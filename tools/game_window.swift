@@ -82,7 +82,12 @@ case "click":
     for kind: CGEventType in [.mouseMoved, .leftMouseDown, .leftMouseUp] {
         guard let event = CGEvent(mouseEventSource: nil, mouseType: kind, mouseCursorPosition: point, mouseButton: .left)
         else { fail("unable to create mouse event") }
-        event.postToPid(pid)
+        // Wine's game mouse path consumes HID events. postToPid can move the
+        // pointer while silently losing button presses. Check focus immediately
+        // before every event so a focus change aborts this guarded action.
+        guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid
+        else { fail("research client lost focus; click aborted") }
+        event.post(tap: .cghidEventTap)
         Thread.sleep(forTimeInterval: 0.08)
     }
     result["fraction"] = [rx, ry]

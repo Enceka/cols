@@ -92,6 +92,7 @@ class ReadClientState {
                 }
                 Field(process,"frontend_state",0x078b06c8,4);
                 Field(process,"cqb_training_flag",0x0c9670b5,2);
+                Field(process,"prestige_rank_unlock",0x0c966f9d,2);
                 Field(process,"onboard_character_id",0x0c95e386,4);
                 uint inventoryCount=Read(process,0x07bdc9b0,4);
                 Console.WriteLine("\"inventory_result_count\":"+inventoryCount+",");

@@ -166,6 +166,12 @@ pub fn maximize_test_rank(arguments: &[u8], user_id: u64) -> Result<Vec<u8>, Lob
     plain[4844..4848].copy_from_slice(&0i32.to_le_bytes());
     plain[4887..4891].copy_from_slice(&70i32.to_le_bytes());
     plain[4891..4895].copy_from_slice(&4i32.to_le_bytes());
+    // uiNotifications un_room_list/un_mp_room_creation require
+    // uf_prestige_rank >= 4, not the displayed rank (VA 0x5c63b0).
+    // unlockFlags.csv maps it to unlockFlagsNew[1], an Int16 at 8297.
+    // Raise the ordinary level component to 69 without losing a higher value.
+    let unlocked = i16::from_le_bytes([plain[8297], plain[8298]]).max(69);
+    plain[8297..8299].copy_from_slice(&unlocked.to_le_bytes());
     encode_private(plain)
 }
 
@@ -230,12 +236,20 @@ mod tests {
         assert_eq!(&after[4844..4848], &0i32.to_le_bytes());
         assert_eq!(&after[4887..4891], &70i32.to_le_bytes());
         assert_eq!(&after[4891..4895], &4i32.to_le_bytes());
-        for range in [0..4, 4844..4848, 4887..4895] {
+        assert_eq!(&after[8297..8299], &69i16.to_le_bytes());
+        for range in [0..4, 4844..4848, 4887..4895, 8297..8299] {
             after[range.clone()].copy_from_slice(&before[range]);
         }
         assert_eq!(after, before);
         assert_eq!(maximize_test_rank(&updated, uid).unwrap(), updated);
         assert!(maximize_test_rank(&old, uid + 1).is_err());
+        before[8297..8299].copy_from_slice(&140i16.to_le_bytes());
+        let higher = encode_private(before).unwrap();
+        let boosted = maximize_test_rank(&higher, uid).unwrap();
+        assert_eq!(
+            &snapshot_and_tail(&boosted).unwrap().0[8297..8299],
+            &140i16.to_le_bytes()
+        );
     }
     #[test]
     fn private_projection_matches_independent_target_layout_vector() {
