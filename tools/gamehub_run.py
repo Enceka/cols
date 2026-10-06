@@ -8,6 +8,7 @@ import argparse
 import fcntl
 import json
 import os
+import re
 import signal
 import shutil
 import subprocess
@@ -55,6 +56,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=["list", "prepare", "init", "probe", "client"])
     parser.add_argument("--engine-id", default="10000033")
+    parser.add_argument("--prefix-name", help="named project-owned prefix for isolated diagnostics; never resets an existing prefix")
     parser.add_argument("--seconds", type=int, default=90)
     parser.add_argument("--title-id-hex", "--context-hex", dest="context_hex", help="explicit u32 title_id; valid game deployment value is still unknown")
     parser.add_argument("--file-trace", action="store_true")
@@ -77,6 +79,8 @@ def main():
         return 0
     if not 1 <= args.seconds <= 900:
         parser.error("seconds must be 1..900")
+    if args.prefix_name and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", args.prefix_name):
+        parser.error("prefix-name must be a simple directory name, at most 64 characters")
     if (args.tls_probe or args.rust_auth or args.trust_lab_cert) and args.action != "client":
         parser.error("TLS options require a client experiment")
     if args.tls_probe and args.rust_auth:
@@ -110,7 +114,7 @@ def main():
         (work / LAB_MARKER).write_text(json.dumps({"source": str(DEFAULT_WORKSPACE / "CODOL"), "method": "APFS clone via cp -cR", "purpose": "CODOL research; separate writable copy"}) + "\n")
         print(json.dumps({"prepared": str(work)}))
         return 0
-    prefix = lab / ("wine10-prefix" if args.engine_id == "10000033" else "gamehub-" + args.engine_id)
+    prefix = lab / (args.prefix_name or ("wine10-prefix" if args.engine_id == "10000033" else "gamehub-" + args.engine_id))
     prefix.mkdir(exist_ok=True)
     marker = prefix / ".codol-prefix.json"
     if marker.exists():
@@ -154,6 +158,11 @@ def main():
              "wine_debug": channels, "seconds": args.seconds, "started_unix": time.time()}
     with (output / "wine.log").open("wb") as log, (output / "observer.log").open("wb") as server_log, (output / "crossproxy.log").open("wb") as cross_log, (output / "tls-plaintext.bin").open("wb") as tls_plaintext, (output / "tls-status.log").open("wb") as tls_status:
         try:
+            # Terminating the harness must still restore temporary certificate
+            # trust and stop its own children. SIGKILL cannot run this cleanup.
+            def interrupted(signum, _frame):
+                raise KeyboardInterrupt("signal " + str(signum))
+            signal.signal(signal.SIGTERM, interrupted)
             if args.action == "client":
                 bootstrap = "127.0.0.1 39001\n127.0.0.1 39002\n0x%08X\n" % context
                 (work / "dwauth.ini").write_text(bootstrap, encoding="ascii")
@@ -240,6 +249,9 @@ def main():
             state["harness_error"] = type(error).__name__ + ": " + str(error)
             raise
         finally:
+            # A second interrupt must not strand the cleanup halfway through.
+            signal.signal(signal.SIGINT, signal.SIG_IGN)
+            signal.signal(signal.SIGTERM, signal.SIG_IGN)
             # WINEPREFIX scopes wineserver -k to this project-owned environment.
             try:
                 stop_prefix(engine, env)
