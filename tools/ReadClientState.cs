@@ -101,6 +101,16 @@ class ReadClientState {
                     Field(process,"inventory_first_item_id",checked(entries+0x30),4);
                     Field(process,"inventory_first_quantity",checked(entries+0x34),4);
                 }
+                uint ownedCount=Read(process,0x07817ddc,4);
+                Console.WriteLine("\"active_inventory_count\":"+ownedCount+",");
+                if(ownedCount<=128) {
+                    var ids=new StringBuilder();
+                    for(uint i=0;i<ownedCount;i++) {
+                        if(i>0)ids.Append(',');
+                        ids.Append(Read(process,checked(0x07bec478+i*0xa8),4));
+                    }
+                    Console.WriteLine("\"active_inventory_ids\":["+ids+"],");
+                }
                 Console.WriteLine("\"read_only\":true}");
             } finally {CloseHandle(process);}
             return 0;

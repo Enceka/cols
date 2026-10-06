@@ -99,15 +99,58 @@ class ClientAssets {
         for(int i=0;i<cols*rows;i++)cells.Add(Convert.ToBase64String(StringBytes(U(values,i*8))));
         return Obj("found",true,"entry",entry,"address",at,"name",Name(U(t,0)),"columns",cols,"rows",rows,"cells_base64",cells);
     }
+    object MarketplaceHeader() {
+        // Target type-name table at 0xce0ea0 assigns marketplacedata type 45.
+        // VA 0x70517e loads it under the same name as the separate StringTable.
+        uint entry;uint at=Find(45,"mp/coMarketplaceItems.csv",out entry);
+        if(at==0)return Obj("found",false);
+        return Obj("found",true,"entry",entry,"address",at,"header_base64",Convert.ToBase64String(Read(at,128)));
+    }
+    object RuntimeSkus() {
+        // Fixed, read-only runtime tables from 0x5840a0/0x7072f0/0x4a6550.
+        // Undo field obfuscation locally; never export the process's mask values.
+        uint skuBase=Word(0x02dbb288);int skuCount=Count(Word(0x02dbb28c),30000);
+        if(skuCount<1)throw new Exception("runtime SKU pool not initialized");
+        byte[] skuBytes=Read(skuBase,checked(skuCount*24));
+        uint[] keys=new uint[9];for(int j=0;j<9;j++)keys[j]=Word(0x00cdd57c+(uint)j*4);
+        var skus=new List<object>();
+        for(int i=0;i<skuCount;i++) {
+            uint at=checked(skuBase+(uint)i*24);var fields=new List<uint>();
+            for(int j=0;j<7;j++) {
+                uint v=(uint)BitConverter.ToUInt16(skuBytes,i*24+j*2)^((at+(uint)j*2)&65535)^(keys[j]&65535);
+                fields.Add(((v<<4)|(v>>12))&65535);
+            }
+            for(int j=0;j<2;j++) {
+                uint v=U(skuBytes,i*24+16+j*4)^(at+16+(uint)j*4)^keys[7+j];
+                fields.Add((v<<8)|(v>>24));
+            }
+            skus.Add(Obj("index",i,"fields",fields,"byte14",skuBytes[i*24+14],"byte15",skuBytes[i*24+15]));
+        }
+        uint productBase=Word(0x02dbb270);int productCount=Count(Word(0x02dbb274),30000);
+        byte[] products=Read(productBase,checked(productCount*24));var rows=new List<object>();
+        for(int i=0;i<productCount;i++) {
+            int n=products[i*24+10];var items=new List<int>();
+            if(n>0) {
+                byte[] ids=Read(U(products,i*24+12),n*2);
+                for(int j=0;j<n;j++)items.Add(BitConverter.ToUInt16(ids,j*2));
+            }
+            rows.Add(Obj("index",i,"header_base64",Convert.ToBase64String(products,i*24,24),"item_ids",items));
+        }
+        return Obj("skus",skus,"products",rows);
+    }
     public static void Export(IntPtr process) {
         var reader=new ClientAssets(process);var schemas=new Dictionary<string,object>();var tables=new Dictionary<string,object>();
         foreach(string name in new string[]{"mp/playerdata.def","mp/playersecuredata.def"}) {
             try{schemas[name]=reader.Schema(name);}catch(Exception e){schemas[name]=Obj("error",e.Message);}
         }
-        foreach(string name in new string[]{"mp/coMarketplaceItems.csv","mp/coCharacterDefTable.csv","mp/cogroupdefs.csv","mp/coWeapSlotDefs.csv","mp/coCharItemStatsTable.csv","mp/coCharItems/cha.csv","mp/uiNotifications.csv","mp/functionalUnlockTable.csv","mp/unlockFlags.csv","mp/rankTable.csv"}) {
+        foreach(string name in new string[]{"mp/coMarketplaceItems.csv","mp/coCharacterDefTable.csv","mp/cogroupdefs.csv","mp/coWeapSlotDefs.csv","mp/coCharItemStatsTable.csv","mp/coCharItems/cha.csv","mp/uiNotifications.csv","mp/functionalUnlockTable.csv","mp/unlockFlags.csv","mp/rankTable.csv",
+            "mp/coWeapItems/ast.csv","mp/coWeapItems/pst.csv","mp/coWeapItems/cam.csv","mp/coWeapItems/oth.csv","mp/coWeapItems/ret.csv","mp/coItemDependency.csv",
+            "mp/coWeaponPrimaryRankTable.csv","mp/coWeaponSecondaryRankTable.csv"}) {
             try{tables[name]=reader.Table(name);}catch(Exception e){tables[name]=Obj("error",e.Message);}
         }
-        var output=Obj("schema_version",1,"read_only",true,"client_sha256","e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b","schemas",schemas,"tables",tables);
+        object market;try{market=reader.MarketplaceHeader();}catch(Exception e){market=Obj("error",e.Message);}
+        object runtime;try{runtime=reader.RuntimeSkus();}catch(Exception e){runtime=Obj("error",e.Message);}
+        var output=Obj("schema_version",1,"read_only",true,"client_sha256","e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b","schemas",schemas,"tables",tables,"marketplace",market,"runtime_marketplace",runtime);
         var serializer=new JavaScriptSerializer();serializer.MaxJsonLength=32*1024*1024;
         Console.WriteLine(serializer.Serialize(output));
     }

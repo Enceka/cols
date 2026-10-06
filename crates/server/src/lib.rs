@@ -4,6 +4,7 @@ pub mod capture;
 pub mod config;
 pub mod http;
 pub mod lobby_server;
+mod marketplace;
 pub mod observe;
 pub mod services;
 pub mod session;

@@ -57,6 +57,10 @@ impl<'a> Reader<'a> {
                 .map_err(|_| LobbyError("u32 size"))?,
         ))
     }
+    pub fn u8(&mut self) -> Result<u8, LobbyError> {
+        self.tag(3)?;
+        Ok(self.take(1)?[0])
+    }
     pub fn u16(&mut self) -> Result<u16, LobbyError> {
         self.tag(6)?;
         Ok(u16::from_le_bytes(
@@ -288,13 +292,7 @@ pub fn player_data_with_balances(
     {
         return Err(LobbyError("invalid local currency entries"));
     }
-    if items.len() > 128 || items.contains(&0) {
-        return Err(LobbyError("invalid local inventory count/item id"));
-    }
-    let mut seen = std::collections::HashSet::new();
-    if items.iter().any(|id| !seen.insert(*id)) {
-        return Err(LobbyError("duplicate local item id"));
-    }
+    validate_inventory(items)?;
     let mut out = Writer::default();
     out.u64(user_id);
     out.string("");
@@ -313,15 +311,7 @@ pub fn player_data_with_balances(
             out.u64(user_id);
             out.string("");
         }
-        out.u32(*id);
-        out.u32(1);
-        out.u32(0);
-        out.blob(&[])?;
-        out.u32(u32::MAX);
-        out.i64(i64::MAX);
-        out.u16(0);
-        out.u32(u32::MAX);
-        out.u8(0);
+        inventory_fields(&mut out, *id)?;
     }
     if user_id == u64::MAX {
         // bdUserAccountID(-1, "") means no inherited identity to the nested reader.
@@ -330,6 +320,45 @@ pub fn player_data_with_balances(
     }
     out.u32(0); // Entitlement pair count is UInt32 on wire, UInt16 in memory.
     Ok(out.0)
+}
+
+fn validate_inventory(items: &[u32]) -> Result<(), LobbyError> {
+    if items.len() > 128 || items.contains(&0) {
+        return Err(LobbyError("invalid local inventory count/item id"));
+    }
+    let mut seen = std::collections::HashSet::new();
+    if items.iter().any(|id| !seen.insert(*id)) {
+        return Err(LobbyError("duplicate local item id"));
+    }
+    Ok(())
+}
+fn inventory_fields(out: &mut Writer, id: u32) -> Result<(), LobbyError> {
+    out.u32(id);
+    out.u32(1);
+    out.u32(0);
+    out.blob(&[])?;
+    out.u32(u32::MAX);
+    out.i64(i64::MAX);
+    out.u16(0);
+    out.u32(u32::MAX);
+    out.u8(0);
+    Ok(())
+}
+
+/// 80/203 binds standalone inventory entries (VA 0xa468c0/0x4a6a9f).
+/// The default account passed by 0xa4b790 requires an explicit owner per entry.
+pub fn inventory_records(user_id: u64, items: &[u32]) -> Result<Vec<Vec<u8>>, LobbyError> {
+    validate_inventory(items)?;
+    items
+        .iter()
+        .map(|id| {
+            let mut out = Writer::default();
+            out.u64(user_id);
+            out.string("");
+            inventory_fields(&mut out, *id)?;
+            Ok(out.0)
+        })
+        .collect()
 }
 
 #[cfg(test)]

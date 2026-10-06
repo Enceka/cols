@@ -1,5 +1,6 @@
 //! Opt-in local services. Opaque user files are isolated by authenticated
 //! title/UID; no old-build profile or catalogue data is manufactured.
+use crate::marketplace::{LocalShop, LocalWallet, Payment};
 use crate::{auth_server::write_private, session::Session};
 use anyhow::{Context, Result, ensure};
 use base64::{Engine, engine::general_purpose::STANDARD};
@@ -55,29 +56,6 @@ struct LocalInventory {
     title_id: u32,
     user_id: String,
     items: Vec<u32>,
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct LocalWallet {
-    schema_version: u32,
-    client_sha256: String,
-    title_id: u32,
-    user_id: String,
-    cp: u32,
-    gp: u32,
-}
-impl LocalWallet {
-    fn validate(&self, title_id: u32, user_id: u64) -> Result<()> {
-        ensure!(
-            self.schema_version == 1
-                && self.client_sha256 == codol_protocol::CLIENT_SHA256
-                && self.title_id == title_id
-                && self.user_id.parse::<u64>()? == user_id,
-            "wallet identity/version mismatch"
-        );
-        Ok(())
-    }
 }
 
 impl LocalServices {
@@ -159,29 +137,20 @@ impl LocalServices {
                         task::TASK_FAILED,
                     ));
                 }
-                let path = self
-                    .profile_path(session, false)
-                    .await?
-                    .with_file_name("inventory.json");
-                let items = if let Some(bytes) = read_bounded(&path, 32768).await? {
-                    let inventory: LocalInventory = serde_json::from_slice(&bytes)?;
-                    ensure!(
-                        inventory.schema_version == 1
-                            && inventory.client_sha256 == codol_protocol::CLIENT_SHA256
-                            && inventory.title_id == session.title_id
-                            && inventory.user_id.parse::<u64>()? == session.user_id,
-                        "inventory identity/version mismatch"
-                    );
-                    inventory.items
-                } else {
-                    Vec::new()
-                };
+                let mut items = self.inventory(session).await?;
                 let wallet = self.wallet(session).await?;
+                if let Some(w) = &wallet {
+                    for grant in &w.purchases {
+                        if !items.contains(&grant.item_id) {
+                            items.push(grant.item_id);
+                        }
+                    }
+                }
                 let balances = wallet
                     .as_ref()
                     // VA 0x4a5680 copies ONLY entry 0 to the marketplace wallet.
                     // It must be GP; the separate 93/1 result supplies CP.
-                    .map(|w| vec![(2, w.gp)])
+                    .map(|w| vec![(Payment::Gp.wire_currency(), w.gp)])
                     .unwrap_or_default();
                 Ok(TaskResult::success(
                     if wallet.is_some() {
@@ -213,7 +182,7 @@ impl LocalServices {
                 // This local account has no issued coupons/mail attachments.
                 Ok(TaskResult::success("empty_coupon_inventory", vec![]))
             }
-            (93, 1) => {
+            (93, 1) | (80, 130) => {
                 let mut reader = task::Reader::new(request.arguments);
                 let maximum = reader.u32()?;
                 reader.finish()?;
@@ -223,13 +192,87 @@ impl LocalServices {
                         task::TASK_FAILED,
                     ));
                 }
-                // VA 0xa4c4a0 reads currency UChar + UInt32 amount. The game
-                // checks currency 1 (CP) at VA 0x57d548.
-                let cp = self.wallet(session).await?.map_or(0, |w| w.cp);
+                // VA 0xa4c4a0 reads UChar + UInt32. Payment route and UI wire
+                // currency are distinct; the target UI uses GP=1 and CP=2.
+                let cp = request.service == 93;
+                let amount = self
+                    .wallet(session)
+                    .await?
+                    .map_or(0, |w| if cp { w.cp } else { w.gp });
                 let mut record = Writer::default();
-                record.u8(1);
-                record.u32(cp);
-                Ok(TaskResult::success("local_cp_balance", vec![record.0]))
+                record.u8(if cp { Payment::Cp } else { Payment::Gp }.wire_currency());
+                record.u32(amount);
+                Ok(TaskResult::success(
+                    if cp {
+                        "local_cp_balance"
+                    } else {
+                        "local_gp_balance"
+                    },
+                    vec![record.0],
+                ))
+            }
+            (80, 203) => {
+                let mut r = task::Reader::new(request.arguments);
+                let context = r.string(16)?;
+                let maximum = r.u16()?;
+                r.finish()?;
+                if !context.is_empty() || !(1..=20000).contains(&maximum) {
+                    return Ok(TaskResult::failure(
+                        "unsupported_inventory_query",
+                        task::TASK_FAILED,
+                    ));
+                }
+                let mut items = self.inventory(session).await?;
+                if let Some(wallet) = self.wallet(session).await? {
+                    for p in wallet.purchases {
+                        if !items.contains(&p.item_id) {
+                            items.push(p.item_id);
+                        }
+                    }
+                }
+                let mut records = task::inventory_records(session.user_id, &items)?;
+                records.truncate(usize::from(maximum));
+                Ok(TaskResult::success("local_inventory_refresh", records))
+            }
+            (80, 154) | (93, 131) => {
+                let sku = codol_protocol::purchase::single_sku(request.service, request.arguments)?;
+                let _lock = self.writes.lock().await;
+                let Some(bytes) =
+                    read_bounded(&self.root.join("shop.json"), 4 * 1024 * 1024).await?
+                else {
+                    return Ok(TaskResult::failure("local_shop_missing", task::TASK_FAILED));
+                };
+                let shop: LocalShop = serde_json::from_slice(&bytes)?;
+                shop.validate(session.title_id)?;
+                let Some(mut wallet) = self.wallet(session).await? else {
+                    return Ok(TaskResult::failure(
+                        "local_wallet_missing",
+                        task::TASK_FAILED,
+                    ));
+                };
+                let inventory = self.inventory(session).await?;
+                let payment = if request.service == 93 {
+                    Payment::Cp
+                } else {
+                    Payment::Gp
+                };
+                if let Err(reason) = wallet.purchase(&shop, &inventory, sku, payment) {
+                    tracing::info!(sku, ?payment, %reason, "local purchase rejected");
+                    return Ok(TaskResult::failure(
+                        "local_purchase_rejected",
+                        task::TASK_FAILED,
+                    ));
+                }
+                // Debit and grant commit together. A write failure never acknowledges success.
+                let path = self
+                    .profile_directory(session.title_id, session.user_id)
+                    .await?
+                    .join("wallet.json");
+                atomic_private_write(&path, &serde_json::to_vec_pretty(&wallet)?).await?;
+                Ok(TaskResult::success(
+                    "local_permanent_item_purchased",
+                    vec![],
+                ))
             }
             (8, 1 | 2) => {
                 let mut reader = task::Reader::new(request.arguments);
@@ -299,12 +342,32 @@ impl LocalServices {
             .profile_directory(session.title_id, session.user_id)
             .await?
             .join("wallet.json");
-        let Some(bytes) = read_bounded(&path, 4096).await? else {
+        let Some(bytes) = read_bounded(&path, 32768).await? else {
             return Ok(None);
         };
         let wallet: LocalWallet = serde_json::from_slice(&bytes)?;
         wallet.validate(session.title_id, session.user_id)?;
         Ok(Some(wallet))
+    }
+
+    async fn inventory(&self, session: &Session) -> Result<Vec<u32>> {
+        let path = self
+            .profile_path(session, false)
+            .await?
+            .with_file_name("inventory.json");
+        let Some(bytes) = read_bounded(&path, 32768).await? else {
+            return Ok(Vec::new());
+        };
+        let inventory: LocalInventory = serde_json::from_slice(&bytes)?;
+        ensure!(
+            inventory.schema_version == 1
+                && inventory.client_sha256 == codol_protocol::CLIENT_SHA256
+                && inventory.title_id == session.title_id
+                && inventory.user_id.parse::<u64>()? == session.user_id,
+            "inventory identity/version mismatch"
+        );
+        task::player_data(session.user_id, &inventory.items)?;
+        Ok(inventory.items)
     }
 
     /// Offline administration of one existing lab account. Stop all services
@@ -326,10 +389,14 @@ impl LocalServices {
             .context("existing private profile required; initialize the account first")?;
         let new_private = profile::maximize_test_rank(&old_private, user_id)?;
         let wallet_path = directory.join("wallet.json");
-        let old_wallet = read_bounded(&wallet_path, 4096).await?;
-        if let Some(bytes) = &old_wallet {
-            serde_json::from_slice::<LocalWallet>(bytes)?.validate(title_id, user_id)?;
-        }
+        let old_wallet = read_bounded(&wallet_path, 32768).await?;
+        let purchases = if let Some(bytes) = &old_wallet {
+            let wallet = serde_json::from_slice::<LocalWallet>(bytes)?;
+            wallet.validate(title_id, user_id)?;
+            wallet.purchases
+        } else {
+            Vec::new()
+        };
         let wallet = LocalWallet {
             schema_version: 1,
             client_sha256: codol_protocol::CLIENT_SHA256.to_owned(),
@@ -337,6 +404,7 @@ impl LocalServices {
             user_id: user_id.to_string(),
             cp,
             gp,
+            purchases,
         };
         let new_wallet = serde_json::to_vec_pretty(&wallet)?;
         let mut nonce = [0u8; 8];
@@ -620,6 +688,149 @@ fn blob_result(label: &'static str, data: &[u8]) -> Result<TaskResult> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn buy(service: u8, sku: u32) -> Vec<u8> {
+        let mut w = Writer(vec![service, 3, if service == 80 { 154 } else { 131 }]);
+        w.string("");
+        w.u32(1);
+        w.u32(sku);
+        w.u32(1);
+        w.u32(1);
+        w.boolean(false);
+        w.u32(1);
+        w.u64(0);
+        w.string("");
+        w.u32(0);
+        w.u32(0);
+        w.u8(0);
+        w.u32(u32::from(service == 80));
+        w.0.push(0);
+        w.0
+    }
+    #[tokio::test]
+    async fn purchases_commit_debit_and_item_together_and_reject_duplicates_after_restart() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("data");
+        let server = LocalServices::open(root.clone()).await.unwrap();
+        let s = session(0x89abcdef01234567);
+        let wallet_path = server
+            .profile_directory(s.title_id, s.user_id)
+            .await
+            .unwrap()
+            .join("wallet.json");
+        let initial = serde_json::json!({"schema_version":1,"client_sha256":codol_protocol::CLIENT_SHA256,
+            "title_id":s.title_id,"user_id":s.user_id.to_string(),"cp":1000,"gp":3000});
+        atomic_private_write(&wallet_path, &serde_json::to_vec(&initial).unwrap())
+            .await
+            .unwrap();
+        let shop = serde_json::json!({"schema_version":1,"client_sha256":codol_protocol::CLIENT_SHA256,
+            "title_id":s.title_id,"source_sha256":"a".repeat(64),"offers":[
+            {"sku_id":10073,"item_id":10183,"currency":2,"price":2600},
+            {"sku_id":14629,"item_id":20659,"currency":1,"price":280},
+            {"sku_id":15,"item_id":10183,"currency":1,"price":100},
+            {"sku_id":16,"item_id":5,"currency":2,"price":9999}]});
+        atomic_private_write(&root.join("shop.json"), &serde_json::to_vec(&shop).unwrap())
+            .await
+            .unwrap();
+        let request = buy(80, 10073);
+        let (a, b) = tokio::join!(
+            server.handle(&request, &s, 1),
+            server.handle(&request, &s, 1)
+        );
+        assert_eq!(
+            usize::from(a.unwrap().result.is_ok()) + usize::from(b.unwrap().result.is_ok()),
+            1
+        );
+        assert!(
+            server
+                .handle(&buy(93, 14629), &s, 2)
+                .await
+                .unwrap()
+                .result
+                .unwrap()
+                .is_empty()
+        );
+        drop(server);
+        let server = LocalServices::open(root).await.unwrap();
+        let wallet = server.wallet(&s).await.unwrap().unwrap();
+        assert_eq!((wallet.cp, wallet.gp), (720, 400));
+        assert_eq!(
+            wallet
+                .purchases
+                .iter()
+                .map(|p| p.item_id)
+                .collect::<Vec<_>>(),
+            [10183, 20659]
+        );
+        let records = server
+            .handle(&[80, 3, 230, 16, 0, 0], &s, 3)
+            .await
+            .unwrap()
+            .result
+            .unwrap();
+        assert_eq!(
+            records,
+            [task::player_data_with_balances(s.user_id, &[10183, 20659], &[(1, 400)]).unwrap()]
+        );
+        let refresh = [80, 3, 203, 16, 0, 6, 32, 78, 0];
+        let refreshed = server
+            .handle(&refresh, &s, 3)
+            .await
+            .unwrap()
+            .result
+            .unwrap();
+        assert_eq!(refreshed.len(), 2);
+        for (record, id) in refreshed.iter().zip([10183, 20659]) {
+            let mut r = task::Reader::new(record);
+            assert_eq!(r.u64().unwrap(), s.user_id);
+            assert_eq!(r.string(16).unwrap(), "");
+            assert_eq!(r.u32().unwrap(), id);
+            assert_eq!(r.u32().unwrap(), 1);
+        }
+        assert_eq!(
+            server
+                .handle(&[80, 3, 130, 8, 1, 0, 0, 0, 0], &s, 3)
+                .await
+                .unwrap()
+                .result,
+            Ok(vec![vec![3, 1, 8, 144, 1, 0, 0]])
+        );
+        assert_eq!(
+            server
+                .handle(&refresh, &session(2), 3)
+                .await
+                .unwrap()
+                .result,
+            Ok(vec![])
+        );
+        for n in 0..refresh.len() {
+            assert!(server.handle(&refresh[..n], &s, 3).await.is_err());
+        }
+        let before = tokio::fs::read(&wallet_path).await.unwrap();
+        // Replays, alternative SKU for owned item, wrong currency, unknown SKU, overdraft.
+        for request in [
+            buy(80, 10073),
+            buy(93, 14629),
+            buy(93, 15),
+            buy(93, 10073),
+            buy(80, 999),
+            buy(80, 16),
+        ] {
+            assert_eq!(
+                server.handle(&request, &s, 4).await.unwrap().result,
+                Err(task::TASK_FAILED)
+            );
+            assert_eq!(tokio::fs::read(&wallet_path).await.unwrap(), before);
+        }
+        assert_eq!(
+            server
+                .handle(&buy(80, 10073), &session(2), 4)
+                .await
+                .unwrap()
+                .result,
+            Err(task::TASK_FAILED)
+        );
+        assert!(server.wallet(&session(2)).await.unwrap().is_none());
+    }
     #[tokio::test]
     async fn test_account_boost_backs_up_progress_and_persists_consistent_isolated_balances() {
         let temp = tempfile::tempdir().unwrap();
@@ -669,12 +880,12 @@ mod tests {
             .unwrap();
         assert_eq!(
             &player[0][11..28],
-            &[8, 1, 0, 0, 0, 3, 2, 8, 64, 66, 15, 0, 8, 1, 0, 0, 0]
+            &[8, 1, 0, 0, 0, 3, 1, 8, 64, 66, 15, 0, 8, 1, 0, 0, 0]
         );
         let external = [93, 3, 1, 8, 1, 0, 0, 0, 0];
         assert_eq!(
             server.handle(&external, &s, 1).await.unwrap().result,
-            Ok(vec![vec![3, 1, 8, 160, 134, 1, 0]])
+            Ok(vec![vec![3, 2, 8, 160, 134, 1, 0]])
         );
         let mut other = s.clone();
         for change_title in [true, false] {
@@ -685,7 +896,7 @@ mod tests {
             }
             assert_eq!(
                 server.handle(&external, &other, 1).await.unwrap().result,
-                Ok(vec![vec![3, 1, 8, 0, 0, 0, 0]])
+                Ok(vec![vec![3, 2, 8, 0, 0, 0, 0]])
             );
             let misplaced = server
                 .profile_directory(other.title_id, other.user_id)
@@ -730,7 +941,7 @@ mod tests {
         );
         assert_eq!(
             server.handle(&balance, &s, 1).await.unwrap().result,
-            Ok(vec![vec![3, 1, 8, 0, 0, 0, 0]])
+            Ok(vec![vec![3, 2, 8, 0, 0, 0, 0]])
         );
         for body in [&coupons[..], &balance[..]] {
             for size in 0..body.len() {
