@@ -137,6 +137,8 @@ Rust `game_wire::NativeXor` 已把两个方向分开：`incoming_xor(sequence_by
 
 下一步应从真实客户端首个 14 字节包中恢复 XOR 后的 native opcode/ACK（需要 command ring 初值），再用一个无副作用的 reliable command 做确认；只有确认成功后，才构造完整 gamestate。直接发送大块配置仍会掩盖 opcode、ACK 或 command-string 错误。
 
+服务端观测器现在对长度至少 14 的 C2S native 包优先解析 `ClientHeader`，记录 `client_server_id`、`client_message_ack`、`client_reliable_ack`，并用其 sequence 计算丢包；不再把这类包的 server-id 字节误标记成 opcode。较短的未知包仍走通用 sequence/opcode 观测。字段只写入 event.json，不更新可靠 ring，也不改变连接状态。
+
 feed 来源已进一步确认：0x46d830 在调用 0x4f9850 前把 `ECX=3`，即读取 configstring index 3；随后 0xaf6e68 调用十进制 `strtol`（base=10），结果写入 `DAT_0796f2d8`。因此服务端未来应从 gamestate 的 server-id/configstring 3 生成 `feed_byte = parsed_u32 as u8`，不能从 challenge、DTLS key 或用户 UID 派生。Rust 已加入 `native_feed_byte` 纯函数和边界测试；command ring 与 `+0x40148/+0x138` 的运行时值仍待目标包确认。
 
 真实内层包在 heartbeat 后是 14 字节：`LE32(sequence) || 9 个零字节 || 末尾值`，不同实验末尾分别观察到 `0x37` 和 `0x76`；这不是可直接当作 gamestate 的明文。目标接收器 0x46e6a0 使用 0x5a1180 读取四字节序号、再按消息码分派；0x46dea0 的 gamestate 路径会读取可靠确认号、检查 configstring/服务器校验并推进状态。此前 152 字节原型没有经过这些状态前置，不能单独用它推断配置内容不足。
