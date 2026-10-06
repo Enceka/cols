@@ -31,7 +31,7 @@
 
 ## 5. 最小 gamestate 试验结论
 
-本轮用 AlphaBuild `CODOL_WriteGamestate` 的目标顺序（opcode 2、command sequence、map、zone type、CRC、opcode 3 configstrings、client number、checksum feed、opcode 5）构造了 152 字节原型，只包含 map/mode/server ID/systeminfo 三项。Rust bit writer 的低位优先顺序与参考 `codol_msg.c` 一致。
+本轮用 AlphaBuild `CODOL_WriteGamestate` 的字段顺序，并结合目标 0x46e6a0 分派表修正为 opcode 3（目标 opcode 2 是可靠客户端命令路径），构造了 152 字节原型：command sequence、map、zone type、CRC、configstrings、client number、checksum feed、结束标记。它只包含 map/mode/server ID/systeminfo 三项。Rust bit writer 的低位优先顺序与参考 `codol_msg.c` 一致。
 
 真实客户端在收到该原型后没有进入 gamestate ACK 或场景，约 30 秒后弹出“服务器连接超时”。服务端原始事件显示该响应已经通过外层 DATA MAC；后续客户端仍发送少量 14 字节内层包，未发送可确认的 gamestate ACK。结论是 configstring 数量、内容、checksum feed、完整 `mp_afghan` 资源/纯校验或其他可靠命令至少有一项必需，不能把原型接入默认运行路径。
 

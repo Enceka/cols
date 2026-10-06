@@ -199,7 +199,9 @@ pub fn minimal_gamestate(
     if map.is_empty() || mode.is_empty() || map.len() > 255 || mode.len() > 63 {
         return Err(LobbyError("invalid minimal gamestate identity"));
     }
-    let mut out = vec![2];
+    // Client dispatch at 0x46e6a0 routes opcode 3 to 0x46dea0 gamestate;
+    // opcode 2 is the reliable client-command path.
+    let mut out = vec![3];
     out.extend_from_slice(&0u32.to_le_bytes());
     string(&mut out, map);
     string(&mut out, "mp");
@@ -237,7 +239,7 @@ mod tests {
     #[test]
     fn target_gamestate_has_expected_header_config_indices_and_tail() {
         let message = minimal_gamestate("mp_afghan", "war", 1, 0).unwrap();
-        assert_eq!(message[0], 2);
+        assert_eq!(message[0], 3);
         assert_eq!(&message[5..15], b"mp_afghan\0");
         assert!(
             message
