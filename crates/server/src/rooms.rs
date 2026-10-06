@@ -80,7 +80,12 @@ impl Rooms {
                         task::TASK_FAILED,
                     ));
                 };
-                let (id, key) = endpoint.allocate(session, game.description.security_key, now)?;
+                let (id, key) = endpoint.allocate(
+                    session,
+                    game.description.security_key,
+                    game.description.build,
+                    now,
+                )?;
                 let record = game
                     .description
                     .allocation_record(endpoint.address(), &id, &key)?;

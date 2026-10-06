@@ -2,7 +2,9 @@
 
 更新：2026-10-07。目标仍为 CODOL 3.3.3.3，EXE SHA-256 `e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b`。
 
-已实测：人机训练准备后，Rust 分配游戏端点、回应 mmbook，客户端进入“荒漠边陲”加载画面，完成 P-224 握手；Rust 成功验证并解密 `getchallenge`。本轮真实客户端停在等待连接；随后补了 challenge 回复并通过模拟 UDP 客户端测试，实际客户端复测遇到启动阻塞，尚未确认 connect、gamestate、出生、Bot AI 或完整对局。加载画面不能计为可玩。
+已实测：人机训练分配、mmbook/mmstart、随机 P-224 握手、双向加密 DATA、challenge/connect、32 KiB stats 上传确认与加载心跳均通过。客户端开始发送序号递增的游戏通道数据包，当前停在“设置游戏”，等待尚未实现的 gamestate/快照。没有出生、Bot AI 或完整对局。启动阻塞已恢复，见 [CLIENT_STARTUP_RECOVERY.md](CLIENT_STARTUP_RECOVERY.md)。
+
+下一阶段实施顺序见 [GAMEPLAY_PLAN.md](GAMEPLAY_PLAN.md)。
 
 ## 分配与开局控制
 
@@ -54,18 +56,18 @@ ECDH 曲线 secp224r1。公钥为 LibTomCrypt DER（包含 bit-string、curve-si
 
 ```sh
 sh tools/cargo.sh build --workspace --locked
-python3 tools/gamehub_run.py client --seconds 900 --title-id-hex 3ea \
+python3 tools/gamehub_run.py client --prefix-name wine10-recovered-20261007 --seconds 900 --title-id-hex 3ea \
   --rust-auth --local-auth-tickets --rust-lobby --rust-stun --rust-game \
   --local-services --trust-lab-cert --quiet-network
 ```
 
 `--rust-game` 映射 `serve-auth --game-bind 127.0.0.1:39004`，要求本地 services 与 lobby；当前只允许 loopback。抓包在本次实验的 `auth-captures/auth-*/game`，event.json 区分 MAC 通过、错误及明文长度。
 
-下一步从目标的 challenge/connect 消费者恢复回复及身份绑定，再处理 gamestate/snapshot、场景出生与 AI；多客户端成员加入、定向广播和每席 admission 尚未实现。先核实目标消费者，不能直接用旧参考的 protocol/shortversion 常量。
+下一步恢复内层 netchan、gamestate/snapshot、场景出生与 AI；多客户端成员加入、定向广播和每席 admission 尚未实现。先核实目标消费者，不能直接用旧参考的 protocol/shortversion 常量。
 
 本阶段验证：fmt、Clippy、66 项 Rust、13 项 Python 通过。新增测试覆盖独立加密向量、防重放/乱序/计数耗尽、P-224 cookie/key exchange、分配过期与密钥轮换、mmbook 身份隔离、真实 UDP admission gate 与 INIT 重传。
 
-## 后续增量：challenge 回复与复测限制
+## 历史阶段：7ee4480 的 challenge 回复与复测限制
 
 提交 `10e8022` 保存了分配、booking 和已实测的加密通道。之后增加 `game_connection.rs`：只向已认证 DATA 中、UID 与 admission 一致的 `getchallenge 0 "<16位 hex UID>"` 回复随机正整数 `challengeResponse`，相同 association 重试复用 challenge。目标 0x466a55 读取 argv(1) 写连接对象 +0x138，随后由 challenging(3) 转 connecting(4)。构造 connect 的目标函数 0x465c00 使用 `connect %s "%s"`（字符串 0xc612bc）；challenge 字段名在 0xc61214。未发送 connectResponse 或伪造世界状态。
 
@@ -75,4 +77,39 @@ python3 tools/gamehub_run.py client --seconds 900 --title-id-hex 3ea \
 
 macOS 采样发现研究 prefix 的 Wine server 阻塞于 `req_create_file → open_fd → open`，早先还残留 IIPSHostApp。核对 cwd 后终止了研究进程，按 prefix 设备号/inode 隔离了两个无持有者的 `/private/tmp/.wine-501/server-100000f-5fd6ec` 运行目录（保留 `.stale-codol-*` 备份）。重新启动后仍在 IIPS 加载阶段阻塞；不能仅凭残留进程断定全部根因。未重建 prefix 或重置玩家档案。采样保留为 `research-output/wine-start-sample.txt`、`game-start-sample.txt`、`wineserver-blocked-sample.txt`。
 
-接续优先恢复实验副本的 IIPS 启动，确认新客户端可见且已完成 AUTH，再重测 challenge；不要连续复用一个仍卡在文件打开的 Wine server，也不要把零 UDP 的实验记成协议失败。当前运行命令无需改动，新增 challenge 路径已随 `--rust-game` 启用。
+该阶段曾需要优先恢复 IIPS；现已解决，见下节。历史建议：确认新客户端可见且已完成 AUTH，再重测 challenge；不要连续复用一个仍卡在文件打开的 Wine server，也不要把零 UDP 的实验记成协议失败。当前运行命令无需改动，新增 challenge 路径已随 `--rust-game` 启用。
+
+## 2026-10-07：完整连接前置流程实测通过
+
+### connect 身份与版本绑定
+
+真实请求为 `connect <16位 hex UID> "\\key\\value..."`，没有末尾 NUL；userinfo 含 name、xuid、natType、rank、2490、checksum、challenge、statver 等。Rust 校验外层 UID、userinfo 的 xuid 都等于 admission 身份，challenge 必须是当前 association 已签发值，`2490` 必须等于实时描述的 build。拒绝重复字段、缺失必需字段、超长/不配对字段和控制字符；不执行文本，也不以玩家自报 rank 作为授权。
+
+Admission 新增 build 绑定，build/key/登录 seed 变化撤销旧分配。目标 0x466b24..0x466c22 在 connectResponse 后只初始化 netchan（0x5a5420），进入状态 5 并开始 stats 上传；未读取旧参考的 info-string。因此回复为 OOB `connectResponse`，没有照搬 1.1.1.13 的 shortversion/protocol 常量。
+
+### 目标 stats 分块格式
+
+完整明文：`ffffffff || "stats" || 00 || chunk:u8 || compressed_total:LE16 || fragment`。**这个位置是 chunk + 压缩长度，不是旧参考的 qport + chunk。**
+
+目标 0x6d80d0 决定分块数与重发索引，0x6d81a0 写索引、长度和片段：每片至多 0x4d6=1238 字节；compressed_total=0 表示原始 32768 字节，否则按指定总长度重组 zlib，输出须恰好 32768 字节。最大 27 片，对应客户端 mask 0x7ffffff。服务端 `game_stats::Upload` 有界重组，接受相同重传，拒绝冲突重传/中途改变长度、截断、超界索引、额外 zlib 尾部和过量展开。
+
+回复 `statResponse <实际缺失位图>`；只有全部片段收到且完整解压验证后才返回 0。不是收到任一 stats 就固定 ACK 0。真实训练样本压缩长度为 1192/1194 等，单片即可完整上传。之后客户端不再反复重传 stats。
+
+当前只把上传作为会话内的原始材料，不写回大厅持久档案或信任其中的等级/装备。首个真实样本内部首 DWORD 与 `CRC32(bytes[4..])` 不一致：目标 0x6d81a0 路径先调用 0x6d7d80 计算 CRC，再调用 0x6d8a70 调整装备，可能有关；尚未确定原因。现有校验保证 DTLS MAC、分块完整性、zlib 流完整性和 32 KiB 长度，不宣称验证了 stats 内部业务含义。
+
+### 心跳与内层游戏包
+
+stats 完成后，目标处于状态 6 时发送 OOB `heartbeat`；仅在 stats 完整接收后回复 `heartbeatresponse`。目标 0x466c30 分支检查本地地图加载工作线程（0x4640a0），完成后继续进入游戏通道。
+
+`client-1791310514572` 已从 heartbeat 转为序号递增的非 OOB 包，首三个明文分别为 `0100000000000000000000000037`、`0200000000000000000000000037`、`0300000000000000000000000037`，后续还出现 64 字节包。服务端目前只认证/解密和保存这些包，尚未恢复内层消息解析或发送 gamestate，不能据此声称快照同步。
+
+### 已停止实验的证据
+
+| 实验 | 进展 | DATA MAC 通过 |
+| --- | --- | ---: |
+| client-1791309533210 | 文件替换后恢复大厅，challenge 回复接受并收到 connect | 78 |
+| client-1791309800878 | connectResponse 接受，界面“同步游戏设置”，收到重复 stats | 1178 |
+| client-1791310250844 | 完整 stats ACK 接受，转 heartbeat，界面“设置游戏” | 119 |
+| client-1791310514572 | heartbeatresponse 接受，产生递增序号游戏包 | 145 |
+
+以上实验 event.json 均无错误，停止后临时证书均已恢复。截图与原始包只留在忽略目录。71 项 Rust、13 项 Python、fmt/Clippy 通过；新增覆盖 connect 身份/build/challenge、防重复字段、真实 UDP connect 回复、stats 重组/冲突/解压边界以及未完成 stats 禁止推进心跳。

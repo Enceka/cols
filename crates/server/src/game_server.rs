@@ -21,6 +21,7 @@ pub(crate) struct Admission {
     title: u32,
     owner: u64,
     seed: u32,
+    build: i32,
     expires: u32,
     pub(crate) key: [u8; 16],
     booked: bool,
@@ -39,6 +40,7 @@ impl GameAdmissions {
         &self,
         session: &Session,
         security_key: [u8; 16],
+        build: i32,
         now: u32,
     ) -> Result<([u8; 8], [u8; 16])> {
         let mut entries = self
@@ -50,7 +52,7 @@ impl GameAdmissions {
             a.expires > now
                 && (a.title != session.title_id
                     || a.owner != session.user_id
-                    || (a.seed == session.iv_seed && a.key == security_key))
+                    || (a.seed == session.iv_seed && a.key == security_key && a.build == build))
         });
         if let Some((id, a)) = entries.iter().find(|(_, a)| {
             a.title == session.title_id && a.owner == session.user_id && a.seed == session.iv_seed
@@ -72,6 +74,7 @@ impl GameAdmissions {
                 title: session.title_id,
                 owner: session.user_id,
                 seed: session.iv_seed,
+                build,
                 expires: session.expires_at.min(now.saturating_add(930)),
                 key,
                 booked: false,
@@ -300,12 +303,16 @@ impl GameServer {
                     let payload = decoded.as_ref().expect("decoded DATA");
                     let payload =
                         [payload.encrypted.as_slice(), payload.cleartext.as_slice()].concat();
-                    if let Some(reply) = p.connection.handle(&payload, admission.owner)? {
+                    if let Some(reply) =
+                        p.connection
+                            .handle(&payload, admission.owner, admission.build)?
+                    {
                         return Ok(Some(records.seal(&reply, p.remote_tag)?));
                     }
                 }
                 Ok(None)
             })();
+            let connection_stage = peers.get(&peer).map(|p| p.connection.stage());
             let error = handled.as_ref().err().map(ToString::to_string);
             let response = handled.unwrap_or(None);
             if let Some(plain) = &decoded {
@@ -329,7 +336,7 @@ impl GameServer {
             write_private(&self.directory.join(format!("{count:04}-event.json")),&serde_json::to_vec(&serde_json::json!({
                 "peer":peer,"bytes":n,"type":wire.first(),"version_byte":wire.get(1),"admitted_init":admitted,
                 "reply_bytes":response.as_ref().map_or(0,Vec::len),"unix_time_ms":unix_time_ms()
-                ,"mac_verified":decoded.is_some(),"plaintext_bytes":decoded.as_ref().map(|p| p.encrypted.len() + p.cleartext.len()),"encrypted_payload_bytes":decoded.as_ref().map(|p| p.encrypted.len()),"error":error
+                ,"connection_stage":connection_stage,"mac_verified":decoded.is_some(),"plaintext_bytes":decoded.as_ref().map(|p| p.encrypted.len() + p.cleartext.len()),"encrypted_payload_bytes":decoded.as_ref().map(|p| p.encrypted.len()),"error":error
             }))?).await?;
             tracing::info!(%peer,bytes=n,kind=?wire.first(),admitted_init=admitted,mac_verified=decoded.is_some(),"game UDP datagram captured");
         }
@@ -369,9 +376,9 @@ mod tests {
     fn booking_is_session_bound_and_start_is_required_for_udp_admission() {
         let a = admissions();
         let s = session();
-        let (id, key) = a.allocate(&s, [7; 16], 1).unwrap();
+        let (id, key) = a.allocate(&s, [7; 16], -688906341, 1).unwrap();
         assert_eq!(key, [7; 16]);
-        assert_eq!(a.allocate(&s, key, 2).unwrap().0, id);
+        assert_eq!(a.allocate(&s, key, -688906341, 2).unwrap().0, id);
         let start = command("mmstart sv_resetServer; playlist 0");
         assert!(a.control(&start, &s, 2).is_err());
         let book = command(&format!("mmbook 4 {} 0", STANDARD.encode(id)));
@@ -406,16 +413,16 @@ mod tests {
     fn key_rotation_and_new_session_revoke_the_old_allocation() {
         let a = admissions();
         let mut s = session();
-        let (old, _) = a.allocate(&s, [7; 16], 1).unwrap();
-        let (new, _) = a.allocate(&s, [8; 16], 1).unwrap();
+        let (old, _) = a.allocate(&s, [7; 16], -688906341, 1).unwrap();
+        let (new, _) = a.allocate(&s, [8; 16], -688906341, 1).unwrap();
         assert_ne!(old, new);
         assert!(!a.entries.lock().unwrap().contains_key(&old));
         s.iv_seed += 1;
         a.revoke_other_sessions(&s);
         assert!(a.entries.lock().unwrap().is_empty());
-        let (next, _) = a.allocate(&s, [8; 16], 1).unwrap();
+        let (next, _) = a.allocate(&s, [8; 16], -688906341, 1).unwrap();
         assert_ne!(next, new);
-        assert!(a.allocate(&s, [8; 16], 100).is_err());
+        assert!(a.allocate(&s, [8; 16], -688906341, 100).is_err());
     }
 
     #[tokio::test]
@@ -429,7 +436,7 @@ mod tests {
         let now = (unix_time_ms() / 1000) as u32;
         let mut s = session();
         s.expires_at = now + 30;
-        let (id, _) = a.allocate(&s, [7; 16], now).unwrap();
+        let (id, _) = a.allocate(&s, [7; 16], -688906341, now).unwrap();
         let (stop, stopped) = tokio::sync::oneshot::channel();
         let task = tokio::spawn(server.run(async {
             let _ = stopped.await;
@@ -501,6 +508,7 @@ mod tests {
             codol_protocol::game::Records::new(codol_protocol::game::derive_key(&shared, &[7; 16]));
         let mut challenge = vec![255; 4];
         challenge.extend_from_slice(format!("getchallenge 0 \"{:016x}\"\0", s.user_id).as_bytes());
+        let mut challenge_number = String::new();
         for _ in 0..2 {
             client
                 .send_to(&records.seal(&challenge, local_tag).unwrap(), a.address())
@@ -518,7 +526,24 @@ mod tests {
                     .starts_with(b"\xff\xff\xff\xffchallengeResponse ")
             );
             assert!(reply.cleartext.is_empty());
+            challenge_number = std::str::from_utf8(&reply.encrypted[22..reply.encrypted.len() - 1])
+                .unwrap()
+                .to_owned();
         }
+        let mut connect = vec![255; 4];
+        connect.extend_from_slice(format!("connect {0:016x} \"\\xuid\\{0:016x}\\challenge\\{challenge_number}\\2490\\-688906341\"", s.user_id).as_bytes());
+        client
+            .send_to(&records.seal(&connect, local_tag).unwrap(), a.address())
+            .await
+            .unwrap();
+        let (n, _) = tokio::time::timeout(Duration::from_secs(2), client.recv_from(&mut buffer))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            records.open(&buffer[..n], 42).unwrap().encrypted,
+            b"\xff\xff\xff\xffconnectResponse\0"
+        );
         a.revoke(&s);
         client.send_to(&init, a.address()).await.unwrap();
         assert!(
