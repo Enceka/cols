@@ -6,6 +6,7 @@ pub mod http;
 pub mod lobby_server;
 mod marketplace;
 pub mod observe;
+mod rooms;
 pub mod services;
 pub mod session;
 pub mod stun_server;

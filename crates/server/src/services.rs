@@ -19,19 +19,20 @@ use tokio::{io::AsyncReadExt, sync::Mutex};
 pub struct LocalServices {
     root: PathBuf,
     writes: Mutex<()>,
+    rooms: Mutex<crate::rooms::Rooms>,
 }
 pub struct TaskResult {
     pub label: &'static str,
     pub result: Result<Vec<Vec<u8>>, u32>,
 }
 impl TaskResult {
-    fn success(label: &'static str, records: Vec<Vec<u8>>) -> Self {
+    pub(crate) fn success(label: &'static str, records: Vec<Vec<u8>>) -> Self {
         Self {
             label,
             result: Ok(records),
         }
     }
-    fn failure(label: &'static str, code: u32) -> Self {
+    pub(crate) fn failure(label: &'static str, code: u32) -> Self {
         Self {
             label,
             result: Err(code),
@@ -67,12 +68,28 @@ impl LocalServices {
         Ok(Self {
             root: tokio::fs::canonicalize(root).await?,
             writes: Mutex::new(()),
+            rooms: Mutex::new(crate::rooms::Rooms::default()),
         })
     }
 
     pub async fn handle(&self, body: &[u8], session: &Session, now: u32) -> Result<TaskResult> {
         let request = Request::parse(body)?;
         match (request.service, request.task) {
+            (11 | 21, _) => self.rooms.lock().await.handle(&request, session, now),
+            (71, 2) => {
+                let mut reader = task::Reader::new(request.arguments);
+                let name = reader.string(1024)?;
+                reader.finish()?;
+                if name.is_empty() || name.chars().any(char::is_control) {
+                    return Ok(TaskResult::failure("invalid_local_text", task::TASK_FAILED));
+                }
+                // Target 0xa52180 reads Bool + String. Callback 0x6aa540 names
+                // the Boolean "sanitized", so unchanged local text uses false.
+                let mut record = Writer::default();
+                record.boolean(false);
+                record.string(name);
+                Ok(TaskResult::success("local_text_checked", vec![record.0]))
+            }
             (71, 4) => {
                 lobby::registration_build(body)?;
                 Ok(TaskResult::success("registration", vec![]))
@@ -688,6 +705,35 @@ fn blob_result(label: &'static str, data: &[u8]) -> Result<TaskResult> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn room_name_check_preserves_utf8_and_reports_unchanged_text() {
+        let temp = tempfile::tempdir().unwrap();
+        let server = LocalServices::open(temp.path().join("data")).await.unwrap();
+        let s = session(1);
+        let mut query = Writer(vec![71, 3, 2]);
+        query.string("本地房间");
+        query.0.push(0);
+        let response = server
+            .handle(&query.0, &s, 1)
+            .await
+            .unwrap()
+            .result
+            .unwrap();
+        assert_eq!(&response[0][..3], &[1, 0, 16]);
+        assert_eq!(&response[0][3..], "本地房间\0".as_bytes());
+        for n in 0..query.0.len() {
+            assert!(server.handle(&query.0[..n], &s, 1).await.is_err());
+        }
+        for text in ["", "room\nname"] {
+            let mut q = Writer(vec![71, 3, 2]);
+            q.string(text);
+            q.0.push(0);
+            assert_eq!(
+                server.handle(&q.0, &s, 1).await.unwrap().result,
+                Err(task::TASK_FAILED)
+            );
+        }
+    }
     fn buy(service: u8, sku: u32) -> Vec<u8> {
         let mut w = Writer(vec![service, 3, if service == 80 { 154 } else { 131 }]);
         w.string("");

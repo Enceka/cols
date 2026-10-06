@@ -6,6 +6,7 @@ pub mod lobby;
 pub mod profile;
 pub mod publisher;
 pub mod purchase;
+pub mod room;
 pub mod stun;
 pub mod task;
 pub mod ticket;

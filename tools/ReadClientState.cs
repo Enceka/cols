@@ -91,6 +91,13 @@ class ReadClientState {
                     Field(process,"player_amount_"+i,entry+0x34,4);
                 }
                 Field(process,"frontend_state",0x078b06c8,4);
+                uint roomController=Read(process,0x078b0708,4);
+                if(roomController>=0x10000) {
+                    uint roomVtable=Read(process,roomController,4);
+                    Console.WriteLine("\"room_controller\":"+roomController+",");
+                    Console.WriteLine("\"room_vtable\":"+roomVtable+",");
+                    Field(process,"room_create_method",checked(roomVtable+4),4);
+                }
                 Field(process,"cqb_training_flag",0x0c9670b5,2);
                 Field(process,"prestige_rank_unlock",0x0c966f9d,2);
                 Field(process,"onboard_character_id",0x0c95e386,4);

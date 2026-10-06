@@ -127,6 +127,9 @@ impl<'a> Reader<'a> {
         }
         Ok(())
     }
+    pub fn remaining(&self) -> &'a [u8] {
+        self.bytes
+    }
 }
 
 #[derive(Debug)]
