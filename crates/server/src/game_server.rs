@@ -293,6 +293,16 @@ impl GameServer {
                         .as_mut()
                         .ok_or_else(|| anyhow::anyhow!("DATA before cookie exchange"))?;
                     decoded = Some(records.open(wire, p.local_tag)?);
+                    let admission = self
+                        .admissions
+                        .get(&p.id, now)
+                        .ok_or_else(|| anyhow::anyhow!("DATA admission expired"))?;
+                    let payload = decoded.as_ref().expect("decoded DATA");
+                    let payload =
+                        [payload.encrypted.as_slice(), payload.cleartext.as_slice()].concat();
+                    if let Some(reply) = p.connection.handle(&payload, admission.owner)? {
+                        return Ok(Some(records.seal(&reply, p.remote_tag)?));
+                    }
                 }
                 Ok(None)
             })();
@@ -409,7 +419,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn real_udp_endpoint_requires_started_admission_before_init() {
+    async fn udp_admission_handshake_and_authenticated_challenge_roundtrip() {
         use std::time::Duration;
         let temp = tempfile::tempdir().unwrap();
         let server = GameServer::bind("127.0.0.1:0".parse().unwrap(), temp.path().join("game"))
@@ -430,6 +440,15 @@ mod tests {
         init.extend_from_slice(&id);
         let mut buffer = [0; 256];
         client.send_to(&init, a.address()).await.unwrap();
+        // Wait until the server has actually evaluated the rejected INIT;
+        // filesystem capture can be slower than a short socket timeout.
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !temp.path().join("game/0001-event.json").exists() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
         assert!(
             tokio::time::timeout(Duration::from_millis(100), client.recv_from(&mut buffer))
                 .await
@@ -458,6 +477,48 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(&buffer[..n], first);
+        let local_tag = u16::from_le_bytes([first[14], first[15]]);
+        let group = openssl::ec::EcGroup::from_curve_name(openssl::nid::Nid::SECP224R1).unwrap();
+        let ec = openssl::ec::EcKey::generate(&group).unwrap();
+        let public = crate::game_handshake::encode_public(&ec).unwrap();
+        let key = openssl::pkey::PKey::from_ec_key(ec).unwrap();
+        let mut cookie = vec![3, 2];
+        cookie.extend_from_slice(&local_tag.to_le_bytes());
+        cookie.extend_from_slice(&[0, 0]);
+        cookie.extend_from_slice(&first);
+        cookie.extend_from_slice(&[0; 37]);
+        cookie.extend_from_slice(&id);
+        cookie.extend_from_slice(&public);
+        client.send_to(&cookie, a.address()).await.unwrap();
+        let (n, _) = tokio::time::timeout(Duration::from_secs(2), client.recv_from(&mut buffer))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(n, 114);
+        assert_eq!(&buffer[..6], &[4, 2, 42, 0, 0, 0]);
+        let shared = crate::game_handshake::shared_secret(&key, &buffer[6..106]).unwrap();
+        let mut records =
+            codol_protocol::game::Records::new(codol_protocol::game::derive_key(&shared, &[7; 16]));
+        let mut challenge = vec![255; 4];
+        challenge.extend_from_slice(format!("getchallenge 0 \"{:016x}\"\0", s.user_id).as_bytes());
+        for _ in 0..2 {
+            client
+                .send_to(&records.seal(&challenge, local_tag).unwrap(), a.address())
+                .await
+                .unwrap();
+            let (n, _) =
+                tokio::time::timeout(Duration::from_secs(2), client.recv_from(&mut buffer))
+                    .await
+                    .unwrap()
+                    .unwrap();
+            let reply = records.open(&buffer[..n], 42).unwrap();
+            assert!(
+                reply
+                    .encrypted
+                    .starts_with(b"\xff\xff\xff\xffchallengeResponse ")
+            );
+            assert!(reply.cleartext.is_empty());
+        }
         a.revoke(&s);
         client.send_to(&init, a.address()).await.unwrap();
         assert!(

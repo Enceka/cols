@@ -2,7 +2,7 @@
 
 更新：2026-10-07。目标仍为 CODOL 3.3.3.3，EXE SHA-256 `e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b`。
 
-已实测：人机训练准备后，Rust 分配游戏端点、回应 mmbook，客户端进入“荒漠边陲”加载画面，完成 P-224 握手；Rust 成功验证并解密 `getchallenge`。当前停在等待连接，尚无 challenge 回复、connect、gamestate、出生、Bot AI 或完整对局。加载画面不能计为可玩。
+已实测：人机训练准备后，Rust 分配游戏端点、回应 mmbook，客户端进入“荒漠边陲”加载画面，完成 P-224 握手；Rust 成功验证并解密 `getchallenge`。本轮真实客户端停在等待连接；随后补了 challenge 回复并通过模拟 UDP 客户端测试，实际客户端复测遇到启动阻塞，尚未确认 connect、gamestate、出生、Bot AI 或完整对局。加载画面不能计为可玩。
 
 ## 分配与开局控制
 
@@ -64,3 +64,15 @@ python3 tools/gamehub_run.py client --seconds 900 --title-id-hex 3ea \
 下一步从目标的 challenge/connect 消费者恢复回复及身份绑定，再处理 gamestate/snapshot、场景出生与 AI；多客户端成员加入、定向广播和每席 admission 尚未实现。先核实目标消费者，不能直接用旧参考的 protocol/shortversion 常量。
 
 本阶段验证：fmt、Clippy、66 项 Rust、13 项 Python 通过。新增测试覆盖独立加密向量、防重放/乱序/计数耗尽、P-224 cookie/key exchange、分配过期与密钥轮换、mmbook 身份隔离、真实 UDP admission gate 与 INIT 重传。
+
+## 后续增量：challenge 回复与复测限制
+
+提交 `10e8022` 保存了分配、booking 和已实测的加密通道。之后增加 `game_connection.rs`：只向已认证 DATA 中、UID 与 admission 一致的 `getchallenge 0 "<16位 hex UID>"` 回复随机正整数 `challengeResponse`，相同 association 重试复用 challenge。目标 0x466a55 读取 argv(1) 写连接对象 +0x138，随后由 challenging(3) 转 connecting(4)。构造 connect 的目标函数 0x465c00 使用 `connect %s "%s"`（字符串 0xc612bc）；challenge 字段名在 0xc61214。未发送 connectResponse 或伪造世界状态。
+
+67 项 Rust、13 项 Python、fmt/Clippy 通过；真实 UDP 集成测试走 admission gate→INIT→cookie→双向加密 challenge/retry→撤销。它是模拟客户端测试，不代替 CODOL 实测。测试等待初次拒绝事件完成后才开 admission，避免异步抓包写盘延迟造成时序误判。
+
+本轮 `client-1791308194533`、`client-1791308318514`、`client-1791308480466`、`client-1791308564019`、`client-1791308801999` 没有到达可见游戏界面或发出游戏 UDP，不能用于评价 challenge 回包。最初一次手动终止 harness 误用了 SIGTERM，之后已从哈希核对的备份恢复研究副本的临时证书；后续使用 SIGINT 并确认 finally 恢复证书。原始客户端未改动。
+
+macOS 采样发现研究 prefix 的 Wine server 阻塞于 `req_create_file → open_fd → open`，早先还残留 IIPSHostApp。核对 cwd 后终止了研究进程，按 prefix 设备号/inode 隔离了两个无持有者的 `/private/tmp/.wine-501/server-100000f-5fd6ec` 运行目录（保留 `.stale-codol-*` 备份）。重新启动后仍在 IIPS 加载阶段阻塞；不能仅凭残留进程断定全部根因。未重建 prefix 或重置玩家档案。采样保留为 `research-output/wine-start-sample.txt`、`game-start-sample.txt`、`wineserver-blocked-sample.txt`。
+
+接续优先恢复实验副本的 IIPS 启动，确认新客户端可见且已完成 AUTH，再重测 challenge；不要连续复用一个仍卡在文件打开的 Wine server，也不要把零 UDP 的实验记成协议失败。当前运行命令无需改动，新增 challenge 路径已随 `--rust-game` 启用。

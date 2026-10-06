@@ -16,14 +16,14 @@
 
 用户最新要求：先恢复登录、背包和大厅，然后推进本地房间/人机与双客户端最小对局。优先使用 GameHub Wine/Proton 在 Mac 上运行，Parallels Windows 保留作对照；服务端使用 Rust。
 
-当前入口：[游戏服分配与 UDP](GAME_TRANSPORT_PROGRESS.md)。登录、仓库、等级 70、房间等级锁、持久钱包和永久单件购买已接入；商城切换细节按用户要求暂缓。单客户端房间、训练赛单中文/人数与准备广播已恢复。训练准备后现在可进入地图加载界面并完成随机 P-224 握手，Rust 已解密真实 getchallenge；尚未回复 challenge，没有出生或 AI。
+当前入口：[游戏服分配与 UDP](GAME_TRANSPORT_PROGRESS.md)。登录、仓库、等级 70、房间等级锁、持久钱包和永久单件购买已接入；商城切换细节按用户要求暂缓。单客户端房间、训练赛单中文/人数与准备广播已恢复。训练准备后现在可进入地图加载界面并完成随机 P-224 握手，Rust 已解密真实 getchallenge；challenge 回复已补并通过模拟 UDP 集成测试，实际复测遇到 Wine/IIPS 启动阻塞；没有出生或 AI。
 
-已实现 AUTH 测试票据、协议 210 大厅、UDP 地址发现、档案/文件、钱包与库存、购买原子保存、单人 channel、游戏分配/booking、目标版本的 SHA1/AES128 游戏通道。66 项 Rust、13 项 Python 以及 fmt/Clippy 通过。数据仍用隔离文件，无 SQLite。
+已实现 AUTH 测试票据、协议 210 大厅、UDP 地址发现、档案/文件、钱包与库存、购买原子保存、单人 channel、游戏分配/booking、目标版本的 SHA1/AES128 游戏通道。67 项 Rust、13 项 Python 以及 fmt/Clippy 通过。数据仍用隔离文件，无 SQLite。
 
 下一次工作：
 
 1. 复用现有克隆、prefix、publisher 和 profiles，不要重新初始化已有账号。
-2. 从 game transport 的 getchallenge 接续：恢复目标 challenge/connect 消费者、身份绑定、gamestate 和场景出生；之后才做 Bot/剧情或双客户端。
+2. 先排查最新 Wine/IIPS 启动阻塞（采样和实验见当前入口），再从 game transport 的 getchallenge 接续：恢复目标 challenge/connect 消费者、身份绑定、gamestate 和场景出生；之后才做 Bot/剧情或双客户端。
 3. 剧情首关没有先发 21/1，尚缺该路径的实时 security key；不得使用零密钥兜底。
 4. AlphaBuild 更新中的 admission/连接结构可参考，但目标 3.3.3.3 的游戏加密已经证实不同，详见新文档。无参考 .git 元数据，不能把文件日期当作精确更新 diff。
 5. 按验证阶段 Git commit；本地提交即可，没有要求推送。参考快照和运行抓包均在忽略目录，不能加入账号/密钥原件。

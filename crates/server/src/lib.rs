@@ -2,6 +2,7 @@
 pub mod auth_server;
 pub mod capture;
 pub mod config;
+mod game_connection;
 mod game_handshake;
 pub mod game_server;
 pub mod http;

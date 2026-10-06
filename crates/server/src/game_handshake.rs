@@ -12,6 +12,7 @@ use openssl::{
 use std::net::SocketAddrV4;
 
 pub(crate) struct Peer {
+    pub connection: crate::game_connection::Connection,
     pub id: [u8; 8],
     init: [u8; 16],
     init_ack: [u8; 38],
@@ -23,7 +24,7 @@ pub(crate) struct Peer {
     pub local_tag: u16,
     pub remote_tag: u16,
 }
-fn encode_public(key: &EcKey<Private>) -> Result<[u8; 100]> {
+pub(super) fn encode_public(key: &EcKey<Private>) -> Result<[u8; 100]> {
     let mut ctx = BigNumContext::new()?;
     let mut x = BigNum::new()?;
     let mut y = BigNum::new()?;
@@ -44,7 +45,7 @@ fn encode_public(key: &EcKey<Private>) -> Result<[u8; 100]> {
     out[..der.len()].copy_from_slice(&der);
     Ok(out)
 }
-fn shared_secret(key: &PKey<Private>, public: &[u8]) -> Result<[u8; 28]> {
+pub(super) fn shared_secret(key: &PKey<Private>, public: &[u8]) -> Result<[u8; 28]> {
     ensure!(
         public.len() == 100 && public[..9] == [0x30, public[1], 3, 2, 7, 0, 2, 1, 28],
         "invalid game public-key header"
@@ -117,6 +118,7 @@ impl Peer {
         init_ack[28..30].copy_from_slice(&address.port().to_le_bytes());
         init_ack[30..38].copy_from_slice(&id);
         Ok(Self {
+            connection: Default::default(),
             id,
             init: packet.try_into()?,
             init_ack,
