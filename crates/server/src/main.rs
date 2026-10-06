@@ -23,6 +23,19 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Offline only: back up an existing test account, set level 70 and local funds.
+    BoostTestAccount {
+        #[arg(long)]
+        service_data_dir: PathBuf,
+        #[arg(long, default_value_t = 1002)]
+        title_id: u32,
+        #[arg(long)]
+        user_id: u64,
+        #[arg(long, default_value_t = 100_000)]
+        cp: u32,
+        #[arg(long, default_value_t = 1_000_000)]
+        gp: u32,
+    },
     /// Create a local private profile from a CRC-valid client default; no overwrite.
     PreparePrivateProfile {
         #[arg(long)]
@@ -120,6 +133,22 @@ async fn main() -> Result<()> {
         .with_writer(std::io::stderr)
         .init();
     match Cli::parse().command {
+        Command::BoostTestAccount {
+            service_data_dir,
+            title_id,
+            user_id,
+            cp,
+            gp,
+        } => {
+            let services = codol_server::services::LocalServices::open(service_data_dir).await?;
+            let backup = services
+                .boost_test_account(title_id, user_id, cp, gp)
+                .await?;
+            println!(
+                "{}",
+                serde_json::json!({"backup":backup,"level":70,"rank_version":4,"experience_within_rank":0,"cp":cp,"gp":gp,"scope":"local_test_account"})
+            );
+        }
         Command::PreparePrivateProfile {
             assets,
             snapshot,

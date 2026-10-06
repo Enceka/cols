@@ -1,6 +1,6 @@
 # 目标档案定义、私有档案与初始库存
 
-更新：2026-10-06。当前接续入口。用户已确认仓库可用；最新要求是提高测试账号等级，然后推进本地房间/人机。前一阶段见 [ONBOARDING_PROGRESS.md](ONBOARDING_PROGRESS.md)。
+更新：2026-10-06。后续工作见 [测试账号与功能限制](TEST_ACCOUNT_PROGRESS.md)。用户已确认仓库可用；等级和余额显示后，又反馈创建房间的等级限制及购买失败，正在继续排查。前一阶段见 [ONBOARDING_PROGRESS.md](ONBOARDING_PROGRESS.md)。
 
 ## 已验证结果与剩余边界
 

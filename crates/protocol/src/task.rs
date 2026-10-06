@@ -270,6 +270,24 @@ pub fn empty_player_data(user_id: u64) -> Vec<u8> {
 /// Full inventory records inherit their account from the enclosing player data
 /// (VA 0xa4b850). Unspecified fields use target constructor 0xa4b4e0 defaults.
 pub fn player_data(user_id: u64, items: &[u32]) -> Result<Vec<u8>, LobbyError> {
+    player_data_with_balances(user_id, items, &[])
+}
+
+/// Currency decoder VA 0xa64ad0 inherits the enclosing account (except -1),
+/// then reads UChar currency and UInt32 amount. Target holds at most 10.
+pub fn player_data_with_balances(
+    user_id: u64,
+    items: &[u32],
+    balances: &[(u8, u32)],
+) -> Result<Vec<u8>, LobbyError> {
+    let mut currencies = std::collections::HashSet::new();
+    if balances.len() > 10
+        || balances
+            .iter()
+            .any(|(id, _)| *id == 0 || !currencies.insert(*id))
+    {
+        return Err(LobbyError("invalid local currency entries"));
+    }
     if items.len() > 128 || items.contains(&0) {
         return Err(LobbyError("invalid local inventory count/item id"));
     }
@@ -280,7 +298,15 @@ pub fn player_data(user_id: u64, items: &[u32]) -> Result<Vec<u8>, LobbyError> {
     let mut out = Writer::default();
     out.u64(user_id);
     out.string("");
-    out.u32(0); // Balance count.
+    out.u32(balances.len() as u32);
+    for (id, amount) in balances {
+        if user_id == u64::MAX {
+            out.u64(user_id);
+            out.string("");
+        }
+        out.u8(*id);
+        out.u32(*amount);
+    }
     out.u32(items.len() as u32);
     for id in items {
         if user_id == u64::MAX {
@@ -309,6 +335,26 @@ pub fn player_data(user_id: u64, items: &[u32]) -> Result<Vec<u8>, LobbyError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn currency_records_match_target_tags_and_inherit_owner() {
+        let wire = player_data_with_balances(1, &[], &[(1, 100_000), (2, 1_000_000)]).unwrap();
+        assert_eq!(
+            &wire[11..],
+            &[
+                8, 2, 0, 0, 0, 3, 1, 8, 160, 134, 1, 0, 3, 2, 8, 64, 66, 15, 0, 8, 0, 0, 0, 0, 8,
+                0, 0, 0, 0
+            ]
+        );
+        let sentinel = player_data_with_balances(u64::MAX, &[], &[(1, 0)]).unwrap();
+        assert_eq!(&sentinel[16..27], &sentinel[..11]);
+        assert_eq!(&sentinel[27..34], &[3, 1, 8, 0, 0, 0, 0]);
+        assert!(player_data_with_balances(1, &[], &[(1, 0), (1, 2)]).is_err());
+        assert!(player_data_with_balances(1, &[], &[(0, 1)]).is_err());
+        assert!(
+            player_data_with_balances(1, &[], &(1..=11).map(|id| (id, 0)).collect::<Vec<_>>())
+                .is_err()
+        );
+    }
     #[test]
     fn inventory_record_matches_independent_target_field_vector() {
         let v: serde_json::Value = serde_json::from_str(include_str!(

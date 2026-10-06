@@ -81,6 +81,15 @@ class ReadClientState {
                 Field(process,"coupon_query_completed",0x07817c07,1);
                 Field(process,"external_currency",0x0ba0b2e8,1);
                 Field(process,"external_balance",0x0ba0b2ec,4);
+                Field(process,"marketplace_currency",0x0ba0b2c8,1);
+                Field(process,"marketplace_balance",0x0ba0b2cc,4);
+                uint balanceCount=Read(process,0x07bdc728,4);
+                Console.WriteLine("\"player_balance_count\":"+balanceCount+",");
+                if(balanceCount<=10) for(uint i=0;i<balanceCount;i++) {
+                    uint entry=0x07bdc730+i*0x40;
+                    Field(process,"player_currency_"+i,entry+0x30,1);
+                    Field(process,"player_amount_"+i,entry+0x34,4);
+                }
                 Field(process,"frontend_state",0x078b06c8,4);
                 Field(process,"cqb_training_flag",0x0c9670b5,2);
                 Field(process,"onboard_character_id",0x0c95e386,4);

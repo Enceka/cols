@@ -149,6 +149,27 @@ pub fn prepare_private(
         // checks unlockFlagsNew[141] >= 1 via VA 0x4a4ca0.
         plain[8577..8579].copy_from_slice(&1i16.to_le_bytes());
     }
+    encode_private(plain)
+}
+
+/// Local testing only: target rankTable v4 ends at displayed level 70.
+/// VA 0x590720 returns rank-1; VA 0x590550 adds experience to the rank's
+/// cumulative threshold, so experience is WITHIN the rank, not lifetime XP.
+pub fn maximize_test_rank(arguments: &[u8], user_id: u64) -> Result<Vec<u8>, LobbyError> {
+    validate_private(arguments)?;
+    let (mut plain, _) = snapshot_and_tail(arguments)?;
+    if plain[4943..4947] != ((user_id >> 32) as u32).to_le_bytes()
+        || plain[4947..4951] != (user_id as u32).to_le_bytes()
+    {
+        return Err(LobbyError("private profile owner mismatch"));
+    }
+    plain[4844..4848].copy_from_slice(&0i32.to_le_bytes());
+    plain[4887..4891].copy_from_slice(&70i32.to_le_bytes());
+    plain[4891..4895].copy_from_slice(&4i32.to_le_bytes());
+    encode_private(plain)
+}
+
+fn encode_private(mut plain: Vec<u8>) -> Result<Vec<u8>, LobbyError> {
     let crc = crc32fast::hash(&plain[4..]);
     plain[..4].copy_from_slice(&crc.to_le_bytes());
     let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::fast());
@@ -193,6 +214,28 @@ mod tests {
     use super::*;
     fn fixture() -> Vec<u8> {
         include_bytes!("../../../fixtures/protocol/public-profile-synthetic.bin").to_vec()
+    }
+    #[test]
+    fn test_rank_preserves_every_unrelated_byte_and_checks_owner() {
+        let mut blank = vec![0; SNAPSHOT_BYTES];
+        let crc = crc32fast::hash(&blank[4..]);
+        blank[..4].copy_from_slice(&crc.to_le_bytes());
+        let uid = 0x89abcdef01234567;
+        let old = prepare_private(&blank, uid, true).unwrap();
+        let (mut before, _) = snapshot_and_tail(&old).unwrap();
+        before[12345] = 42; // Unrelated progress must survive a boost.
+        let old = encode_private(before.clone()).unwrap();
+        let updated = maximize_test_rank(&old, uid).unwrap();
+        let (mut after, _) = snapshot_and_tail(&updated).unwrap();
+        assert_eq!(&after[4844..4848], &0i32.to_le_bytes());
+        assert_eq!(&after[4887..4891], &70i32.to_le_bytes());
+        assert_eq!(&after[4891..4895], &4i32.to_le_bytes());
+        for range in [0..4, 4844..4848, 4887..4895] {
+            after[range.clone()].copy_from_slice(&before[range]);
+        }
+        assert_eq!(after, before);
+        assert_eq!(maximize_test_rank(&updated, uid).unwrap(), updated);
+        assert!(maximize_test_rank(&old, uid + 1).is_err());
     }
     #[test]
     fn private_projection_matches_independent_target_layout_vector() {

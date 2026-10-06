@@ -62,7 +62,18 @@ case "click":
     guard let app = NSRunningApplication(processIdentifier: pid),
           app.activate(options: [.activateAllWindows])
     else { fail("unable to activate the research client") }
-    Thread.sleep(forTimeInterval: 0.15)
+    // Activation is asynchronous. Pump AppKit's run loop so the CLI observes
+    // the focus change instead of reading its cached isActive value.
+    let deadline = Date().addingTimeInterval(2)
+    while !app.isActive && Date() < deadline {
+        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+    }
+    if !app.isActive {
+        // Wine's unbundled executable may require System Events activation.
+        // Still target only the validated experiment PID; never click globally.
+        _ = try run("/usr/bin/osascript", ["-e", "tell application \"System Events\" to set frontmost of first process whose unix id is \(pidNumber) to true"])
+        RunLoop.current.run(until: Date().addingTimeInterval(0.15))
+    }
     guard app.isActive else { fail("research client did not become active; no click sent") }
     let point = CGPoint(x: x + width * rx, y: y + height * ry)
     // Wine games may poll GetCursorPos instead of using an event's coordinates.

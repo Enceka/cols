@@ -57,6 +57,29 @@ struct LocalInventory {
     items: Vec<u32>,
 }
 
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LocalWallet {
+    schema_version: u32,
+    client_sha256: String,
+    title_id: u32,
+    user_id: String,
+    cp: u32,
+    gp: u32,
+}
+impl LocalWallet {
+    fn validate(&self, title_id: u32, user_id: u64) -> Result<()> {
+        ensure!(
+            self.schema_version == 1
+                && self.client_sha256 == codol_protocol::CLIENT_SHA256
+                && self.title_id == title_id
+                && self.user_id.parse::<u64>()? == user_id,
+            "wallet identity/version mismatch"
+        );
+        Ok(())
+    }
+}
+
 impl LocalServices {
     pub async fn open(root: PathBuf) -> Result<Self> {
         create_directory(&root).await?;
@@ -153,13 +176,26 @@ impl LocalServices {
                 } else {
                     Vec::new()
                 };
+                let wallet = self.wallet(session).await?;
+                let balances = wallet
+                    .as_ref()
+                    // VA 0x4a5680 copies ONLY entry 0 to the marketplace wallet.
+                    // It must be GP; the separate 93/1 result supplies CP.
+                    .map(|w| vec![(2, w.gp)])
+                    .unwrap_or_default();
                 Ok(TaskResult::success(
-                    if items.is_empty() {
+                    if wallet.is_some() {
+                        "local_player_wallet_inventory"
+                    } else if items.is_empty() {
                         "local_empty_player_data"
                     } else {
                         "local_player_inventory"
                     },
-                    vec![task::player_data(session.user_id, &items)?],
+                    vec![task::player_data_with_balances(
+                        session.user_id,
+                        &items,
+                        &balances,
+                    )?],
                 ))
             }
             (80, 173) => {
@@ -188,11 +224,12 @@ impl LocalServices {
                     ));
                 }
                 // VA 0xa4c4a0 reads currency UChar + UInt32 amount. The game
-                // checks currency 1 at VA 0x57d548. No local funds were granted.
+                // checks currency 1 (CP) at VA 0x57d548.
+                let cp = self.wallet(session).await?.map_or(0, |w| w.cp);
                 let mut record = Writer::default();
                 record.u8(1);
-                record.u32(0);
-                Ok(TaskResult::success("local_zero_balance", vec![record.0]))
+                record.u32(cp);
+                Ok(TaskResult::success("local_cp_balance", vec![record.0]))
             }
             (8, 1 | 2) => {
                 let mut reader = task::Reader::new(request.arguments);
@@ -236,13 +273,9 @@ impl LocalServices {
     }
 
     async fn profile_path(&self, session: &Session, private: bool) -> Result<PathBuf> {
-        let title = self
-            .root
-            .join("profiles")
-            .join(session.title_id.to_string());
-        create_directory(&title).await?;
-        let user = title.join(session.user_id.to_string());
-        create_directory(&user).await?;
+        let user = self
+            .profile_directory(session.title_id, session.user_id)
+            .await?;
         let path = user.join(if private { "private.bin" } else { "public.bin" });
         if let Ok(metadata) = tokio::fs::symlink_metadata(&path).await {
             ensure!(
@@ -251,6 +284,92 @@ impl LocalServices {
             );
         }
         Ok(path)
+    }
+
+    async fn profile_directory(&self, title_id: u32, user_id: u64) -> Result<PathBuf> {
+        let title = self.root.join("profiles").join(title_id.to_string());
+        create_directory(&title).await?;
+        let user = title.join(user_id.to_string());
+        create_directory(&user).await?;
+        Ok(user)
+    }
+
+    async fn wallet(&self, session: &Session) -> Result<Option<LocalWallet>> {
+        let path = self
+            .profile_directory(session.title_id, session.user_id)
+            .await?
+            .join("wallet.json");
+        let Some(bytes) = read_bounded(&path, 4096).await? else {
+            return Ok(None);
+        };
+        let wallet: LocalWallet = serde_json::from_slice(&bytes)?;
+        wallet.validate(session.title_id, session.user_id)?;
+        Ok(Some(wallet))
+    }
+
+    /// Offline administration of one existing lab account. Stop all services
+    /// first: this instance's mutex cannot coordinate another server process.
+    /// Each replacement is atomic; the two-file update is recoverable from the
+    /// returned backup directory, not a cross-file transaction.
+    pub async fn boost_test_account(
+        &self,
+        title_id: u32,
+        user_id: u64,
+        cp: u32,
+        gp: u32,
+    ) -> Result<PathBuf> {
+        let _lock = self.writes.lock().await;
+        let directory = self.profile_directory(title_id, user_id).await?;
+        let private_path = directory.join("private.bin");
+        let old_private = read_bounded(&private_path, task::MAX_FILE_BYTES)
+            .await?
+            .context("existing private profile required; initialize the account first")?;
+        let new_private = profile::maximize_test_rank(&old_private, user_id)?;
+        let wallet_path = directory.join("wallet.json");
+        let old_wallet = read_bounded(&wallet_path, 4096).await?;
+        if let Some(bytes) = &old_wallet {
+            serde_json::from_slice::<LocalWallet>(bytes)?.validate(title_id, user_id)?;
+        }
+        let wallet = LocalWallet {
+            schema_version: 1,
+            client_sha256: codol_protocol::CLIENT_SHA256.to_owned(),
+            title_id,
+            user_id: user_id.to_string(),
+            cp,
+            gp,
+        };
+        let new_wallet = serde_json::to_vec_pretty(&wallet)?;
+        let mut nonce = [0u8; 8];
+        openssl::rand::rand_bytes(&mut nonce)?;
+        let backup = directory.join(format!(
+            "backup-test-account-{:016x}",
+            u64::from_le_bytes(nonce)
+        ));
+        tokio::fs::create_dir(&backup).await?;
+        atomic_private_write(&backup.join("private.bin"), &old_private).await?;
+        if let Some(bytes) = &old_wallet {
+            atomic_private_write(&backup.join("wallet.json"), bytes).await?;
+        }
+        atomic_private_write(
+            &backup.join("manifest.json"),
+            &serde_json::to_vec_pretty(&serde_json::json!({
+                "title_id": title_id, "user_id": user_id.to_string(),
+                "wallet_existed": old_wallet.is_some(), "level": 70, "cp": cp, "gp": gp,
+            }))?,
+        )
+        .await?;
+        atomic_private_write(&private_path, &new_private)
+            .await
+            .with_context(|| format!("private update failed; backup: {}", backup.display()))?;
+        atomic_private_write(&wallet_path, &new_wallet)
+            .await
+            .with_context(|| {
+                format!(
+                    "wallet update failed; restore both files from {}",
+                    backup.display()
+                )
+            })?;
+        Ok(backup)
     }
 
     async fn list_publisher(&self, arguments: &[u8]) -> Result<TaskResult> {
@@ -501,6 +620,103 @@ fn blob_result(label: &'static str, data: &[u8]) -> Result<TaskResult> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn test_account_boost_backs_up_progress_and_persists_consistent_isolated_balances() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("data");
+        let server = LocalServices::open(root.clone()).await.unwrap();
+        let s = session(0x89abcdef01234567);
+        let mut blank = vec![0; profile::SNAPSHOT_BYTES];
+        // CRC32 of a 32764-byte zero default, computed independently.
+        blank[..4].copy_from_slice(&0xb52d2b04u32.to_le_bytes());
+        let seeded = profile::prepare_private(&blank, s.user_id, true).unwrap();
+        let private_path = server.profile_path(&s, true).await.unwrap();
+        atomic_private_write(&private_path, &seeded).await.unwrap();
+        let public_path = server.profile_path(&s, false).await.unwrap();
+        atomic_private_write(&public_path, b"preserve public")
+            .await
+            .unwrap();
+        let inventory_path = private_path.with_file_name("inventory.json");
+        let inventory = serde_json::to_vec(&serde_json::json!({
+            "schema_version":1,"client_sha256":codol_protocol::CLIENT_SHA256,
+            "title_id":s.title_id,"user_id":s.user_id.to_string(),"items":[792]
+        }))
+        .unwrap();
+        atomic_private_write(&inventory_path, &inventory)
+            .await
+            .unwrap();
+        let backup = server
+            .boost_test_account(s.title_id, s.user_id, 100_000, 1_000_000)
+            .await
+            .unwrap();
+        assert_eq!(
+            tokio::fs::read(backup.join("private.bin")).await.unwrap(),
+            seeded
+        );
+        assert!(!backup.join("wallet.json").exists());
+        assert_eq!(
+            tokio::fs::read(&public_path).await.unwrap(),
+            b"preserve public"
+        );
+        assert_eq!(tokio::fs::read(&inventory_path).await.unwrap(), inventory);
+        drop(server);
+        let server = LocalServices::open(root).await.unwrap();
+        let player = server
+            .handle(&[80, 3, 230, 16, 0, 0], &s, 1)
+            .await
+            .unwrap()
+            .result
+            .unwrap();
+        assert_eq!(
+            &player[0][11..28],
+            &[8, 1, 0, 0, 0, 3, 2, 8, 64, 66, 15, 0, 8, 1, 0, 0, 0]
+        );
+        let external = [93, 3, 1, 8, 1, 0, 0, 0, 0];
+        assert_eq!(
+            server.handle(&external, &s, 1).await.unwrap().result,
+            Ok(vec![vec![3, 1, 8, 160, 134, 1, 0]])
+        );
+        let mut other = s.clone();
+        for change_title in [true, false] {
+            if change_title {
+                other.title_id = 999;
+            } else {
+                other = session(2);
+            }
+            assert_eq!(
+                server.handle(&external, &other, 1).await.unwrap().result,
+                Ok(vec![vec![3, 1, 8, 0, 0, 0, 0]])
+            );
+            let misplaced = server
+                .profile_directory(other.title_id, other.user_id)
+                .await
+                .unwrap()
+                .join("wallet.json");
+            tokio::fs::copy(private_path.with_file_name("wallet.json"), misplaced)
+                .await
+                .unwrap();
+            assert!(server.handle(&external, &other, 1).await.is_err());
+        }
+        let backup2 = server
+            .boost_test_account(s.title_id, s.user_id, 7, 8)
+            .await
+            .unwrap();
+        let previous: LocalWallet =
+            serde_json::from_slice(&tokio::fs::read(backup2.join("wallet.json")).await.unwrap())
+                .unwrap();
+        assert_eq!((previous.cp, previous.gp), (100_000, 1_000_000));
+        let before = tokio::fs::read(&private_path).await.unwrap();
+        tokio::fs::write(private_path.with_file_name("wallet.json"), b"{}")
+            .await
+            .unwrap();
+        assert!(
+            server
+                .boost_test_account(s.title_id, s.user_id, 1, 1)
+                .await
+                .is_err()
+        );
+        assert_eq!(tokio::fs::read(private_path).await.unwrap(), before);
+    }
     #[tokio::test]
     async fn initial_coupon_and_balance_queries_have_distinct_verified_result_shapes() {
         let temp = tempfile::tempdir().unwrap();
