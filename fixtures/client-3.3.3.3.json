@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "version": "3.3.3.3",
+  "files": [
+    {"path": "CODOL/codoMP_client_shipRetail.exe", "size": 10473472, "sha256": "e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b"},
+    {"path": "CODO_OfflineLauncher.exe", "size": 46080, "sha256": "2af388593f269a721b30735500a1481d341b42a1e8e36f5bb7fb2a6c6b178296"},
+    {"path": "CODOL/IIPS/IIPSVersion.ini", "size": 7, "sha256": "3e5d9903a15b50ee297f71606b5ac874eced826b7970c4505285f95b309ddaa7"},
+    {"path": "CODOL/TCLS/version.ini", "size": 134, "sha256": "1361cbe830500b3b0663326bec5d8733edfe2e4ae3a40d07c3a34242a0926978"},
+    {"path": "CODOL/IIPS/IIPSFilelist.ini", "size": 64092, "sha256": "a1cb0060ed2eddf32135bb38b30110d0d9d79c57ee873d12db2064415601467c"},
+    {"path": "CODOL/IIPS/IIPSVFS.dll", "size": 216120, "sha256": "be61df01a23bc3c817b1a4058d588aee0316aa059c0da9e16679365de3e5f449"},
+    {"path": "CODOL/IIPS/IFS2.dll", "size": 601656, "sha256": "5b0324e0b2ba3545a6c02626287d4fbc6a3116594744f4647333982d85508421"},
+    {"path": "CODOL/TenProxy.dll", "size": 167592, "sha256": "a5ee7ede762c473f58a87b214213097f6dda8950ac537b0a959389aef31348cb"},
+    {"path": "Installer/CODOL_Experience_V3.3.3.3_FULL.exe", "size": 1528836, "sha256": "261aa32a40e5bd8f709d1a51bdfa6585d8fe41437b253ea9fa04d8e86b06a739"}
+  ],
+  "markers": [
+    {"offset": "0x877864", "ascii": "dwauth.ini"},
+    {"offset": "0x8e6624", "ascii": ".?AVbdByteBuffer@@"},
+    {"offset": "0x8e81ac", "ascii": ".?AVbdLobbyEventHandler@@"},
+    {"offset": "0x88458c", "ascii": "Unknown bdLobbyErrorCode"},
+    {"offset": "0x86119c", "ascii": "getchallenge 0 \"%s\""},
+    {"offset": "0x8613ec", "ascii": "connectResponse"},
+    {"offset": "0x87b5fc", "ascii": "ListDedicatedServer"}
+  ],
+  "resource_count": 362,
+  "provenance": "Local static inspection. No official traffic captures or original server code."
+}

@@ -1,0 +1,324 @@
+use anyhow::{Context, Result, bail, ensure};
+use clap::{Parser, Subcommand};
+use codol_protocol::bootstrap::{DwauthConfig, Endpoint};
+use codol_server::auth_server::{AuthOptions, AuthServer};
+use codol_server::lobby_server::LobbyServer;
+use codol_server::stun_server::StunServer;
+use codol_server::{config::Config, observe::Observer};
+use std::{
+    io::{Read, Write},
+    path::PathBuf,
+};
+use tracing_subscriber::EnvFilter;
+
+#[derive(Parser)]
+#[command(
+    version,
+    about = "CODOL research runtime: local AUTH, lobby 210, and bounded service recovery"
+)]
+struct Cli {
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// Validate a captured decrypted 8/3 public-profile upload without importing it.
+    InspectPublicProfile {
+        #[arg(long)]
+        input: PathBuf,
+    },
+    /// Generate the two minimal local publisher files; refuses existing files.
+    PreparePublisher {
+        #[arg(long)]
+        output_dir: PathBuf,
+    },
+    /// Serve the observed legacy AUTH transport on loopback; default reply is 501.
+    ServeAuth {
+        #[arg(long, default_value = "127.0.0.1:39002")]
+        bind: std::net::SocketAddr,
+        #[arg(long)]
+        cert: PathBuf,
+        #[arg(long)]
+        key: PathBuf,
+        #[arg(long, default_value = "captures")]
+        capture_dir: PathBuf,
+        /// Explicit experimental JSON response (HTTP 200); not a login implementation.
+        #[arg(long)]
+        reply_file: Option<PathBuf>,
+        /// Issue local test-account tickets for this title (not QQ login).
+        #[arg(long, conflicts_with = "reply_file")]
+        local_title_id: Option<u32>,
+        /// Optional protocol-210 lobby handshake/observation endpoint.
+        #[arg(long, requires = "local_title_id")]
+        lobby_bind: Option<std::net::SocketAddr>,
+        /// Enable local time/storage services and explicit failures for unknown tasks.
+        #[arg(long, requires = "lobby_bind")]
+        service_data_dir: Option<PathBuf>,
+        /// Optional Demonware UDP discovery pair, on loopback only.
+        #[arg(long, requires = "lobby_bind")]
+        stun_bind: Option<std::net::SocketAddrV4>,
+        #[arg(long, default_value = "127.0.0.1:3078")]
+        stun_alt: std::net::SocketAddrV4,
+    },
+    /// Parse an observed task-10 JSON body; identifiers are omitted from output.
+    InspectAuth {
+        #[arg(long)]
+        input: PathBuf,
+    },
+    /// Inspect one reassembled TLS ClientHello (does not negotiate TLS).
+    InspectTls {
+        #[arg(long)]
+        input: PathBuf,
+    },
+    /// Record incoming TCP streams without replying or guessing game packets.
+    Observe {
+        #[arg(long, default_value = "configs/local.toml")]
+        config: PathBuf,
+    },
+    /// Validate listener configuration without opening sockets.
+    CheckConfig {
+        #[arg(long, default_value = "configs/local.toml")]
+        config: PathBuf,
+    },
+    /// Produce a NEW laboratory dwauth.ini; endpoint order is static evidence.
+    Bootstrap {
+        #[arg(long, default_value = "configs/local.toml")]
+        config: PathBuf,
+        /// Address reachable from the client (VM loopback is not Mac loopback).
+        #[arg(long)]
+        host: String,
+        /// Hex title_id. Field mapping is confirmed; valid game value is not.
+        #[arg(long, alias = "context-hex")]
+        title_id_hex: String,
+        /// Must not exist. Use a research directory, then a disposable client copy.
+        #[arg(long)]
+        output: PathBuf,
+    },
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+        )
+        .with_writer(std::io::stderr)
+        .init();
+    match Cli::parse().command {
+        Command::InspectPublicProfile { input } => {
+            let mut bytes = Vec::new();
+            std::fs::File::open(input)?
+                .take((codol_protocol::task::MAX_FILE_BYTES + 4) as u64)
+                .read_to_end(&mut bytes)?;
+            ensure!(
+                bytes.len() <= codol_protocol::task::MAX_FILE_BYTES,
+                "profile request exceeds byte limit"
+            );
+            let request = codol_protocol::task::Request::parse(&bytes)?;
+            ensure!(
+                request.service == 8 && request.task == 3,
+                "expected a public profile upload"
+            );
+            codol_protocol::profile::validate_public(request.arguments)?;
+            println!(
+                "{}",
+                serde_json::json!({"validated":true,"snapshot_bytes":codol_protocol::profile::SNAPSHOT_BYTES,"scope":"public_profile_upload_shape_zlib_crc"})
+            );
+        }
+        Command::PreparePublisher { output_dir } => {
+            let config = include_bytes!("../../../configs/publisher/configs_s.ini");
+            let playlist =
+                include_bytes!("../../../configs/publisher/mp_playlists_shipRetail_release.info");
+            let files = [
+                (
+                    "configs_s.info",
+                    codol_protocol::publisher::crypt_configs(config)?,
+                ),
+                ("mp_playlists_shipRetail_release.info", playlist.to_vec()),
+            ];
+            for (name, _) in &files {
+                ensure!(
+                    !output_dir.join(name).try_exists()?,
+                    "publisher file already exists: {name}"
+                );
+            }
+            std::fs::create_dir_all(&output_dir)?;
+            for (name, bytes) in files {
+                let path = output_dir.join(name);
+                let mut file = std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&path)?;
+                file.write_all(&bytes)?;
+                file.sync_all()?;
+                println!(
+                    "Created {} ({} bytes; local research data)",
+                    path.display(),
+                    bytes.len()
+                );
+            }
+        }
+        Command::ServeAuth {
+            bind,
+            cert,
+            key,
+            capture_dir,
+            reply_file,
+            local_title_id,
+            lobby_bind,
+            service_data_dir,
+            stun_bind,
+            stun_alt,
+        } => {
+            let server = AuthServer::bind(AuthOptions {
+                bind,
+                certificate: cert,
+                key,
+                capture_dir,
+                reply_file,
+                local_title_id,
+            })
+            .await?;
+            if let Some(bind) = lobby_bind {
+                let lobby = LobbyServer::bind_with_services(
+                    bind,
+                    server.registry(),
+                    server.directory().join("lobby"),
+                    service_data_dir,
+                )
+                .await?;
+                tracing::info!(address=%lobby.address()?,"Rust lobby listener ready");
+                tracing::info!(address=%server.address()?,directory=%server.directory().display(),"Rust AUTH listener ready");
+                let (stop, receiver) = tokio::sync::watch::channel(false);
+                let mut tasks = tokio::task::JoinSet::new();
+                if let Some(bind) = stun_bind {
+                    let stun =
+                        StunServer::bind(bind, stun_alt, server.directory().join("stun")).await?;
+                    tracing::info!(address=%stun.address()?,"Rust STUN listener ready");
+                    tasks.spawn(stun.run(wait_for_stop(receiver.clone())));
+                }
+                tasks.spawn(server.run(wait_for_stop(receiver.clone())));
+                tasks.spawn(lobby.run(wait_for_stop(receiver)));
+                let outcome = tokio::select! {
+                    result=tokio::signal::ctrl_c()=>result.context("shutdown signal"),
+                    result=tasks.join_next()=>result.context("service task missing")?.context("service task failed")?,
+                };
+                stop.send_replace(true);
+                while let Some(result) = tasks.join_next().await {
+                    result.context("service shutdown")??;
+                }
+                outcome?;
+            } else {
+                tracing::info!(address=%server.address()?, directory=%server.directory().display(), "Rust AUTH listener ready");
+                server.run(tokio::signal::ctrl_c()).await?;
+            }
+        }
+        Command::InspectAuth { input } => {
+            let mut body = Vec::new();
+            std::fs::File::open(&input)
+                .with_context(|| format!("open {}", input.display()))?
+                .take((codol_protocol::auth::MAX_AUTH_BODY + 1) as u64)
+                .read_to_end(&mut body)?;
+            let request = codol_protocol::auth::parse_task10(&body)?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "auth_task": request.wire.auth_task,
+                    "title_id": request.title_id,
+                    "identity_bytes": request.wire.identity.len(),
+                    "extra_version": request.extra.version,
+                    "additional_fields": request.wire.additional_fields.keys().collect::<Vec<_>>(),
+                    "scope": "request_parsing_only_not_authentication",
+                }))?
+            );
+        }
+        Command::InspectTls { input } => {
+            let mut bytes = Vec::new();
+            std::fs::File::open(&input)
+                .with_context(|| format!("open {}", input.display()))?
+                .take((codol_protocol::tls::MAX_PLAINTEXT_RECORD + 6) as u64)
+                .read_to_end(&mut bytes)?;
+            let hello = codol_protocol::tls::parse_client_hello(&bytes)?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "record_version": format!("0x{:04x}", hello.record_version),
+                    "client_version": format!("0x{:04x}", hello.client_version),
+                    "cipher_suites": hello.cipher_suites.iter().map(|suite| format!("0x{suite:04x}")).collect::<Vec<_>>(),
+                    "session_id_bytes": hello.session_id.len(),
+                    "compression_methods": hello.compression_methods,
+                    "extension_types": hello.extensions.iter().map(|extension| extension.kind).collect::<Vec<_>>(),
+                    "scope": "single_record_inspection_only",
+                }))?
+            );
+        }
+        Command::CheckConfig { config } => {
+            let config = Config::load(&config)?;
+            println!("{}", serde_json::to_string_pretty(&config)?);
+        }
+        Command::Observe { config } => {
+            let observer = Observer::bind(Config::load(&config)?).await?;
+            tracing::info!(directory = %observer.directory().display(), "observation run created; no game responses enabled");
+            for (name, address) in observer.addresses()? {
+                tracing::info!(listener = name, %address, "TCP listener ready");
+            }
+            observer.run(tokio::signal::ctrl_c()).await?;
+            tracing::info!("all capture sessions closed");
+        }
+        Command::Bootstrap {
+            config,
+            host,
+            title_id_hex,
+            output,
+        } => {
+            let config = Config::load(&config)?;
+            let endpoint = |name: &str| -> Result<Endpoint> {
+                let listener = config
+                    .listeners
+                    .iter()
+                    .find(|l| l.name == name)
+                    .with_context(|| format!("missing listener {name}"))?;
+                Ok(Endpoint {
+                    host: host.clone(),
+                    port: listener.bind.port(),
+                })
+            };
+            let hex = title_id_hex
+                .strip_prefix("0x")
+                .or_else(|| title_id_hex.strip_prefix("0X"))
+                .unwrap_or(&title_id_hex);
+            ensure!(
+                !hex.is_empty() && hex.len() <= 8 && hex.bytes().all(|b| b.is_ascii_hexdigit()),
+                "title-id-hex must be a u32 hexadecimal integer"
+            );
+            let bootstrap = DwauthConfig {
+                endpoint_a: endpoint("endpoint_a")?,
+                endpoint_b: endpoint("endpoint_b")?,
+                title_id: u32::from_str_radix(hex, 16)?,
+            };
+            let contents = bootstrap.render()?;
+            if output.exists() {
+                bail!("refusing to overwrite {}", output.display());
+            }
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&output)
+                .with_context(|| format!("create {} (parent must exist)", output.display()))?;
+            file.write_all(contents.as_bytes())?;
+            println!(
+                "Created {}. Format and title_id mapping are confirmed; this does not establish successful authentication.",
+                output.display()
+            );
+        }
+    }
+    Ok(())
+}
+
+async fn wait_for_stop(mut receiver: tokio::sync::watch::Receiver<bool>) -> std::io::Result<()> {
+    if !*receiver.borrow() {
+        let _ = receiver.changed().await;
+    }
+    Ok(())
+}

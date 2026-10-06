@@ -1,0 +1,14 @@
+name: Foundation checks
+on: [push, pull_request]
+jobs:
+  rust-and-tools:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned toolchain
+        run: rustup toolchain install 1.96.0 --profile minimal --component rustfmt,clippy
+      - name: Check code and synthetic transport tests
+        run: sh tools/check.sh

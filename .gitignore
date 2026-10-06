@@ -1,0 +1,9 @@
+.DS_Store
+/target/
+/.venv/
+/.tools/
+/captures/
+/research-output/
+/client-work/
+__pycache__/
+*.pyc

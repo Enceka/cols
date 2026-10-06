@@ -1,0 +1,17 @@
+# Laboratory observation ports, not recovered original server ports.
+# Endpoint A/B follow the file order. B is confirmed HTTPS AUTH; A is unverified.
+capture_dir = "../captures"
+max_connections = 16
+max_sessions_per_run = 128
+max_bytes_per_session = 1048576
+max_chunks_per_session = 4096
+idle_timeout_ms = 10000
+session_timeout_ms = 30000
+
+[[listeners]]
+name = "endpoint_a"
+bind = "127.0.0.1:39001"
+
+[[listeners]]
+name = "endpoint_b"
+bind = "127.0.0.1:39002"

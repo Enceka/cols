@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "provenance": "Observed from the supplied CODOL client using the installed GameHub wine-proton_10.0 engine. Public TLS handshake only; no authentication payload.",
+  "client_sha256": "e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b",
+  "capture_sha256": "4e483f150d06742f560a9917da5dd0cde053540f90caa1a09f6813addc1ef200",
+  "bytes": 70,
+  "direction": "client_to_server",
+  "endpoint": "endpoint_b / 127.0.0.1:39002",
+  "context_value": 0,
+  "context_value_validity": "unknown; explicitly chosen laboratory value",
+  "engine_id": "10000033",
+  "capture_source": "research-output/gamehub/client-1791258054604/captures/run-1791258054624-41219/000001-endpoint_b.bin"
+}

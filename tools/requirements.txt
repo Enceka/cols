@@ -1,0 +1,5 @@
+capstone==5.0.9
+dncil==1.0.2
+dnfile==0.18.0
+pefile==2024.8.26
+pycryptodome==3.23.0

@@ -1,0 +1,17 @@
+// Local research playlist. Match allocation and gameplay are not implemented.
+version 1
+
+gametype tdm
+name english "Team Deathmatch"
+script war
+teambased
+
+catinfo 1 0 0 "Local Research" "Local Research"
+
+playlist 1
+name english "Local Research"
+description english "Protocol research: Afghan / Team Deathmatch"
+category 1
+minparty 1
+maxparty 2
+mp_afghan,tdm,1

@@ -1,0 +1,7 @@
+{
+  "source": "Synthetic bytes, independent Python zlib/CRC32; not actual player data",
+  "plain_bytes": 32768,
+  "blob_bytes": 618,
+  "projected_int32_fields": 125,
+  "sha256": "b3dd9b5b5a293e698aed91a213333e0d1a1aa3773e90a34cb0c4d28592327d3d"
+}

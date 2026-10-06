@@ -1,0 +1,7 @@
+{
+  "provenance": "Real, unencrypted protocol-210 preface. Contains protocol constants, receive limit and a public random nonce; no ticket or user identity.",
+  "client_sha256": "e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b",
+  "source": "research-output/gamehub/client-1791263659786/auth-captures/auth-1791263660316-72305/lobby/000001/client-hello.bin",
+  "sha256": "d98909b777291214a9716f9a60ffa22ac5b2e6b033056ad35af77a8b29eec996",
+  "bytes": 28
+}
