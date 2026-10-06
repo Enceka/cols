@@ -123,4 +123,6 @@ stats 完成后，目标处于状态 6 时发送 OOB `heartbeat`；仅在 stats 
 
 内层观测器现已接入但只做验证和记录：读取 LE32 native sequence，拒绝 ACK 位和回退序号，记录丢失包数，并按目标分派表标记 0/1/2/3/5/6 为 Snapshot/ReliableServerCommand/ReliableClientCommand/Gamestate/End/Configstring；未知码保留为 Unknown。DATA 外层通过后，事件文件增加 `inner_kind` 与 `inner_dropped`。不对输入执行 XOR 解密，因为 0x46bf80 的 key 还依赖连接对象 `+0x40148`、challenge 状态 `+0x138` 和全局 `DAT_0796f2d8`；其中 `DAT_0796f2d8` 由 0x46d830 的运行时函数计算，不能用 DTLS key 替代。
 
+Rust `game_wire::NativeXor` 已把两个方向分开：`incoming_xor(sequence_byte, challenge_byte, command, data)` 对应 0x46bf80；`outgoing_xor(..., feed_byte, ...)` 对应 0x46bf00，额外 feed_byte 对应目标 `DAT_0796f2d8`。状态跨分片保留 command cursor 和奇偶 offset，在 C 字符串 NUL 后重启；测试覆盖跨调用分块、方向错误和可逆性。它仍未接入真实回复，因为当前 admission 没有经目标验证的 command 表/feed 值。
+
 真实内层包在 heartbeat 后是 14 字节：`LE32(sequence) || 9 个零字节 || 末尾值`，不同实验末尾分别观察到 `0x37` 和 `0x76`；这不是可直接当作 gamestate 的明文。目标接收器 0x46e6a0 使用 0x5a1180 读取四字节序号、再按消息码分派；0x46dea0 的 gamestate 路径会读取可靠确认号、检查 configstring/服务器校验并推进状态。此前 152 字节原型没有经过这些状态前置，不能单独用它推断配置内容不足。

@@ -9,6 +9,56 @@ pub const SEQUENCE_MASK: u32 = 0x1fff_ffff;
 pub const FRAGMENT_BIT: u32 = 0x8000_0000;
 pub const ACK_BIT: u32 = 0x2000_0000;
 
+#[derive(Clone, Debug)]
+pub struct NativeXor {
+    key: u8,
+    command: Vec<u8>,
+    cursor: usize,
+    offset: usize,
+}
+
+impl NativeXor {
+    fn new(key: u8, command: &[u8]) -> Self {
+        Self {
+            key,
+            command: command.to_vec(),
+            cursor: 0,
+            offset: 0,
+        }
+    }
+
+    fn apply(&mut self, data: &mut [u8]) {
+        for byte in data {
+            if !self.command.is_empty() {
+                if self.cursor == self.command.len() || self.command[self.cursor] == 0 {
+                    self.cursor = 0;
+                }
+                self.key ^= self.command[self.cursor].wrapping_shl((self.offset & 1) as u32);
+                self.cursor += 1;
+            }
+            *byte ^= self.key;
+            self.offset += 1;
+        }
+    }
+}
+
+/// Target 0x46bf80, used for bytes received from the server.
+pub fn incoming_xor(sequence_byte: u8, challenge_byte: u8, command: &[u8], data: &mut [u8]) {
+    NativeXor::new(sequence_byte ^ challenge_byte, command).apply(data);
+}
+
+/// Target 0x46bf00, used for bytes sent to the client. `feed_byte` is the
+/// separate runtime value at DAT_0796f2d8; it is not part of the DTLS key.
+pub fn outgoing_xor(
+    sequence_byte: u8,
+    challenge_byte: u8,
+    feed_byte: u8,
+    command: &[u8],
+    data: &mut [u8],
+) {
+    NativeXor::new(sequence_byte ^ challenge_byte ^ feed_byte, command).apply(data);
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MessageKind {
     Snapshot,
@@ -196,6 +246,22 @@ mod tests {
         xor_stream(&mut encoded, 0x37, b"\\map\\test\0ignored");
         xor_stream(&mut encoded, 0x37, b"\\map\\test\0ignored");
         assert_eq!(encoded, original);
+    }
+
+    #[test]
+    fn native_xor_direction_and_chunking_are_stateful() {
+        let plain = b"gamestate-message".to_vec();
+        let mut encoded = plain.clone();
+        outgoing_xor(0x48, 0x34, 0xa7, b"\\map\\mp_afghan\0ignored", &mut encoded);
+        let mut decoded = encoded.clone();
+        let command = b"\\map\\mp_afghan\0ignored";
+        let mut state = NativeXor::new(0x48 ^ 0x34 ^ 0xa7, command);
+        state.apply(&mut decoded[..7]);
+        state.apply(&mut decoded[7..]);
+        assert_eq!(decoded, plain);
+        let mut wrong_direction = encoded.clone();
+        incoming_xor(0x48, 0x34, command, &mut wrong_direction);
+        assert_ne!(wrong_direction, plain);
     }
 
     #[test]
