@@ -120,3 +120,7 @@ stats 完成后，目标处于状态 6 时发送 OOB `heartbeat`；仅在 stats 
 在 `client-1791312016136` 中尝试了 152 字节的目标顺序 gamestate 原型。外层 DATA 已认证，客户端没有接受；截图 `ui-1791312268118.png` 显示“服务器连接超时”。已移除自动发送，避免后续实验继续下发未经验证的空壳状态。目标完整 gamestate 仍需恢复 configstring bank、资源纯校验和可靠命令内容；参考包报告的 743 项/2992 字节不能直接移植到 3.3.3.3。
 
 目标消费者静态地址：内层分派 0x46e6a0；gamestate 解析 0x46dea0；configstring 字符串 `CA_GAMESTATE` 0xc61bb8；更新提示 `gamestateupdate %d` 0xc61d90。目标内层 stream 还调用 0x46bf80 native XOR，key 使用关联 outgoing sequence/challenge 状态并滚动命令字节；当前最小原型未做该 XOR，这也是失败实验的待排查因素，不能把失败归因于 configstring 缺失。`game_wire::xor_stream` 仅有离线可逆测试，未接入生产发送。
+
+内层观测器现已接入但只做验证和记录：读取 LE32 native sequence，拒绝 ACK 位和回退序号，记录丢失包数，并按目标分派表标记 0/1/2/3/5/6 为 Snapshot/ReliableServerCommand/ReliableClientCommand/Gamestate/End/Configstring；未知码保留为 Unknown。DATA 外层通过后，事件文件增加 `inner_kind` 与 `inner_dropped`。不对输入执行 XOR 解密，因为 0x46bf80 的 key 还依赖连接对象 `+0x40148`、challenge 状态 `+0x138` 和全局 `DAT_0796f2d8`；其中 `DAT_0796f2d8` 由 0x46d830 的运行时函数计算，不能用 DTLS key 替代。
+
+真实内层包在 heartbeat 后是 14 字节：`LE32(sequence) || 9 个零字节 || 末尾值`，不同实验末尾分别观察到 `0x37` 和 `0x76`；这不是可直接当作 gamestate 的明文。目标接收器 0x46e6a0 使用 0x5a1180 读取四字节序号、再按消息码分派；0x46dea0 的 gamestate 路径会读取可靠确认号、检查 configstring/服务器校验并推进状态。此前 152 字节原型没有经过这些状态前置，不能单独用它推断配置内容不足。

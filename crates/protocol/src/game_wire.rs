@@ -5,6 +5,69 @@
 use crate::lobby::LobbyError;
 
 pub const FRAGMENT_SIZE: usize = 1162;
+pub const SEQUENCE_MASK: u32 = 0x1fff_ffff;
+pub const FRAGMENT_BIT: u32 = 0x8000_0000;
+pub const ACK_BIT: u32 = 0x2000_0000;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MessageKind {
+    Snapshot,
+    ReliableServerCommand,
+    ReliableClientCommand,
+    Gamestate,
+    Configstring,
+    End,
+    Unknown(u8),
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct Incoming {
+    pub raw_sequence: u32,
+    pub sequence: u32,
+    pub dropped: u32,
+    pub kind: Option<MessageKind>,
+    pub body: Vec<u8>,
+}
+
+/// Decode the native stream header after the DTLS DATA envelope has been
+/// opened. This intentionally does not decrypt or acknowledge packets: the
+/// target's rolling XOR state is association-specific and must be supplied by
+/// the authenticated game session before a caller treats `body` as trusted.
+pub fn incoming(wire: &[u8], previous: Option<u32>) -> Result<Incoming, LobbyError> {
+    if wire.len() < 4 {
+        return Err(LobbyError("inner game packet header truncated"));
+    }
+    let raw = u32::from_le_bytes(wire[..4].try_into().unwrap());
+    if raw & ACK_BIT != 0 {
+        return Err(LobbyError("inner game acknowledgement not a message"));
+    }
+    let sequence = raw & SEQUENCE_MASK;
+    if let Some(last) = previous {
+        if sequence <= last {
+            return Err(LobbyError("inner game sequence replay"));
+        }
+        if sequence - last > 0x1000_0000 {
+            return Err(LobbyError("inner game sequence jump"));
+        }
+    }
+    let body = wire[4..].to_vec();
+    let kind = body.first().copied().map(|v| match v {
+        0 => MessageKind::Snapshot,
+        1 => MessageKind::ReliableServerCommand,
+        2 => MessageKind::ReliableClientCommand,
+        3 => MessageKind::Gamestate,
+        5 => MessageKind::End,
+        6 => MessageKind::Configstring,
+        n => MessageKind::Unknown(n),
+    });
+    Ok(Incoming {
+        raw_sequence: raw,
+        sequence,
+        dropped: previous.map_or(0, |last| sequence - last - 1),
+        kind,
+        body,
+    })
+}
 
 /// CoDOL's native stream XOR (target VA 0x46bf80). The key and rotating
 /// command bytes are association state, not the DTLS key. Callers must obtain
@@ -133,5 +196,20 @@ mod tests {
         xor_stream(&mut encoded, 0x37, b"\\map\\test\0ignored");
         xor_stream(&mut encoded, 0x37, b"\\map\\test\0ignored");
         assert_eq!(encoded, original);
+    }
+
+    #[test]
+    fn incoming_validates_native_sequence_and_dispatch_opcode_without_guessing_body() {
+        let first = incoming(&[1, 0, 0, 0, 3, 9, 8], None).unwrap();
+        assert_eq!(first.sequence, 1);
+        assert_eq!(first.dropped, 0);
+        assert_eq!(first.kind, Some(MessageKind::Gamestate));
+        let next = incoming(&[3, 0, 0, 0, 6, 1], Some(first.sequence)).unwrap();
+        assert_eq!(next.dropped, 1);
+        assert_eq!(next.kind, Some(MessageKind::Configstring));
+        assert!(incoming(&[2, 0, 0, 0, 0], Some(3)).is_err());
+        assert!(incoming(&[0, 0, 0, 0, 0], None).is_ok());
+        assert!(incoming(&ACK_BIT.to_le_bytes(), None).is_err());
+        assert!(incoming(&(FRAGMENT_BIT | 5).to_le_bytes(), None).is_ok());
     }
 }

@@ -23,6 +23,7 @@ pub(crate) struct Peer {
     pub records: Option<Records>,
     pub local_tag: u16,
     pub remote_tag: u16,
+    pub inner_sequence: Option<u32>,
 }
 pub(super) fn encode_public(key: &EcKey<Private>) -> Result<[u8; 100]> {
     let mut ctx = BigNumContext::new()?;
@@ -129,6 +130,7 @@ impl Peer {
             records: None,
             local_tag,
             remote_tag,
+            inner_sequence: None,
         })
     }
     pub fn is_retry(&self, packet: &[u8]) -> bool {

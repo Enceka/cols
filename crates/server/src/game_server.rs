@@ -259,6 +259,8 @@ impl GameServer {
                 .any(|(_, a)| a.expires > now);
             peers.retain(|_, p| self.admissions.get(&p.id, now).is_some());
             let mut decoded = None;
+            let mut inner_kind = None;
+            let mut inner_dropped = None;
             let handled = (|| -> Result<Option<Vec<u8>>> {
                 if live && n == 29 && wire[..3] == [13, 2, 0] {
                     let mut reply = wire.to_vec();
@@ -303,6 +305,13 @@ impl GameServer {
                     let payload = decoded.as_ref().expect("decoded DATA");
                     let payload =
                         [payload.encrypted.as_slice(), payload.cleartext.as_slice()].concat();
+                    if payload.len() >= 4 && payload[..4] != [255, 255, 255, 255] {
+                        let message =
+                            codol_protocol::game_wire::incoming(&payload, p.inner_sequence)?;
+                        p.inner_sequence = Some(message.sequence);
+                        inner_kind = message.kind.map(|kind| format!("{kind:?}"));
+                        inner_dropped = Some(message.dropped);
+                    }
                     if let Some(reply) =
                         p.connection
                             .handle(&payload, admission.owner, admission.build)?
@@ -336,7 +345,7 @@ impl GameServer {
             write_private(&self.directory.join(format!("{count:04}-event.json")),&serde_json::to_vec(&serde_json::json!({
                 "peer":peer,"bytes":n,"type":wire.first(),"version_byte":wire.get(1),"admitted_init":admitted,
                 "reply_bytes":response.as_ref().map_or(0,Vec::len),"unix_time_ms":unix_time_ms()
-                ,"connection_stage":connection_stage,"mac_verified":decoded.is_some(),"plaintext_bytes":decoded.as_ref().map(|p| p.encrypted.len() + p.cleartext.len()),"encrypted_payload_bytes":decoded.as_ref().map(|p| p.encrypted.len()),"error":error
+                ,"connection_stage":connection_stage,"inner_kind":inner_kind,"inner_dropped":inner_dropped,"mac_verified":decoded.is_some(),"plaintext_bytes":decoded.as_ref().map(|p| p.encrypted.len() + p.cleartext.len()),"encrypted_payload_bytes":decoded.as_ref().map(|p| p.encrypted.len()),"error":error
             }))?).await?;
             tracing::info!(%peer,bytes=n,kind=?wire.first(),admitted_init=admitted,mac_verified=decoded.is_some(),"game UDP datagram captured");
         }
