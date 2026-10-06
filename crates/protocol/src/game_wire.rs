@@ -8,6 +8,61 @@ pub const FRAGMENT_SIZE: usize = 1162;
 pub const SEQUENCE_MASK: u32 = 0x1fff_ffff;
 pub const FRAGMENT_BIT: u32 = 0x8000_0000;
 pub const ACK_BIT: u32 = 0x2000_0000;
+pub const RELIABLE_WINDOW: u32 = 256;
+pub const RELIABLE_COMMAND_BYTES: usize = 1024;
+
+#[derive(Debug, Default)]
+pub struct ReliableCommands {
+    sequence: u32,
+    acknowledge: u32,
+    entries: std::collections::HashMap<u32, Vec<u8>>,
+}
+
+impl ReliableCommands {
+    pub fn sequence(&self) -> u32 {
+        self.sequence
+    }
+    pub fn acknowledge_sequence(&self) -> u32 {
+        self.acknowledge
+    }
+    pub fn pending(&self) -> u32 {
+        self.sequence.saturating_sub(self.acknowledge)
+    }
+
+    /// Queue one C1 reliable command. The ring is bounded exactly like the
+    /// target's 256-entry / 1024-byte command storage.
+    pub fn push(&mut self, command: &[u8]) -> Result<u32, LobbyError> {
+        if command.is_empty() || command.len() >= RELIABLE_COMMAND_BYTES {
+            return Err(LobbyError("reliable command size limit"));
+        }
+        if self.pending() >= RELIABLE_WINDOW - 1 {
+            return Err(LobbyError("reliable command window full"));
+        }
+        self.sequence = self
+            .sequence
+            .checked_add(1)
+            .ok_or(LobbyError("reliable sequence exhausted"))?;
+        self.entries.insert(self.sequence, command.to_vec());
+        Ok(self.sequence)
+    }
+
+    /// Apply the client command acknowledgement carried by the next native
+    /// packet. Acknowledgements cannot move backwards or past the sent range.
+    pub fn acknowledge(&mut self, value: u32) -> Result<(), LobbyError> {
+        if value < self.acknowledge || value > self.sequence {
+            return Err(LobbyError("reliable acknowledgement outside window"));
+        }
+        self.acknowledge = value;
+        self.entries.retain(|seq, _| *seq > value);
+        Ok(())
+    }
+
+    /// Command used by native XOR for the acknowledged slot. Empty is the
+    /// initial command and remains valid before the first server command.
+    pub fn command_for(&self, value: u32) -> &[u8] {
+        self.entries.get(&value).map_or(&[], Vec::as_slice)
+    }
+}
 
 /// Target 0x46d830 sets DAT_0796f2d8 by looking up configstring index 3
 /// (ECX=3 at 0x46d837), then parsing its decimal text with base 10. The
@@ -341,5 +396,24 @@ mod tests {
         assert!(incoming(&[0, 0, 0, 0, 0], None).is_ok());
         assert!(incoming(&ACK_BIT.to_le_bytes(), None).is_err());
         assert!(incoming(&(FRAGMENT_BIT | 5).to_le_bytes(), None).is_ok());
+    }
+
+    #[test]
+    fn reliable_window_matches_target_ack_and_ring_limits() {
+        let mut ring = ReliableCommands::default();
+        assert_eq!(ring.command_for(0), b"");
+        for i in 0..255 {
+            let text = format!("d {} value-{i}", i + 1);
+            assert_eq!(ring.push(text.as_bytes()).unwrap(), i + 1);
+        }
+        assert_eq!(ring.pending(), 255);
+        assert!(ring.push(b"overflow").is_err());
+        assert!(ring.acknowledge(256).is_err());
+        ring.acknowledge(128).unwrap();
+        assert_eq!(ring.pending(), 127);
+        assert!(ring.command_for(128).is_empty());
+        assert_eq!(ring.command_for(255), b"d 255 value-254");
+        assert!(ring.acknowledge(127).is_err());
+        assert!(ring.push(&vec![b'x'; RELIABLE_COMMAND_BYTES]).is_err());
     }
 }
