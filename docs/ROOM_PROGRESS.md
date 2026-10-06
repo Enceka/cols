@@ -52,3 +52,35 @@ channel 按 title/UID/session 绑定，最多 128 个，随票据过期清理。
 不将 PVP 房间里的最低 4 人限制简单改成 1 来冒充人机实现。当前尚未确认目标客户端保留的本地 Bot/监听服能力。
 
 55 项 Rust、13 项 Python 测试通过（名称、隔离、重试、过期、会话绑定、描述截断、消息边界），另有 fmt/Clippy。完整实验、资源和账号数据留在忽略目录。
+
+## 快速开始列表、人机标记和中文编码
+
+用户指出“快速开始游戏”应有人机训练入口。已确认服务器下发的最小赛单分类错误：catinfo 的第二个数是页面筛选值，0=PVE、1=PVP；第三个数控制展示（0=普通、1=featured、2=隐藏）。原 `catinfo 1 0 0` 导致 Local Research 出现在 PVE 页、PVP 为空。
+
+目标 category 基址 0x0783faa0、步长 0x454；id/page/presentation 分别为 +0/+4/+8，name=+12，playlist 数=+0x44c。UI getter 0x6acab0 明确比较 +4 与请求页面、排除 presentation=2。目标 parser=0x6111d0；`combattraining` 在 0x611ed4 将 playlist flags 置 0x10。旧参考也有“新手训练”“人机训练”赛单，但未整份复制旧版文件。
+
+版本 2 新增 PVP 的人机训练和团队竞技分类，均使用目标存在的 mp_afghan/war；还未实现 AI/对局分配。用户发现中文乱码，已改为版本 3：仓库中的源配置保持 UTF-8，`prepare-publisher` 使用 GBK 编码生成 wire 文件，拒绝无法表示的字符。独立 Python GBK 字节比对已通过；不能直接把 UTF-8 源文件复制到服务数据目录。
+
+实际 publisher 旧文件保存在 research-output/playlist-before-training.info 和 playlist-utf8-v2.info；新生成文件在 publisher-gbk-v3。当前正在进行中文显示验收。
+
+PVE 路径已有新发现：client-1791288403789 的剧情首关“身份不明”进入“战斗开始”提示，产生 11/13→21/5，没有先发 21/1。因此 11/4 接收校验改为只要求属于当前 channel，不能把已有游戏会话注册当作前提。开局 21/5 仍未实现。
+
+为了连续 UI 调试，harness 上限现为 900 秒、lobby 总时限 930 秒，最多 1024 个业务帧；1 MiB 请求预算和 Wine 日志预算仍保留。测试更新为 56 项 Rust、13 项 Python，包含 GBK 回归向量。
+
+## 人机训练的人数错误与直接开局要求
+
+用户截图显示训练进入房间后为 1/0，并提示“玩家数量超出上限”；期望训练自动进入游戏。版本 4 补充目标人数规则：0x47a57f 注册名 `1011`，写入 0x01a323c4（最少人数）；0x47a59b 注册名 `3265`，写入 0x01a32368（最多人数，默认 0）。0x6e26e3..0x6e2719 通过 0x6137c0 执行赛单规则，再读取两个 dvar 的 +12 current 值。不能使用旧参考的上限编号 2481。
+
+人机训练规则为 1011=1、3265=12，团队竞技为 1011=2、3265=12。`dw_autoStartGame` 在 0x6ca862 注册时默认 true（0x078a04fc），无须臆造开关。修复人数并不等于已能直接进图：client-1791291071883 的训练流程先发送 query=3 的 21/5（8 个 Int32 条件），失败后进入 channel；仍需要恢复真正的服务器分配。客户端内部建 channel 可以是过渡状态，不能把停在房间 UI 当作训练开局完成。
+
+当前验证实验为 client-1791292128672，加载 GBK 赛单版本 4。旧文件备份 playlist-before-player-limits.info，生成物在 publisher-gbk-v4。
+
+该实验 ui-1791292237201.png 已确认中文“人机训练”和人数 1/12，原 1/0 问题消失。但只 ACK 准备请求仍不足以推进状态，客户端连续发送相同 ready 消息，不能把这种结果记为取消准备成功。
+
+## 房间广播与当前开局阻塞点
+
+新增 lobby kind=2 推送，事件号 7。目标外层分派 0xa43ba0 的 jump table 0xa43df0 将 kind 2 交给 0xa42db0；事件 7/8 再到 0xa3d5a0。body 顺序为 UInt32 event=7、UInt64 sender、String[64] sender name、UInt64 channel、Blob、UInt32 delivery。该目标 Blob 上限是 1024 字节；批次按完整子消息切块，拒绝单条超长。
+
+对当前单人 channel 回送本人消息；之后的多成员广播仍待实现。推送复用 S2C 加密序号，不消耗 RPC transaction ID。新增传输测试验证 ACK→push→下一 RPC 的序号和 FIFO 不串位。
+
+client-1791294035140：前三条 11/4 均成功并各发送一次推送。ready 后出现新的 21/5，随后客户端因未实现的游戏服查询返回错误，发送 21/3、11/2 清理并回大厅。用户报告“服务器繁忙，请稍后”，截图 ui-1791294155906.png 一致。此处是分配服务缺失，不能声称已经自动开局或把它解释为客户端进程崩溃。

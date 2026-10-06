@@ -1,17 +1,43 @@
-// Local research playlist. Match allocation and gameplay are not implemented.
-version 1
+// Local playlists for target UI/protocol recovery. Game allocation is pending.
+version 4
 
 gametype tdm
 name english "Team Deathmatch"
+name chinese "团队竞技"
 script war
 teambased
 
-catinfo 1 0 0 "Local Research" "Local Research"
+// Target catinfo: id, page (1=PVP, 0=PVE), presentation (0=normal), names.
+catinfo 1 1 0 "Combat Training" "人机训练"
+catinfo 2 1 0 "Team Deathmatch" "团队竞技"
 
 playlist 1
-name english "Local Research"
-description english "Protocol research: Afghan / Team Deathmatch"
+name english "Combat Training"
+name chinese "人机训练"
+description english "Team Deathmatch training on Afghan."
+description chinese "阿富汗地图的团队竞技训练。"
 category 1
+combattraining
+unlocklevelstart 0
+unlocklevelend 70
 minparty 1
-maxparty 2
+maxparty 6
+// Target registrations 0x47a57f/0x47a59b: min players=1011, max players=3265.
+// 3265 defaults to zero; missing it produces a 1/0 room and rejects starting.
+rule 1011 1
+rule 3265 12
+mp_afghan,tdm,1
+
+playlist 2
+name english "Team Deathmatch"
+name chinese "团队竞技"
+description english "Team Deathmatch on Afghan."
+description chinese "在阿富汗地图进行团队竞技。"
+category 2
+unlocklevelstart 0
+unlocklevelend 70
+minparty 1
+maxparty 6
+rule 1011 2
+rule 3265 12
 mp_afghan,tdm,1

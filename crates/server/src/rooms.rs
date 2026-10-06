@@ -221,7 +221,6 @@ impl Rooms {
                     c.title_id == session.title_id
                         && c.owner == session.user_id
                         && c.session_seed == session.iv_seed
-                        && c.game.is_some()
                 }) else {
                     return Ok(TaskResult::failure(
                         "room_owner_mismatch",
@@ -236,26 +235,50 @@ impl Rooms {
                 }
                 let mut left = batch;
                 let mut count = 0;
+                let mut chunks = Vec::<Vec<u8>>::new();
+                let mut chunk = Vec::new();
                 while !left.is_empty() {
                     let header = left
                         .get(..4)
                         .ok_or_else(|| anyhow::anyhow!("truncated room message length"))?;
                     let n = u32::from_le_bytes(header.try_into()?) as usize;
                     anyhow::ensure!(
-                        n > 0 && n <= left.len() - 4 && count < 64,
+                        n > 0 && n <= left.len() - 4 && n + 4 <= 1024 && count < 64,
                         "invalid room message framing"
                     );
+                    if chunk.len() + 4 + n > 1024 {
+                        chunks.push(std::mem::take(&mut chunk));
+                    }
+                    chunk.extend_from_slice(&left[..4 + n]);
                     left = &left[4 + n..];
                     count += 1;
                 }
-                // Single-owner room: accept the ordered batch. No other member
-                // has joined yet, so there are no remote recipients to forward to.
-                // Keep a bounded queue for subsequent room-message recovery.
+                if !chunk.is_empty() {
+                    chunks.push(chunk);
+                }
+                // The owner also consumes its channel broadcast to update ready
+                // state. Target event 7 (0xa42db0→0xa3d5a0) allows a 1024-byte blob.
                 if channel.messages.len() == 32 {
                     channel.messages.pop_front();
                 }
                 channel.messages.push_back(batch.to_vec());
-                Ok(TaskResult::success("local_room_message_accepted", vec![]))
+                let fallback = session.user_id.to_string();
+                let name = channel
+                    .game
+                    .as_ref()
+                    .map_or(fallback.as_str(), |g| g.description.owner_name.as_str());
+                let mut result = TaskResult::success("local_room_message_broadcast", vec![]);
+                for payload in chunks {
+                    let mut push = Writer::default();
+                    push.u32(7);
+                    push.u64(session.user_id);
+                    push.string(name);
+                    push.u64(id);
+                    push.blob(&payload)?;
+                    push.u32(delivery);
+                    result.pushes.push(push.0);
+                }
+                Ok(result)
             }
             _ => Ok(TaskResult::failure(
                 "unsupported_room_task",

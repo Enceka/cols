@@ -240,14 +240,15 @@ async fn main() -> Result<()> {
         }
         Command::PreparePublisher { output_dir } => {
             let config = include_bytes!("../../../configs/publisher/configs_s.ini");
-            let playlist =
-                include_bytes!("../../../configs/publisher/mp_playlists_shipRetail_release.info");
+            let playlist = codol_protocol::publisher::encode_playlist(include_str!(
+                "../../../configs/publisher/mp_playlists_shipRetail_release.info"
+            ))?;
             let files = [
                 (
                     "configs_s.info",
                     codol_protocol::publisher::crypt_configs(config)?,
                 ),
-                ("mp_playlists_shipRetail_release.info", playlist.to_vec()),
+                ("mp_playlists_shipRetail_release.info", playlist),
             ];
             for (name, _) in &files {
                 ensure!(

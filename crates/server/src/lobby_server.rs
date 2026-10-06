@@ -28,9 +28,10 @@ pub struct LobbyServer {
     directory: PathBuf,
     services: Option<Arc<LocalServices>>,
 }
-// The harness permits 300-second UI experiments. Keep its final observation
+// The harness permits 900-second UI experiments. Keep its final observation
 // inside the transport budget; byte/frame/concurrency limits remain enforced.
-const MAX_SESSION_SECONDS: u64 = 330;
+const MAX_SESSION_SECONDS: u64 = 930;
+const MAX_SERVICE_FRAMES: usize = 1024;
 impl LobbyServer {
     pub async fn bind(
         bind: SocketAddr,
@@ -52,7 +53,7 @@ impl LobbyServer {
         };
         let listener = TcpListener::bind(bind).await?;
         tokio::fs::create_dir(&directory).await?;
-        write_private(&directory.join("run.json"),&serde_json::to_vec_pretty(&json!({"mode":if services.is_some(){"lobby_210_local_services"}else{"lobby_210_handshake_observe"},"bind":listener.local_addr()?,"max_sessions":128,"max_connections":16,"max_frames":if services.is_some(){256}else{32},"session_timeout_seconds":MAX_SESSION_SECONDS}))?).await?;
+        write_private(&directory.join("run.json"),&serde_json::to_vec_pretty(&json!({"mode":if services.is_some(){"lobby_210_local_services"}else{"lobby_210_handshake_observe"},"bind":listener.local_addr()?,"max_sessions":128,"max_connections":16,"max_frames":if services.is_some(){MAX_SERVICE_FRAMES}else{32},"session_timeout_seconds":MAX_SESSION_SECONDS}))?).await?;
         Ok(Self {
             listener,
             registry,
@@ -170,7 +171,11 @@ async fn handle(
     let mut expected_sequence = 1;
     let mut outgoing_sequence = 1u32;
     let mut transaction_id = 1u64;
-    for index in 0..if services.is_some() { 256 } else { 32 } {
+    for index in 0..if services.is_some() {
+        MAX_SERVICE_FRAMES
+    } else {
+        32
+    } {
         let frame =
             match tokio::time::timeout(Duration::from_secs(60), read_frame(&mut stream)).await {
                 Ok(Ok(frame)) => frame,
@@ -236,6 +241,7 @@ async fn handle(
                                 TaskResult {
                                     label: "task_rejected",
                                     result: Err(task::TASK_FAILED),
+                                    pushes: Vec::new(),
                                 }
                             }
                         },
@@ -245,6 +251,7 @@ async fn handle(
                     Some(TaskResult {
                         label: "registration",
                         result: Ok(vec![]),
+                        pushes: Vec::new(),
                     })
                 } else {
                     None
@@ -262,6 +269,7 @@ async fn handle(
                     "transaction_id":transaction_id,"service":service,"task":task,"handler":response.label,
                     "error_code":response.result.as_ref().err().copied().unwrap_or(0),
                     "result_count":response.result.as_ref().map_or(0,Vec::len),
+                    "push_count":response.pushes.len(),
                 }))?).await?;
                 transaction_id = transaction_id.wrapping_add(1);
                 let mut iv = [0; 16];
@@ -285,6 +293,31 @@ async fn handle(
                 )
                 .await?;
                 stream.write_all(&reply).await?;
+                // Pushes share the encrypted S2C sequence but do not consume an
+                // RPC transaction ID or disturb the client's reply FIFO.
+                for (push_index, body) in response.pushes.iter().enumerate() {
+                    let mut iv = [0; 16];
+                    openssl::rand::rand_bytes(&mut iv)?;
+                    let wire = lobby::encrypt_application(
+                        2,
+                        body,
+                        &secrets.data_keys,
+                        lobby::Direction::ServerToClient,
+                        outgoing_sequence,
+                        iv,
+                    )?;
+                    ensure!(
+                        wire.len() - 4 <= client_limits.max_receive as usize,
+                        "push exceeds client receive limit"
+                    );
+                    outgoing_sequence = outgoing_sequence.wrapping_add(1);
+                    write_private(
+                        &directory.join(format!("packet-{index:03}-push-{push_index:02}.bin")),
+                        &wire,
+                    )
+                    .await?;
+                    stream.write_all(&wire).await?;
+                }
                 tracing::info!(
                     session_id = id,
                     handler = response.label,

@@ -24,18 +24,22 @@ pub struct LocalServices {
 pub struct TaskResult {
     pub label: &'static str,
     pub result: Result<Vec<Vec<u8>>, u32>,
+    /// Unsolicited lobby kind-2 bodies, sent after the task acknowledgement.
+    pub pushes: Vec<Vec<u8>>,
 }
 impl TaskResult {
     pub(crate) fn success(label: &'static str, records: Vec<Vec<u8>>) -> Self {
         Self {
             label,
             result: Ok(records),
+            pushes: Vec::new(),
         }
     }
     pub(crate) fn failure(label: &'static str, code: u32) -> Self {
         Self {
             label,
             result: Err(code),
+            pushes: Vec::new(),
         }
     }
 }

@@ -25,6 +25,19 @@ fn bytes(v: &serde_json::Value, name: &str) -> Vec<u8> {
         .collect()
 }
 
+async fn receive(
+    stream: &mut TcpStream,
+    keys: &[u8; 72],
+    sequence: u32,
+) -> lobby::ApplicationMessage {
+    let mut prefix = [0; 4];
+    stream.read_exact(&mut prefix).await.unwrap();
+    let mut wire = vec![0; 4 + u32::from_le_bytes(prefix) as usize];
+    wire[..4].copy_from_slice(&prefix);
+    stream.read_exact(&mut wire[4..]).await.unwrap();
+    lobby::decrypt_application(&wire, keys, Direction::ServerToClient, sequence).unwrap()
+}
+
 #[tokio::test]
 async fn binds_issued_ticket_and_records_authenticated_application_data() {
     exercise_lobby(false).await;
@@ -179,6 +192,63 @@ async fn exercise_lobby(local_services: bool) {
                 _ => unreachable!(),
             }
         }
+        // A channel message emits an ACK and an unsolicited push. The next
+        // RPC keeps transaction 7 even though its encrypted frame is sequence 8.
+        let create = lobby::encrypt_application(
+            0x86,
+            &[11, 3, 13, 0],
+            &secrets.data_keys,
+            Direction::ClientToServer,
+            5,
+            [0x45; 16],
+        )
+        .unwrap();
+        stream.write_all(&create).await.unwrap();
+        let created = receive(&mut stream, &secrets.data_keys, 5).await;
+        let channel = codol_protocol::task::Reader::new(&created.body[26..])
+            .u64()
+            .unwrap();
+        let payload = [1, 0, 0, 0, 2];
+        let mut msg = codol_protocol::task::Writer(vec![11, 3, 4]);
+        msg.u64(channel);
+        msg.blob(&payload).unwrap();
+        msg.u32(1);
+        msg.0.push(0);
+        for (sequence, body) in [(6, msg.0.as_slice()), (7, &[12, 3, 6, 0][..])] {
+            stream
+                .write_all(
+                    &lobby::encrypt_application(
+                        0x86,
+                        body,
+                        &secrets.data_keys,
+                        Direction::ClientToServer,
+                        sequence,
+                        [0x46; 16],
+                    )
+                    .unwrap(),
+                )
+                .await
+                .unwrap();
+        }
+        let ack = receive(&mut stream, &secrets.data_keys, 6).await;
+        assert_eq!(ack.kind, 1);
+        assert_eq!(
+            ack.body,
+            codol_protocol::task::reply(6, 4, Ok(&[])).unwrap()
+        );
+        let push = receive(&mut stream, &secrets.data_keys, 7).await;
+        assert_eq!(push.kind, 2);
+        let mut r = codol_protocol::task::Reader::new(&push.body);
+        assert_eq!(r.u32().unwrap(), 7);
+        assert_eq!(r.u64().unwrap(), u64::MAX);
+        assert_eq!(r.string(65).unwrap(), u64::MAX.to_string());
+        assert_eq!(r.u64().unwrap(), channel);
+        assert_eq!(r.blob().unwrap(), payload);
+        assert_eq!(r.u32().unwrap(), 1);
+        assert!(r.remaining().is_empty());
+        let next = receive(&mut stream, &secrets.data_keys, 8).await;
+        assert_eq!(next.kind, 1);
+        assert_eq!(&next.body[..9], &[10, 7, 0, 0, 0, 0, 0, 0, 0]);
     }
     stream.shutdown().await.unwrap();
     let mut rest = Vec::new();

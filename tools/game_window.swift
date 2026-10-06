@@ -82,6 +82,7 @@ case "click":
     for kind: CGEventType in [.mouseMoved, .leftMouseDown, .leftMouseUp] {
         guard let event = CGEvent(mouseEventSource: nil, mouseType: kind, mouseCursorPosition: point, mouseButton: .left)
         else { fail("unable to create mouse event") }
+        if kind != .mouseMoved { event.setIntegerValueField(.mouseEventClickState, value: 1) }
         // Wine's game mouse path consumes HID events. postToPid can move the
         // pointer while silently losing button presses. Check focus immediately
         // before every event so a focus change aborts this guarded action.

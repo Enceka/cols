@@ -74,8 +74,8 @@ def main():
         print(json.dumps([{k: info[k] for k in ["id", "name", "version", "install_path", "install_status"]}
                           for info in available.values()], indent=2))
         return 0
-    if not 1 <= args.seconds <= 300:
-        parser.error("seconds must be 1..300")
+    if not 1 <= args.seconds <= 900:
+        parser.error("seconds must be 1..900")
     if (args.tls_probe or args.rust_auth or args.trust_lab_cert) and args.action != "client":
         parser.error("TLS options require a client experiment")
     if args.tls_probe and args.rust_auth:

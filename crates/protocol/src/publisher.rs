@@ -10,6 +10,19 @@ const RESOURCE_KEY: [u8; 24] = [
     0x8c, 0x17, 0xef, 0x53, 0x99, 0xf8, 0x68, 0x3c,
 ];
 
+/// The Chinese client's playlist text is GBK. Keep repository sources UTF-8
+/// and transcode when preparing publisher data; refuse lossy substitutions.
+pub fn encode_playlist(source: &str) -> Result<Vec<u8>, LobbyError> {
+    if source.is_empty() || source.len() > MAX_FILE_BYTES || source.contains('\0') {
+        return Err(LobbyError("invalid playlist source size/text"));
+    }
+    let (bytes, _, unmappable) = encoding_rs::GBK.encode(source);
+    if unmappable || bytes.len() > MAX_FILE_BYTES {
+        return Err(LobbyError("playlist cannot be encoded losslessly as GBK"));
+    }
+    Ok(bytes.into_owned())
+}
+
 /// Length-preserving and symmetric. No extra NUL, padding, or IV on the wire.
 pub fn crypt_configs(data: &[u8]) -> Result<Vec<u8>, LobbyError> {
     if data.is_empty() || data.len() > MAX_FILE_BYTES {
@@ -34,6 +47,16 @@ pub fn crypt_configs(data: &[u8]) -> Result<Vec<u8>, LobbyError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn chinese_playlist_uses_target_encoding_without_silent_replacement() {
+        assert_eq!(
+            encode_playlist("人机训练").unwrap(),
+            [0xc8, 0xcb, 0xbb, 0xfa, 0xd1, 0xb5, 0xc1, 0xb7]
+        );
+        assert_eq!(encode_playlist("version 3\n").unwrap(), b"version 3\n");
+        assert!(encode_playlist("\u{1f600}").is_err());
+        assert!(encode_playlist("bad\0text").is_err());
+    }
     #[test]
     fn agrees_with_independent_aes_ctr_vectors_and_length_derived_iv() {
         let vectors: serde_json::Value = serde_json::from_str(include_str!(

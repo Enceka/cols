@@ -17,6 +17,7 @@ hkdf.workspace = true
 aes.workspace = true
 flate2.workspace = true
 crc32fast.workspace = true
+encoding_rs.workspace = true
 
 [lints]
 workspace = true
