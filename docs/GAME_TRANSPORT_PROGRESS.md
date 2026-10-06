@@ -118,3 +118,5 @@ stats 完成后，目标处于状态 6 时发送 OOB `heartbeat`；仅在 stats 
 ## 2026-10-07 gamestate 原型失败边界
 
 在 `client-1791312016136` 中尝试了 152 字节的目标顺序 gamestate 原型。外层 DATA 已认证，客户端没有接受；截图 `ui-1791312268118.png` 显示“服务器连接超时”。已移除自动发送，避免后续实验继续下发未经验证的空壳状态。目标完整 gamestate 仍需恢复 configstring bank、资源纯校验和可靠命令内容；参考包报告的 743 项/2992 字节不能直接移植到 3.3.3.3。
+
+目标消费者静态地址：内层分派 0x46e6a0；gamestate 解析 0x46dea0；configstring 字符串 `CA_GAMESTATE` 0xc61bb8；更新提示 `gamestateupdate %d` 0xc61d90。目标内层 stream 还调用 0x46bf80 native XOR，key 使用关联 outgoing sequence/challenge 状态并滚动命令字节；当前最小原型未做该 XOR，这也是失败实验的待排查因素，不能把失败归因于 configstring 缺失。`game_wire::xor_stream` 仅有离线可逆测试，未接入生产发送。

@@ -36,3 +36,5 @@
 真实客户端在收到该原型后没有进入 gamestate ACK 或场景，约 30 秒后弹出“服务器连接超时”。服务端原始事件显示该响应已经通过外层 DATA MAC；后续客户端仍发送少量 14 字节内层包，未发送可确认的 gamestate ACK。结论是 configstring 数量、内容、checksum feed、完整 `mp_afghan` 资源/纯校验或其他可靠命令至少有一项必需，不能把原型接入默认运行路径。
 
 `game_wire::minimal_gamestate` 和 4 字节 sequence 原型保留为离线编码测试，但当前 Connection 不自动发送它。下一步需要恢复目标版本完整 configstring bank（AlphaBuild 的 743 项/2992 字节仅作为旧版本结构参考），再用真实 ACK 验证。
+
+静态解析进一步确认：客户端内层消息分派在 0x46e6a0，消息码 0/1/2/3/5 进入不同解析器，消息码 6 读取四字节 client number 后进入快照/可靠流路径；gamestate 解析器入口为 0x46dea0，结束标记和 configstring 读取不能从旧版 opcode 表直接猜测。目标连接后对服务端内层字节还会执行 0x46bf80 的 native XOR：初始 key 来自关联的 outgoing sequence/challenge 状态，并按命令字符串字节和奇偶位滚动。它与 DTLS DATA 密钥独立；Rust 已保留可逆 `xor_stream` 原型，但未接入发送路径，因 key/command 状态尚未被目标抓包确认。

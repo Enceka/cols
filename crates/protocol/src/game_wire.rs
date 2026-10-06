@@ -6,6 +6,23 @@ use crate::lobby::LobbyError;
 
 pub const FRAGMENT_SIZE: usize = 1162;
 
+/// CoDOL's native stream XOR (target VA 0x46bf80). The key and rotating
+/// command bytes are association state, not the DTLS key. Callers must obtain
+/// them from a verified connection before encoding a gamestate.
+pub fn xor_stream(data: &mut [u8], mut key: u8, command: &[u8]) {
+    let mut cursor = 0usize;
+    for (index, byte) in data.iter_mut().enumerate() {
+        if !command.is_empty() {
+            if cursor == command.len() || command[cursor] == 0 {
+                cursor = 0;
+            }
+            key ^= command[cursor].wrapping_shl((index & 1) as u32);
+            cursor += 1;
+        }
+        *byte ^= key;
+    }
+}
+
 pub fn packet(sequence: u32, message: &[u8]) -> Result<Vec<u8>, LobbyError> {
     if message.len() >= FRAGMENT_SIZE {
         return Err(LobbyError("inner game fragmentation not implemented"));
@@ -107,5 +124,14 @@ mod tests {
         let wire = packet(1, &message).unwrap();
         assert_eq!(&wire[..4], &[1, 0, 0, 0]);
         assert!(packet(1, &[0; FRAGMENT_SIZE]).is_err());
+    }
+
+    #[test]
+    fn xor_stream_is_reversible_and_restarts_command_at_nul() {
+        let original = b"gamestate wire".to_vec();
+        let mut encoded = original.clone();
+        xor_stream(&mut encoded, 0x37, b"\\map\\test\0ignored");
+        xor_stream(&mut encoded, 0x37, b"\\map\\test\0ignored");
+        assert_eq!(encoded, original);
     }
 }
