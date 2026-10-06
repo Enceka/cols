@@ -84,3 +84,13 @@ PVE 路径已有新发现：client-1791288403789 的剧情首关“身份不明�
 对当前单人 channel 回送本人消息；之后的多成员广播仍待实现。推送复用 S2C 加密序号，不消耗 RPC transaction ID。新增传输测试验证 ACK→push→下一 RPC 的序号和 FIFO 不串位。
 
 client-1791294035140：前三条 11/4 均成功并各发送一次推送。ready 后出现新的 21/5，随后客户端因未实现的游戏服查询返回错误，发送 21/3、11/2 清理并回大厅。用户报告“服务器繁忙，请稍后”，截图 ui-1791294155906.png 一致。此处是分配服务缺失，不能声称已经自动开局或把它解释为客户端进程崩溃。
+
+## 下一步直接从游戏服分配接续
+
+同一实验的 21/5 有两种明确阶段：packet-039 是 query=3、offset=0、maxResults=50，带 8 个 Int32 条件；准备广播之后 packet-048 是 query=1、offset=0、maxResults=10，仅一个 Int32 build 值 -688906341。前者是匹配入口，后者是准备后的游戏服查询。不能将两者都当成创建 channel，也不能拿固定空成功宣称开局恢复。
+
+目标 SDK builder=0xa56f50；游戏调用点 0x6d44bb、0x6d4953。结果数组 0x0c89eb20，初始化器 0xb49f25，主 vtable=0xc78450，反序列化器=0x701db0，序列化器=0x701b60。基类解码 0xa55700：Blob 地址、Blob[8] session ID、3×UInt32；然后是创建描述从房间名起的同样尾部。请求基类 0xa554c0 仅有地址和 2×UInt32，因此查找结果比创建描述多 session ID Blob 和一个 UInt32，不能原样回显请求。
+
+静态导出已保留：find-session-result.c、matchmaking-record.c、matchmaking-base.c（research-output/ghidra）。接续先确认额外 UInt32 的人数语义及 query 条件，再接 Rust 游戏端点和真实会话分配，采集 UDP 握手。当前工程尚无能够承载地图、出生和 AI 的 Rust 游戏进程，所以自动进图仍未完成。不要通过返回一个没有接收端的假地址掩盖此缺口。
+
+本阶段实现已提交 a4095c2（训练分类、GBK、人数字段、本人房间广播与传输 FIFO 回归）；前序房间基础 c6ed48a、购买 d06f197。最新测试 56 Rust + 13 Python 全部通过。最后一次客户端实验已按 900 秒时限清理结束。
