@@ -2,7 +2,7 @@
 
 更新：2026-10-06。本文件保留工程基础说明；认证与传输见 [AUTH_LOBBY_PROGRESS.md](AUTH_LOBBY_PROGRESS.md)，最新文件服务与公共配置阻塞点见 [SERVICE_INITIALIZATION.md](SERVICE_INITIALIZATION.md)。玩家档案、背包和完整大厅界面仍未完成。
 
-后续公共配置已解除阻塞，公共档案保存已实现；当前接续请读 [PUBLISHER_FILES.md](PUBLISHER_FILES.md)。39 项 Rust、5 项 Python 测试通过；下文描述基础观测/存储阶段。
+后续已完成公共档案真实重登、空目录与余额/附件初始化；当前接续请读 [ONBOARDING_PROGRESS.md](ONBOARDING_PROGRESS.md)。41 项 Rust、5 项 Python 测试通过；下文描述基础观测/存储阶段。
 
 **现有实现**
 

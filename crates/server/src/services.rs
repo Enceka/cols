@@ -75,6 +75,48 @@ impl LocalServices {
             }
             (10, 10 | 12 | 21) => self.storage(task::storage(&request)?, session, now).await,
             (10, 20) => self.list_publisher(request.arguments).await,
+            (80, 70 | 107) => {
+                let mut reader = task::Reader::new(request.arguments);
+                let context = reader.string(16)?;
+                let page = reader.u32()?;
+                let page_size = reader.u32()?;
+                if request.task == 70 {
+                    let _show_all = reader.boolean()?;
+                    let sku_filters = reader.u32()?;
+                    if sku_filters != 0 {
+                        return Ok(TaskResult::failure(
+                            "unsupported_catalogue_filter",
+                            task::TASK_FAILED,
+                        ));
+                    }
+                    let type_filters = reader.u32()?;
+                    if type_filters != 0 {
+                        return Ok(TaskResult::failure(
+                            "unsupported_catalogue_filter",
+                            task::TASK_FAILED,
+                        ));
+                    }
+                }
+                let _client_version = reader.string(32)?;
+                reader.finish()?;
+                if !context.is_empty() || page != 1 || !(1..=2000).contains(&page_size) {
+                    return Ok(TaskResult::failure(
+                        "unsupported_catalogue_query",
+                        task::TASK_FAILED,
+                    ));
+                }
+                // VA 0x4a6150 stops pagination when resultCount < pageSize,
+                // including an empty first page. The lab has no saleable SKUs;
+                // owned inventory and starter grants remain separate work.
+                Ok(TaskResult::success(
+                    if request.task == 70 {
+                        "local_empty_catalogue"
+                    } else {
+                        "local_empty_catalogue_links"
+                    },
+                    vec![],
+                ))
+            }
             (80, 230) => {
                 let mut reader = task::Reader::new(request.arguments);
                 let context = reader.string(16)?;
@@ -89,6 +131,38 @@ impl LocalServices {
                     "local_empty_player_data",
                     vec![task::empty_player_data(session.user_id)],
                 ))
+            }
+            (80, 173) => {
+                let mut reader = task::Reader::new(request.arguments);
+                let context = reader.string(16)?;
+                let maximum = reader.u16()?;
+                reader.finish()?;
+                if !context.is_empty() || !(1..=700).contains(&maximum) {
+                    return Ok(TaskResult::failure(
+                        "unsupported_coupon_query",
+                        task::TASK_FAILED,
+                    ));
+                }
+                // VA 0xa46fb0 binds an array; VA 0x4a3470 consumes its count.
+                // This local account has no issued coupons/mail attachments.
+                Ok(TaskResult::success("empty_coupon_inventory", vec![]))
+            }
+            (93, 1) => {
+                let mut reader = task::Reader::new(request.arguments);
+                let maximum = reader.u32()?;
+                reader.finish()?;
+                if maximum != 1 {
+                    return Ok(TaskResult::failure(
+                        "unsupported_balance_query",
+                        task::TASK_FAILED,
+                    ));
+                }
+                // VA 0xa4c4a0 reads currency UChar + UInt32 amount. The game
+                // checks currency 1 at VA 0x57d548. No local funds were granted.
+                let mut record = Writer::default();
+                record.u8(1);
+                record.u32(0);
+                Ok(TaskResult::success("local_zero_balance", vec![record.0]))
             }
             (8, 1 | 2) => {
                 let mut reader = task::Reader::new(request.arguments);
@@ -389,6 +463,47 @@ fn blob_result(label: &'static str, data: &[u8]) -> Result<TaskResult> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn initial_coupon_and_balance_queries_have_distinct_verified_result_shapes() {
+        let temp = tempfile::tempdir().unwrap();
+        let server = LocalServices::open(temp.path().join("data")).await.unwrap();
+        let s = session(1);
+        let coupons = [80, 3, 173, 16, 0, 6, 188, 2, 0];
+        let balance = [93, 3, 1, 8, 1, 0, 0, 0, 0];
+        assert_eq!(
+            server.handle(&coupons, &s, 1).await.unwrap().result,
+            Ok(vec![])
+        );
+        assert_eq!(
+            server.handle(&balance, &s, 1).await.unwrap().result,
+            Ok(vec![vec![3, 1, 8, 0, 0, 0, 0]])
+        );
+        for body in [&coupons[..], &balance[..]] {
+            for size in 0..body.len() {
+                assert!(server.handle(&body[..size], &s, 1).await.is_err());
+            }
+            let mut extra = body.to_vec();
+            extra.push(0);
+            assert!(server.handle(&extra, &s, 1).await.is_err());
+        }
+        let mut zero = coupons;
+        zero[6] = 0;
+        zero[7] = 0;
+        assert_eq!(
+            server.handle(&zero, &s, 1).await.unwrap().result,
+            Err(task::TASK_FAILED)
+        );
+        let mut other = balance;
+        other[4] = 2;
+        assert_eq!(
+            server.handle(&other, &s, 1).await.unwrap().result,
+            Err(task::TASK_FAILED)
+        );
+        assert_eq!(
+            server.handle(&[80, 3, 172, 0], &s, 1).await.unwrap().result,
+            Err(task::TASK_FAILED)
+        );
+    }
     fn session(uid: u64) -> Session {
         Session {
             title_id: 1002,
@@ -509,7 +624,7 @@ mod tests {
             );
         }
         assert_eq!(
-            server.handle(&[80, 3, 70, 0], &s, 1).await.unwrap().result,
+            server.handle(&[80, 3, 69, 0], &s, 1).await.unwrap().result,
             Err(task::TASK_FAILED)
         );
         let path = server.user_path(&s, "the.json").await.unwrap();
@@ -679,6 +794,54 @@ mod tests {
                 .unwrap()
                 .result,
             Err(task::NO_PROFILE)
+        );
+    }
+
+    #[tokio::test]
+    async fn empty_lab_catalogue_only_answers_supported_unfiltered_queries() {
+        let temp = tempfile::tempdir().unwrap();
+        let server = LocalServices::open(temp.path().join("data")).await.unwrap();
+        let s = session(1);
+        let mut query = Writer(vec![80, 3, 70]);
+        query.string("");
+        query.u32(1);
+        query.u32(2000);
+        query.boolean(true);
+        query.u32(0);
+        query.u32(0);
+        query.string("982808");
+        query.0.push(0);
+        assert_eq!(
+            server.handle(&query.0, &s, 1).await.unwrap().result,
+            Ok(vec![])
+        );
+        let mut links = Writer(vec![80, 3, 107]);
+        links.string("");
+        links.u32(1);
+        links.u32(2000);
+        links.string("982808");
+        links.0.push(0);
+        assert_eq!(
+            server.handle(&links.0, &s, 1).await.unwrap().result,
+            Ok(vec![])
+        );
+        for n in 0..links.0.len() {
+            assert!(server.handle(&links.0[..n], &s, 1).await.is_err());
+        }
+        for n in 0..query.0.len() {
+            assert!(server.handle(&query.0[..n], &s, 1).await.is_err());
+        }
+        let mut page = query.0.clone();
+        page[6] = 2;
+        assert_eq!(
+            server.handle(&page, &s, 1).await.unwrap().result,
+            Err(task::TASK_FAILED)
+        );
+        let mut filter = query.0;
+        filter[18] = 1;
+        assert_eq!(
+            server.handle(&filter, &s, 1).await.unwrap().result,
+            Err(task::TASK_FAILED)
         );
     }
 }

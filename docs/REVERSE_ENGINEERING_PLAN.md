@@ -1,6 +1,6 @@
 # CODOL 3.3.3.3：Rust 服务端重建计划
 
-日期：2026-10-06。状态：Rust AUTH、协议 210、UDP、时间、最小公共配置已通过真实客户端验证，客户端进入新玩家引导。the.json 上传/重登通过，公共档案保存已实现；背包与完整大厅仍未恢复。最新进展见 [PUBLISHER_FILES.md](PUBLISHER_FILES.md)，传输与认证见 [AUTH_LOBBY_PROGRESS.md](AUTH_LOBBY_PROGRESS.md)。
+日期：2026-10-06。状态：认证、协议 210、公共配置、文件及公共档案真实上传/重登已验证。空测试目录初始化完成，客户端停在无忙碌弹窗的新玩家引导；非空背包、私有档案与完整大厅仍未恢复。最新进展见 [ONBOARDING_PROGRESS.md](ONBOARDING_PROGRESS.md)，传输与认证见 [AUTH_LOBBY_PROGRESS.md](AUTH_LOBBY_PROGRESS.md)。
 
 用户最新确定的优先级：第一阶段先恢复登录、背包和大厅；双客户端、一张地图、一种模式的最小联机对局调整为第二阶段。优先使用 GameHub 的 Mac 兼容层，Parallels 作为对照环境。
 

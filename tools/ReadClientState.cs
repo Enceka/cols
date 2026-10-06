@@ -1,0 +1,81 @@
+// Read-only Win32 probe for the marked research client. It does not attach a
+// debugger, inject a thread, patch memory, or enumerate account/session keys.
+// Build with the private Wine prefix's csc.exe; see docs/ONBOARDING_PROGRESS.md.
+using System;
+using System.IO;
+using System.Runtime.InteropServices;
+using System.Security.Cryptography;
+using System.Text;
+
+class ReadClientState {
+    [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)]
+    struct Entry {
+        public uint size, usage, pid;
+        public IntPtr heap;
+        public uint module, threads, parent;
+        public int priority;
+        public uint flags;
+        [MarshalAs(UnmanagedType.ByValTStr,SizeConst=260)] public string name;
+    }
+    [DllImport("kernel32.dll",SetLastError=true)] static extern IntPtr CreateToolhelp32Snapshot(uint flags,uint pid);
+    [DllImport("kernel32.dll",CharSet=CharSet.Unicode,SetLastError=true)] static extern bool Process32FirstW(IntPtr snapshot,ref Entry entry);
+    [DllImport("kernel32.dll",CharSet=CharSet.Unicode,SetLastError=true)] static extern bool Process32NextW(IntPtr snapshot,ref Entry entry);
+    [DllImport("kernel32.dll",SetLastError=true)] static extern IntPtr OpenProcess(uint access,bool inherit,uint pid);
+    [DllImport("kernel32.dll",CharSet=CharSet.Unicode,SetLastError=true)] static extern bool QueryFullProcessImageNameW(IntPtr process,uint flags,StringBuilder path,ref uint size);
+    [DllImport("kernel32.dll",SetLastError=true)] static extern bool ReadProcessMemory(IntPtr process,IntPtr address,byte[] bytes,UIntPtr count,out UIntPtr read);
+    [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
+    static uint Read(IntPtr process,uint address,int size) {
+        byte[] bytes=new byte[size]; UIntPtr read;
+        if(!ReadProcessMemory(process,new IntPtr(address),bytes,new UIntPtr((uint)size),out read)||read.ToUInt64()!=(uint)size)
+            throw new Exception("read failed at 0x"+address.ToString("x")+": "+Marshal.GetLastWin32Error());
+        return size==1 ? bytes[0] : BitConverter.ToUInt32(bytes,0);
+    }
+    static void Field(IntPtr process,string name,uint address,int size) {
+        Console.WriteLine("\""+name+"\":"+Read(process,address,size)+",");
+    }
+    static int Main() {
+        try {
+            IntPtr snapshot=CreateToolhelp32Snapshot(2,0); uint found=0;
+            if(snapshot==new IntPtr(-1)) throw new Exception("process snapshot failed");
+            try {
+                Entry e=new Entry();e.size=(uint)Marshal.SizeOf(typeof(Entry));
+                bool next=Process32FirstW(snapshot,ref e);
+                while(next) {
+                    if(String.Equals(e.name,"codoMP_client_shipRetail.exe",StringComparison.OrdinalIgnoreCase)) {
+                        if(found!=0) throw new Exception("more than one client in prefix");
+                        found=e.pid;
+                    }
+                    next=Process32NextW(snapshot,ref e);
+                }
+            } finally {CloseHandle(snapshot);}
+            if(found==0) throw new Exception("research client not running");
+            IntPtr process=OpenProcess(0x1010,false,found); // QUERY_LIMITED_INFORMATION | VM_READ
+            if(process==IntPtr.Zero) throw new Exception("open process failed");
+            try {
+                StringBuilder path=new StringBuilder(4096);uint size=4096;
+                if(!QueryFullProcessImageNameW(process,0,path,ref size)||
+                   !File.Exists(Path.Combine(Path.GetDirectoryName(path.ToString()),".codol-research-copy.json")))
+                    throw new Exception("target is not a marked research copy");
+                using(var source=File.OpenRead(path.ToString())) using(var sha=SHA256.Create()) {
+                    string hash=BitConverter.ToString(sha.ComputeHash(source)).Replace("-","").ToLowerInvariant();
+                    if(hash!="e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b")
+                        throw new Exception("target executable hash differs from the recovered version");
+                }
+                Console.WriteLine("{");
+                Field(process,"config_version",0x078a06bc,4);
+                Field(process,"playlist_version",0x031fe614,4);
+                Field(process,"server_time",0x0c9e34e0,4);
+                Field(process,"catalogue_state",0x07817dd8,4);
+                Field(process,"catalogue_status_bits",0x07817df8,4);
+                Field(process,"catalogue_count",0x07817de0,4);
+                Field(process,"market_initialization_state",0x0783f86c,4);
+                Field(process,"coupon_query_completed",0x07817c07,1);
+                Field(process,"external_currency",0x0ba0b2e8,1);
+                Field(process,"external_balance",0x0ba0b2ec,4);
+                Field(process,"frontend_state",0x078b06c8,4);
+                Console.WriteLine("\"read_only\":true}");
+            } finally {CloseHandle(process);}
+            return 0;
+        } catch(Exception e) {Console.Error.WriteLine(e.Message);return 1;}
+    }
+}

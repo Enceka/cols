@@ -28,6 +28,9 @@ pub struct LobbyServer {
     directory: PathBuf,
     services: Option<Arc<LocalServices>>,
 }
+// The harness permits 300-second UI experiments. Keep its final observation
+// inside the transport budget; byte/frame/concurrency limits remain enforced.
+const MAX_SESSION_SECONDS: u64 = 330;
 impl LobbyServer {
     pub async fn bind(
         bind: SocketAddr,
@@ -49,7 +52,7 @@ impl LobbyServer {
         };
         let listener = TcpListener::bind(bind).await?;
         tokio::fs::create_dir(&directory).await?;
-        write_private(&directory.join("run.json"),&serde_json::to_vec_pretty(&json!({"mode":if services.is_some(){"lobby_210_local_services"}else{"lobby_210_handshake_observe"},"bind":listener.local_addr()?,"max_sessions":128,"max_connections":16,"max_frames":if services.is_some(){256}else{32}}))?).await?;
+        write_private(&directory.join("run.json"),&serde_json::to_vec_pretty(&json!({"mode":if services.is_some(){"lobby_210_local_services"}else{"lobby_210_handshake_observe"},"bind":listener.local_addr()?,"max_sessions":128,"max_connections":16,"max_frames":if services.is_some(){256}else{32},"session_timeout_seconds":MAX_SESSION_SECONDS}))?).await?;
         Ok(Self {
             listener,
             registry,
@@ -81,7 +84,7 @@ impl LobbyServer {
                         let result=if *stop.borrow(){Err(anyhow::anyhow!("shutdown"))}else{
                             tokio::select! {
                                 _=stop.changed()=>Err(anyhow::anyhow!("shutdown")),
-                                result=tokio::time::timeout(Duration::from_secs(120),handle(stream,id,&registry,&directory,services.as_deref()))=>match result{Ok(r)=>r,Err(_)=>Err(anyhow::anyhow!("lobby session timeout"))},
+                                result=tokio::time::timeout(Duration::from_secs(MAX_SESSION_SECONDS),handle(stream,id,&registry,&directory,services.as_deref()))=>match result{Ok(r)=>r,Err(_)=>Err(anyhow::anyhow!("lobby session timeout"))},
                             }
                         };
                         if let Err(error)=result {

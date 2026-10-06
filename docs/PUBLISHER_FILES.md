@@ -2,6 +2,8 @@
 
 更新：2026-10-06。当前接续入口。目标主程序 SHA-256 仍为 `e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b`。传输、认证及基础存储的早期证据见 [SERVICE_INITIALIZATION.md](SERVICE_INITIALIZATION.md)。
 
+后续已验证公共档案真实上传/重登，并完成空测试目录、余额和附件初始化；最终无忙碌弹窗。最新接续入口为 [ONBOARDING_PROGRESS.md](ONBOARDING_PROGRESS.md)，下文保留本阶段当时的边界。
+
 本轮已经解除必需公共配置和缺档案错误阻塞。真实 GameHub 客户端进入新玩家引导界面，能发出 ClientLogin，并将 `the.json` 上传后在重登时读取。截图中的界面仍出现“服务器繁忙，请稍候重试”；背包物品、装备保存、完整大厅及对局均未通过。
 
 ## 实验与验收边界

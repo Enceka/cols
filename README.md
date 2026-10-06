@@ -1,6 +1,6 @@
 # CODOL 3.3.3.3 / Rust
 
-当前 Rust 后端已通过真实 3.3.3.3 客户端验证：TLS/HTTP AUTH、本地测试票据、协议 210、UDP 地址发现、时间及最小公共配置。客户端已进入新玩家引导，the.json 已完成上传及重登读回；公共档案持久化已实现，背包、完整大厅与对局仍待恢复。
+当前 Rust 后端已通过真实 3.3.3.3 客户端验证：TLS/HTTP AUTH、协议 210、UDP、时间、最小公共配置和公共档案重登。客户端已进入无忙碌弹窗的新玩家引导，空测试商城目录初始化完成；商品、起始装备、完整大厅与对局仍待恢复。
 
 从 [docs/README.md](docs/README.md) 接续任务；运行细节见 [docs/FOUNDATION.md](docs/FOUNDATION.md)，静态发现见 [docs/BOOTSTRAP_FINDINGS.md](docs/BOOTSTRAP_FINDINGS.md)。
 
@@ -10,7 +10,7 @@
 
 最新业务层进展、文件持久化测试及公共配置阻塞点见 [docs/SERVICE_INITIALIZATION.md](docs/SERVICE_INITIALIZATION.md)。
 
-当前接续入口为 [docs/PUBLISHER_FILES.md](docs/PUBLISHER_FILES.md)：公共配置已解除阻塞、玩家数据与档案通道、界面截图的验证边界及最新运行命令。
+当前接续入口为 [docs/ONBOARDING_PROGRESS.md](docs/ONBOARDING_PROGRESS.md)：公共档案真实闭环、目录/余额/附件初始化、Mac 上的只读客户端状态探针和下一步。
 
 在 `server/` 下执行：
 
