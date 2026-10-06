@@ -64,6 +64,19 @@ impl LobbyServer {
     pub fn address(&self) -> Result<SocketAddr> {
         Ok(self.listener.local_addr()?)
     }
+    pub async fn with_game_endpoint(
+        mut self,
+        endpoint: Arc<crate::game_server::GameAdmissions>,
+    ) -> Result<Self> {
+        let services = self
+            .services
+            .take()
+            .context("game endpoint requires local services")?;
+        let services =
+            Arc::try_unwrap(services).map_err(|_| anyhow::anyhow!("services already shared"))?;
+        self.services = Some(Arc::new(services.with_game_endpoint(endpoint).await));
+        Ok(self)
+    }
     pub async fn run<F: Future<Output = std::io::Result<()>>>(self, shutdown: F) -> Result<()> {
         let (stop, _) = watch::channel(false);
         let slots = Arc::new(Semaphore::new(16));

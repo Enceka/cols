@@ -6,6 +6,12 @@
 
 实施更新：参考票据已用 Rust 重建并获真实客户端接受；目标大厅新增协议 210，已另行恢复其 HKDF-SHA1/AES/HMAC，不能直接使用本参考的旧大厅 3DES 帧。最新验证见 [AUTH_LOBBY_PROGRESS.md](AUTH_LOBBY_PROGRESS.md)。以下保留审阅时的证据和判断。
 
+**2026-10-07 联机资料复核**
+
+用户提示参考更新，已重新审阅 dedicated 的 `CODOL_ASSOCIATION.md`、handshake/ecdh/crypto/association/network/connect 源码和测试，以及 lobby 的 admission/reconnect 文档。目录无 `.git` 元数据，只能记录当前快照，不能确认精确增量；7 个重点文件指纹在忽略的 `research-output/alpha-network-review-20261007.json`。
+
+采用的协议研究线索包括 P-224 公钥 DER、cookie 报文结构、实时会话 key 与 admission 隔离、重新连接清理。3.3.3.3 静态与真实包验证得出游戏 DATA 为 SHA1 KDF、AES128-CTR、小端计数、SHA1(seq32+tag16) IV、HMAC 覆盖长度字段，不能复用旧版 Tiger/AES192。参考固定私钥兼容实验不适用于本轮目标：随机私钥已实测成功。Rust 独立重建，未移入原生 C/C++ 源码；详细地址、实验与尚缺功能见 [游戏通道进展](GAME_TRANSPORT_PROGRESS.md)。
+
 **参考包实际包含什么**
 
 | 部分 | 实际实现 | 对当前任务的价值 |

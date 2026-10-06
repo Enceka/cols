@@ -2,6 +2,8 @@
 pub mod auth_server;
 pub mod capture;
 pub mod config;
+mod game_handshake;
+pub mod game_server;
 pub mod http;
 pub mod lobby_server;
 mod marketplace;

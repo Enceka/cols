@@ -87,6 +87,9 @@ enum Command {
         stun_bind: Option<std::net::SocketAddrV4>,
         #[arg(long, default_value = "127.0.0.1:3078")]
         stun_alt: std::net::SocketAddrV4,
+        /// Experimental game UDP handshake endpoint; no world simulation yet.
+        #[arg(long, requires_all = ["service_data_dir", "lobby_bind"])]
+        game_bind: Option<std::net::SocketAddrV4>,
     },
     /// Parse an observed task-10 JSON body; identifiers are omitted from output.
     InspectAuth {
@@ -283,6 +286,7 @@ async fn main() -> Result<()> {
             service_data_dir,
             stun_bind,
             stun_alt,
+            game_bind,
         } => {
             let server = AuthServer::bind(AuthOptions {
                 bind,
@@ -294,7 +298,7 @@ async fn main() -> Result<()> {
             })
             .await?;
             if let Some(bind) = lobby_bind {
-                let lobby = LobbyServer::bind_with_services(
+                let mut lobby = LobbyServer::bind_with_services(
                     bind,
                     server.registry(),
                     server.directory().join("lobby"),
@@ -305,6 +309,17 @@ async fn main() -> Result<()> {
                 tracing::info!(address=%server.address()?,directory=%server.directory().display(),"Rust AUTH listener ready");
                 let (stop, receiver) = tokio::sync::watch::channel(false);
                 let mut tasks = tokio::task::JoinSet::new();
+                if let Some(bind) = game_bind {
+                    let game = codol_server::game_server::GameServer::bind(
+                        bind,
+                        server.directory().join("game"),
+                    )
+                    .await?;
+                    let endpoint = game.admissions();
+                    tracing::info!(address=%endpoint.address(),"experimental Rust game UDP endpoint ready");
+                    lobby = lobby.with_game_endpoint(endpoint).await?;
+                    tasks.spawn(game.run(wait_for_stop(receiver.clone())));
+                }
                 if let Some(bind) = stun_bind {
                     let stun =
                         StunServer::bind(bind, stun_alt, server.directory().join("stun")).await?;

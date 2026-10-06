@@ -94,3 +94,7 @@ client-1791294035140：前三条 11/4 均成功并各发送一次推送。ready 
 静态导出已保留：find-session-result.c、matchmaking-record.c、matchmaking-base.c（research-output/ghidra）。接续先确认额外 UInt32 的人数语义及 query 条件，再接 Rust 游戏端点和真实会话分配，采集 UDP 握手。当前工程尚无能够承载地图、出生和 AI 的 Rust 游戏进程，所以自动进图仍未完成。不要通过返回一个没有接收端的假地址掩盖此缺口。
 
 本阶段实现已提交 a4095c2（训练分类、GBK、人数字段、本人房间广播与传输 FIFO 回归）；前序房间基础 c6ed48a、购买 d06f197。最新测试 56 Rust + 13 Python 全部通过。最后一次客户端实验已按 900 秒时限清理结束。
+
+## 2026-10-07 更新：已越过分配与握手
+
+当前进度转到 [GAME_TRANSPORT_PROGRESS.md](GAME_TRANSPORT_PROGRESS.md)：真实 UDP 端点分配、mmbook/mmstart、随机 P-224 握手及目标版本 DATA 校验/解密已验证，训练进入荒漠边陲加载画面并发出 getchallenge。原“服务器繁忙”分配失败已越过；当前阻塞变为尚未处理 challenge/connect 与世界状态，因此仍不能出生/打人机。剧情首关的 key 来源和多成员房间仍待恢复。

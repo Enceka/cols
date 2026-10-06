@@ -64,6 +64,13 @@ struct LocalInventory {
 }
 
 impl LocalServices {
+    pub async fn with_game_endpoint(
+        self,
+        endpoint: std::sync::Arc<crate::game_server::GameAdmissions>,
+    ) -> Self {
+        *self.rooms.lock().await = crate::rooms::Rooms::with_game_endpoint(endpoint);
+        self
+    }
     pub async fn open(root: PathBuf) -> Result<Self> {
         create_directory(&root).await?;
         create_directory(&root.join("publisher")).await?;
@@ -79,7 +86,7 @@ impl LocalServices {
     pub async fn handle(&self, body: &[u8], session: &Session, now: u32) -> Result<TaskResult> {
         let request = Request::parse(body)?;
         match (request.service, request.task) {
-            (11 | 21, _) => self.rooms.lock().await.handle(&request, session, now),
+            (11 | 21, _) | (6, 14) => self.rooms.lock().await.handle(&request, session, now),
             (71, 2) => {
                 let mut reader = task::Reader::new(request.arguments);
                 let name = reader.string(1024)?;

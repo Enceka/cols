@@ -4,6 +4,7 @@ use anyhow::Result;
 use codol_protocol::room::Description;
 use codol_protocol::task::{self, Reader, Request, Writer};
 use std::collections::{HashMap, VecDeque};
+use std::sync::Arc;
 
 struct Channel {
     title_id: u32,
@@ -20,8 +21,15 @@ struct GameSession {
 #[derive(Default)]
 pub(crate) struct Rooms {
     channels: HashMap<u64, Channel>,
+    game_endpoint: Option<Arc<crate::game_server::GameAdmissions>>,
 }
 impl Rooms {
+    pub fn with_game_endpoint(endpoint: Arc<crate::game_server::GameAdmissions>) -> Self {
+        Self {
+            channels: HashMap::new(),
+            game_endpoint: Some(endpoint),
+        }
+    }
     pub fn handle(
         &mut self,
         request: &Request<'_>,
@@ -30,8 +38,62 @@ impl Rooms {
     ) -> Result<TaskResult> {
         self.channels.retain(|_, c| c.expires_at > now);
         match (request.service, request.task) {
+            (6, 14) if self.game_endpoint.is_some() => self
+                .game_endpoint
+                .as_ref()
+                .expect("guarded endpoint")
+                .control(request.arguments, session, now),
+            (21, 5) if self.game_endpoint.is_some() => {
+                let query = codol_protocol::room::Search::parse(request.arguments)?;
+                // This experimental endpoint allocates solo sessions. Peer-room
+                // matching is intentionally not advertised as implemented.
+                if query.query == 3 {
+                    return Ok(TaskResult::success(
+                        "local_solo_search_no_peer_rooms",
+                        vec![],
+                    ));
+                }
+                let Some(channel) = self.channels.values().find(|c| {
+                    c.title_id == session.title_id
+                        && c.owner == session.user_id
+                        && c.session_seed == session.iv_seed
+                }) else {
+                    return Ok(TaskResult::failure(
+                        "game_allocation_requires_channel",
+                        task::TASK_FAILED,
+                    ));
+                };
+                if channel
+                    .game
+                    .as_ref()
+                    .is_some_and(|g| g.description.build != query.criteria[0])
+                {
+                    return Ok(TaskResult::failure(
+                        "game_build_mismatch",
+                        task::TASK_FAILED,
+                    ));
+                }
+                let endpoint = self.game_endpoint.as_ref().expect("guarded game endpoint");
+                let Some(game) = channel.game.as_ref() else {
+                    return Ok(TaskResult::failure(
+                        "game_allocation_requires_live_key",
+                        task::TASK_FAILED,
+                    ));
+                };
+                let (id, key) = endpoint.allocate(session, game.description.security_key, now)?;
+                let record = game
+                    .description
+                    .allocation_record(endpoint.address(), &id, &key)?;
+                Ok(TaskResult::success(
+                    "local_game_transport_allocated",
+                    vec![record],
+                ))
+            }
             (11, 13) => {
                 Reader::new(request.arguments).finish()?;
+                if let Some(endpoint) = &self.game_endpoint {
+                    endpoint.revoke_other_sessions(session);
+                }
                 self.channels.retain(|_, c| {
                     !(c.title_id == session.title_id
                         && c.owner == session.user_id
@@ -105,6 +167,9 @@ impl Rooms {
                     ));
                 }
                 self.channels.remove(&id);
+                if let Some(endpoint) = &self.game_endpoint {
+                    endpoint.revoke(session);
+                }
                 Ok(TaskResult::success("local_room_channel_left", vec![]))
             }
             (21, 1) => {
@@ -180,6 +245,9 @@ impl Rooms {
                     ));
                 };
                 channel.game = None;
+                if let Some(endpoint) = &self.game_endpoint {
+                    endpoint.revoke(session);
+                }
                 Ok(TaskResult::success("local_room_session_deleted", vec![]))
             }
             (11, 15) => {
