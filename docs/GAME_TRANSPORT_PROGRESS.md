@@ -113,3 +113,8 @@ stats 完成后，目标处于状态 6 时发送 OOB `heartbeat`；仅在 stats 
 | client-1791310514572 | heartbeatresponse 接受，产生递增序号游戏包 | 145 |
 
 以上实验 event.json 均无错误，停止后临时证书均已恢复。截图与原始包只留在忽略目录。71 项 Rust、13 项 Python、fmt/Clippy 通过；新增覆盖 connect 身份/build/challenge、防重复字段、真实 UDP connect 回复、stats 重组/冲突/解压边界以及未完成 stats 禁止推进心跳。
+
+
+## 2026-10-07 gamestate 原型失败边界
+
+在 `client-1791312016136` 中尝试了 152 字节的目标顺序 gamestate 原型。外层 DATA 已认证，客户端没有接受；截图 `ui-1791312268118.png` 显示“服务器连接超时”。已移除自动发送，避免后续实验继续下发未经验证的空壳状态。目标完整 gamestate 仍需恢复 configstring bank、资源纯校验和可靠命令内容；参考包报告的 743 项/2992 字节不能直接移植到 3.3.3.3。

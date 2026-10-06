@@ -23,6 +23,8 @@ impl Connection {
 
     pub fn handle(&mut self, payload: &[u8], owner: u64, build: i32) -> Result<Option<Vec<u8>>> {
         let Some(command) = payload.strip_prefix(&[255; 4]) else {
+            // Inner packets are captured for netchan/gamestate recovery. Do
+            // not answer with an unverified empty gamestate.
             return Ok(None);
         };
         if let Some(chunk) = command.strip_prefix(b"stats\0") {

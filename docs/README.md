@@ -16,7 +16,7 @@
 
 用户最新要求：先恢复登录、背包和大厅，然后推进本地房间/人机与双客户端最小对局。优先使用 GameHub Wine/Proton 在 Mac 上运行，Parallels Windows 保留作对照；服务端使用 Rust。
 
-当前入口：[游戏服分配与 UDP](GAME_TRANSPORT_PROGRESS.md)。玩家等级 70、库存、钱包、单人房间和训练列表已恢复；本轮进一步通过真实客户端验证 challenge/connect、完整 stats 上传确认和加载心跳，开始收到序号递增的内层游戏包。当前仍停在“设置游戏”，缺 gamestate、出生与快照，尚不能打人机。
+当前入口：[游戏服分配与 UDP](GAME_TRANSPORT_PROGRESS.md)。玩家等级 70、库存、钱包、单人房间和训练列表已恢复；本轮进一步通过真实客户端验证 challenge/connect、完整 stats 上传确认和加载心跳，开始收到序号递增的内层游戏包。当前已验证 stats/heartbeat 和内层包；最小 gamestate 原型被客户端拒绝并超时，已撤回自动发送。完整 gamestate、出生与快照仍缺，尚不能打人机。
 
 [客户端启动恢复](CLIENT_STARTUP_RECOVERY.md)记录了 IIPS 资源文件打开阻塞及副本修复。现使用 `--prefix-name wine10-recovered-20261007`，没有重置账号。71 项 Rust、13 项 Python 及 fmt/Clippy 通过；持久数据仍使用隔离文件，无 SQLite。
 

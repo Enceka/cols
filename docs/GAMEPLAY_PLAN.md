@@ -27,3 +27,12 @@
 恢复房间成员加入、跨大厅连接的定向推送、每个席位 admission、ready/cancel 与房主生命周期。世界状态按玩家共享，各连接的 DTLS/序号/重放窗口独立。最后验收同图互相可见、移动/伤害同步、断线重进和旧会话撤销。
 
 每一步都分别保留合成回归测试、真实客户端抓包与界面证据，并按可验收阶段提交 Git。当前暂无 Rust 世界模拟循环、地图碰撞加载或 AI，不能把传输 bootstrap 已完成扩大为“服务端已完整联机”。
+
+
+## 5. 最小 gamestate 试验结论
+
+本轮用 AlphaBuild `CODOL_WriteGamestate` 的目标顺序（opcode 2、command sequence、map、zone type、CRC、opcode 3 configstrings、client number、checksum feed、opcode 5）构造了 152 字节原型，只包含 map/mode/server ID/systeminfo 三项。Rust bit writer 的低位优先顺序与参考 `codol_msg.c` 一致。
+
+真实客户端在收到该原型后没有进入 gamestate ACK 或场景，约 30 秒后弹出“服务器连接超时”。服务端原始事件显示该响应已经通过外层 DATA MAC；后续客户端仍发送少量 14 字节内层包，未发送可确认的 gamestate ACK。结论是 configstring 数量、内容、checksum feed、完整 `mp_afghan` 资源/纯校验或其他可靠命令至少有一项必需，不能把原型接入默认运行路径。
+
+`game_wire::minimal_gamestate` 和 4 字节 sequence 原型保留为离线编码测试，但当前 Connection 不自动发送它。下一步需要恢复目标版本完整 configstring bank（AlphaBuild 的 743 项/2992 字节仅作为旧版本结构参考），再用真实 ACK 验证。

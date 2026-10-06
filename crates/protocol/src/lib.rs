@@ -4,6 +4,7 @@ pub mod auth;
 pub mod bootstrap;
 pub mod game;
 pub mod game_stats;
+pub mod game_wire;
 pub mod lobby;
 pub mod profile;
 pub mod publisher;
