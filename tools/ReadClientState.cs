@@ -24,17 +24,24 @@ class ReadClientState {
     [DllImport("kernel32.dll",CharSet=CharSet.Unicode,SetLastError=true)] static extern bool QueryFullProcessImageNameW(IntPtr process,uint flags,StringBuilder path,ref uint size);
     [DllImport("kernel32.dll",SetLastError=true)] static extern bool ReadProcessMemory(IntPtr process,IntPtr address,byte[] bytes,UIntPtr count,out UIntPtr read);
     [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
-    static uint Read(IntPtr process,uint address,int size) {
+    static long totalRead;
+    internal static byte[] ReadBytes(IntPtr process,uint address,int size) {
+        if(address<0x10000 || size<0 || size>4*1024*1024 || (ulong)address+(uint)size>0x100000000UL ||
+           (totalRead+=size)>64*1024*1024) throw new Exception("read budget or address limit");
         byte[] bytes=new byte[size]; UIntPtr read;
         if(!ReadProcessMemory(process,new IntPtr(address),bytes,new UIntPtr((uint)size),out read)||read.ToUInt64()!=(uint)size)
             throw new Exception("read failed at 0x"+address.ToString("x")+": "+Marshal.GetLastWin32Error());
-        return size==1 ? bytes[0] : BitConverter.ToUInt32(bytes,0);
+        return bytes;
     }
+    static uint Read(IntPtr process,uint address,int size) { byte[] bytes=ReadBytes(process,address,size);return size==1?bytes[0]:size==2?BitConverter.ToUInt16(bytes,0):BitConverter.ToUInt32(bytes,0); }
     static void Field(IntPtr process,string name,uint address,int size) {
         Console.WriteLine("\""+name+"\":"+Read(process,address,size)+",");
     }
-    static int Main() {
+    static int Main(string[] args) {
         try {
+            bool assets=args.Length==1 && args[0]=="--assets";
+            bool profiles=args.Length==1 && args[0]=="--profiles";
+            if(args.Length!=0 && !assets && !profiles) throw new Exception("only fixed extraction modes are supported");
             IntPtr snapshot=CreateToolhelp32Snapshot(2,0); uint found=0;
             if(snapshot==new IntPtr(-1)) throw new Exception("process snapshot failed");
             try {
@@ -61,6 +68,8 @@ class ReadClientState {
                     if(hash!="e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b")
                         throw new Exception("target executable hash differs from the recovered version");
                 }
+                if(assets) { ClientAssets.Export(process);return 0; }
+                if(profiles) { ClientAssets.ExportProfiles(process);return 0; }
                 Console.WriteLine("{");
                 Field(process,"config_version",0x078a06bc,4);
                 Field(process,"playlist_version",0x031fe614,4);
@@ -73,6 +82,15 @@ class ReadClientState {
                 Field(process,"external_currency",0x0ba0b2e8,1);
                 Field(process,"external_balance",0x0ba0b2ec,4);
                 Field(process,"frontend_state",0x078b06c8,4);
+                Field(process,"cqb_training_flag",0x0c9670b5,2);
+                Field(process,"onboard_character_id",0x0c95e386,4);
+                uint inventoryCount=Read(process,0x07bdc9b0,4);
+                Console.WriteLine("\"inventory_result_count\":"+inventoryCount+",");
+                if(inventoryCount>0 && inventoryCount<=128) {
+                    uint entries=Read(process,0x07bdc9b4,4);
+                    Field(process,"inventory_first_item_id",checked(entries+0x30),4);
+                    Field(process,"inventory_first_quantity",checked(entries+0x34),4);
+                }
                 Console.WriteLine("\"read_only\":true}");
             } finally {CloseHandle(process);}
             return 0;

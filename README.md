@@ -10,7 +10,7 @@
 
 最新业务层进展、文件持久化测试及公共配置阻塞点见 [docs/SERVICE_INITIALIZATION.md](docs/SERVICE_INITIALIZATION.md)。
 
-当前接续入口为 [docs/ONBOARDING_PROGRESS.md](docs/ONBOARDING_PROGRESS.md)：公共档案真实闭环、目录/余额/附件初始化、Mac 上的只读客户端状态探针和下一步。
+当前接续入口为 [docs/PROFILE_INVENTORY_PROGRESS.md](docs/PROFILE_INVENTORY_PROGRESS.md)：目标档案定义、私有档案、8 件初始库存及真实仓库界面。用户已确认仓库可用，下一步是提高测试等级和本地房间/人机。
 
 在 `server/` 下执行：
 

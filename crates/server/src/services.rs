@@ -47,6 +47,15 @@ struct StoredFile {
     visibility: bool,
     data_base64: String,
 }
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LocalInventory {
+    schema_version: u32,
+    client_sha256: String,
+    title_id: u32,
+    user_id: String,
+    items: Vec<u32>,
+}
 
 impl LocalServices {
     pub async fn open(root: PathBuf) -> Result<Self> {
@@ -127,9 +136,30 @@ impl LocalServices {
                         task::TASK_FAILED,
                     ));
                 }
+                let path = self
+                    .profile_path(session, false)
+                    .await?
+                    .with_file_name("inventory.json");
+                let items = if let Some(bytes) = read_bounded(&path, 32768).await? {
+                    let inventory: LocalInventory = serde_json::from_slice(&bytes)?;
+                    ensure!(
+                        inventory.schema_version == 1
+                            && inventory.client_sha256 == codol_protocol::CLIENT_SHA256
+                            && inventory.title_id == session.title_id
+                            && inventory.user_id.parse::<u64>()? == session.user_id,
+                        "inventory identity/version mismatch"
+                    );
+                    inventory.items
+                } else {
+                    Vec::new()
+                };
                 Ok(TaskResult::success(
-                    "local_empty_player_data",
-                    vec![task::empty_player_data(session.user_id)],
+                    if items.is_empty() {
+                        "local_empty_player_data"
+                    } else {
+                        "local_player_inventory"
+                    },
+                    vec![task::player_data(session.user_id, &items)?],
                 ))
             }
             (80, 173) => {
@@ -173,23 +203,31 @@ impl LocalServices {
                     ));
                 }
                 reader.finish()?;
-                if request.task == 1 {
-                    let path = self.profile_path(session).await?;
-                    if let Some(data) = read_bounded(&path, task::MAX_FILE_BYTES).await? {
-                        return Ok(TaskResult::success(
-                            "public_profile",
-                            vec![profile::public_record(session.user_id, &data)?],
-                        ));
-                    }
+                let private = request.task == 2;
+                let path = self.profile_path(session, private).await?;
+                if let Some(data) = read_bounded(&path, task::MAX_FILE_BYTES).await? {
+                    let record = if private {
+                        profile::private_record(session.user_id, &data)?
+                    } else {
+                        profile::public_record(session.user_id, &data)?
+                    };
+                    return Ok(TaskResult::success(
+                        if private {
+                            "private_profile"
+                        } else {
+                            "public_profile"
+                        },
+                        vec![record],
+                    ));
                 }
-                // Private profile writes are not supported yet. A precise
+                // Private profile RPC writes are not supported. A precise
                 // missing result lets the target initialize its own defaults.
                 Ok(TaskResult::failure("profile_missing", task::NO_PROFILE))
             }
             (8, 3) => {
                 profile::validate_public(request.arguments)?;
                 let _lock = self.writes.lock().await;
-                let path = self.profile_path(session).await?;
+                let path = self.profile_path(session, false).await?;
                 atomic_private_write(&path, request.arguments).await?;
                 Ok(TaskResult::success("public_profile_saved", vec![]))
             }
@@ -197,7 +235,7 @@ impl LocalServices {
         }
     }
 
-    async fn profile_path(&self, session: &Session) -> Result<PathBuf> {
+    async fn profile_path(&self, session: &Session, private: bool) -> Result<PathBuf> {
         let title = self
             .root
             .join("profiles")
@@ -205,7 +243,7 @@ impl LocalServices {
         create_directory(&title).await?;
         let user = title.join(session.user_id.to_string());
         create_directory(&user).await?;
-        let path = user.join("public.bin");
+        let path = user.join(if private { "private.bin" } else { "public.bin" });
         if let Ok(metadata) = tokio::fs::symlink_metadata(&path).await {
             ensure!(
                 metadata.is_file() && !metadata.is_symlink(),
@@ -795,6 +833,79 @@ mod tests {
                 .result,
             Err(task::NO_PROFILE)
         );
+    }
+    #[tokio::test]
+    async fn private_profile_is_bound_to_session_and_survives_restart() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("data");
+        let server = LocalServices::open(root.clone()).await.unwrap();
+        let s = session(u64::MAX);
+        let data = include_bytes!("../../../fixtures/protocol/private-profile-synthetic.bin");
+        let path = server.profile_path(&s, true).await.unwrap();
+        atomic_private_write(&path, data).await.unwrap();
+        drop(server);
+        let server = LocalServices::open(root).await.unwrap();
+        let record = profile::private_record(s.user_id, data).unwrap();
+        assert_eq!(
+            server
+                .handle(&[8, 3, 2, 0], &s, 1)
+                .await
+                .unwrap()
+                .result
+                .unwrap(),
+            [record]
+        );
+        assert_eq!(
+            server
+                .handle(&[8, 3, 2, 0], &session(1), 1)
+                .await
+                .unwrap()
+                .result,
+            Err(task::NO_PROFILE)
+        );
+        let mut other_title = s.clone();
+        other_title.title_id = 2;
+        assert_eq!(
+            server
+                .handle(&[8, 3, 2, 0], &other_title, 1)
+                .await
+                .unwrap()
+                .result,
+            Err(task::NO_PROFILE)
+        );
+        let mut damaged = data.to_vec();
+        damaged[11] ^= 1;
+        tokio::fs::write(path, damaged).await.unwrap();
+        assert!(server.handle(&[8, 3, 2, 0], &s, 1).await.is_err());
+    }
+    #[tokio::test]
+    async fn item_grants_require_the_authenticated_identity_and_sample() {
+        let temp = tempfile::tempdir().unwrap();
+        let server = LocalServices::open(temp.path().join("data")).await.unwrap();
+        let s = session(1);
+        let request = [80, 3, 230, 16, 0, 0];
+        let path = server
+            .profile_path(&s, false)
+            .await
+            .unwrap()
+            .with_file_name("inventory.json");
+        let data=serde_json::to_vec(&serde_json::json!({"schema_version":1,"client_sha256":codol_protocol::CLIENT_SHA256,"title_id":s.title_id,"user_id":"1","items":[792,10001]})).unwrap();
+        atomic_private_write(&path, &data).await.unwrap();
+        let reply = server.handle(&request, &s, 1).await.unwrap();
+        assert_eq!(reply.label, "local_player_inventory");
+        let records = reply.result.unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(&records[0][16..21], &[8, 2, 0, 0, 0]);
+        let other = session(2);
+        let other_path = server
+            .profile_path(&other, false)
+            .await
+            .unwrap()
+            .with_file_name("inventory.json");
+        atomic_private_write(&other_path, &data).await.unwrap();
+        assert!(server.handle(&request, &other, 1).await.is_err());
+        tokio::fs::write(&path, b"invalid").await.unwrap();
+        assert!(server.handle(&request, &s, 1).await.is_err());
     }
 
     #[tokio::test]

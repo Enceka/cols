@@ -1,0 +1,188 @@
+{
+  "source": "Independent Python zlib/CRC and runtime definition field order; synthetic data, not a seed",
+  "definition_version": 19,
+  "definition_checksum": 2318499177,
+  "sha256": "af3ee4c9ea32fd9d872a2614a6280b6eb16f749f6c2fb60bc0b25beb2a5c87e9",
+  "projected": [
+    {
+      "name": "accuracy",
+      "offset": 12,
+      "tag": 7
+    },
+    {
+      "name": "assists",
+      "offset": 676,
+      "tag": 7
+    },
+    {
+      "name": "bombDefuses",
+      "offset": 680,
+      "tag": 7
+    },
+    {
+      "name": "bombPlants",
+      "offset": 684,
+      "tag": 7
+    },
+    {
+      "name": "confirmed",
+      "offset": 4820,
+      "tag": 7
+    },
+    {
+      "name": "currentWinStreak",
+      "offset": 4824,
+      "tag": 7
+    },
+    {
+      "name": "deaths",
+      "offset": 4828,
+      "tag": 7
+    },
+    {
+      "name": "denied",
+      "offset": 4832,
+      "tag": 7
+    },
+    {
+      "name": "elo",
+      "offset": 4836,
+      "tag": 7
+    },
+    {
+      "name": "escapes",
+      "offset": 4840,
+      "tag": 7
+    },
+    {
+      "name": "experience",
+      "offset": 4844,
+      "tag": 7
+    },
+    {
+      "name": "headshots",
+      "offset": 4848,
+      "tag": 7
+    },
+    {
+      "name": "hits",
+      "offset": 4852,
+      "tag": 7
+    },
+    {
+      "name": "kdRatio",
+      "offset": 4856,
+      "tag": 7
+    },
+    {
+      "name": "killStreak",
+      "offset": 4860,
+      "tag": 7
+    },
+    {
+      "name": "kills",
+      "offset": 4864,
+      "tag": 13
+    },
+    {
+      "name": "losses",
+      "offset": 4868,
+      "tag": 7
+    },
+    {
+      "name": "objectives",
+      "offset": 4872,
+      "tag": 7
+    },
+    {
+      "name": "prestige",
+      "offset": 4883,
+      "tag": 7
+    },
+    {
+      "name": "rank",
+      "offset": 4887,
+      "tag": 7
+    },
+    {
+      "name": "rankVersion",
+      "offset": 4891,
+      "tag": 7
+    },
+    {
+      "name": "score",
+      "offset": 4895,
+      "tag": 7
+    },
+    {
+      "name": "scorePerMinute",
+      "offset": 4899,
+      "tag": 7
+    },
+    {
+      "name": "skill",
+      "offset": 4903,
+      "tag": 7
+    },
+    {
+      "name": "suicides",
+      "offset": 4907,
+      "tag": 7
+    },
+    {
+      "name": "survivalTopScoreEasy",
+      "offset": 4911,
+      "tag": 7
+    },
+    {
+      "name": "survivalTopScoreHard",
+      "offset": 4915,
+      "tag": 7
+    },
+    {
+      "name": "survivalTopScoreMedium",
+      "offset": 4919,
+      "tag": 7
+    },
+    {
+      "name": "ties",
+      "offset": 4923,
+      "tag": 7
+    },
+    {
+      "name": "timePlayed",
+      "offset": 4927,
+      "tag": 7
+    },
+    {
+      "name": "timePlayedOverAll",
+      "offset": 4931,
+      "tag": 7
+    },
+    {
+      "name": "timePlayedTotal",
+      "offset": 4935,
+      "tag": 7
+    },
+    {
+      "name": "totalShots",
+      "offset": 4939,
+      "tag": 7
+    },
+    {
+      "name": "winRatio",
+      "offset": 4951,
+      "tag": 7
+    },
+    {
+      "name": "winStreak",
+      "offset": 4955,
+      "tag": 7
+    },
+    {
+      "name": "wins",
+      "offset": 4959,
+      "tag": 13
+    }
+  ]
+}

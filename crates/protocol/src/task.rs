@@ -73,6 +73,14 @@ impl<'a> Reader<'a> {
                 .map_err(|_| LobbyError("i32 size"))?,
         ))
     }
+    pub fn f32_bits(&mut self) -> Result<u32, LobbyError> {
+        self.tag(13)?;
+        Ok(u32::from_le_bytes(
+            self.take(4)?
+                .try_into()
+                .map_err(|_| LobbyError("float size"))?,
+        ))
+    }
     pub fn u64(&mut self) -> Result<u64, LobbyError> {
         self.tag(10)?;
         Ok(u64::from_le_bytes(
@@ -172,6 +180,22 @@ pub fn storage<'a>(request: &Request<'a>) -> Result<StorageRequest<'a>, LobbyErr
 #[derive(Default)]
 pub struct Writer(pub Vec<u8>);
 impl Writer {
+    pub fn u16(&mut self, value: u16) {
+        self.0.push(6);
+        self.0.extend_from_slice(&value.to_le_bytes());
+    }
+    pub fn i64(&mut self, value: i64) {
+        self.0.push(9);
+        self.0.extend_from_slice(&value.to_le_bytes());
+    }
+    pub fn i32(&mut self, value: i32) {
+        self.0.push(7);
+        self.0.extend_from_slice(&value.to_le_bytes());
+    }
+    pub fn f32_bits(&mut self, value: u32) {
+        self.0.push(13);
+        self.0.extend_from_slice(&value.to_le_bytes());
+    }
     pub fn u8(&mut self, value: u8) {
         self.0.extend_from_slice(&[3, value]);
     }
@@ -239,23 +263,71 @@ pub fn reply(
 /// inventory, then entitlement pairs (VA 0xa4bd80). A new local account has
 /// no accepted grants/purchases. This does not seed game-specific starter items.
 pub fn empty_player_data(user_id: u64) -> Vec<u8> {
+    // Empty input cannot exceed the record bound.
+    player_data(user_id, &[]).expect("empty player data")
+}
+
+/// Full inventory records inherit their account from the enclosing player data
+/// (VA 0xa4b850). Unspecified fields use target constructor 0xa4b4e0 defaults.
+pub fn player_data(user_id: u64, items: &[u32]) -> Result<Vec<u8>, LobbyError> {
+    if items.len() > 128 || items.contains(&0) {
+        return Err(LobbyError("invalid local inventory count/item id"));
+    }
+    let mut seen = std::collections::HashSet::new();
+    if items.iter().any(|id| !seen.insert(*id)) {
+        return Err(LobbyError("duplicate local item id"));
+    }
     let mut out = Writer::default();
     out.u64(user_id);
     out.string("");
     out.u32(0); // Balance count.
-    out.u32(0); // Inventory record count.
+    out.u32(items.len() as u32);
+    for id in items {
+        if user_id == u64::MAX {
+            out.u64(user_id);
+            out.string("");
+        }
+        out.u32(*id);
+        out.u32(1);
+        out.u32(0);
+        out.blob(&[])?;
+        out.u32(u32::MAX);
+        out.i64(i64::MAX);
+        out.u16(0);
+        out.u32(u32::MAX);
+        out.u8(0);
+    }
     if user_id == u64::MAX {
         // bdUserAccountID(-1, "") means no inherited identity to the nested reader.
         out.u64(user_id);
         out.string("");
     }
     out.u32(0); // Entitlement pair count is UInt32 on wire, UInt16 in memory.
-    out.0
+    Ok(out.0)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn inventory_record_matches_independent_target_field_vector() {
+        let v: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../fixtures/protocol/player-inventory-synthetic.json"
+        ))
+        .unwrap();
+        let wire = v["record"].as_str().unwrap();
+        let expected: Vec<u8> = (0..wire.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&wire[i..i + 2], 16).unwrap())
+            .collect();
+        assert_eq!(
+            player_data(0x8000_0000_0000_0002, &[792, 10001]).unwrap(),
+            expected
+        );
+        assert!(player_data(1, &[792, 792]).is_err());
+        assert!(player_data(1, &[0]).is_err());
+        assert!(player_data(1, &(1..=129).collect::<Vec<_>>()).is_err());
+    }
     #[test]
     fn empty_player_record_inherits_unsigned_identity_and_uses_u32_counts() {
         assert_eq!(

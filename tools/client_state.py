@@ -21,7 +21,12 @@ def main():
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--build", action="store_true")
     mode.add_argument("--experiment", type=Path, help="a running experiment.json")
+    extract = parser.add_mutually_exclusive_group()
+    extract.add_argument("--assets", action="store_true", help="extract the fixed profile-schema and data-table allowlist")
+    extract.add_argument("--profiles", action="store_true", help="save this client's two fixed profile buffers to the ignored experiment directory")
     args = parser.parse_args()
+    if args.build and (args.assets or args.profiles):
+        parser.error("extraction options require a running experiment")
     state = json.loads(args.experiment.read_text()) if args.experiment else None
     engine_id = state["engine_id"] if state else "10000033"
     engine = Path(engines()[engine_id]["install_path"])
@@ -31,7 +36,8 @@ def main():
     marker = prefix / ".codol-prefix.json"
     if not marker.is_file() or json.loads(marker.read_text())["engine_id"] != engine_id:
         parser.error("prefix ownership marker mismatch")
-    source = REPO / "tools/ReadClientState.cs"
+    sources = [REPO / "tools/ReadClientState.cs", REPO / "tools/ClientAssets.cs"]
+    source_hashes = {p.name: sha256(p) for p in sources}
     binary = REPO / ".tools/ReadClientState.exe"
     stamp = binary.with_suffix(".build.json")
     env = os.environ.copy()
@@ -44,11 +50,11 @@ def main():
             try:
                 built = subprocess.run([
                     wine, r"C:\windows\Microsoft.NET\Framework\v4.0.30319\csc.exe",
-                    "/nologo", "/platform:anycpu", "/out:Z:" + str(binary), "Z:" + str(source),
+                    "/nologo", "/platform:anycpu", "/r:System.Web.Extensions.dll", "/out:Z:" + str(binary), *["Z:" + str(p) for p in sources],
                 ], env=env, capture_output=True, text=True, timeout=30)
                 if built.returncode:
                     raise RuntimeError((built.stdout + built.stderr)[-2000:])
-                stamp.write_text(json.dumps({"source_sha256": sha256(source), "binary_sha256": sha256(binary)}) + "\n")
+                stamp.write_text(json.dumps({"sources_sha256": source_hashes, "binary_sha256": sha256(binary)}) + "\n")
                 print(json.dumps({"built": str(binary), "read_only": True}))
             finally:
                 # A standalone compiler can let Wine exit before cleanup.
@@ -68,15 +74,17 @@ def main():
         if not stamp.is_file():
             parser.error("build the probe first with --build")
         hashes = json.loads(stamp.read_text())
-        if hashes != {"source_sha256": sha256(source), "binary_sha256": sha256(binary)}:
+        if hashes != {"sources_sha256": source_hashes, "binary_sha256": sha256(binary)}:
             parser.error("probe changed; rebuild it")
-        result = subprocess.run([wine, str(binary)], env=env, capture_output=True, text=True, timeout=20)
+        result = subprocess.run([wine, str(binary)] + (["--assets"] if args.assets else ["--profiles"] if args.profiles else []), env=env, capture_output=True, text=True, timeout=30)
         if result.returncode:
             raise RuntimeError((result.stdout + result.stderr)[-2000:])
         decoded = json.loads(result.stdout)
-        output = args.experiment.parent / ("client-state-" + str(int(time.time() * 1000)) + ".json")
+        output = args.experiment.parent / (("client-assets-" if args.assets else "client-profiles-" if args.profiles else "client-state-") + str(int(time.time() * 1000)) + ".json")
         output.write_text(json.dumps(decoded, indent=2) + "\n")
-        print(json.dumps({"output": str(output), "state": decoded}))
+        summary = {"schemas": {k: {f: v[f] for f in ("found", "error") if f in v} for k, v in decoded["schemas"].items()},
+                   "tables": {k: {f: v[f] for f in ("found", "rows", "columns", "error") if f in v} for k, v in decoded["tables"].items()}} if args.assets else {"read_only": True, "profile_buffers": 2} if args.profiles else decoded
+        print(json.dumps({"output": str(output), "state": summary}))
 
 
 if __name__ == "__main__":

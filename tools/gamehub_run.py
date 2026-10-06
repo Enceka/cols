@@ -66,6 +66,7 @@ def main():
     parser.add_argument("--rust-lobby", action="store_true", help="enable the Rust protocol-210 lobby handshake observer")
     parser.add_argument("--rust-stun", action="store_true", help="enable loopback UDP discovery on 3074/3078")
     parser.add_argument("--local-services", action="store_true", help="enable time/storage services with persistent data in client-work/server-data")
+    parser.add_argument("--quiet-network", action="store_true", help="omit verbose Wine winsock tracing during longer UI tests; Rust captures remain enabled")
     parser.add_argument("--trust-lab-cert", action="store_true", help="temporarily add the lab certificate to ONLY the research copy's cacert.pem")
     args = parser.parse_args()
     available = engines()
@@ -137,6 +138,8 @@ def main():
     output.mkdir(parents=True)
     env = os.environ.copy()
     channels = "-all,err+all,+timestamp,+pid,+tid,+seh,+loaddll,+winsock,+debugstr"
+    if args.quiet_network:
+        channels = channels.replace(",+winsock", "")
     if args.file_trace:
         channels += ",+file"
     env.update(WINEPREFIX=str(prefix), WINEDEBUG=channels, WINEDLLOVERRIDES="winemenubuilder.exe=d")

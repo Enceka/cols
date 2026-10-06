@@ -1,0 +1,125 @@
+// Read-only extraction of two known profile schemas and selected data tables.
+// Asset hash lookup: target VA 0x49e170/0x49e370; no calls inside the game.
+using System;
+using System.Collections.Generic;
+using System.Text;
+using System.Web.Script.Serialization;
+
+class ClientAssets {
+    readonly IntPtr process;
+    readonly Dictionary<uint,byte[]> strings=new Dictionary<uint,byte[]>();
+    static uint U(byte[] b,int at) { return BitConverter.ToUInt32(b,at); }
+    byte[] Read(uint at,int count) { return ReadClientState.ReadBytes(process,at,count); }
+    uint Word(uint at) { return U(Read(at,4),0); }
+    ClientAssets(IntPtr p) { process=p; }
+    static Dictionary<string,object> Obj(params object[] pairs) {
+        var o=new Dictionary<string,object>();for(int i=0;i<pairs.Length;i+=2)o[(string)pairs[i]]=pairs[i+1];return o;
+    }
+    static int Count(uint n,int maximum) { if(n>maximum)throw new Exception("asset count exceeds limit");return (int)n; }
+    byte[] StringBytes(uint at) {
+        if(at==0)return new byte[0];byte[] cached;
+        if(strings.TryGetValue(at,out cached))return cached;
+        var bytes=new List<byte>();
+        while(bytes.Count<4096) {
+            byte[] block=Read(checked(at+(uint)bytes.Count),64);
+            for(int i=0;i<block.Length;i++) {
+                if(block[i]==0) {cached=bytes.ToArray();strings.Add(at,cached);return cached;}
+                bytes.Add(block[i]);
+            }
+        }
+        throw new Exception("unterminated asset string");
+    }
+    string Name(uint at) {
+        if(at==0)return null;var b=StringBytes(at);
+        if(b.Length>255)throw new Exception("asset identifier too long");
+        foreach(byte c in b)if(c<32||c>126)throw new Exception("non-ASCII asset identifier; check layout");
+        return Encoding.ASCII.GetString(b);
+    }
+    uint Find(uint kind,string name,out uint entryAddress) {
+        uint hash=kind;foreach(char c in name.ToLowerInvariant())hash=unchecked(hash*31+(c=='\\'?47u:c));
+        uint index=Word(0x01bc9f20+(hash%80000)*4);
+        var seen=new HashSet<uint>();
+        while(index!=0) {
+            if(index>=100000 || !seen.Add(index)||seen.Count>128)throw new Exception("invalid asset hash chain");
+            uint entry=checked(0x01fc4e28+index*28);byte[] raw=Read(entry,28);
+            if(U(raw,0)==kind) {
+                uint header=U(raw,8);
+                if(String.Equals(Name(Word(header)),name,StringComparison.OrdinalIgnoreCase)) {
+                    if((raw[17]&5)==0)throw new Exception("asset is not loaded");
+                    entryAddress=entry;return header;
+                }
+            }
+            index=U(raw,20);
+        }
+        entryAddress=0;return 0;
+    }
+    object Definition(uint at) {
+        byte[] d=Read(at,60);
+        int enumCount=Count(U(d,8),4096),structCount=Count(U(d,16),4096),iaCount=Count(U(d,24),4096),eaCount=Count(U(d,32),4096);
+        int leaves=Count(U(d,52),65536);if(U(d,48)>32764)throw new Exception("profile definition is larger than target buffer");
+        var enums=new List<object>();
+        for(int i=0;i<enumCount;i++) {
+            byte[] e=Read(checked(U(d,12)+(uint)i*12),12);int count=Count(U(e,0),32768);var entries=new List<object>();
+            byte[] values=count==0?new byte[0]:Read(U(e,8),checked(count*8));
+            for(int j=0;j<count;j++)entries.Add(Obj("name",Name(U(values,j*8)),"value",BitConverter.ToUInt16(values,j*8+4)));
+            enums.Add(Obj("reserved",U(e,4),"entries",entries));
+        }
+        var structs=new List<object>();
+        for(int i=0;i<structCount;i++) {
+            byte[] s=Read(checked(U(d,20)+(uint)i*20),20);int count=Count(U(s,0),8192);var props=new List<object>();
+            byte[] values=count==0?new byte[0]:Read(U(s,4),checked(count*24));
+            for(int j=0;j<count;j++) {
+                int o=j*24;props.Add(Obj("name",Name(U(values,o)),"type",U(values,o+4),"index",U(values,o+8),"leaf",U(values,o+12),"extra4",U(values,o+16),"extra5",U(values,o+20)));
+            }
+            structs.Add(Obj("size",U(s,8),"bitOffset",U(s,12),"leafCount",U(s,16),"properties",props));
+        }
+        var indexed=new List<object>();var enumed=new List<object>();
+        for(int i=0;i<iaCount;i++) {
+            byte[] a=Read(checked(U(d,28)+(uint)i*16),16);indexed.Add(Obj("count",U(a,0),"type",U(a,4),"index",U(a,8),"size",U(a,12)));
+        }
+        for(int i=0;i<eaCount;i++) {
+            byte[] a=Read(checked(U(d,36)+(uint)i*16),16);enumed.Add(Obj("enum",U(a,0),"type",U(a,4),"index",U(a,8),"size",U(a,12)));
+        }
+        var offsets=new List<uint>();byte[] table=leaves==0?new byte[0]:Read(U(d,56),checked(leaves*4));
+        for(int i=0;i<leaves;i++)offsets.Add(U(table,i*4));
+        return Obj("address",at,"version",U(d,0),"formatChecksum",U(d,4),"rootType",U(d,40),"rootIndex",U(d,44),"size",U(d,48),"leafCount",leaves,"enums",enums,"structs",structs,"indexedArrays",indexed,"enumedArrays",enumed,"offsets",offsets);
+    }
+    object Schema(string name) {
+        uint entry;uint at=Find(39,name,out entry);if(at==0)return Obj("found",false);
+        byte[] s=Read(at,12);int count=Count(U(s,4),64);var defs=new List<object>();
+        for(int i=0;i<count;i++)defs.Add(Definition(checked(U(s,8)+(uint)i*60)));
+        return Obj("found",true,"entry",entry,"address",at,"name",Name(U(s,0)),"definitions",defs);
+    }
+    object Table(string name) {
+        uint entry;uint at=Find(37,name,out entry);if(at==0)return Obj("found",false);
+        byte[] t=Read(at,16);int cols=Count(U(t,4),256),rows=Count(U(t,8),30000);
+        if(cols<1||rows<1||cols*(long)rows>200000)throw new Exception("string table dimensions outside budget");
+        // CODOL StringTable cells contain a string pointer and hash (8 bytes).
+        byte[] values=Read(U(t,12),checked(cols*rows*8));var cells=new List<string>();
+        for(int i=0;i<cols*rows;i++)cells.Add(Convert.ToBase64String(StringBytes(U(values,i*8))));
+        return Obj("found",true,"entry",entry,"address",at,"name",Name(U(t,0)),"columns",cols,"rows",rows,"cells_base64",cells);
+    }
+    public static void Export(IntPtr process) {
+        var reader=new ClientAssets(process);var schemas=new Dictionary<string,object>();var tables=new Dictionary<string,object>();
+        foreach(string name in new string[]{"mp/playerdata.def","mp/playersecuredata.def"}) {
+            try{schemas[name]=reader.Schema(name);}catch(Exception e){schemas[name]=Obj("error",e.Message);}
+        }
+        foreach(string name in new string[]{"mp/coMarketplaceItems.csv","mp/coCharacterDefTable.csv","mp/cogroupdefs.csv","mp/coWeapSlotDefs.csv","mp/coCharItemStatsTable.csv","mp/coCharItems/cha.csv","mp/uiNotifications.csv","mp/functionalUnlockTable.csv","mp/unlockFlags.csv","mp/rankTable.csv"}) {
+            try{tables[name]=reader.Table(name);}catch(Exception e){tables[name]=Obj("error",e.Message);}
+        }
+        var output=Obj("schema_version",1,"read_only",true,"client_sha256","e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b","schemas",schemas,"tables",tables);
+        var serializer=new JavaScriptSerializer();serializer.MaxJsonLength=32*1024*1024;
+        Console.WriteLine(serializer.Serialize(output));
+    }
+    public static void ExportProfiles(IntPtr process) {
+        // Current player singleton returned by VA 0x6da140. Consumer paths
+        // address public/private data at +0x90/+0x91b8, following their CRCs.
+        var r=new ClientAssets(process);
+        var output=Obj("schema_version",1,"read_only",true,
+            "client_sha256","e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b",
+            "user_id",BitConverter.ToUInt64(r.Read(0x0c95bd80,8),0).ToString(),
+            "public_snapshot",Convert.ToBase64String(r.Read(0x0c95be0c,32768)),
+            "private_snapshot",Convert.ToBase64String(r.Read(0x0c964f34,32768)));
+        Console.WriteLine(new JavaScriptSerializer().Serialize(output));
+    }
+}

@@ -23,6 +23,20 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Create a local private profile from a CRC-valid client default; no overwrite.
+    PreparePrivateProfile {
+        #[arg(long)]
+        assets: PathBuf,
+        #[arg(long)]
+        snapshot: PathBuf,
+        #[arg(long)]
+        service_data_dir: PathBuf,
+        #[arg(long, default_value_t = 1002)]
+        title_id: u32,
+        /// Mark only the target's CQB training flag for lobby research.
+        #[arg(long)]
+        training_complete: bool,
+    },
     /// Validate a captured decrypted 8/3 public-profile upload without importing it.
     InspectPublicProfile {
         #[arg(long)]
@@ -106,6 +120,75 @@ async fn main() -> Result<()> {
         .with_writer(std::io::stderr)
         .init();
     match Cli::parse().command {
+        Command::PreparePrivateProfile {
+            assets,
+            snapshot,
+            service_data_dir,
+            title_id,
+            training_complete,
+        } => {
+            use base64::Engine;
+            let read_json = |path: &PathBuf, limit: u64| -> Result<serde_json::Value> {
+                let mut bytes = Vec::new();
+                std::fs::File::open(path)?
+                    .take(limit + 1)
+                    .read_to_end(&mut bytes)?;
+                ensure!(
+                    bytes.len() as u64 <= limit,
+                    "input exceeds preparation limit"
+                );
+                Ok(serde_json::from_slice(&bytes)?)
+            };
+            let asset = read_json(&assets, 16 * 1024 * 1024)?;
+            let captured = read_json(&snapshot, 128 * 1024)?;
+            for value in [&asset, &captured] {
+                ensure!(
+                    value["client_sha256"] == codol_protocol::CLIENT_SHA256
+                        && value["read_only"] == true,
+                    "expected target-version read-only extraction"
+                );
+            }
+            let definition = &asset["schemas"]["mp/playersecuredata.def"]["definitions"][0];
+            ensure!(
+                definition["version"] == 19
+                    && definition["formatChecksum"] == 2318499177u64
+                    && definition["leafCount"] == 9498
+                    && definition["size"] == 13739,
+                "private definition differs from recovered v19 layout"
+            );
+            let uid = captured["user_id"]
+                .as_str()
+                .context("snapshot identity missing")?
+                .parse::<u64>()?;
+            let raw = base64::engine::general_purpose::STANDARD.decode(
+                captured["private_snapshot"]
+                    .as_str()
+                    .context("private snapshot missing")?,
+            )?;
+            let data = codol_protocol::profile::prepare_private(&raw, uid, training_complete)?;
+            let directory = service_data_dir
+                .join("profiles")
+                .join(title_id.to_string())
+                .join(uid.to_string());
+            std::fs::create_dir_all(&directory)?;
+            let output = directory.join("private.bin");
+            let mut options = std::fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            let mut file = options
+                .open(&output)
+                .context("create private profile; existing data is never overwritten")?;
+            file.write_all(&data)?;
+            file.sync_all()?;
+            println!(
+                "{}",
+                serde_json::json!({"created":output,"schema_version":19,"rank":1,"cqb_training_complete":training_complete,"scope":"local_private_profile_seed"})
+            );
+        }
         Command::InspectPublicProfile { input } => {
             let mut bytes = Vec::new();
             std::fs::File::open(input)?
