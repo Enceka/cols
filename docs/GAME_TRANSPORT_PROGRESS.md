@@ -125,6 +125,8 @@ stats 完成后，目标处于状态 6 时发送 OOB `heartbeat`；仅在 stats 
 
 Rust `game_wire::NativeXor` 已把两个方向分开：`incoming_xor(sequence_byte, challenge_byte, command, data)` 对应 0x46bf80；`outgoing_xor(..., feed_byte, ...)` 对应 0x46bf00，额外 feed_byte 对应目标 `DAT_0796f2d8`。状态跨分片保留 command cursor 和奇偶 offset，在 C 字符串 NUL 后重启；测试覆盖跨调用分块、方向错误和可逆性。它仍未接入真实回复，因为当前 admission 没有经目标验证的 command 表/feed 值。
 
+服务端方向另有 `server_outgoing_xor/server_packet`：保持 LE32 outgoing sequence 明文，body 使用 `challenge ^ (sequence as u8)` 与 last client command。这个公式来自 AlphaBuild `SV_Netchan_Encode`，独立于目标客户端 0x46bf00 的 feed 版本；对应测试已覆盖 sequence 保持明文和逆变换。当前仍只作为编解码地基，不自动发送 gamestate。
+
 feed 来源已进一步确认：0x46d830 在调用 0x4f9850 前把 `ECX=3`，即读取 configstring index 3；随后 0xaf6e68 调用十进制 `strtol`（base=10），结果写入 `DAT_0796f2d8`。因此服务端未来应从 gamestate 的 server-id/configstring 3 生成 `feed_byte = parsed_u32 as u8`，不能从 challenge、DTLS key 或用户 UID 派生。Rust 已加入 `native_feed_byte` 纯函数和边界测试；command ring 与 `+0x40148/+0x138` 的运行时值仍待目标包确认。
 
 真实内层包在 heartbeat 后是 14 字节：`LE32(sequence) || 9 个零字节 || 末尾值`，不同实验末尾分别观察到 `0x37` 和 `0x76`；这不是可直接当作 gamestate 的明文。目标接收器 0x46e6a0 使用 0x5a1180 读取四字节序号、再按消息码分派；0x46dea0 的 gamestate 路径会读取可靠确认号、检查 configstring/服务器校验并推进状态。此前 152 字节原型没有经过这些状态前置，不能单独用它推断配置内容不足。

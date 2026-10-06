@@ -70,6 +70,39 @@ pub fn outgoing_xor(
     NativeXor::new(sequence_byte ^ challenge_byte ^ feed_byte, command).apply(data);
 }
 
+/// Server-side native netchan encode from AlphaBuild's `SV_Netchan_Encode`:
+/// the four-byte outgoing sequence stays clear and the body uses challenge ^
+/// outgoingSequence, mixed with the last client command. This is distinct from
+/// the target client's 0x46bf00 path above, which has the extra configstring
+/// feed byte.
+pub fn server_outgoing_xor(
+    sequence: u32,
+    challenge_byte: u8,
+    command: &[u8],
+    packet: &mut [u8],
+) -> Result<(), LobbyError> {
+    if packet.len() < 4 || u32::from_le_bytes(packet[..4].try_into().unwrap()) != sequence {
+        return Err(LobbyError("server inner packet sequence mismatch"));
+    }
+    NativeXor::new(challenge_byte ^ sequence as u8, command).apply(&mut packet[4..]);
+    Ok(())
+}
+
+pub fn server_packet(
+    sequence: u32,
+    challenge_byte: u8,
+    command: &[u8],
+    body: &[u8],
+) -> Result<Vec<u8>, LobbyError> {
+    if body.len() + 4 >= FRAGMENT_SIZE {
+        return Err(LobbyError("server inner fragmentation not implemented"));
+    }
+    let mut packet = sequence.to_le_bytes().to_vec();
+    packet.extend_from_slice(body);
+    server_outgoing_xor(sequence, challenge_byte, command, &mut packet)?;
+    Ok(packet)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MessageKind {
     Snapshot,
@@ -275,6 +308,16 @@ mod tests {
         let mut wrong_direction = encoded.clone();
         incoming_xor(0x48, 0x34, command, &mut wrong_direction);
         assert_ne!(wrong_direction, plain);
+    }
+
+    #[test]
+    fn server_outgoing_keeps_sequence_clear_and_uses_challenge_sequence_key() {
+        let body = b"\x03gamestate";
+        let packet = server_packet(7, 0x34, b"last client command\0", body).unwrap();
+        assert_eq!(&packet[..4], &7u32.to_le_bytes());
+        let mut decoded = packet[4..].to_vec();
+        NativeXor::new(0x34 ^ 7, b"last client command\0").apply(&mut decoded);
+        assert_eq!(decoded, body);
     }
 
     #[test]
