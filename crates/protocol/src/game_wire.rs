@@ -9,6 +9,17 @@ pub const SEQUENCE_MASK: u32 = 0x1fff_ffff;
 pub const FRAGMENT_BIT: u32 = 0x8000_0000;
 pub const ACK_BIT: u32 = 0x2000_0000;
 
+/// Target 0x46d830 sets DAT_0796f2d8 by looking up configstring index 3
+/// (ECX=3 at 0x46d837), then parsing its decimal text with base 10. The
+/// native XOR consumes only the low byte of this value.
+pub fn native_feed_byte(server_id_configstring: &str) -> Result<u8, LobbyError> {
+    let value = server_id_configstring
+        .trim()
+        .parse::<u32>()
+        .map_err(|_| LobbyError("invalid native server-id feed"))?;
+    Ok(value as u8)
+}
+
 #[derive(Clone, Debug)]
 pub struct NativeXor {
     key: u8,
@@ -262,6 +273,14 @@ mod tests {
         let mut wrong_direction = encoded.clone();
         incoming_xor(0x48, 0x34, command, &mut wrong_direction);
         assert_ne!(wrong_direction, plain);
+    }
+
+    #[test]
+    fn native_feed_comes_from_decimal_configstring_three_and_uses_low_byte() {
+        assert_eq!(native_feed_byte("1").unwrap(), 1);
+        assert_eq!(native_feed_byte("257").unwrap(), 1);
+        assert!(native_feed_byte("-1").is_err());
+        assert!(native_feed_byte("serverid").is_err());
     }
 
     #[test]
