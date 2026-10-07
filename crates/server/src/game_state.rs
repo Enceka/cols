@@ -26,6 +26,8 @@ struct BootstrapAmmo {
     clip: u16,
     reserve: u16,
     source_sha256: String,
+    #[serde(default)]
+    fire_interval_msec: Option<u16>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -105,6 +107,9 @@ impl PreparedGameState {
                         && ammo.reserve_key <= 1023
                         && ammo.clip <= 511
                         && ammo.reserve <= 2047
+                        && ammo
+                            .fire_interval_msec
+                            .is_none_or(|n| (50..=2000).contains(&n))
                         && ammo.source_sha256.len() == 64
                         && ammo.source_sha256.bytes().all(|b| b.is_ascii_hexdigit()),
                     "invalid bootstrap ammo seed"
@@ -213,17 +218,24 @@ impl PreparedGameState {
         command_time: u32,
         establish_baseline: bool,
         angles: [u16; 3],
+        equipment: Option<codol_protocol::game_snapshot::Equipment>,
     ) -> Result<Vec<u8>> {
         Ok(codol_protocol::game_snapshot::player_frame(
             server_time,
             command_time,
             self.spawn_origin,
             establish_baseline,
-            self.bootstrap_weapon
-                .as_ref()
-                .map(|w| codol_protocol::game_snapshot::Equipment {
+            equipment,
+            angles,
+        )?)
+    }
+    pub(crate) fn player(&self) -> Option<crate::game_player::Player> {
+        self.bootstrap_weapon.as_ref().map(|w| {
+            crate::game_player::Player::new(
+                codol_protocol::game_snapshot::Equipment {
                     weapon: w.index,
                     viewmodel: w.viewmodel_index,
+                    firing: None,
                     ammo: w
                         .ammo
                         .as_ref()
@@ -233,9 +245,10 @@ impl PreparedGameState {
                             clip: a.clip,
                             reserve: a.reserve,
                         }),
-                }),
-            angles,
-        )?)
+                },
+                w.ammo.as_ref().and_then(|a| a.fire_interval_msec),
+            )
+        })
     }
     pub(crate) fn input_base(&self) -> codol_protocol::game_usercmd::UserCommand {
         let mut base = codol_protocol::game_usercmd::UserCommand::default();

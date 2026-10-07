@@ -269,7 +269,8 @@ class ClientAssets {
             }
             weapon=Obj("name",name,"index",i,
                 "ammo_name",r.Name(r.Word(at+0x6b4)),"ammo_key",r.Word(at+0x6b8),
-                "clip_name",r.Name(r.Word(at+0x6bc)),"clip_key",r.Word(at+0x6c0),"model_fields",modelFields);
+                "clip_name",r.Name(r.Word(at+0x6bc)),"clip_key",r.Word(at+0x6c0),"model_fields",modelFields,
+                "runtime_fields",r.WeaponRuntimeFields(at));
             baseIndex=i;
         }
         if(weapon==null)throw new Exception("M4 not registered; load the training map first");
@@ -278,11 +279,28 @@ class ClientAssets {
             uint at=r.Word(0x017f5a40+i*4);string name=r.Name(r.Word(at));
             if(name!=composedName)continue;
             if(composed!=null)throw new Exception("duplicate composed M4");
-            composed=Obj("name",name,"index",i,"ammo_key",r.Word(at+0x6b8),"clip_key",r.Word(at+0x6c0));
+            composed=Obj("name",name,"index",i,"ammo_key",r.Word(at+0x6b8),"clip_key",r.Word(at+0x6c0),
+                "runtime_fields",r.WeaponRuntimeFields(at));
         }
         var output=Obj("schema_version",1,"read_only",true,
             "client_sha256","e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b",
             "connection_state",r.Word(0x01a2e7ec),"ncs_crc",r.Word(0x02df7d90),"weapon",weapon,"composed_weapon",composed);
         Console.WriteLine(new JavaScriptSerializer().Serialize(output));
+    }
+    object WeaponRuntimeFields(uint at) {
+        // 0x4253e0 writes def+0x6f0 to PS.weaponDelay and def+0xd10 to
+        // PS.weaponTime; no capacity field is guessed here. Names below are
+        // diagnostic slots; 0x5587e0 explicitly consumes def+0x154/+0x15c.
+        var names=new Dictionary<string,object>();
+        foreach(uint offset in new uint[]{0x7c,0x80,0x84,0x88,0x154,0x15c}) {
+            uint pointer=Word(checked(at+offset));
+            names["0x"+offset.ToString("x")]=pointer==0?null:Name(pointer);
+        }
+        return Obj("fire_delay_msec",Word(at+0x6f0),"fire_interval_msec",Word(at+0xd10),
+            // 0x4232d0 selects normal/empty duration; 0x4230a0 selects the
+            // earlier ammo-transfer marker (zero means the full duration).
+            "reload_msec",Word(at+0x71c),"reload_empty_msec",Word(at+0x728),
+            "reload_add_msec",Word(at+0x730),"reload_empty_add_msec",Word(at+0x738),
+            "animation_name_fields",names);
     }
 }

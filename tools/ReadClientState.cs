@@ -141,6 +141,10 @@ class ReadClientState {
                         Field(process,"predicted_view_pitch_bits",checked(cg+0x14c),4);
                         Field(process,"predicted_view_yaw_bits",checked(cg+0x150),4);
                         Field(process,"predicted_weapon_animation",checked(cg+0x26c),4);
+                        // 0x557390 selects the first-person animation from
+                        // PS+0x26c; weapon state is+0x27c and ADS fraction+0x34c.
+                        Field(process,"predicted_weapon_state",checked(cg+0x27c),4);
+                        Field(process,"predicted_ads_fraction_bits",checked(cg+0x34c),4);
                         Field(process,"cg_frame_msec",checked(cg+0xae4c4),4);
                         Field(process,"cg_time",checked(cg+0xae4c8),4);
                         // 0x451720 copies/interpolates these two CG snapshots.
@@ -152,6 +156,15 @@ class ReadClientState {
                                 Field(process,"cg_snapshot_"+slot+"_yaw_bits",checked(snap+0x150),4);
                             }
                         }
+                    }
+                }
+                // 0x557390: two24-byte first-person records, last anim at+12.
+                uint weaponViewSlot=Read(process,0x07817bb8,4);
+                if(weaponViewSlot<256) {
+                    uint views=Read(process,checked(0x01a19510+weaponViewSlot*4),4)^0x39641402;
+                    if(views>=0x10000 && views<0xff000000) {
+                        Field(process,"viewmodel_last_animation_0",checked(views+12),4);
+                        Field(process,"viewmodel_last_animation_1",checked(views+24+12),4);
                     }
                 }
                 if(active>=0x10000 && active<0x7ff00000) {
@@ -194,6 +207,9 @@ class ReadClientState {
                     // indices19/18 store pitch/yaw at0x14c/0x150, codec -87.
                     Field(process,"current_view_pitch_bits",checked(active+0xc+0x14c),4);
                     Field(process,"current_view_yaw_bits",checked(active+0xc+0x150),4);
+                    Field(process,"current_clip_ammo_0",checked(active+0xc+0x3e0),4);
+                    Field(process,"current_reserve_ammo_0",checked(active+0xc+0x368),4);
+                    Field(process,"current_weapon_time",checked(active+0xc+0x270),4);
                 }
                 Field(process,"config_version",0x078a06bc,4);
                 Field(process,"playlist_version",0x031fe614,4);

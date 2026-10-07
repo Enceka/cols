@@ -14,6 +14,13 @@ pub struct Equipment {
     pub weapon: u16,
     pub ammo: Option<Ammo>,
     pub viewmodel: Option<u16>,
+    pub firing: Option<Firing>,
+}
+#[derive(Debug, Clone, Copy)]
+pub struct Firing {
+    pub animation: u16,
+    pub remaining_msec: u16,
+    pub state: u8,
 }
 
 /// A full baseline with command time and health, no entities/clients/weapons.
@@ -79,6 +86,10 @@ pub fn player_frame(
     let weapon = equipment.map(|e| e.weapon);
     let ammo = equipment.and_then(|e| e.ammo);
     let viewmodel = equipment.and_then(|e| e.viewmodel);
+    let firing = equipment.and_then(|e| e.firing);
+    if firing.is_some_and(|f| f.animation > 2047 || f.remaining_msec > 32767 || f.state > 63) {
+        return Err(LobbyError("invalid bootstrap firing state"));
+    }
     if viewmodel.is_some_and(|i| i == 0 || i >= 1024) {
         return Err(LobbyError("invalid viewmodel index"));
     }
@@ -134,10 +145,18 @@ pub fn player_frame(
         if let Some(weapon) = weapon {
             // 0x422e5c/0x42956f select idle0 with the0x400 restart bit.
             fields.extend([
-                (9, 0x400, 11),
+                (9, u32::from(firing.map_or(0x400, |f| f.animation)), 11),
                 (39, u32::from(weapon), 10),
                 (54, 0x1000, 28),
             ]);
+            if let Some(firing) = firing {
+                if firing.remaining_msec != 0 {
+                    fields.push((3, u32::from(firing.remaining_msec), 16));
+                }
+                if firing.state != 0 {
+                    fields.push((17, u32::from(firing.state), 6));
+                }
+            }
         }
         if let Some(model) = viewmodel {
             fields.push((56, u32::from(model), 10));
@@ -261,6 +280,11 @@ mod tests {
         .unwrap();
         let equipment = Equipment {
             weapon: 163,
+            firing: Some(Firing {
+                animation: 0x402,
+                remaining_msec: 79,
+                state: 6,
+            }),
             viewmodel: Some(53),
             ammo: Some(Ammo {
                 clip_key: 163,
@@ -325,7 +349,9 @@ mod tests {
             assert_eq!(fields[&39], 163);
             assert_eq!(fields[&0], 925);
             assert_eq!(fields[&56], 53);
-            assert_eq!(fields[&9], 0x400);
+            assert_eq!(fields[&9], 0x402);
+            assert_eq!(fields[&3], 79);
+            assert_eq!(fields[&17], 6);
             assert_eq!(fields[&19], 65535);
             assert_eq!(fields[&18], 16384);
             assert_eq!(fields[&54], 0x1000);
@@ -372,6 +398,7 @@ mod tests {
         }
         let bad = Equipment {
             weapon: 163,
+            firing: None,
             viewmodel: None,
             ammo: Some(Ammo {
                 clip_key: 163,

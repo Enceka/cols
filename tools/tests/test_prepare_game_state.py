@@ -39,6 +39,13 @@ class GameStatePreparation(unittest.TestCase):
                   weapon={**weapon,"ammo_key":163,"clip_key":163})
         result=weapon_ammo(json.dumps(data).encode(),123,weapon)
         self.assertEqual((result["clip"],result["reserve"]),(30,90))
+        data["weapon"]["runtime_fields"] = {"fire_delay_msec":0,"fire_interval_msec":79}
+        self.assertEqual(weapon_ammo(json.dumps(data).encode(),123,weapon)["fire_interval_msec"],79)
+        for bad in [0,49,2001,79.5,True]:
+            invalid=copy.deepcopy(data);invalid["weapon"]["runtime_fields"]["fire_interval_msec"]=bad
+            with self.assertRaises(ValueError):weapon_ammo(json.dumps(invalid).encode(),123,weapon)
+        invalid=copy.deepcopy(data);invalid["weapon"]["runtime_fields"]["fire_delay_msec"]=1
+        with self.assertRaises(ValueError):weapon_ammo(json.dumps(invalid).encode(),123,weapon)
         for key,value in [("ammo_key",1024),("clip_key",-1),("index",164),("ammo_key",1.5)]:
             invalid=copy.deepcopy(data);invalid["weapon"][key]=value
             with self.assertRaises(ValueError):weapon_ammo(json.dumps(invalid).encode(),123,weapon)

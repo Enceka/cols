@@ -15,6 +15,7 @@ pub(crate) struct Connection {
     native_ack: u32,
     server_commands: ReliableCommands,
     game_state: Option<Arc<crate::game_state::PreparedGameState>>,
+    player: Option<crate::game_player::Player>,
     gamestate_sent: bool,
     gamestate_acknowledged: bool,
     gamestate_update: Option<u8>,
@@ -30,6 +31,7 @@ pub(crate) struct Connection {
 impl Connection {
     pub fn with_game_state(state: Arc<crate::game_state::PreparedGameState>) -> Self {
         Self {
+            player: state.player(),
             game_state: Some(state),
             ..Self::default()
         }
@@ -91,6 +93,7 @@ impl Connection {
             self.snapshot_first_sequence
                 .is_none_or(|first| self.native_ack < first),
             angles,
+            self.player.as_ref().map(|p| p.equipment()),
         )?;
         let ack = self.client_commands.sequence();
         let packet = game_wire::server_packet(
@@ -249,11 +252,21 @@ impl Connection {
         self.client_commands = client_commands;
         if let Some(movement) = received.movement {
             for input in movement.commands {
+                // A future timestamp must not freeze the input clock or burn
+                // ammunition. Current clients generate commands behind the
+                // newest emitted snapshot; ignore premature commands.
+                let newest_snapshot_time = 1000 + self.snapshot_count.saturating_sub(1) * 50;
+                if input.time < 1000 || input.time > newest_snapshot_time {
+                    continue;
+                }
                 if self
                     .last_input
                     .as_ref()
                     .is_none_or(|last| input.time > last.time)
                 {
+                    if let Some(player) = &mut self.player {
+                        player.apply(&input);
+                    }
                     self.input_count += 1;
                     self.last_input = Some(input);
                 }

@@ -140,8 +140,16 @@ def weapon_ammo(raw, crc, weapon):
     if (type(w["ammo_key"]) is not int or type(w["clip_key"]) is not int
             or not 0 <= w["ammo_key"] <= 1023 or not 0 <= w["clip_key"] <= 1022):
         raise ValueError("unsupported weapon ammo keys")
-    return {"reserve_key":w["ammo_key"],"clip_key":w["clip_key"],
+    result = {"reserve_key":w["ammo_key"],"clip_key":w["clip_key"],
             "clip":30,"reserve":90,"source_sha256":hashlib.sha256(raw).hexdigest()}
+    runtime = w.get("runtime_fields")
+    if runtime is not None:
+        interval = runtime.get("fire_interval_msec")
+        if (runtime.get("fire_delay_msec") != 0 or type(interval) is not int
+                or not 50 <= interval <= 2000):
+            raise ValueError("unsupported M4 fire timing")
+        result["fire_interval_msec"] = interval
+    return result
 
 
 def main():
