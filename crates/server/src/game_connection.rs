@@ -6,6 +6,7 @@ pub(crate) struct Connection {
     challenge: Option<u32>,
     connected: bool,
     stats: codol_protocol::game_stats::Upload,
+    eof_probe_sent: bool,
 }
 
 impl Connection {
@@ -27,8 +28,25 @@ impl Connection {
 
     pub fn handle(&mut self, payload: &[u8], owner: u64, build: i32) -> Result<Option<Vec<u8>>> {
         let Some(command) = payload.strip_prefix(&[255; 4]) else {
+            if payload.len() >= 14
+                && self.connected
+                && !self.eof_probe_sent
+                && let Some(challenge) = self.challenge
+            {
+                let (_, clear) = codol_protocol::game_wire::open_client(payload, challenge, &[])?;
+                if clear == [3] {
+                    self.eof_probe_sent = true;
+                    return Ok(Some(codol_protocol::game_wire::server_packet(
+                        1,
+                        0,
+                        challenge,
+                        &[],
+                        &[6],
+                    )?));
+                }
+            }
             // Inner packets are captured for netchan/gamestate recovery. Do
-            // not answer with an unverified empty gamestate.
+            // not answer with an unverified gamestate.
             return Ok(None);
         };
         if let Some(chunk) = command.strip_prefix(b"stats\0") {
@@ -277,5 +295,18 @@ mod tests {
         let mut extra = valid.to_vec();
         extra.extend_from_slice(b" garbage");
         assert!(connection.handle(&extra, u64::MAX - 1, -688906341).is_err());
+    }
+
+    #[test]
+    fn first_client_eof_gets_only_a_native_server_eof_probe() {
+        let mut connection = Connection {
+            challenge: Some(0x75),
+            connected: true,
+            ..Default::default()
+        };
+        let packet = [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x76];
+        let reply = connection.handle(&packet, 1, 7).unwrap().unwrap();
+        assert_eq!(&reply[..8], &[1, 0, 0, 0, 0, 0, 0, 0]);
+        assert!(connection.handle(&packet, 1, 7).unwrap().is_none());
     }
 }

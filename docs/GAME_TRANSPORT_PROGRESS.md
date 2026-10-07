@@ -145,6 +145,12 @@ Rust `game_wire::NativeXor` 已把两个方向分开：`incoming_xor(sequence_by
 
 真实复测 `client-1791336561121`：108 个外层 DATA 中 93 个 C2S native 包完整解码为 `client_opcode=3`（clc_EOF），且 93 个 header 都是 `(server_id,message_ack,reliable_ack)=(0,0,0)`；其余包为 OOB/握手阶段。没有发送任何 S2C gamestate，因此 ACK 保持 0 是预期结果。这个结果确认 challenge XOR、13 字节 C2S header 和 EOF 解码方向均正确。
 
+### 首个 S2C EOF 探针
+
+Connection 现在只在第一个已连接的 C2S `clc_EOF` 上回复一个 native S2C EOF：`sequence=1`、`clientCommandAck=0`、正文 opcode=6，随后不再重复发送，也不发送 gamestate。真实复测 `client-1791337276586` 的 `0016-reply.bin` 外层包长 25；下一个客户端包 `0017-plaintext.bin` 的 header 从 `(server_id,message_ack,reliable_ack)=(0,0,0)` 变为 `(0,1,0)`，之后保持 message_ack=1。客户端接受该包且没有 MAC/解析错误，证明 S2C 两个清晰 LE32 字段、`challenge ^ sequence` XOR 和 opcode=6 组合正确。
+
+该探针仍停在加载等待，原因是 EOF 只推进 message ACK；下一步的最小安全实验是发送一条真实可靠 command（使用已确认的 ring 序号和 client ACK），观察 reliable_ack 是否推进，再恢复完整 gamestate。当前不会用 EOF 探针伪装出生或对局。
+
 方向边界的独立向量已加入：C2S 样本 `01 00 00 00 00 00 00 00 00 00 00 00 00 76` 解析为 sequence=1、serverId=0、messageAck=0、reliableAck=0、单字节 body=0x76；S2C writer 保持 sequence 与 clientCommandAck 两个 LE32 字段明文，再只对正文 XOR。这个边界与目标 `0x467520` 接收流程及参考 `SV_Netchan_Encode` 一致。
 
 结合目标入站 XOR `0x46bf80` 和参考 clc 表，第二个向量进一步解出 C2S keepalive：实验 `client-1791312016136` 的 challenge 低字节为 `0x75`，body `0x76 ^ 0x75 = 0x03`，即 `clc_EOF`。这解释了客户端在等待阶段持续发送 14 字节包：它们是合法的空客户端消息，而不是 gamestate opcode。Rust 已加入该向量测试；真实服务端仍只记录，不回传猜测状态。
