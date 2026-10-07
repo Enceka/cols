@@ -44,7 +44,8 @@ class ReadClientState {
             bool netConstants=args.Length==1 && args[0]=="--net-constants";
             bool mapEntities=args.Length==1 && args[0]=="--map-entities";
             bool bootstrapWeapon=args.Length==1 && args[0]=="--bootstrap-weapon";
-            if(args.Length!=0 && !assets && !profiles && !netConstants && !mapEntities && !bootstrapWeapon) throw new Exception("only fixed extraction modes are supported");
+            bool weaponModels=args.Length==1 && args[0]=="--weapon-models";
+            if(args.Length!=0 && !assets && !profiles && !netConstants && !mapEntities && !bootstrapWeapon && !weaponModels) throw new Exception("only fixed extraction modes are supported");
             IntPtr snapshot=CreateToolhelp32Snapshot(2,0); uint found=0;
             if(snapshot==new IntPtr(-1)) throw new Exception("process snapshot failed");
             try {
@@ -76,6 +77,7 @@ class ReadClientState {
                 if(netConstants) { ClientAssets.ExportNetConstants(process);return 0; }
                 if(mapEntities) { ClientAssets.ExportMapEntities(process);return 0; }
                 if(bootstrapWeapon) { ClientAssets.ExportBootstrapWeapon(process);return 0; }
+                if(weaponModels) { ClientAssets.ExportWeaponModels(process);return 0; }
                 Console.WriteLine("{");
                 Field(process,"connection_state",0x01a2e7ec,4);
                 Field(process,"client_realtime",0x078b0a58,4);

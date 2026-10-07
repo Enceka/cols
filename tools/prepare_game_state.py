@@ -20,7 +20,8 @@ def strings(values):
     return result
 
 
-def compute(capture, weapon_name=None, compose=False, viewhands=False):
+def compute(capture, weapon_name=None, compose=False, viewhands=False,
+            viewhands_name="viewhands_tf141"):
     if (capture.get("schema_version") != 1 or capture.get("read_only") is not True
             or capture.get("client_sha256") != CLIENT_SHA256):
         raise ValueError("unsupported resource capture identity")
@@ -98,7 +99,9 @@ def compute(capture, weapon_name=None, compose=False, viewhands=False):
             result["bootstrap_weapon"].update(base_index=index,index=len(weapons)+1,
                 composed_name="** %d 3 0" % index)
         if viewhands:
-            name=b"viewhands_player_tf141"
+            if viewhands_name not in ("viewhands_player_tf141","viewhands_tf141"):
+                raise ValueError("unsupported diagnostic hand model")
+            name=viewhands_name.encode("ascii")
             if models.count(name)!=1:raise ValueError("expected one TF141 viewhands model")
             result["bootstrap_weapon"]["viewmodel_index"]=models.index(name)+1
     return result
@@ -169,6 +172,7 @@ def main():
     parser.add_argument("--weapon-runtime", type=Path, help="registered ammo keys for a diagnostic 30/90 ammunition seed")
     parser.add_argument("--compose-weapon", action="store_true", help="register a model-composed M4 in the next unused weapon slot")
     parser.add_argument("--viewhands", action="store_true", help="bind the inherited TF141 first-person hand model")
+    parser.add_argument("--viewhands-model", choices=["viewhands_tf141","viewhands_player_tf141"], default="viewhands_tf141", help="hand-model comparison; requires --viewhands")
     args = parser.parse_args()
     raw = args.capture.read_bytes()
     if len(raw) > 32 * 1024 * 1024:
@@ -178,7 +182,8 @@ def main():
         parser.error("weapon bootstrap requires map-entities")
     if args.compose_weapon and not args.weapon:parser.error("compose-weapon requires weapon")
     if args.viewhands and not args.weapon:parser.error("viewhands requires weapon")
-    summary = compute(capture, args.weapon, args.compose_weapon,args.viewhands)
+    if args.viewhands_model != "viewhands_tf141" and not args.viewhands:parser.error("viewhands-model requires viewhands")
+    summary = compute(capture, args.weapon, args.compose_weapon,args.viewhands,args.viewhands_model)
     if args.weapon_runtime:
         if not args.weapon:
             parser.error("weapon-runtime requires weapon")

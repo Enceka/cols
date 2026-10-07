@@ -63,8 +63,9 @@ class GameStatePreparation(unittest.TestCase):
         self.assertEqual(compute(data,"m4_mp")["bootstrap_weapon"],{"name":"m4_mp","index":3})
         self.assertEqual(compute(data,"m4_mp",True)["bootstrap_weapon"],
             {"name":"m4_mp","index":4,"base_index":3,"composed_name":"** 3 3 0"})
-        data["assets"].append(asset("ncs_mdl_hands",0,0,[b"viewhands_player_tf141"]))
-        self.assertEqual(compute(data,"m4_mp",True,True)["bootstrap_weapon"]["viewmodel_index"],4)
+        data["assets"].append(asset("ncs_mdl_hands",0,0,[b"viewhands_player_tf141",b"viewhands_tf141"]))
+        self.assertEqual(compute(data,"m4_mp",True,True)["bootstrap_weapon"]["viewmodel_index"],5)
+        self.assertEqual(compute(data,"m4_mp",True,True,"viewhands_player_tf141")["bootstrap_weapon"]["viewmodel_index"],4)
         with self.assertRaises(ValueError):compute(data,"missing")
         data["assets"][-3]["strings_base64"] = encoded([b"default",b"missing"])
         with self.assertRaises(ValueError):compute(data,"m4_mp")

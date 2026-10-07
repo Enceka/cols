@@ -303,4 +303,144 @@ class ClientAssets {
             "reload_add_msec",Word(at+0x730),"reload_empty_add_msec",Word(at+0x738),
             "animation_name_fields",names);
     }
+    public static void ExportWeaponModels(IntPtr process) {
+        var r=new ClientAssets(process);var names=new SortedSet<string>();
+        byte[] entries=r.Read(0x01fc4e28,100000*28),heads=r.Read(0x01bc9f20,80000*4);
+        var seen=new HashSet<uint>();var modelHeaders=new HashSet<uint>();var animHeaders=new Dictionary<uint,string>();
+        for(int bucket=0;bucket<80000;bucket++) {
+            uint index=U(heads,bucket*4);int chain=0;
+            while(index!=0) {
+                if(index>=100000||!seen.Add(index)||++chain>128)throw new Exception("invalid model asset chain");
+                int offset=(int)index*28;uint kind=U(entries,offset),header=U(entries,offset+8);
+                if(kind==4)modelHeaders.Add(header);
+                if(kind==2)animHeaders[header]=r.Name(r.Word(header));
+                if(kind==37) {
+                    string name=r.Name(r.Word(header));
+                    if(name.StartsWith("mp/coWeapModels/",StringComparison.OrdinalIgnoreCase)) {
+                        if(names.Count>=1024)throw new Exception("model table name budget");
+                        names.Add(name);
+                    }
+                }
+                index=U(entries,offset+20);
+            }
+        }
+        var tables=new Dictionary<string,object>();
+        foreach(string name in names)if(name.IndexOf("m4",StringComparison.OrdinalIgnoreCase)>=0) {
+            if(tables.Count>=32)throw new Exception("M4 table budget");
+            try{tables[name]=r.Table(name);}catch(Exception e){tables[name]=Obj("error",e.Message);}
+        }
+        foreach(string name in new string[]{"mp/coWeapItems/ast.csv","mp/coCharItemStatsTable.csv","mp/coWeapSlotDefs.csv"}) {
+            try{tables[name]=r.Table(name);}catch(Exception e){tables[name]=Obj("error",e.Message);}
+        }
+        var weapons=new List<object>();var compatible=new List<object>();uint baseIndex=0;int count=Count(r.Word(0x07817b88),899);
+        for(uint i=1;i<=count;i++) {
+            uint def=r.Word(0x017f5a40+i*4);string name=r.Name(r.Word(def));
+            if(name=="m4_mp") {
+                baseIndex=i;
+                // 0x42e3b0: per-base compatibility count and (attachment,
+                // attribute) ushort pairs. Resolve names through its registry.
+                int n=Count(r.Read(0x017f5848+i,1)[0],64);
+                byte[] pairs=r.Read(0x017f8248+i*0x100,n*4);
+                for(int part=0;part<n;part++) {
+                    uint id=BitConverter.ToUInt16(pairs,part*4);
+                    if(id>=16384)throw new Exception("attachment ID budget");
+                    uint attachment=r.Word(0x017e5848+id*4);
+                    compatible.Add(Obj("index",id,"name",attachment==0?null:r.Name(attachment),
+                        "attribute_index",BitConverter.ToUInt16(pairs,part*4+2)));
+                }
+            }
+            if(baseIndex==0||!name.StartsWith("** "+baseIndex+" ",StringComparison.Ordinal))continue;
+            // 0x42e3b0 embeds WeaponDef at composition+0xa0; 0x42dc10 writes
+            // counts+0x91/+0x92 and model arrays+0xf68/+0xfac.
+            uint record=checked(def-0xa0);
+            if(r.Name(record)!=name)throw new Exception("composed M4 record identity mismatch");
+            int parts=Count(r.Read(record+0x92,1)[0],17);
+            var models=new List<object>();
+            for(uint part=0;part<parts;part++) {
+                uint world=r.Word(record+0xf68+part*4),view=r.Word(record+0xfac+part*4);
+                models.Add(Obj("part",part,
+                    "world",world!=0&&modelHeaders.Contains(world)?r.Name(r.Word(world)):null,
+                    "view",view!=0&&modelHeaders.Contains(view)?r.Name(r.Word(view)):null));
+            }
+            weapons.Add(Obj("index",i,"name",name,"attachment_count",r.Read(record+0x91,1)[0],"models",models));
+        }
+        var firstPerson=new List<object>();
+        uint slot=r.Word(0x07817bb8);
+        if(slot>=256)throw new Exception("first-person pointer slot outside budget");
+        uint views=r.Word(0x01a19510+slot*4)^0x39641402;
+        for(uint hand=0;hand<2;hand++) {
+            uint dobj=r.Word(views+hand*24);if(dobj==0)continue;
+            // 0x644860 sets DObj+9=count and +0xc0=model pointer array;
+            // 0x59e610 iterates that same indirect array. XModel+4 is bone
+            // count, +0x2c points to script-string IDs used by0x644860.
+            int modelCount=Count(r.Read(dobj+9,1)[0],32);
+            uint array=r.Word(dobj+0xc0);var modelList=new List<object>();var combinedBones=new List<string>();
+            for(uint index=0;index<modelCount;index++) {
+                uint model=r.Word(array+index*4);
+                if(!modelHeaders.Contains(model))throw new Exception("DObj references an unregistered model");
+                int bones=Count(r.Read(model+4,1)[0],253);
+                byte[] ids=r.Read(r.Word(model+0x2c),bones*2);
+                var boneNames=new List<string>();uint scriptStrings=r.Word(0x02f37164);
+                for(int b=0;b<bones;b++)boneNames.Add(r.Name(scriptStrings+4+(uint)BitConverter.ToUInt16(ids,b*2)*20));
+                combinedBones.AddRange(boneNames);
+                modelList.Add(Obj("name",r.Name(r.Word(model)),"bone_names",boneNames));
+            }
+            uint tree=r.Word(dobj);var animSlots=new List<object>();var animStates=new List<object>();
+            if(tree!=0) {
+                uint anims=r.Word(tree);
+                // Bounded pointer matching identifies leaf assets without
+                // interpreting unknown XAnim_s fields as arbitrary pointers.
+                byte[] bank=r.Read(anims,512);
+                for(int offset=0;offset<bank.Length;offset+=4) {
+                    uint part=U(bank,offset);string partName;
+                    if(!animHeaders.TryGetValue(part,out partName))continue;
+                    // 0x649320 binds parts+0x30 script-string IDs, with the
+                    // bone count at+0x1a (not the old version's+0x1b).
+                    int boneCount=Count(r.Read(part+0x1a,1)[0],253);var bones=new List<string>();
+                    if(boneCount>0) {
+                        byte[] ids=r.Read(r.Word(part+0x30),boneCount*2);uint stringsAt=r.Word(0x02f37164);
+                        for(int b=0;b<boneCount;b++)bones.Add(r.Name(stringsAt+4+(uint)BitConverter.ToUInt16(ids,b*2)*20));
+                    }
+                    animSlots.Add(Obj("bank_offset",offset,"name",partName,"bone_names",bones));
+                }
+                // 0x64b490 follows children+0xc and next+0xa in the56-byte
+                // XAnimInfo pool; 0x64c880 owns its goal/weight/time fields.
+                var pending=new Stack<uint>();var visited=new HashSet<uint>();
+                pending.Push(BitConverter.ToUInt16(r.Read(tree+4,2),0));
+                while(pending.Count>0) {
+                    uint index=pending.Pop();if(index==0)continue;
+                    if(!visited.Add(index)||visited.Count>256)throw new Exception("animation tree cycle/budget");
+                    byte[] node=r.Read(checked(0x0374db08+index*0x38),0x38);
+                    pending.Push(BitConverter.ToUInt16(node,0xa));pending.Push(BitConverter.ToUInt16(node,0xc));
+                    uint binding=BitConverter.ToUInt16(node,0x12);var boundNames=new List<string>();
+                    if(binding!=0) {
+                        // 0x649320 interns eight mask words, one count byte,
+                        // then one model-bone index per animation bone;0xfc
+                        // means no matching bone. The blob is a script string.
+                        uint at=r.Word(0x02f37164)+4+binding*20;
+                        int mappedCount=Count(r.Read(at+32,1)[0],253);
+                        byte[] mapping=r.Read(at+33,mappedCount);
+                        foreach(byte mapped in mapping)boundNames.Add(mapped<combinedBones.Count?combinedBones[mapped]:null);
+                    }
+                    animStates.Add(Obj("animation_index",BitConverter.ToUInt16(node,0x10),
+                        "time_bits",U(node,0x18),"goal_weight_bits",U(node,0x28),"weight_bits",U(node,0x2c),"rate_bits",U(node,0x30),
+                        "bound_model_bones",boundNames));
+                }
+            }
+            firstPerson.Add(Obj("hand",hand,"models",modelList,"animation_leaves",animSlots,"animation_states",animStates));
+        }
+        var candidateHands=new List<object>();
+        foreach(string name in new string[]{"viewhands_player_tf141","viewhands_tf141"}) {
+            uint entry;uint model=r.Find(4,name,out entry);if(model==0)continue;
+            int countBones=Count(r.Read(model+4,1)[0],253);var bones=new List<string>();
+            byte[] ids=r.Read(r.Word(model+0x2c),countBones*2);uint baseStrings=r.Word(0x02f37164);
+            for(int b=0;b<countBones;b++)bones.Add(r.Name(baseStrings+4+(uint)BitConverter.ToUInt16(ids,b*2)*20));
+            candidateHands.Add(Obj("name",name,"bone_names",bones));
+        }
+        var output=Obj("schema_version",1,"read_only",true,
+            "client_sha256","e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b",
+            "connection_state",r.Word(0x01a2e7ec),"ncs_crc",r.Word(0x02df7d90),"model_table_names",names,"tables",tables,"weapons",weapons,"compatible_attachments",compatible,"first_person",firstPerson,"candidate_hands",candidateHands);
+        var serializer=new JavaScriptSerializer();serializer.MaxJsonLength=8*1024*1024;
+        Console.WriteLine(serializer.Serialize(output));
+    }
 }

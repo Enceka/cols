@@ -9,6 +9,7 @@
 - [GameHub 动态调试](GAMEHUB_DEBUG.md)：真实 ClientHello、HTTPS AUTH 请求、title_id 对照实验、运行工具和响应逆向入口。
 - [AlphaBuild 审阅](ALPHA_BUILD_REVIEW.md)：用户提供的 1.1.1.13 实现、与 3.3.3.3 的交叉核对和移植依据。
 - [2.6.9.7加载文档对照](LOADING_2697_REVIEW.md)：本版IFS明文清单、M4跨包资源与模型表装配函数的核对。
+- [持枪模型与动画绑定](VIEWMODEL_PROGRESS.md)：实际DObj/XAnim证据、手臂模型单变量对照及默认资源修正。
 - [AUTH 与大厅通道](AUTH_LOBBY_PROGRESS.md)：Rust 认证票据与协议 210 的真实客户端验证、UDP 地址发现、业务帧解密。
 - [业务初始化与文件服务](SERVICE_INITIALIZATION.md)：任务 FIFO、时间、存储格式与早期公共配置失败。
 - [公共配置与玩家初始化](PUBLISHER_FILES.md)：配置解密与解析、80/230 和档案格式。
@@ -25,7 +26,7 @@
 
 下一次工作：
 
-1. 继续核对第一人称DObj、XAnim树与模型骨骼绑定。idle0x400→0x401实验没有修复姿态，已撤回；不要重复以动画编号猜测作为修复。注册定义中有viewmodel_m4a1tech动画名，尚不能证明实际绑定正确。
+1. 默认手臂已通过单变量对照改为viewhands_tf141，实际DObj/XAnim已读到。继续补齐M4默认配件；idle0x400→0x401实验没有修复姿态，不要重复。详见持枪模型文档。
 2. 补全服务端ADS、换弹中断、武器事件及射击状态连续性；随后接入地图碰撞与权威位移。每帧固定出生坐标不是移动实现；不把客户端预测动作当作服务器完成。
 3. 复用已验证native方向、NCS CRC、时钟配置和ACK输入base。改PS字段时核对目标版本的235项字段表，不能照搬Alpha布局。
 4. 复用现有客户端与业务数据，不重新初始化账号。商城切换暂缓；剧情首关仍缺无21/1路径的security key。
