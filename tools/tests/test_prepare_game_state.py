@@ -6,7 +6,7 @@ from pathlib import Path
 import zlib
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from prepare_game_state import CLIENT_SHA256, compute
+from prepare_game_state import CLIENT_SHA256, compute, spawn_origin
 
 
 def encoded(values):
@@ -32,6 +32,17 @@ def capture():
 
 
 class GameStatePreparation(unittest.TestCase):
+    def test_spawn_comes_from_expected_map_and_rejects_invalid_coordinates(self):
+        def capture_map(text):
+            return dict(schema_version=1,read_only=True,client_sha256=CLIENT_SHA256,maps=[dict(
+                name="maps/mp/mp_afghan.d3dbsp",byte_count=len(text),entity_string_base64=encoded([text])[0])])
+        text = b'{"classname" "worldspawn"}\n{"classname" "mp_tdm_spawn_allies_start" "origin" "1 2 -3.5"}'
+        self.assertEqual(spawn_origin(capture_map(text)),[1,2,-3.5])
+        for invalid in [b"NaN 2 3",b"1 2",b"1 2 1000001"]:
+            with self.assertRaises(ValueError): spawn_origin(capture_map(text.replace(b"1 2 -3.5",invalid)))
+        wrong=capture_map(text);wrong["maps"][0]["name"]="another_map"
+        with self.assertRaises(ValueError): spawn_origin(wrong)
+
     def test_seed_resource_order_dedup_and_no_terminators(self):
         data = capture()
         result = compute(data)

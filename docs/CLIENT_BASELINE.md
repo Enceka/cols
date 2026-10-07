@@ -138,3 +138,9 @@
 - `0x5855d0`（VA）注册dvar名称CRC seed、`0x585000`排序、`0x584d80`去重及`0x584ed0`累加经静态指令与只读资源提取交叉验证。mp_afghan计算CRC=`0x1f3a0a82`，与真实客户端初始化后的内存值一致，置信度高。工具与复现见 [NET_CONSTANTS_CRC.md](NET_CONSTANTS_CRC.md)。
 - `client-1791342759140` 实测gamestateupdate1～6、连接状态9、服务端消息序号3；随后只读确认serverId=1。CS2需字面值`cod`的校验已定位在VA `0x445b74`～`0x445bb6`并修复下发值。
 - 当前界面“等待玩家数据”，尚无出生、玩家移动、快照循环或AI。下一个目标为VA `0x46d170`的完整snapshot解析与VA `0x5a4230`的playerState布局；不得把初始化完成扩大为已经可玩。
+
+**同日后续：快照、输入与场景显示**
+
+- `client-1791345984530` 实际显示阿富汗地形与HUD。快照缓存和当前帧分别为flags8和flags0，状态10；总6798帧、251个入站事件无解析错误，native ACK最高6627。临时CA已恢复。当前实现仍是有界bootstrap，未完成武器/权威移动/AI。
+- type19地图实体字符串只读提取给出第一条团队出生点 `-472 -800 -113.4`；目标内存确认坐标、视角高度60、viewLocked/viewLinked实体2047。反复发送基线帧仍黑；ACK后切换普通帧才观察到场景。静态依据与分阶段实测见 [SNAPSHOT_PROGRESS.md](SNAPSHOT_PROGRESS.md)。
+- VA `0xc55f70` 的235项PS字段表已固定为协议事实fixture，独立提取脚本校验EXE身份。VA `0x5a1be0` 的usercmd已恢复三分支、额外11bit melee实体及第五个尾word，真实输入包完整解析成功；不执行客户端控制台文本或信任客户端预测位置。

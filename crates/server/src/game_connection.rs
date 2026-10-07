@@ -20,6 +20,7 @@ pub(crate) struct Connection {
     client_commands: ReliableCommands,
     snapshot_count: u32,
     snapshot_next: Option<Instant>,
+    snapshot_first_sequence: Option<u32>,
     input_count: u32,
     last_input: Option<codol_protocol::game_usercmd::UserCommand>,
 }
@@ -68,7 +69,11 @@ impl Connection {
         {
             return Ok(None);
         }
-        let body = codol_protocol::game_snapshot::bootstrap(1000 + self.snapshot_count * 50)?;
+        let body = self.game_state.as_ref().expect("enabled state").snapshot(
+            1000 + self.snapshot_count * 50,
+            self.snapshot_first_sequence
+                .is_none_or(|first| self.native_ack < first),
+        )?;
         let ack = self.client_commands.sequence();
         let packet = game_wire::server_packet(
             self.native_sent + 1,
@@ -79,6 +84,7 @@ impl Connection {
             &body,
         )?;
         self.native_sent += 1;
+        self.snapshot_first_sequence.get_or_insert(self.native_sent);
         self.snapshot_count += 1;
         self.snapshot_next = Some(now + Duration::from_millis(50));
         Ok(Some(packet))
@@ -390,10 +396,14 @@ mod tests {
         assert!(c.poll_snapshot(now).unwrap().is_none());
         c.gamestate_update = Some(6);
         for i in 0..60u32 {
+            if i == 1 {
+                c.native_ack = 4;
+            }
             let at = now + Duration::from_millis(u64::from(i) * 50);
             let mut packet = c.poll_snapshot(at).unwrap().unwrap();
             assert_eq!(&packet[..4], &(i + 4).to_le_bytes());
             game_wire::xor_stream(&mut packet[8..], 0x75 ^ (i + 4) as u8, b"");
+            assert_eq!(packet[14], if i == 0 { 8 } else { 0 });
             assert_eq!(&packet[9..13], &(1000 + i * 50).to_le_bytes());
             assert!(
                 c.poll_snapshot(at + Duration::from_millis(49))

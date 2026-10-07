@@ -19,6 +19,10 @@ pub struct PreparedGameState {
     constant_count: u32,
     asset_count: u32,
     observed_crc_verified: bool,
+    #[serde(default)]
+    spawn_origin: Option<[f32; 3]>,
+    #[serde(default)]
+    map_entities_sha256: Option<String>,
     #[serde(skip)]
     snapshot_probe: bool,
     #[serde(skip)]
@@ -46,6 +50,23 @@ impl PreparedGameState {
             "prepared game state size"
         );
         let state: Self = serde_json::from_slice(&std::fs::read(path)?)?;
+        ensure!(
+            state.spawn_origin.is_some() == state.map_entities_sha256.is_some(),
+            "spawn evidence missing"
+        );
+        if let Some(origin) = state.spawn_origin {
+            ensure!(
+                origin
+                    .iter()
+                    .all(|v| v.is_finite() && v.abs() <= 1_000_000.0),
+                "invalid spawn origin"
+            );
+            let hash = state.map_entities_sha256.as_deref().unwrap_or("");
+            ensure!(
+                hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit()),
+                "invalid map entity source hash"
+            );
+        }
         ensure!(
             state.schema_version == 1 && state.client_sha256 == codol_protocol::CLIENT_SHA256,
             "prepared game state identity mismatch"
@@ -114,6 +135,13 @@ impl PreparedGameState {
         }
         .encode()?)
     }
+    pub(crate) fn snapshot(&self, server_time: u32, establish_baseline: bool) -> Result<Vec<u8>> {
+        Ok(codol_protocol::game_snapshot::frame(
+            server_time,
+            self.spawn_origin,
+            establish_baseline,
+        )?)
+    }
 }
 
 #[cfg(test)]
@@ -131,6 +159,8 @@ pub(crate) fn synthetic() -> PreparedGameState {
         constant_count: 2,
         asset_count: 1,
         observed_crc_verified: false,
+        spawn_origin: None,
+        map_entities_sha256: None,
         snapshot_probe: false,
         snapshot_frames: 0,
     }

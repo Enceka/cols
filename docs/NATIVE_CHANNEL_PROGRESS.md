@@ -2,7 +2,7 @@
 
 2026-10-07。本文替代 GAME_TRANSPORT_PROGRESS 后半段中的旧方向/标记推测。目标 EXE hash 保持 `e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b`。
 
-**最新：已实测 gamestate 初始化完成，客户端进入状态9（等待玩家数据），尚未出生。** 详见文末“真实 gamestate 验收”。
+**最新：已推进到状态10、实际显示阿富汗场景与HUD。** 快照与输入的后续验收见 [SNAPSHOT_PROGRESS.md](SNAPSHOT_PROGRESS.md)。本文的状态9记录为此前gamestate里程碑；武器、权威移动、AI仍未实现。
 
 前序可靠消息实验 `client-1791338632345`：151 个 UDP 事件无错误；0016 收到初始 EOF，回复 native 消息1；0017 客户端 message_ack=1，回复 native 消息2（可靠命令序号1，空字符串）；0018 开始 message_ack=2、reliable_ack=1，连续114个 C2S 包保持该确认。玩家配置没有被修改；当时仍因缺少 gamestate 等待超时。
 
@@ -21,12 +21,12 @@
 
 - S2C 分派 0x46e6a0：0=snapshot，1=可靠字符串（0x46e3b0），2=可靠二进制（0x46e470），3=gamestate（0x46dea0），5=另一请求路径（0x46e620，语义待恢复），6=EOF。**2不是客户端命令，6不是 configstring。**
 - Gamestate 内部只有4进入 configstring 读取0x46db20，6结束该段，再读 clientNumber 和 checksumFeed。最终外层消息同样需要 EOF6。
-- C2S 构造0x4603e0/0x4606a8：opcode占3位，2=客户端可靠字符串（LE32序号、NUL字符串），3=EOF。0/1为移动路径，当前未实现。
+- C2S 构造0x4603e0/0x4606a8：opcode占3位，2=客户端可靠字符串（LE32序号、NUL字符串），3=EOF。0/1移动路径已在后续快照诊断中实现解析，限定于当前bootstrap的输入base。
 - 3-bit opcode 使用独立位池。插入整字节序号/字符串时，位池中的剩余位继续保留；新位池字节在当前字节游标处预留。目标读取0x40c370/0x5a13a0；不能将其当作连续普通 bitstream 或旧 Huffman 数据。
 
 ## 当前连接状态与边界
 
-必须先完成 stats，才处理 native 包。gamestate 前只接受 serverId=0，发送后允许已配置的1。验证递增客户端序号、未超出已发送范围的 message ACK、合法可靠 ACK；整包解析成功后才提交序号/ACK。客户端可靠命令仅记录接收序号与正文以支持后续 XOR，不执行命令。移动 opcode 仍明确拒绝。
+必须先完成 stats，才处理 native 包。gamestate 前只接受 serverId=0，发送后允许已配置的1。验证递增客户端序号、未超出已发送范围的 message ACK、合法可靠 ACK；整包解析成功后才提交序号/ACK。客户端可靠命令仅记录接收序号与正文以支持后续 XOR，不执行命令。发送bootstrap快照后才允许解析移动；其余阶段拒绝移动消息。
 
 S2C探针1：`sequence=1, clientCommandAck=0, body=[6]`。
 
@@ -36,7 +36,7 @@ S2C探针2：收到 messageAck=1 后，`sequence=2, clientCommandAck=0, body=[1,
 
 可靠窗口按完整序号保留256槽；确认后的当前命令仍供后续包 XOR 使用，不能 ACK 后立即删除或对不存在槽静默返回空字符串。queued、sent、acknowledged 分开；观察字段使用当前已知槽解码，不再对任意 reliableAck 使用空槽。
 
-默认只发两个有界探针；显式 `--game-state` 才在 ACK2/reliableACK1 后发送 gamestate。丢包重发、完整服务端可靠命令发布、客户端命令执行、移动解析和 native 分片都未完成。不得把 transport/reliable ACK 扩大为游戏已可玩。
+默认只发两个有界探针；显式 `--game-state` 才在 ACK2/reliableACK1 后发送 gamestate。丢包重发、完整服务端可靠命令发布、客户端命令执行和 native 分片都未完成。后续输入解析仅记录动作，未执行物理移动。不得把 transport/reliable ACK 扩大为游戏已可玩。
 
 ## 需要纠正的旧实验解释
 

@@ -214,7 +214,7 @@ impl GameServer {
         };
         tokio::fs::create_dir_all(&directory).await?;
         write_private(&directory.join("run.json"),&serde_json::to_vec_pretty(&serde_json::json!({
-            "mode":"experimental_game_udp_transport","bind":address,"simulation":false,"max_datagrams":2048,
+            "mode":"experimental_game_udp_transport","bind":address,"simulation":false,"base_max_datagrams":2048,
             "client_sha256":codol_protocol::CLIENT_SHA256
         }))?).await?;
         Ok(Self {
@@ -250,12 +250,12 @@ impl GameServer {
         let mut snapshots = 0u32;
         loop {
             let (n, peer) = tokio::select! {result=&mut shutdown=>{result?;return Ok(())},
-            _=tick.tick()=>{
+            scheduled=tick.tick()=>{
                 let now=(unix_time_ms()/1000) as u32;
                 peers.retain(|_,p|self.admissions.get(&p.id,now).is_some());
                 for (address,p) in &mut peers {
                     let Some(records)=p.records.as_mut() else { continue };
-                    if let Some(plain)=p.connection.poll_snapshot(std::time::Instant::now())? {
+                    if let Some(plain)=p.connection.poll_snapshot(scheduled.into_std())? {
                         let wire=records.seal(&plain,p.remote_tag)?;
                         self.socket.send_to(&wire,*address).await?;
                         snapshots+=1;

@@ -5,7 +5,9 @@ import base64
 from collections import defaultdict
 import hashlib
 import json
+import math
 from pathlib import Path
+import re
 import zlib
 
 CLIENT_SHA256 = "e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b"
@@ -80,16 +82,48 @@ def compute(capture):
             "asset_count": included, "observed_crc_verified": bool(capture["initialized"])}
 
 
+def spawn_origin(capture):
+    if (capture.get("schema_version") != 1 or capture.get("read_only") is not True
+            or capture.get("client_sha256") != CLIENT_SHA256):
+        raise ValueError("unsupported map capture identity")
+    maps = [m for m in capture["maps"] if m["name"] == "maps/mp/mp_afghan.d3dbsp"]
+    if len(maps) != 1:
+        raise ValueError("expected one mp_afghan map entity resource")
+    entry = maps[0]
+    text = base64.b64decode(entry["entity_string_base64"], validate=True)
+    if len(text) != entry["byte_count"] or len(text) > 4 * 1024 * 1024:
+        raise ValueError("map entity byte count mismatch")
+    for block in re.findall(rb'\{([^{}]*)\}', text):
+        pairs = re.findall(rb'"([^"\r\n]*)"\s+"([^"\r\n]*)"', block)
+        values = dict(pairs)
+        if values.get(b"classname") != b"mp_tdm_spawn_allies_start":
+            continue
+        if len(pairs) != len(values):
+            raise ValueError("duplicate spawn entity key")
+        origin = [float(v) for v in values[b"origin"].split()]
+        if len(origin) != 3 or any(not math.isfinite(v) or abs(v)>1_000_000 for v in origin):
+            raise ValueError("invalid training spawn position")
+        return origin
+    raise ValueError("training spawn not found in map resource")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("capture", type=Path)
     parser.add_argument("--output", type=Path, help="prepare opt-in mp_afghan/war training gamestate")
+    parser.add_argument("--map-entities", type=Path, help="include a map-derived training spawn in the snapshot probe")
     args = parser.parse_args()
     raw = args.capture.read_bytes()
     if len(raw) > 32 * 1024 * 1024:
         parser.error("capture size limit")
     capture = json.loads(raw)
     summary = compute(capture)
+    if args.map_entities:
+        map_raw = args.map_entities.read_bytes()
+        if len(map_raw) > 16 * 1024 * 1024:
+            parser.error("map capture size limit")
+        summary.update(spawn_origin=spawn_origin(json.loads(map_raw)),
+                       map_entities_sha256=hashlib.sha256(map_raw).hexdigest())
     if args.output:
         if capture["connection_state"] != 7:
             parser.error("preparation requires the training map's state-7 resource capture")

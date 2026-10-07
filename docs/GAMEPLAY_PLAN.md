@@ -1,6 +1,6 @@
 # 从已连接到实际对局
 
-更新：2026-10-07。登录、训练分配、DTLS、challenge/connect、stats、心跳、可靠消息及 gamestate 已获 3.3.3.3 客户端接受。现在连接进入状态9，停在“等待玩家数据”。本文件规划后续世界状态；最新证据见 [NATIVE_CHANNEL_PROGRESS.md](NATIVE_CHANNEL_PROGRESS.md)。
+更新：2026-10-07。真实客户端已进入状态10，显示阿富汗场景及HUD，快照与输入ACK持续推进。地图出生位置和视角高度已在目标内存验证。武器、完整玩家实体、权威移动、碰撞及AI仍待完成；最新证据见 [SNAPSHOT_PROGRESS.md](SNAPSHOT_PROGRESS.md)。
 
 ## 1. 游戏通道与 gamestate
 
@@ -8,11 +8,11 @@
 
 gamestate消费入口 `0x46dea0`、三类configstring列表 `0x46db20` 已复核并实现。资源CRC按 [NET_CONSTANTS_CRC.md](NET_CONSTANTS_CRC.md)计算，真实客户端进度1～6完成；CS2游戏标识 `cod` 的缺失错误已修复。AlphaBuild 可继续提供快照线索，但目标结构与常量编号必须独立确认。
 
-当前训练固定 mp_afghan、war，通过显式准备文件绑定，并验证已捕获的mmstart字段，不执行控制台文本。尚未覆盖完整server规则或多地图；验收依据为客户端实际CRC、初始化进度和状态9，暂未收到后续native ACK3。不要扩大成已可玩。
+当前训练固定 mp_afghan、war，通过显式准备文件绑定，并验证已捕获的mmstart字段，不执行控制台文本。已通过实际CRC、初始化、快照ACK及场景显示验收；仍未覆盖完整server规则或多地图，不扩大成已可玩。
 
 ## 2. 单客户端出生
 
-恢复目标 entity/playerState/netfield 表及 delta 编码，再准备有效的初始 playerState、出生位置、角色/武器索引和持续快照。资源编号必须来自 3.3.3.3；上传的 stats 仅为会话材料，不能直接替代服务器校验后的装备模型。
+已恢复235项playerState字段顺序、必要的初始状态、地图来源出生点、基线到普通帧的切换及持续有界快照。接续local client/entity记录、角色与武器索引、服务端碰撞和权威位移；同时排查目前较稀疏的客户端输入发包节奏。资源编号必须来自3.3.3.3；上传的stats仅为会话材料，不能直接替代服务器校验后的装备模型。
 
 验收：实际进入场景、看到 HUD/武器、可移动和转向、快照 ACK 持续推进、断开/重进可重复。地图背景图和“设置游戏”均不算出生完成。
 

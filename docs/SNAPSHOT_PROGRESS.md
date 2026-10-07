@@ -1,6 +1,6 @@
 # 3.3.3.3 快照与输入
 
-2026-10-07，接续 [native通道](NATIVE_CHANNEL_PROGRESS.md)。已实测进入连接状态10，客户端保存有效完整快照，并开始返回 native ACK 和输入。**尚未恢复正常场景/HUD、装备出生或物理模拟**，当前仍有黑屏及菜单显示。
+2026-10-07，接续 [native通道](NATIVE_CHANNEL_PROGRESS.md)。**最新已实际进入阿富汗地图，显示场景与HUD**，连接状态10，客户端持续返回native ACK和输入。武器、权威移动、完整玩家实体和AI尚未实现；不是可玩的训练对局。文末记录普通帧切换与进图验收，前面的黑屏实验属于前序诊断。
 
 ## 目标格式
 
@@ -44,3 +44,31 @@ python3 tools/gamehub_run.py client --prefix-name wine10-recovered-20261007 --se
 先从地图资源准备有来源的出生点，恢复视角高度与实体未绑定标记。目标 `0x4e95e0` 将PS+0x1f0写为2047，`0x5227bd` 比较它决定链接视角分支；`0x4e8e11/0x4ebc1b` 将PS+0x1b4写为2047。不要保留零值而把实体0误作有效链接。
 
 之后补充local client/entity记录、真实装备和server规则。当前没有地图碰撞、位移积分、命中、AI，也没有完整可靠重发和snapshot delta历史。应以实际场景、HUD、操作和持续同步验收，不能以状态10或菜单可见代替。
+
+## 真实场景与HUD验收
+
+`client-1791345608656` 首先验证地图来源的出生点与视角字段：`client-state-1791345711612.json` 中origin为 `[-472,-800,-113.4000015]`、viewHeight=60、viewLockedEntity=viewLinkedEntity=2047，快照有效、ACK推进，但画面仍黑。总4104帧、247个入站事件，无服务端解析错误。因此不能把黑屏只归因于原点坐标。
+
+`client-1791345984530` 在首个基线获得native ACK后，将后续帧flags从8改为0。保留delta距离0，令actor/entity/client历史引用已缓存的完整基线；playerState选择位仍为0，独立从零基线完整写入。这样不需要假设某个尚未确认的delta序号已存在。
+
+结果：`ui-1791346072400.png` 已显示阿富汗地形、植被、天空、雷达框和计分HUD。`client-state-1791346072294.json` 对照：缓存基线消息27、flags8、time2150；当前快照消息587、flags0、time30150，valid1、状态10。此时的黑屏解除发生在普通帧切换后；不再将“反复收到完整基线”视为渲染帧验收。
+
+最后一轮6798帧、251个入站事件，无服务端解析错误，收到的最高native ACK=6627。先前6000帧输入实验最终465个入站事件、最高ACK6005，也没有解析错误。当前输入发送仍较稀疏（可见约33秒一包、每包最多32条）；后续需要检查客户端发包节流/前台状态，不能把解析通过当成正常实时操控。各实验已停止、临时CA均恢复。
+
+地图准备与启动：
+
+```sh
+python3 tools/prepare_game_state.py research-output/gamehub/client-1791341394600/net-constants-1791341887328.json --map-entities research-output/gamehub/client-1791344898487/map-entities-1791345085525.json --output research-output/training-spawn-state.json
+sh tools/cargo.sh build --workspace --locked
+python3 tools/gamehub_run.py client --prefix-name wine10-recovered-20261007 --seconds 900 --title-id-hex 3ea --rust-auth --local-auth-tickets --rust-lobby --rust-stun --rust-game --game-state research-output/training-spawn-state.json --snapshot-probe 18000 --local-services --trust-lab-cert --quiet-network
+```
+
+`--map-entities` 必须对应目标版本、目标map名，选择第一条 `mp_tdm_spawn_allies_start` 的三维有限坐标，并记录原始采集SHA-256。不提交实体文本。准备文件省略该选项时仍支持原始零坐标诊断，新增字段保持向后兼容。
+
+新增下发字段（target table index / PS offset / codec）：origin X=8/0x1c/-88、Z=10/0x24/-88、Y=11/0x20/-88；viewHeightCurrent=34/0x15c/-88；viewHeightTarget=38/0x158/-8；groundEntity=47/0xac/11；viewLockedEntity=61/0x1b4/16；viewLinkedEntity=68/0x1f0/11。整数编码为nonzero bit + width%8低位 + 剩余整字节。lc=69，范围内无hint2字段。视角角度、武器与otherFlags仍为零，输入默认base尚不支持任意玩家状态。
+
+235项静态字段事实保存在 `fixtures/protocol/player-state-fields-3.3.3.3.json`，表SHA-256为 `56b46d3430513982131602b42ce6a8f9c376320b2de8e383627676c88d9c2495`，可用 `.venv/bin/python tools/extract_game_layout.py --output 目标路径` 从核对过EXE重建。测试对照这些独立提取值及真实客户端接受的48字节快照向量，防止索引、字段编码和保留位池退化。
+
+快照调度使用tokio interval给出的计划时间，而非处理时刻，避免微小调度抖动把下一帧判成“尚未到期”而跳帧。仍有显式帧数、admission期限及实验运行时间限制；到预算末尾停止发送或进程关闭是实验边界，不能承诺永不断线。
+
+最终检查：fmt、Clippy、87项Rust和17项Python测试全部通过；服务端调试可执行文件已重建。覆盖实际接受快照向量、14段结构、PS字段源表、出生数据校验、输入截断/tag/新增melee字段、发送节奏与预算、ACK后基线切换。只读探针已重新编译并在目标进程中验证。

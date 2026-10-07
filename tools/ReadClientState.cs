@@ -83,6 +83,12 @@ class ReadClientState {
                 Field(process,"full_snapshot_message",0x07999658,4);
                 Field(process,"full_snapshot_command_time",0x07996128,4);
                 Field(process,"full_snapshot_health",0x079962b8,4);
+                Field(process,"full_snapshot_origin_x_bits",0x07996144,4);
+                Field(process,"full_snapshot_origin_y_bits",0x07996148,4);
+                Field(process,"full_snapshot_origin_z_bits",0x0799614c,4);
+                Field(process,"full_snapshot_view_height_bits",0x07996284,4);
+                Field(process,"full_snapshot_view_locked_entity",0x079962dc,4);
+                Field(process,"full_snapshot_view_linked_entity",0x07996318,4);
                 Field(process,"net_constants_initialized",0x02df9934,4);
                 Field(process,"net_constants_crc",0x02df7d90,4);
                 uint connection=Read(process,0x01a2a538,4)^0xd362501f;
@@ -90,6 +96,13 @@ class ReadClientState {
                     Field(process,"server_message_sequence",checked(connection+0x40148),4);
                     Field(process,"client_command_ack",checked(connection+0x144),4);
                     Field(process,"server_command_sequence",checked(connection+0x4014c),4);
+                }
+                uint active=Read(process,0x01a2e838,4)^0x6891d1c7;
+                if(active>=0x10000 && active<0x7ff00000) {
+                    Field(process,"current_snapshot_valid",checked(active+0x3530),4);
+                    Field(process,"current_snapshot_flags",checked(active+0x3534),4);
+                    Field(process,"current_snapshot_server_time",checked(active+0x3538),4);
+                    Field(process,"current_snapshot_message",checked(active+0x353c),4);
                 }
                 Field(process,"config_version",0x078a06bc,4);
                 Field(process,"playlist_version",0x031fe614,4);
