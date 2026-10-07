@@ -421,6 +421,15 @@ mod tests {
         );
         assert_eq!(body, [0x76]);
     }
+
+    #[test]
+    fn captured_keepalive_decrypts_to_client_eof_with_challenge_key() {
+        // client-1791312016136: challenge low byte 0x75, body 0x76.
+        // With empty acknowledged command and zero header fields, 0x76 ^ 0x75 = clc_EOF(3).
+        let packet = [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x76];
+        let (_, body) = open_client(&packet, 0x75, b"").unwrap();
+        assert_eq!(body, [3]);
+    }
     #[test]
     fn command_pool_reuses_bits_across_byte_fields() {
         // Commands 2/2/EOF3: the EOF consumes two old pool bits and one new.

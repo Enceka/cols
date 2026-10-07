@@ -143,6 +143,8 @@ Rust `game_wire::NativeXor` 已把两个方向分开：`incoming_xor(sequence_by
 
 方向边界的独立向量已加入：C2S 样本 `01 00 00 00 00 00 00 00 00 00 00 00 00 76` 解析为 sequence=1、serverId=0、messageAck=0、reliableAck=0、单字节 body=0x76；S2C writer 保持 sequence 与 clientCommandAck 两个 LE32 字段明文，再只对正文 XOR。这个边界与目标 `0x467520` 接收流程及参考 `SV_Netchan_Encode` 一致。
 
+结合目标入站 XOR `0x46bf80` 和参考 clc 表，第二个向量进一步解出 C2S keepalive：实验 `client-1791312016136` 的 challenge 低字节为 `0x75`，body `0x76 ^ 0x75 = 0x03`，即 `clc_EOF`。这解释了客户端在等待阶段持续发送 14 字节包：它们是合法的空客户端消息，而不是 gamestate opcode。Rust 已加入该向量测试；真实服务端仍只记录，不回传猜测状态。
+
 目标 `0x5a5720` 的重组器还显示了版本特有的分片阈值：普通路径比较 `0x4d8`，关联类型为 2 时比较 `0x482`；超过阈值会进入内部片段 ring，而不是简单把完整正文当一个 UDP 包。AlphaBuild 的旧 `CODOL_FRAGMENT_SIZE=1162 (0x48a)` 不能直接套用。Rust 当前 server packet 明确拒绝超过阈值的正文，防止向目标发错片段；下一步需从目标实包恢复片段头字段后再实现。
 
 feed 来源已进一步确认：0x46d830 在调用 0x4f9850 前把 `ECX=3`，即读取 configstring index 3；随后 0xaf6e68 调用十进制 `strtol`（base=10），结果写入 `DAT_0796f2d8`。因此服务端未来应从 gamestate 的 server-id/configstring 3 生成 `feed_byte = parsed_u32 as u8`，不能从 challenge、DTLS key 或用户 UID 派生。Rust 已加入 `native_feed_byte` 纯函数和边界测试；command ring 与 `+0x40148/+0x138` 的运行时值仍待目标包确认。
