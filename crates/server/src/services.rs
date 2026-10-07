@@ -63,6 +63,10 @@ struct LocalInventory {
     items: Vec<u32>,
 }
 
+// A pretty-printed complete target catalogue exceeds the old 32 KiB starter
+// file bound. This also bounds hostile JSON whitespace before deserialization.
+const MAX_INVENTORY_FILE_BYTES: usize = 256 * 1024;
+
 impl LocalServices {
     pub async fn with_game_endpoint(
         self,
@@ -383,7 +387,7 @@ impl LocalServices {
             .profile_path(session, false)
             .await?
             .with_file_name("inventory.json");
-        let Some(bytes) = read_bounded(&path, 32768).await? else {
+        let Some(bytes) = read_bounded(&path, MAX_INVENTORY_FILE_BYTES).await? else {
             return Ok(Vec::new());
         };
         let inventory: LocalInventory = serde_json::from_slice(&bytes)?;
@@ -396,6 +400,35 @@ impl LocalServices {
         );
         task::player_data(session.user_id, &inventory.items)?;
         Ok(inventory.items)
+    }
+
+    /// Freeze the latest saved backpack and ownership for one admitted player.
+    /// Uses the same write lock and grant sources as lobby saves/purchases.
+    pub(crate) async fn game_profile(
+        &self,
+        title_id: u32,
+        user_id: u64,
+    ) -> Result<(Vec<u8>, Vec<u32>)> {
+        let _lock = self.writes.lock().await;
+        let session = Session {
+            title_id,
+            user_id,
+            iv_seed: 0,
+            expires_at: 0,
+            key: [0; 24],
+        };
+        let path = self.profile_path(&session, false).await?;
+        let public = read_bounded(&path, task::MAX_FILE_BYTES)
+            .await?
+            .context("saved player loadout is missing")?;
+        profile::validate_public(&public)?;
+        let mut owned = self.inventory(&session).await?;
+        if let Some(wallet) = self.wallet(&session).await? {
+            owned.extend(wallet.purchases.iter().map(|p| p.item_id));
+        }
+        owned.sort_unstable();
+        owned.dedup();
+        Ok((public, owned))
     }
 
     /// Offline administration of one existing lab account. Stop all services
@@ -716,6 +749,77 @@ fn blob_result(label: &'static str, data: &[u8]) -> Result<TaskResult> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn game_profile_reads_latest_save_and_combines_starter_and_purchase_ownership() {
+        let temp = tempfile::tempdir().unwrap();
+        let services = LocalServices::open(temp.path().join("data")).await.unwrap();
+        let s = session(1);
+        let directory = services
+            .profile_directory(s.title_id, s.user_id)
+            .await
+            .unwrap();
+        let inventory = serde_json::json!({"schema_version":1,"client_sha256":codol_protocol::CLIENT_SHA256,
+            "title_id":s.title_id,"user_id":s.user_id.to_string(),"items":[10001]});
+        atomic_private_write(
+            &directory.join("inventory.json"),
+            &serde_json::to_vec(&inventory).unwrap(),
+        )
+        .await
+        .unwrap();
+        let wallet = LocalWallet {
+            schema_version: 1,
+            client_sha256: codol_protocol::CLIENT_SHA256.into(),
+            title_id: s.title_id,
+            user_id: s.user_id.to_string(),
+            cp: 0,
+            gp: 0,
+            purchases: vec![crate::marketplace::Grant {
+                sku_id: 14629,
+                item_id: 20659,
+                payment: Payment::Cp,
+                price: 280,
+            }],
+        };
+        atomic_private_write(
+            &directory.join("wallet.json"),
+            &serde_json::to_vec(&wallet).unwrap(),
+        )
+        .await
+        .unwrap();
+        for item in [0u32, 20659] {
+            let mut plain = vec![0u8; 32768];
+            plain[1000..1004].copy_from_slice(&item.to_le_bytes());
+            let crc = crc32fast::hash(&plain[4..]);
+            plain[..4].copy_from_slice(&crc.to_le_bytes());
+            let mut public = Writer::default();
+            public.u32(0);
+            public.u32(1);
+            public.u32(crc);
+            public.blob(&plain).unwrap();
+            for _ in 0..125 {
+                public.i32(0);
+            }
+            public.0.push(0);
+            let mut upload = vec![8, 3, 3];
+            upload.extend_from_slice(&public.0);
+            services
+                .handle(&upload, &s, 1)
+                .await
+                .unwrap()
+                .result
+                .unwrap();
+            let (saved, owned) = services.game_profile(s.title_id, s.user_id).await.unwrap();
+            assert_eq!(saved, public.0);
+            assert_eq!(owned, [10001, 20659]);
+            assert!(services.game_profile(s.title_id, 2).await.is_err());
+            assert!(
+                services
+                    .game_profile(s.title_id + 1, s.user_id)
+                    .await
+                    .is_err()
+            );
+        }
+    }
     #[tokio::test]
     async fn room_name_check_preserves_utf8_and_reports_unchanged_text() {
         let temp = tempfile::tempdir().unwrap();
@@ -1390,6 +1494,49 @@ mod tests {
         assert!(server.handle(&request, &other, 1).await.is_err());
         tokio::fs::write(&path, b"invalid").await.unwrap();
         assert!(server.handle(&request, &s, 1).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn full_catalogue_inventory_loads_and_refreshes_without_truncation() {
+        let temp = tempfile::tempdir().unwrap();
+        let server = LocalServices::open(temp.path().join("data")).await.unwrap();
+        let s = session(1);
+        let path = server
+            .profile_path(&s, false)
+            .await
+            .unwrap()
+            .with_file_name("inventory.json");
+        let items: Vec<u32> = (1..=6772).collect();
+        let data = serde_json::to_vec_pretty(&serde_json::json!({
+            "schema_version":1,"client_sha256":codol_protocol::CLIENT_SHA256,
+            "title_id":s.title_id,"user_id":"1","items":items
+        }))
+        .unwrap();
+        assert!(data.len() > 32768);
+        atomic_private_write(&path, &data).await.unwrap();
+        let full = server
+            .handle(&[80, 3, 230, 16, 0, 0], &s, 1)
+            .await
+            .unwrap()
+            .result
+            .unwrap();
+        assert_eq!(full, vec![task::player_data(s.user_id, &items).unwrap()]);
+        let mut query = Writer(vec![80, 3, 203]);
+        query.string("");
+        query.u16(20000);
+        query.0.push(0);
+        let refreshed = server
+            .handle(&query.0, &s, 1)
+            .await
+            .unwrap()
+            .result
+            .unwrap();
+        assert_eq!(refreshed.len(), 6772);
+        assert_eq!(
+            refreshed,
+            task::inventory_records(s.user_id, &items).unwrap()
+        );
+        assert!(task::reply(1, 203, Ok(&refreshed)).unwrap().len() > 65536);
     }
 
     #[tokio::test]

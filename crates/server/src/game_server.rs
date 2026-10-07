@@ -201,6 +201,7 @@ pub struct GameServer {
     admissions: Arc<GameAdmissions>,
     directory: PathBuf,
     game_state: Option<Arc<crate::game_state::PreparedGameState>>,
+    services: Option<Arc<crate::services::LocalServices>>,
 }
 impl GameServer {
     pub async fn bind(address: SocketAddrV4, directory: PathBuf) -> Result<Self> {
@@ -221,6 +222,7 @@ impl GameServer {
             socket,
             directory,
             game_state: None,
+            services: None,
             admissions: Arc::new(GameAdmissions {
                 address,
                 entries: Mutex::new(HashMap::new()),
@@ -232,6 +234,10 @@ impl GameServer {
     }
     pub fn with_game_state(mut self, state: crate::game_state::PreparedGameState) -> Self {
         self.game_state = Some(Arc::new(state));
+        self
+    }
+    pub fn with_services(mut self, services: Option<Arc<crate::services::LocalServices>>) -> Self {
+        self.services = services;
         self
     }
     pub async fn run<F: Future<Output = std::io::Result<()>>>(self, shutdown: F) -> Result<()> {
@@ -248,11 +254,26 @@ impl GameServer {
         let mut tick = tokio::time::interval(std::time::Duration::from_millis(50));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut snapshots = 0u32;
+        let mut profile_check = std::time::Instant::now();
         loop {
             let (n, peer) = tokio::select! {result=&mut shutdown=>{result?;return Ok(())},
             scheduled=tick.tick()=>{
                 let now=(unix_time_ms()/1000) as u32;
                 peers.retain(|_,p|self.admissions.get(&p.id,now).is_some());
+                if profile_check.elapsed()>=std::time::Duration::from_millis(500) {
+                    profile_check=std::time::Instant::now();
+                    if let (Some(template),Some(services))=(&self.game_state,&self.services)
+                        && template.dynamic_loadout() {
+                        for p in peers.values_mut() {
+                            if let Some(admission)=self.admissions.get(&p.id,now) {
+                                match services.game_profile(admission.title,admission.owner).await {
+                                    Ok((public,owned))=>if let Err(error)=p.connection.refresh_profile(template,&public,&owned){tracing::warn!(%error,"player backpack update rejected");},
+                                    Err(error)=>tracing::warn!(%error,"saved backpack read failed"),
+                                }
+                            }
+                        }
+                    }
+                }
                 for (address,p) in &mut peers {
                     let Some(records)=p.records.as_mut() else { continue };
                     if let Some(plain)=p.connection.poll_snapshot(scheduled.into_std())? {
@@ -263,7 +284,7 @@ impl GameServer {
                         write_private(&self.directory.join(format!("snapshot-{snapshots:04}-reply.bin")),&wire).await?;
                         write_private(&self.directory.join(format!("snapshot-{snapshots:04}.json")),&serde_json::to_vec(&serde_json::json!({
                             "peer":address,"native_sequence":u32::from_le_bytes(plain[..4].try_into()?),
-                            "bytes":wire.len(),"unix_time_ms":unix_time_ms(),"mode":"bounded_bootstrap_probe"
+                            "bytes":wire.len(),"unix_time_ms":unix_time_ms(),"mode":"bounded_bootstrap_probe","motion":p.connection.motion_progress(),"prediction":p.connection.prediction_progress()
                         }))?).await?;
                     }
                 }
@@ -299,7 +320,7 @@ impl GameServer {
             let mut client_reliable_ack = None;
             let mut client_body_first = None;
             let mut client_opcode = None;
-            let handled = (|| -> Result<Option<Vec<u8>>> {
+            let handled: Result<Option<Vec<u8>>> = async {
                 if live && n == 29 && wire[..3] == [13, 2, 0] {
                     let mut reply = wire.to_vec();
                     reply[0] = 12;
@@ -324,8 +345,19 @@ impl GameServer {
                                 ),
                                 "prepared game state does not match admitted training request"
                             );
+                            let state = if state.uses_player_loadout() {
+                                let services = self.services.as_ref().ok_or_else(|| {
+                                    anyhow::anyhow!("player loadout requires local services")
+                                })?;
+                                let (public, owned) = services
+                                    .game_profile(admission.title, admission.owner)
+                                    .await?;
+                                Arc::new(state.for_profile(&public, &owned)?)
+                            } else {
+                                state.clone()
+                            };
                             connection.connection =
-                                crate::game_connection::Connection::with_game_state(state.clone());
+                                crate::game_connection::Connection::with_game_state(state);
                         }
                         peers.insert(peer, connection);
                     }
@@ -376,7 +408,8 @@ impl GameServer {
                     }
                 }
                 Ok(None)
-            })();
+            }
+            .await;
             let connection_stage = peers.get(&peer).map(|p| p.connection.stage());
             let gamestate_progress = peers
                 .get(&peer)

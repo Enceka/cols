@@ -6,7 +6,7 @@ from pathlib import Path
 import zlib
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from prepare_game_state import CLIENT_SHA256, compute, spawn_origin, weapon_ammo
+from prepare_game_state import CLIENT_SHA256, compute, spawn_origin, weapon_ammo, weapon_parts
 import json
 
 
@@ -33,6 +33,24 @@ def capture():
 
 
 class GameStatePreparation(unittest.TestCase):
+    def test_only_cosmetic_camo_change_may_reuse_matching_runtime_weapon_parameters(self):
+        weapon={"name":"m4_mp","index":352,"composed_name":"** 163 0 0 2683"}
+        data=dict(schema_version=1,read_only=True,client_sha256=CLIENT_SHA256,ncs_crc=123,
+            composed_weapon={"name":"** 163 3 0 2683","index":352,"ammo_key":163,"clip_key":352})
+        self.assertEqual(weapon_ammo(json.dumps(data).encode(),123,weapon)["clip_key"],352)
+        for name in ("** 164 3 0 2683","** 163 3 0 2684","** 163 3 1 2683","** 163 256 0 2683"):
+            invalid=copy.deepcopy(data);invalid["composed_weapon"]["name"]=name
+            with self.assertRaises(ValueError):weapon_ammo(json.dumps(invalid).encode(),123,weapon)
+    def test_default_parts_keep_target_slot_order_and_reject_ambiguous_or_wrong_map_evidence(self):
+        parts=[dict(kind=9,item_id=20031,name="mag_default",wire_index=9641),
+               dict(kind=1,item_id=10603,name="sto_default",wire_index=2683)]
+        capture=dict(schema_version=1,read_only=True,client_sha256=CLIENT_SHA256,ncs_crc=123,
+                     connection_state=10,m4_default_parts=dict(weapon="m4_mp",parts=parts))
+        self.assertEqual(weapon_parts(json.dumps(capture).encode(),123)["attachments"],[2683,9641])
+        for key,bad in [("kind",9),("wire_index",9641),("item_id",20008),("wire_index",16383)]:
+            invalid=copy.deepcopy(capture);invalid["m4_default_parts"]["parts"][1][key]=bad
+            with self.assertRaises(ValueError):weapon_parts(json.dumps(invalid).encode(),123)
+        with self.assertRaises(ValueError):weapon_parts(json.dumps(capture).encode(),124)
     def test_ammo_keys_are_bound_to_runtime_build_map_and_weapon(self):
         weapon={"name":"m4_mp","index":163}
         data=dict(schema_version=1,read_only=True,client_sha256=CLIENT_SHA256,ncs_crc=123,
@@ -71,7 +89,7 @@ class GameStatePreparation(unittest.TestCase):
                            asset("ncs_wep_common",13,0,[b"default",b"another"])]
         self.assertEqual(compute(data,"m4_mp")["bootstrap_weapon"],{"name":"m4_mp","index":3})
         self.assertEqual(compute(data,"m4_mp",True)["bootstrap_weapon"],
-            {"name":"m4_mp","index":4,"base_index":3,"composed_name":"** 3 3 0"})
+            {"name":"m4_mp","index":4,"base_index":3,"camo":0,"composed_name":"** 3 0 0"})
         data["assets"].append(asset("ncs_mdl_hands",0,0,[b"viewhands_player_tf141",b"viewhands_tf141"]))
         self.assertEqual(compute(data,"m4_mp",True,True)["bootstrap_weapon"]["viewmodel_index"],5)
         self.assertEqual(compute(data,"m4_mp",True,True,"viewhands_player_tf141")["bootstrap_weapon"]["viewmodel_index"],4)

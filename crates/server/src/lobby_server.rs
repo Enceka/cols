@@ -64,6 +64,9 @@ impl LobbyServer {
     pub fn address(&self) -> Result<SocketAddr> {
         Ok(self.listener.local_addr()?)
     }
+    pub fn services(&self) -> Option<Arc<LocalServices>> {
+        self.services.clone()
+    }
     pub async fn with_game_endpoint(
         mut self,
         endpoint: Arc<crate::game_server::GameAdmissions>,

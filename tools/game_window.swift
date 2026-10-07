@@ -93,6 +93,26 @@ case "click", "move":
         Thread.sleep(forTimeInterval: 0.08)
     }
     result["fraction"] = [rx, ry]
+case "hold":
+    let keys: [String: CGKeyCode] = ["w":13,"s":1,"a":0,"d":2,"q":12,"e":14,"r":15,"space":49,"shift":56,"ctrl":59,"c":8,"1":18,"2":19,"escape":53]
+    guard args.count == 5, let seconds = Double(args[4]), seconds.isFinite,
+          (0.03...3.0).contains(seconds), keys[args[3]] != nil || ["fire","ads"].contains(args[3])
+    else { fail("hold requires an allowlisted gameplay key and 0.03..3 seconds") }
+    guard let app = NSRunningApplication(processIdentifier:pid), app.activate(options:[.activateAllWindows]), CGPreflightPostEventAccess()
+    else { fail("unable to focus game or post gameplay key") }
+    let deadline=Date().addingTimeInterval(2)
+    while !app.isActive && Date()<deadline {RunLoop.current.run(until:Date().addingTimeInterval(0.05))}
+    guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else {fail("research client did not become active")}
+    func gameplayEvent(_ down: Bool) -> CGEvent? {
+        if let code=keys[args[3]] {return CGEvent(keyboardEventSource:nil,virtualKey:code,keyDown:down)}
+        let right=args[3]=="ads"
+        return CGEvent(mouseEventSource:nil,mouseType:right ? (down ? .rightMouseDown : .rightMouseUp) : (down ? .leftMouseDown : .leftMouseUp),mouseCursorPosition:CGPoint(x:x+width/2,y:y+height/2),mouseButton:right ? .right : .left)
+    }
+    guard let down=gameplayEvent(true), let up=gameplayEvent(false) else {fail("cannot construct gameplay event")}
+    down.post(tap:.cghidEventTap)
+    Thread.sleep(forTimeInterval:seconds)
+    up.post(tap:.cghidEventTap)
+    result["key"]=args[3];result["seconds"]=seconds
 default:
     fail("unknown window action")
 }

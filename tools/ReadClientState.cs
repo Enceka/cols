@@ -45,7 +45,9 @@ class ReadClientState {
             bool mapEntities=args.Length==1 && args[0]=="--map-entities";
             bool bootstrapWeapon=args.Length==1 && args[0]=="--bootstrap-weapon";
             bool weaponModels=args.Length==1 && args[0]=="--weapon-models";
-            if(args.Length!=0 && !assets && !profiles && !netConstants && !mapEntities && !bootstrapWeapon && !weaponModels) throw new Exception("only fixed extraction modes are supported");
+            bool arsenal=args.Length==1 && args[0]=="--arsenal";
+            bool collision=args.Length==1 && args[0]=="--collision";
+            if(args.Length!=0 && !assets && !profiles && !netConstants && !mapEntities && !bootstrapWeapon && !weaponModels && !arsenal && !collision) throw new Exception("only fixed extraction modes are supported");
             IntPtr snapshot=CreateToolhelp32Snapshot(2,0); uint found=0;
             if(snapshot==new IntPtr(-1)) throw new Exception("process snapshot failed");
             try {
@@ -78,8 +80,13 @@ class ReadClientState {
                 if(mapEntities) { ClientAssets.ExportMapEntities(process);return 0; }
                 if(bootstrapWeapon) { ClientAssets.ExportBootstrapWeapon(process);return 0; }
                 if(weaponModels) { ClientAssets.ExportWeaponModels(process);return 0; }
+                if(arsenal) { ClientAssets.ExportArsenal(process);return 0; }
+                if(collision) { ClientAssets.ExportCollision(process);return 0; }
                 Console.WriteLine("{");
                 Field(process,"connection_state",0x01a2e7ec,4);
+                Field(process,"sound_fade_current_bits",0x0780e4b0,4);
+                Field(process,"sound_fade_target_bits",0x0780e4b4,4);
+                Field(process,"sound_fade_rate_bits",0x0780e4b8,4);
                 Field(process,"client_realtime",0x078b0a58,4);
                 Field(process,"client_input_catchers",0x01a2e7e4,4);
                 // 0x45f120 divides by this value; it is a time interval, not
@@ -140,6 +147,27 @@ class ReadClientState {
                         Field(process,"predicted_pm_type",checked(cg+4),4);
                         Field(process,"predicted_pm_flags",checked(cg+0xc),4);
                         Field(process,"predicted_other_flags",checked(cg+0x10),4);
+                        Field(process,"predicted_weapon",checked(cg+0x340),4);
+                        Field(process,"predicted_origin_x_bits",checked(cg+0x1c),4);
+                        Field(process,"predicted_origin_y_bits",checked(cg+0x20),4);
+                        Field(process,"predicted_origin_z_bits",checked(cg+0x24),4);
+                        Field(process,"predicted_velocity_x_bits",checked(cg+0x28),4);
+                        Field(process,"predicted_velocity_y_bits",checked(cg+0x2c),4);
+                        Field(process,"predicted_velocity_z_bits",checked(cg+0x30),4);
+                        for(uint axis=0;axis<3;axis++)for(uint component=0;component<3;component++)
+                            Field(process,"render_axis_"+axis+"_"+component+"_bits",checked(cg+0xae510+(axis*3+component)*4),4);
+                        for(uint axis=0;axis<3;axis++) {
+                            Field(process,"render_angle_"+axis+"_bits",checked(cg+0xb2688+axis*4),4);
+                            Field(process,"render_origin_"+axis+"_bits",checked(cg+0xae504+axis*4),4);
+                        }
+                        uint infoSlot=Read(process,0x07817bb4,4);
+                        if(infoSlot<256) {
+                            uint info=Read(process,0x01a19510+infoSlot*4,4)^0x7a634997;
+                            foreach(uint id in new uint[]{352,353,354,355}) {
+                                Field(process,"weapon_info_"+id+"_ready",checked(info+id*0x108),4);
+                                Field(process,"weapon_info_"+id+"_display",checked(info+id*0x108+4),4);
+                            }
+                        }
                         Field(process,"predicted_view_pitch_bits",checked(cg+0x14c),4);
                         Field(process,"predicted_view_yaw_bits",checked(cg+0x150),4);
                         Field(process,"predicted_weapon_animation",checked(cg+0x26c),4);
@@ -213,6 +241,11 @@ class ReadClientState {
                     Field(process,"current_clip_ammo_0",checked(active+0xc+0x3e0),4);
                     Field(process,"current_reserve_ammo_0",checked(active+0xc+0x368),4);
                     Field(process,"current_weapon_time",checked(active+0xc+0x270),4);
+                    Field(process,"current_weapon",checked(active+0xc+0x340),4);
+                    Field(process,"current_command_time",checked(active+0xc),4);
+                    Field(process,"current_origin_x_bits",checked(active+0xc+0x1c),4);
+                    Field(process,"current_origin_y_bits",checked(active+0xc+0x20),4);
+                    Field(process,"current_origin_z_bits",checked(active+0xc+0x24),4);
                     Field(process,"current_ads_fraction_bits",checked(active+0xc+0x34c),4);
                 }
                 Field(process,"config_version",0x078a06bc,4);

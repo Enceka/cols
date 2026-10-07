@@ -10,6 +10,7 @@
 - [AlphaBuild 审阅](ALPHA_BUILD_REVIEW.md)：用户提供的 1.1.1.13 实现、与 3.3.3.3 的交叉核对和移植依据。
 - [AlphaBuild逻辑移植路线](ALPHA_RUST_PORT_PLAN.md)：用户确认纯Rust，按完整玩法模块移植并适配3.3差异。
 - [2.6.9.7加载文档对照](LOADING_2697_REVIEW.md)：本版IFS明文清单、M4跨包资源与模型表装配函数的核对。
+- [玩家背包配装](PLAYER_LOADOUT_PROGRESS.md)：按账号读取保存的背包，合并默认件与玩家配件，校验所有权和组合参数。
 - [持枪模型与动画绑定](VIEWMODEL_PROGRESS.md)：实际DObj/XAnim证据、手臂模型单变量对照及默认资源修正。
 - [AUTH 与大厅通道](AUTH_LOBBY_PROGRESS.md)：Rust 认证票据与协议 210 的真实客户端验证、UDP 地址发现、业务帧解密。
 - [业务初始化与文件服务](SERVICE_INITIALIZATION.md)：任务 FIFO、时间、存储格式与早期公共配置失败。
@@ -19,16 +20,16 @@
 
 用户最新要求：先恢复登录、背包和大厅，然后推进本地房间/人机与双客户端最小对局。优先使用 GameHub Wine/Proton 在 Mac 上运行，Parallels Windows 保留作对照；服务端使用 Rust。
 
-当前入口：[玩家出生、输入与装备](PLAYER_BOOTSTRAP_PROGRESS.md)。阿富汗场景/HUD可见，用户已确认持续鼠标转向。commandTime已与快照时钟分离；输入base按ACK选择，组合M4、弹药、entity0已下发。射击后弹匣不会再被快照重置30；换弹状态已实现，实机结果见该文档。持枪模型/瞄准仍异常，尚无权威移动、碰撞、命中和AI。
+当前入口：[背包与全物品](PLAYER_LOADOUT_PROGRESS.md)、[移动与音频](GAMEPLAY_INPUT_PROGRESS.md)。通用资源配装、主副武器和CS6800注册已接通，用户确认切枪恢复；6772项物品已授予。当前优先修复渲染yaw翻倍造成的方向错乱，以及坡面预测差异导致的回拉。移动尚未验收，伤害/命中/AI未实现。
 
-[客户端启动恢复](CLIENT_STARTUP_RECOVERY.md)记录了两次同一IFS文件对象阻塞。当前prefix为 `wine10-play-20261007`，只读探针单独用 `wine10-probe-build-20261007` 编译；保留已有账号、库存和钱包。已结束实验的清理状态以对应experiment.json为准，运行中的实验有900秒期限。
+当前游戏prefix为 `wine10-loadout-20261007`；探针编译用 `wine10-loadout-build-20261007`。音频32位COM缺失已经修复注册，后续需听音确认。运行实验仍有900秒期限，退出状态以experiment.json为准。
 
-检查结果：95项Rust、19项Python及fmt/Clippy通过。普通单元测试不代替画面与操作验收。
+最近完整检查通过：141项Rust、30项Python及fmt/Clippy。曾有UDP测试冷构建后2秒等待超时、同一binary重跑成功；没有盲目延长超时。普通测试不代替真实方向、移动与音频验收。
 
 下一次工作：
 
-1. 默认手臂已通过单变量对照改为viewhands_tf141，实际DObj/XAnim已读到。继续补齐M4默认配件；idle0x400→0x401实验没有修复姿态，不要重复。详见持枪模型文档。
-2. 补全服务端ADS、换弹中断、武器事件及射击状态连续性；随后接入地图碰撞与权威位移。每帧固定出生坐标不是移动实现；不把客户端预测动作当作服务器完成。
+1. 默认手臂已通过单变量对照改为viewhands_tf141，实际DObj/XAnim已读到。默认配件已补齐，当前背包配装见新文档；idle0x400→0x401实验没有修复姿态，不要重复。详见持枪模型文档。
+2. ADS连续状态已接入；扩展背包组合时先补充实测参数，再接入地图碰撞与权威位移。每帧固定出生坐标不是移动实现；不把客户端预测动作当作服务器完成。
 3. 复用已验证native方向、NCS CRC、时钟配置和ACK输入base。改PS字段时核对目标版本的235项字段表，不能照搬Alpha布局。
 4. 复用现有客户端与业务数据，不重新初始化账号。商城切换暂缓；剧情首关仍缺无21/1路径的security key。
 5. 每个可验证阶段Git commit；没有要求推送。原始抓包、资源、账号和密钥保留在忽略目录。

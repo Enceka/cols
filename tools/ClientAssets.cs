@@ -274,10 +274,10 @@ class ClientAssets {
             baseIndex=i;
         }
         if(weapon==null)throw new Exception("M4 not registered; load the training map first");
-        string composedName="** "+baseIndex+" 3 0";
+        string composedName="** "+baseIndex+" ";
         for(uint i=1;i<=count;i++) {
             uint at=r.Word(0x017f5a40+i*4);string name=r.Name(r.Word(at));
-            if(name!=composedName)continue;
+            if(!name.StartsWith(composedName,StringComparison.Ordinal))continue;
             if(composed!=null)throw new Exception("duplicate composed M4");
             composed=Obj("name",name,"index",i,"ammo_key",r.Word(at+0x6b8),"clip_key",r.Word(at+0x6c0),
                 "runtime_fields",r.WeaponRuntimeFields(at));
@@ -307,6 +307,163 @@ class ClientAssets {
             "ads_reload_allowed",Read(at+0xd78,1)[0],"ads_reload_interruptible",Read(at+0xd86,1)[0],
             "ads_reload_end_msec",Word(at+0xb38),
             "animation_name_fields",names);
+    }
+    uint ItemRecord(ushort id) {
+        // Target0x5845b0: compact item ID -> record index ->40-byte record.
+        if(id==0)return 0;
+        uint group=BitConverter.ToUInt16(Read(0x02db8ad4+(uint)(id/1000)*2,2),0);
+        uint slot=(group+(uint)(id%1000))&65535;
+        if(slot>=Word(0x02db8ad0))return 0;
+        uint index=BitConverter.ToUInt16(Read(Word(0x02db8acc)+slot*2,2),0);
+        if(index==0||index>=Word(0x02db8ac8))return 0;
+        return Word(0x02db8ac4)+index*0x28;
+    }
+    uint AttachmentIndex(string name,byte[] registry) {
+        // Target0x42c740: multiply/XOR hash, upper run then wrapped lower run.
+        uint hash=0;foreach(char c in name)hash=unchecked(hash*0x1000193^(uint)c);
+        uint start=hash%0x3fff,found=0;
+        for(uint i=start==0?1:start;i<0x3fff;i++) {
+            uint ptr=U(registry,(int)i*4);if(ptr==0)return 0;
+            if(String.Equals(Name(ptr),name,StringComparison.OrdinalIgnoreCase)){found=i;break;}
+        }
+        for(uint i=1;i<start;i++) {
+            uint ptr=U(registry,(int)i*4);if(ptr==0)return found;
+            if(String.Equals(Name(ptr),name,StringComparison.OrdinalIgnoreCase))return i;
+        }
+        return found;
+    }
+    byte[] itemPool;
+    object M4DefaultParts(byte[] registry) { return WeaponDefaultParts("m4_mp",registry); }
+    object WeaponDefaultParts(string weaponName,byte[] registry) {
+        // 0x584470 finds a record by its internal name; this bounded scan
+        // reads the same pool without calling the game or its hash routine.
+        int count=Count(Word(0x02db8ac8),65535);uint pool=Word(0x02db8ac4);
+        byte[] records=itemPool??(itemPool=Read(pool,count*0x28));uint found=0;
+        for(int i=1;i<count;i++)if(Name(U(records,i*0x28+12))==weaponName) {
+            if(found!=0)throw new Exception("ambiguous M4 item record");found=pool+(uint)i*0x28;
+        }
+        if(found==0)throw new Exception("M4 item record missing");
+        uint detailIndex=BitConverter.ToUInt16(Read(found+2,2),0);
+        uint detailCount=BitConverter.ToUInt16(Read(0x02dbba30,2),0);
+        if(detailIndex==0||detailIndex>=detailCount)throw new Exception("M4 details index invalid");
+        uint details=Word(0x02dbba2c)+detailIndex*0x4c;
+        var parts=new List<object>();
+        // 0x709650 compares item ID against details+0x20+item.kind*2.
+        // +0x40 is separate; do not treat it as a seventeenth slot.
+        for(uint kind=0;kind<16;kind++) {
+            ushort item=BitConverter.ToUInt16(Read(details+0x20+kind*2,2),0);
+            if(item==0||item==20008)continue; //0x709650 treats20008 as universal none
+            uint at=ItemRecord(item);if(at==0)throw new Exception("default part item missing");
+            byte actualKind=Read(at+6,1)[0];if(actualKind!=kind)throw new Exception("default part kind mismatch");
+            string name=Name(Word(at+12));uint wire=AttachmentIndex(name,registry);
+            if(wire==0)throw new Exception("default part not registered: "+name);
+            parts.Add(Obj("kind",kind,"item_id",item,"name",name,"wire_index",wire));
+        }
+        return Obj("weapon",weaponName,"parts",parts);
+    }
+    public static void ExportArsenal(IntPtr process) {
+        var r=new ClientAssets(process);
+        if(r.Word(0x01a2e7ec)!=10)throw new Exception("load the map before arsenal capture");
+        var marketplace=(Dictionary<string,object>)r.Table("mp/coMarketplaceItems.csv");
+        var cells=(List<string>)marketplace["cells_base64"];int columns=(int)marketplace["columns"];
+        var items=new Dictionary<string,List<uint>>(StringComparer.Ordinal);
+        for(int row=0;row<cells.Count;row+=columns) {
+            string group=Encoding.ASCII.GetString(Convert.FromBase64String(cells[row+2]));
+            if(group!="wea")continue;
+            string name=Encoding.ASCII.GetString(Convert.FromBase64String(cells[row+1]));
+            uint id=UInt32.Parse(Encoding.ASCII.GetString(Convert.FromBase64String(cells[row])));
+            List<uint> ids;if(!items.TryGetValue(name,out ids)){ids=new List<uint>();items.Add(name,ids);}ids.Add(id);
+        }
+        int count=Count(r.Word(0x07817b88),899);byte[] names=r.Read(0x017e5848,16384*4);
+        var weapons=new List<object>();
+        for(uint i=1;i<=count;i++) {
+            uint def=r.Word(0x017f5a40+i*4);if(def==0)continue;
+            string name=r.Name(r.Word(def));if(!items.ContainsKey(name))continue;
+            var compatible=new List<object>();int n=Count(r.Read(0x017f5848+i,1)[0],64);
+            byte[] pairs=r.Read(0x017f8248+i*0x100,n*4);
+            for(int j=0;j<n;j++) {
+                uint wire=BitConverter.ToUInt16(pairs,j*4),attr=BitConverter.ToUInt16(pairs,j*4+2);
+                if(wire==0||wire>=0x3fff)throw new Exception("attachment index invalid");
+                string part=r.Name(U(names,(int)wire*4));uint data=r.Word(0x017f7a48+attr*4);
+                int fields=Count(r.Word(data+4),256);
+                compatible.Add(Obj("name",part,"wire_index",wire,"items",r.AttachmentItems(part,wire),
+                    "attributes_base64",Convert.ToBase64String(fields==0?new byte[0]:r.Read(r.Word(data+8),fields*12))));
+            }
+            weapons.Add(Obj("name",name,"base_index",i,"item_ids",items[name],
+                "definition_base64",Convert.ToBase64String(r.Read(def,0xe28)),
+                "defaults",r.WeaponDefaultParts(name,names),"compatible",compatible));
+        }
+        var serializer=new JavaScriptSerializer();serializer.MaxJsonLength=16*1024*1024;
+        Console.WriteLine(serializer.Serialize(Obj("schema_version",1,"read_only",true,
+            "client_sha256","e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b",
+            "connection_state",10,"ncs_crc",r.Word(0x02df7d90),"registered_count",count,
+            "marketplace",marketplace,"weapons",weapons)));
+    }
+    public static void ExportCollision(IntPtr process) {
+        var r=new ClientAssets(process);
+        if(r.Word(0x01a2e7ec)!=10)throw new Exception("load the map before collision capture");
+        uint cm=0x02dfb000;byte[] header=r.Read(cm,256);string map=r.Name(U(header,0));
+        if(map!="maps/mp/mp_afghan.d3dbsp")throw new Exception("unexpected collision map: "+map);
+        var brushes=new List<object>();int count=Count(BitConverter.ToUInt16(header,0x38),65535);
+        byte[] raw=r.Read(U(header,0x3c),count*36),bounds=r.Read(U(header,0x40),count*24),contents=r.Read(U(header,0x44),count*4);
+        for(int b=0;b<count;b++) {
+            uint mask=U(contents,b*4);if((mask&0x02814011)==0)continue;
+            var planes=new List<object>();int sides=Count(BitConverter.ToUInt16(raw,b*36),256);
+            byte[] side=sides==0?new byte[0]:r.Read(U(raw,b*36+4),sides*8);
+            for(int j=0;j<sides;j++) {byte[] plane=r.Read(U(side,j*8),16);planes.Add(Floats(plane,0,4));}
+            brushes.Add(Obj("center",Floats(bounds,b*24,3),"half",Floats(bounds,b*24+12,3),"contents",mask,"planes",planes));
+        }
+        int vc=Count(U(header,0x64),300000),tc=Count(U(header,0x6c),600000),pc=Count(U(header,0x80),100000),ac=Count(U(header,0x88),100000);
+        byte[] verts=r.Read(U(header,0x68),vc*12),tris=r.Read(U(header,0x70),tc*6),parts=r.Read(U(header,0x84),pc*12),trees=r.Read(U(header,0x8c),ac*32);
+        var triangles=new List<object>();var done=new HashSet<uint>();
+        for(int a=0;a<ac;a++) {
+            if(BitConverter.ToUInt16(trees,a*32+14)!=0)continue;
+            uint part=U(trees,a*32+28);if(part>=pc)throw new Exception("collision partition index invalid");
+            uint mat=BitConverter.ToUInt16(trees,a*32+12);byte[] material=r.Read(U(header,0x14)+mat*12,12);uint mask=U(material,8);
+            if((mask&0x02814011)==0||!done.Add(part))continue;
+            uint first=U(parts,(int)part*12+4),block=parts[part*12+2];int n=parts[part*12];
+            if(first+n>tc)throw new Exception("collision triangle span invalid");
+            for(uint t=first;t<first+n;t++) {
+                var points=new List<object>();
+                for(int j=0;j<3;j++){uint v=block*1024+BitConverter.ToUInt16(tris,(int)t*6+j*2);if(v>=vc)throw new Exception("collision vertex invalid");points.Add(Floats(verts,(int)v*12,3));}
+                triangles.Add(Obj("vertices",points,"contents",mask,"surface_flags",U(material,4)));
+            }
+        }
+        var serializer=new JavaScriptSerializer();serializer.MaxJsonLength=64*1024*1024;
+        Console.WriteLine(serializer.Serialize(Obj("schema_version",1,"read_only",true,
+            "client_sha256","e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b",
+            "map",map,"ncs_crc",r.Word(0x02df7d90),"brushes",brushes,"triangles",triangles)));
+    }
+    static float[] Floats(byte[] bytes,int offset,int count) {
+        var values=new float[count];for(int i=0;i<count;i++){values[i]=BitConverter.ToSingle(bytes,offset+i*4);if(Single.IsNaN(values[i])||Single.IsInfinity(values[i]))throw new Exception("nonfinite geometry");}return values;
+    }
+    Dictionary<string,List<object>> attachmentItems;
+    object AttachmentItems(string name,uint wire) {
+        // Resolve marketplace IDs through the target's compact item registry,
+        // not the display slot order in coWeapSlotDefs.csv.
+        if(attachmentItems==null) {
+            attachmentItems=new Dictionary<string,List<object>>(StringComparer.Ordinal);
+            int count=Count(Word(0x02db8ac8),65535),slots=Count(Word(0x02db8ad0),65536);
+            byte[] records=Read(Word(0x02db8ac4),count*0x28);
+            byte[] indices=Read(Word(0x02db8acc),slots*2),groups=Read(0x02db8ad4,66*2);
+            for(uint id=1;id<=65535;id++) {
+                uint slot=(BitConverter.ToUInt16(groups,(int)(id/1000)*2)+id%1000)&65535;
+                if(slot>=slots)continue;
+                int index=BitConverter.ToUInt16(indices,(int)slot*2);
+                if(index==0||index>=count)continue;
+                string itemName=Name(U(records,index*0x28+12));
+                if(itemName==null)continue;
+                List<object> list;
+                if(!attachmentItems.TryGetValue(itemName,out list)) {
+                    list=new List<object>();attachmentItems.Add(itemName,list);
+                }
+                list.Add(Obj("item_id",id,"kind",records[index*0x28+6],"name",itemName));
+            }
+        }
+        var items=new List<object>();List<object> matches;
+        if(name!=null && attachmentItems.TryGetValue(name,out matches))foreach(Dictionary<string,object> item in matches)
+            items.Add(Obj("item_id",item["item_id"],"kind",item["kind"],"name",name,"wire_index",wire));
+        return items;
     }
     public static void ExportWeaponModels(IntPtr process) {
         var r=new ClientAssets(process);var names=new SortedSet<string>();var itemNames=new SortedSet<string>();
@@ -363,8 +520,10 @@ class ClientAssets {
                     uint id=BitConverter.ToUInt16(pairs,part*4);
                     if(id>=16384)throw new Exception("attachment ID budget");
                     uint attachment=r.Word(0x017e5848+id*4);
-                    compatible.Add(Obj("index",id,"name",attachment==0?null:r.Name(attachment),
-                        "attribute_index",BitConverter.ToUInt16(pairs,part*4+2)));
+                    string partName=attachment==0?null:r.Name(attachment);
+                    compatible.Add(Obj("index",id,"name",partName,
+                        "attribute_index",BitConverter.ToUInt16(pairs,part*4+2),
+                        "items",r.AttachmentItems(partName,id)));
                 }
             }
             if(baseIndex==0||!name.StartsWith("** "+baseIndex+" ",StringComparison.Ordinal))continue;
@@ -457,7 +616,7 @@ class ClientAssets {
         }
         var output=Obj("schema_version",1,"read_only",true,
             "client_sha256","e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b",
-            "connection_state",r.Word(0x01a2e7ec),"ncs_crc",r.Word(0x02df7d90),"model_table_names",names,"item_table_names",itemNames,"tables",tables,"weapons",weapons,"compatible_attachments",compatible,"default_attachment_names",defaults,"first_person",firstPerson,"candidate_hands",candidateHands);
+            "connection_state",r.Word(0x01a2e7ec),"ncs_crc",r.Word(0x02df7d90),"model_table_names",names,"item_table_names",itemNames,"tables",tables,"weapons",weapons,"compatible_attachments",compatible,"default_attachment_names",defaults,"m4_default_parts",r.M4DefaultParts(attachmentNames),"first_person",firstPerson,"candidate_hands",candidateHands);
         var serializer=new JavaScriptSerializer();serializer.MaxJsonLength=8*1024*1024;
         Console.WriteLine(serializer.Serialize(output));
     }

@@ -2,8 +2,10 @@
 pub mod auth_server;
 pub mod capture;
 pub mod config;
+mod game_arsenal;
 mod game_connection;
 mod game_handshake;
+pub mod game_motion;
 mod game_player;
 pub mod game_server;
 pub mod game_state;
@@ -15,3 +17,4 @@ mod rooms;
 pub mod services;
 pub mod session;
 pub mod stun_server;
+mod weapon_attributes;

@@ -98,7 +98,7 @@ def compute(capture, weapon_name=None, compose=False, viewhands=False,
         if compose:
             if len(weapons)+1>=900:raise ValueError("no free bootstrap weapon slot")
             result["bootstrap_weapon"].update(base_index=index,index=len(weapons)+1,
-                composed_name="** %d 3 0" % index)
+                camo=0,composed_name="** %d 0 0" % index)
         if viewhands:
             if viewhands_name not in ("viewhands_player_tf141","viewhands_tf141"):
                 raise ValueError("unsupported diagnostic hand model")
@@ -133,13 +133,25 @@ def spawn_origin(capture):
     raise ValueError("training spawn not found in map resource")
 
 
+def same_weapon_physics(source, target):
+    if source==target:return True
+    a=source.split(" ");b=target.split(" ")
+    # 0x42e3b0 applies stat overrides from attachments; its camo byte+0x90
+    # is consumed by0x42dc10/0x708190 only for model/material selection.
+    # Reuse runtime timings only when every other canonical token agrees.
+    return (len(a)>=4 and len(a)==len(b) and a[0]==b[0]=="**"
+            and a[:2]==b[:2] and a[3:]==b[3:] and a[3]=="0"
+            and all(re.fullmatch(r"0|[1-9][0-9]*",p) for p in a[1:]+b[1:])
+            and 0<=int(a[2])<=255 and 0<=int(b[2])<=255)
+
+
 def weapon_ammo(raw, crc, weapon):
     capture=json.loads(raw)
     if (capture.get("schema_version") != 1 or capture.get("read_only") is not True
             or capture.get("client_sha256") != CLIENT_SHA256 or capture.get("ncs_crc") != crc):
         raise ValueError("weapon runtime capture identity/CRC mismatch")
     w=capture.get("composed_weapon") if "composed_name" in weapon else capture["weapon"]
-    if not w or w["name"] != weapon.get("composed_name",weapon["name"]) or w["index"] != weapon["index"]:
+    if not w or not same_weapon_physics(w["name"],weapon.get("composed_name",weapon["name"])) or w["index"] != weapon["index"]:
         raise ValueError("runtime weapon differs from net constants")
     if (type(w["ammo_key"]) is not int or type(w["clip_key"]) is not int
             or not 0 <= w["ammo_key"] <= 1023 or not 0 <= w["clip_key"] <= 1022):
@@ -181,6 +193,28 @@ def weapon_ammo(raw, crc, weapon):
     return result
 
 
+def weapon_parts(raw, crc):
+    capture=json.loads(raw)
+    if (capture.get("schema_version") != 1 or capture.get("read_only") is not True
+            or capture.get("client_sha256") != CLIENT_SHA256 or capture.get("ncs_crc") != crc
+            or capture.get("connection_state") != 10):
+        raise ValueError("default-part capture identity/CRC mismatch")
+    recipe=capture["m4_default_parts"]
+    if recipe.get("weapon")!="m4_mp" or not 1<=len(recipe["parts"])<=16:
+        raise ValueError("invalid M4 default recipe")
+    parts=recipe["parts"];kinds=set();ids=set()
+    for part in parts:
+        kind=part["kind"];wire=part["wire_index"];item=part["item_id"]
+        if (type(kind) is not int or not 0<=kind<16 or kind in kinds
+                or type(wire) is not int or not 1<=wire<0x3fff or wire in ids
+                or type(item) is not int or not 1<=item<=65535 or item==20008
+                or not re.fullmatch(r"[a-z0-9_]{1,64}",part["name"])):
+            raise ValueError("invalid or duplicate default part")
+        kinds.add(kind);ids.add(wire)
+    return {"attachments":[p["wire_index"] for p in sorted(parts,key=lambda p:p["kind"])],
+            "attachment_source_sha256":hashlib.sha256(raw).hexdigest()}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("capture", type=Path)
@@ -189,6 +223,7 @@ def main():
     parser.add_argument("--weapon", choices=["m4_mp"], help="derive the basic M4 wire index for equipment bootstrap")
     parser.add_argument("--weapon-runtime", type=Path, help="registered ammo keys for a diagnostic 30/90 ammunition seed")
     parser.add_argument("--compose-weapon", action="store_true", help="register a model-composed M4 in the next unused weapon slot")
+    parser.add_argument("--default-parts", type=Path, help="M4 runtime default-parts capture; requires --compose-weapon")
     parser.add_argument("--viewhands", action="store_true", help="bind the inherited TF141 first-person hand model")
     parser.add_argument("--viewhands-model", choices=["viewhands_tf141","viewhands_player_tf141"], default="viewhands_tf141", help="hand-model comparison; requires --viewhands")
     args = parser.parse_args()
@@ -202,6 +237,12 @@ def main():
     if args.viewhands and not args.weapon:parser.error("viewhands requires weapon")
     if args.viewhands_model != "viewhands_tf141" and not args.viewhands:parser.error("viewhands-model requires viewhands")
     summary = compute(capture, args.weapon, args.compose_weapon,args.viewhands,args.viewhands_model)
+    if args.default_parts:
+        if not args.compose_weapon:parser.error("default-parts requires compose-weapon")
+        parts_raw=args.default_parts.read_bytes()
+        if len(parts_raw)>8*1024*1024:parser.error("default-part capture size limit")
+        weapon=summary["bootstrap_weapon"];weapon.update(weapon_parts(parts_raw,summary["ncs_crc"]))
+        weapon["composed_name"] += "".join(" %d" % i for i in weapon["attachments"])
     if args.weapon_runtime:
         if not args.weapon:
             parser.error("weapon-runtime requires weapon")

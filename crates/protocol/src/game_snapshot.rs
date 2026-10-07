@@ -1,6 +1,6 @@
 //! Bounded bootstrap snapshot probe for 3.3.3.3, NOT a world simulator.
 //! Parser: 0x46d170; playerState: 0x5a4230; table: 0xc55f70 (235 fields).
-use crate::{game_state::Writer, game_wire::SERVER_EOF, lobby::LobbyError};
+use crate::{game_events, game_state::Writer, game_wire::SERVER_EOF, lobby::LobbyError};
 
 #[derive(Debug, Clone, Copy)]
 pub struct Ammo {
@@ -16,12 +16,37 @@ pub struct Equipment {
     pub viewmodel: Option<u16>,
     pub firing: Option<Firing>,
     pub aim: Option<Aim>,
+    pub secondary: Option<EquippedWeapon>,
+    pub events: Option<crate::game_events::EventQueue>,
+}
+#[derive(Debug, Clone, Copy)]
+pub struct EquippedWeapon {
+    pub weapon: u16,
+    pub ammo: Option<Ammo>,
 }
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Aim {
     pub fraction: f32,
     pub button: bool,
     pub movement_slow: bool,
+}
+/// Authoritative movement fields from the target playerState layout. Position
+/// remains the frame's `origin` argument so it has a single source of truth.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct MotionSnapshot {
+    pub velocity: [f32; 3],
+    pub flags: u32,
+    pub ground_entity: u16,
+    pub view_height: f32,
+    pub view_height_target: u8,
+    pub speed: u16,
+    pub gravity: u16,
+    pub bob_cycle: u8,
+    pub view_height_lerp_time: u32,
+    pub view_height_lerp_target: u8,
+    pub view_height_lerp_down: bool,
+    pub jump_time: u32,
+    pub jump_origin_z: f32,
 }
 #[derive(Debug, Clone, Copy)]
 pub struct Firing {
@@ -91,8 +116,73 @@ pub fn player_frame(
     equipment: Option<Equipment>,
     angles: [u16; 3],
 ) -> Result<Vec<u8>, LobbyError> {
+    player_frame_with_motion(
+        server_time,
+        command_time,
+        origin,
+        establish_baseline,
+        equipment,
+        angles,
+        None,
+    )
+}
+
+pub fn player_frame_with_motion(
+    server_time: u32,
+    command_time: u32,
+    origin: Option<[f32; 3]>,
+    establish_baseline: bool,
+    equipment: Option<Equipment>,
+    angles: [u16; 3],
+    motion: Option<MotionSnapshot>,
+) -> Result<Vec<u8>, LobbyError> {
     let weapon = equipment.map(|e| e.weapon);
     let ammo = equipment.and_then(|e| e.ammo);
+    let secondary = equipment.and_then(|e| e.secondary);
+    let events = equipment.and_then(|e| e.events);
+    if let Some(events) = events {
+        events.validate()?;
+    }
+    if secondary.is_some_and(|other| {
+        other.weapon == 0 || other.weapon >= 900 || Some(other.weapon) == weapon
+    }) {
+        return Err(LobbyError("invalid secondary weapon"));
+    }
+    if motion.is_some_and(|m| {
+        origin.is_none()
+            || m.velocity
+                .iter()
+                .any(|n| !n.is_finite() || n.abs() > 1_000_000.0)
+            || !m.view_height.is_finite()
+            || !(0.0..=127.0).contains(&m.view_height)
+            || m.view_height_target > 127
+            || m.view_height_lerp_target > 127
+            || !m.jump_origin_z.is_finite()
+            || m.jump_origin_z.abs() > 1_000_000.0
+            || m.ground_entity > 2047
+            || m.view_height_lerp_time > command_time
+            || m.jump_time > command_time
+    }) {
+        return Err(LobbyError("invalid authoritative movement"));
+    }
+    let ammunition: Vec<Ammo> = ammo
+        .into_iter()
+        .chain(secondary.and_then(|other| other.ammo))
+        .collect();
+    let mut clips = Vec::<Ammo>::new();
+    let mut reserves = Vec::<Ammo>::new();
+    for record in &ammunition {
+        if let Some(previous) = clips.iter().find(|a| a.clip_key == record.clip_key) {
+            if previous.clip != record.clip {
+                return Err(LobbyError("conflicting shared clip ammunition"));
+            }
+        } else {
+            clips.push(*record);
+        }
+        if !reserves.iter().any(|a| a.reserve_key == record.reserve_key) {
+            reserves.push(*record);
+        }
+    }
     let viewmodel = equipment.and_then(|e| e.viewmodel);
     let firing = equipment.and_then(|e| e.firing);
     let aim = equipment.and_then(|e| e.aim);
@@ -107,9 +197,10 @@ pub fn player_frame(
     if viewmodel.is_some_and(|i| i == 0 || i >= 1024) {
         return Err(LobbyError("invalid viewmodel index"));
     }
-    if ammo.is_some_and(|a| {
-        a.clip_key > 1022 || a.reserve_key > 1023 || a.clip > 511 || a.reserve > 2047
-    }) {
+    if ammunition
+        .iter()
+        .any(|a| a.clip_key > 1022 || a.reserve_key > 1023 || a.clip > 511 || a.reserve > 2047)
+    {
         return Err(LobbyError("invalid bootstrap ammo"));
     }
     if weapon.is_some_and(|w| w == 0 || w >= 900) || (weapon.is_some() && origin.is_none()) {
@@ -138,24 +229,59 @@ pub fn player_frame(
         .extend_from_slice(&[0, if establish_baseline { 8 } else { 0 }]);
     out.bits(0, 1); // no prior playerState
     out.bits(1, 1); // transmit origin/velocity rather than local prediction
-    out.bits(if origin.is_some() { 69 } else { 1 }, 8);
+    out.bits(
+        if motion.is_some() {
+            218
+        } else if origin.is_some() {
+            69
+        } else {
+            1
+        },
+        8,
+    );
     out.bits(1, 1); // field gap +1 from -1
     out.bits(1, 1); // -97 codec, absolute LE32 (0x5a20c0)
     out.bytes.extend_from_slice(&command_time.to_le_bytes());
     if let Some(origin) = origin {
-        // Target field table 0xc55f70. No hint-2 entries occur below index69.
+        // Target field table 0xc55f70. Hint-2 fields use the later tail pass.
         // Equipment and angles must also be reflected in the input delta base.
         let mut previous = 0;
         let mut fields = vec![
             (8, origin[0].to_bits(), 0),
             (10, origin[2].to_bits(), 0),
             (11, origin[1].to_bits(), 0),
-            (34, 60f32.to_bits(), 0),
-            (38, 60, 8),
-            (47, 2047, 11),
+            (34, motion.map_or(60.0, |m| m.view_height).to_bits(), 0),
+            (
+                38,
+                u32::from(motion.map_or(60, |m| m.view_height_target)),
+                8,
+            ),
+            (47, u32::from(motion.map_or(2047, |m| m.ground_entity)), 11),
             (61, 2047, 16),
             (68, 2047, 11),
         ];
+        if let Some(motion) = motion {
+            fields.extend([
+                (12, u32::from(motion.bob_cycle), 8),
+                (13, motion.velocity[1].to_bits(), 0),
+                (14, motion.velocity[0].to_bits(), 0),
+                (16, motion.velocity[2].to_bits(), 0),
+                (58, 1f32.to_bits(), 100),
+                (60, u32::from(motion.speed), 16),
+                (63, u32::from(motion.gravity), 16),
+                (81, u32::from(motion.view_height_lerp_target), 8),
+                (92, motion.view_height_lerp_time, 32),
+                (102, motion.jump_time, 32),
+                (114, motion.jump_origin_z.to_bits(), 100),
+                (217, 1f32.to_bits(), 100),
+            ]);
+        }
+        if let Some(events) = events {
+            fields.push((1, u32::from(events.sequence), 75));
+            for slot in 0..4 {
+                fields.push((21 + slot, slot, 94));
+            }
+        }
         if let Some(weapon) = weapon {
             // 0x422e5c/0x42956f select idle0 with the0x400 restart bit.
             fields.extend([
@@ -178,16 +304,18 @@ pub fn player_frame(
         if let Some(model) = viewmodel {
             fields.push((56, u32::from(model), 10));
         }
-        if let Some(aim) = aim {
-            // Target PS+0xc, field20; PS+0x34c, field41. 0x4224e0 owns
-            // the fraction, not the first-person rendering animation clock.
-            let flags = (u32::from(aim.button) * 0x10) | (u32::from(aim.movement_slow) * 0x40);
-            if flags != 0 {
-                fields.push((20, flags, 32));
-            }
-            if aim.fraction != 0.0 {
-                fields.push((41, aim.fraction.to_bits(), 0));
-            }
+        // Motion and ADS share PS.pm_flags. Emit their combined word once.
+        let flags = motion.map_or(0, |m| m.flags)
+            | aim.map_or(0, |a| {
+                (u32::from(a.button) * 0x10) | (u32::from(a.movement_slow) * 0x40)
+            });
+        if flags != 0 {
+            fields.push((20, flags, 32));
+        }
+        if let Some(aim) = aim
+            && aim.fraction != 0.0
+        {
+            fields.push((41, aim.fraction.to_bits(), 0));
         }
         // Marker87 is the target's -87 short-angle codec, with no nonzero bit.
         for (index, value) in [(19, angles[0]), (18, angles[1]), (29, angles[2])] {
@@ -204,6 +332,16 @@ pub fn player_frame(
                 out.bytes.extend_from_slice(&value.to_le_bytes());
             } else if width == 87 {
                 out.bytes.extend_from_slice(&(value as u16).to_le_bytes());
+            } else if width == 75 {
+                game_events::write_sequence(&mut out, value as u8);
+            } else if width == 94 {
+                game_events::write_event(&mut out, events.unwrap().slots[value as usize]);
+            } else if width == 100 {
+                // Generic float codec 0 differs from raw-float codec -88:
+                // nonzero + full-precision gates, then the raw XOR word.
+                out.bits(1, 1);
+                out.bits(1, 1);
+                out.bytes.extend_from_slice(&value.to_le_bytes());
             } else {
                 // 0x5a27f0 nonzero gate -> 0x5a2510 -> 0x5a2470:
                 // remainder bits first, then whole bytes (not all pool bits).
@@ -216,15 +354,26 @@ pub fn player_frame(
             }
         }
     }
+    if let Some(motion) = motion {
+        // 0x5a4541..0x5a458d: all hint-2 fields strictly below the last
+        // ordinary field, in table order. No gaps and no enclosing gate.
+        // 82(-101),89(1),93(1),98(1),101(1),104(16),106(1),122(-57).
+        out.bits(0, 1); // 82: preserve the initialized protected float.
+        out.bits(u32::from(motion.view_height_lerp_down), 1); // 89 nonzero gate
+        if motion.view_height_lerp_down {
+            out.bits(1, 1);
+        }
+        out.bits(0, 6); // Five zero numeric gates, then direct bool at122.
+    }
     // 0x5a463d: stats presence, 4-bit mask, first stat is a short.
     out.bits(1, 1);
     out.bits(if weapon.is_some() { 5 } else { 1 }, 4);
     out.bytes.extend_from_slice(&100u16.to_le_bytes());
     if let Some(weapon) = weapon {
         out.bytes.extend_from_slice(&100u16.to_le_bytes()); // stats[2], max health
-        if let Some(ammo) = ammo {
+        for (slot, ammo) in clips.iter().enumerate() {
             out.bits(1, 1);
-            out.bits(0, 4);
+            out.bits(slot as u32, 4);
             out.bits(u32::from(ammo.clip_key), 10);
             out.bits(1, 1);
             out.bits(u32::from(ammo.clip), 9);
@@ -237,10 +386,18 @@ pub fn player_frame(
         out.bits(1, 1); // weapon ID present
         out.bits(u32::from(weapon), 10);
         out.bits(0, 5); // five per-slot flags
-        out.bits(0, 14); // slots1..14 unchanged
-        if let Some(ammo) = ammo {
+        if let Some(other) = secondary {
+            out.bits(1, 1); // slot1 changed
+            out.bits(1, 1); // weapon ID present
+            out.bits(u32::from(other.weapon), 10);
+            out.bits(0, 5);
+            out.bits(0, 13); // slots2..14 unchanged
+        } else {
+            out.bits(0, 14); // slots1..14 unchanged
+        }
+        for (slot, ammo) in reserves.iter().enumerate() {
             out.bits(1, 1);
-            out.bits(0, 4);
+            out.bits(slot as u32, 4);
             out.bits(u32::from(ammo.reserve_key), 10);
             out.bits(u32::from(ammo.reserve), 11);
         }
@@ -299,6 +456,247 @@ fn gap(out: &mut Writer, distance: u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{game_events::EventQueue, game_wire::Reader};
+    use std::collections::BTreeMap;
+
+    // An independent reader driven by the extracted target table. The event
+    // widths used here are measured entries from 0xc56d70, not writer helpers.
+    fn read_fields(r: &mut Reader<'_>) -> (BTreeMap<usize, u32>, BTreeMap<usize, u32>) {
+        let layout: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../fixtures/protocol/player-state-fields-3.3.3.3.json"
+        ))
+        .unwrap();
+        let integer = |r: &mut Reader<'_>, width: usize| {
+            if r.bits(1).unwrap() == 0 {
+                return 0;
+            }
+            let low = width % 8;
+            let mut value = r.bits(low).unwrap();
+            for bit in (low..width).step_by(8) {
+                value |= u32::from(r.u8().unwrap()) << bit;
+            }
+            value
+        };
+        let last = r.bits(8).unwrap() as i32 - 1;
+        let mut index = -1i32;
+        let mut fields = BTreeMap::new();
+        let mut parameters = BTreeMap::new();
+        while index < last {
+            let mut distance = 1;
+            if r.bits(1).unwrap() == 0 {
+                loop {
+                    let part = r.bits(4).unwrap();
+                    distance += part;
+                    if part < 15 {
+                        break;
+                    }
+                }
+            }
+            index += distance as i32;
+            assert!(index <= last);
+            let entry = &layout["fields"][index as usize];
+            assert_ne!(
+                entry[2], 2,
+                "hint-2 must not appear in ordinary field stream"
+            );
+            let codec = entry[1].as_i64().unwrap();
+            let value = match codec {
+                -97 => {
+                    assert_eq!(r.bits(1).unwrap(), 1);
+                    r.u32().unwrap()
+                }
+                -88 => r.u32().unwrap(),
+                -87 => u32::from(r.u16().unwrap()),
+                -75 => {
+                    assert_eq!(r.bits(1).unwrap(), 0);
+                    u32::from(r.u8().unwrap())
+                }
+                -94 => {
+                    assert_eq!(r.bits(1).unwrap(), 1);
+                    let id = r.u8().unwrap();
+                    let width = match id {
+                        0 => 11,
+                        24..=33 | 40 | 41 => 0,
+                        34 | 35 => 10,
+                        36 | 37 => 5,
+                        _ => panic!("unexpected event in fixture test"),
+                    };
+                    let parameter = if width != 0 && r.bits(1).unwrap() != 0 {
+                        r.bits(width).unwrap()
+                    } else {
+                        0
+                    };
+                    parameters.insert(index as usize, parameter);
+                    u32::from(id)
+                }
+                0 => {
+                    assert_eq!(r.bits(1).unwrap(), 1);
+                    assert_eq!(r.bits(1).unwrap(), 1);
+                    r.u32().unwrap()
+                }
+                _ => integer(r, codec.unsigned_abs() as usize),
+            };
+            fields.insert(index as usize, value);
+        }
+        for (index, entry) in layout["fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .enumerate()
+            .take(last as usize)
+        {
+            if entry[2] != 2 {
+                continue;
+            }
+            let codec = entry[1].as_i64().unwrap();
+            let value = match codec {
+                -101 => {
+                    assert_eq!(r.bits(1).unwrap(), 0);
+                    0
+                }
+                -57 => r.bits(1).unwrap(),
+                _ => integer(r, codec.unsigned_abs() as usize),
+            };
+            fields.insert(index, value);
+        }
+        (fields, parameters)
+    }
+
+    #[test]
+    fn movement_events_and_two_weapons_decode_with_the_target_field_and_array_layout() {
+        let mut events = EventQueue::default();
+        events
+            .push(game_events::WEAPON_SWITCH_STARTED, 352)
+            .unwrap();
+        events.push(game_events::PUT_AWAY_WEAPON, 0).unwrap();
+        events.push(game_events::RAISE_WEAPON, 0).unwrap();
+        events.push(game_events::FIRE_WEAPON_LAST_SHOT, 0).unwrap();
+        let equipment = Equipment {
+            weapon: 352,
+            ammo: Some(Ammo {
+                clip_key: 352,
+                reserve_key: 163,
+                clip: 29,
+                reserve: 90,
+            }),
+            secondary: Some(EquippedWeapon {
+                weapon: 180,
+                ammo: Some(Ammo {
+                    clip_key: 180,
+                    reserve_key: 163,
+                    clip: 9,
+                    reserve: 90,
+                }),
+            }),
+            aim: Some(Aim {
+                fraction: 0.25,
+                button: true,
+                movement_slow: true,
+            }),
+            viewmodel: Some(54),
+            firing: None,
+            events: Some(events),
+        };
+        for lerp_down in [false, true] {
+            let motion = MotionSnapshot {
+                velocity: [127.25, -52.5, 190.0],
+                flags: 0x400002,
+                ground_entity: 2046,
+                view_height: 47.5,
+                view_height_target: 40,
+                speed: 190,
+                gravity: 800,
+                bob_cycle: 201,
+                view_height_lerp_time: 800,
+                view_height_lerp_target: 40,
+                view_height_lerp_down: lerp_down,
+                jump_time: 700,
+                jump_origin_z: -123.75,
+            };
+            let body = player_frame_with_motion(
+                1000,
+                950,
+                Some([25.0, 0.0, -113.4]),
+                false,
+                Some(equipment),
+                [0, 1234, 0],
+                Some(motion),
+            )
+            .unwrap();
+            let mut r = Reader::new(&body);
+            assert_eq!(r.u8().unwrap(), 0);
+            assert_eq!(r.u32().unwrap(), 1000);
+            assert_eq!(r.u8().unwrap(), 0);
+            assert_eq!(r.u8().unwrap(), 0);
+            assert_eq!(r.bits(2).unwrap(), 2); // Zero PS baseline, authoritative movement.
+            let (fields, parameters) = read_fields(&mut r);
+            for (index, expected) in [
+                (0, 950),
+                (1, 4),
+                (12, 201),
+                (13, (-52.5f32).to_bits()),
+                (14, 127.25f32.to_bits()),
+                (16, 190f32.to_bits()),
+                (20, 0x400052),
+                (21, 34),
+                (22, 32),
+                (23, 30),
+                (24, 37),
+                (34, 47.5f32.to_bits()),
+                (38, 40),
+                (47, 2046),
+                (58, 1f32.to_bits()),
+                (60, 190),
+                (63, 800),
+                (81, 40),
+                (89, u32::from(lerp_down)),
+                (92, 800),
+                (102, 700),
+                (114, (-123.75f32).to_bits()),
+                (217, 1f32.to_bits()),
+            ] {
+                assert_eq!(fields[&index], expected, "field {index}");
+            }
+            assert_eq!(
+                parameters,
+                BTreeMap::from([(21, 352), (22, 0), (23, 0), (24, 0)])
+            );
+            for index in [82, 93, 98, 101, 104, 106, 122] {
+                assert_eq!(fields[&index], 0);
+            }
+            assert_eq!(r.bits(1).unwrap(), 1);
+            assert_eq!(r.bits(4).unwrap(), 5);
+            assert_eq!(r.u16().unwrap(), 100);
+            assert_eq!(r.u16().unwrap(), 100);
+            for (slot, key, rounds) in [(0, 352, 29), (1, 180, 9)] {
+                assert_eq!(r.bits(1).unwrap(), 1);
+                assert_eq!(r.bits(4).unwrap(), slot);
+                assert_eq!(r.bits(10).unwrap(), key);
+                assert_eq!(r.bits(1).unwrap(), 1);
+                assert_eq!(r.bits(9).unwrap(), rounds);
+                assert_eq!(r.bits(1).unwrap(), 1);
+                assert_eq!(r.bits(9).unwrap(), 0);
+            }
+            assert_eq!(r.bits(1).unwrap(), 0);
+            assert_eq!(r.bits(1).unwrap(), 1); // Equipped array.
+            for id in [352, 180] {
+                assert_eq!(r.bits(2).unwrap(), 3);
+                assert_eq!(r.bits(10).unwrap(), id);
+                assert_eq!(r.bits(5).unwrap(), 0);
+            }
+            assert_eq!(r.bits(13).unwrap(), 0);
+            assert_eq!(r.bits(1).unwrap(), 1); // Only one shared reserve record.
+            assert_eq!(r.bits(4).unwrap(), 0);
+            assert_eq!(r.bits(10).unwrap(), 163);
+            assert_eq!(r.bits(11).unwrap(), 90);
+            assert_eq!(r.bits(13).unwrap(), 0); // Reserve EOF, ten arrays, anim, actor.
+            assert_eq!(r.bits(2).unwrap(), 2);
+            assert_eq!(r.bits(11).unwrap(), 2047);
+            assert_eq!(r.bits(2).unwrap(), 0);
+            assert_eq!(r.u8().unwrap(), SERVER_EOF);
+            r.finish().unwrap();
+        }
+    }
     #[test]
     fn equipped_snapshot_matches_target_field_array_and_entity_sections() {
         use crate::game_wire::Reader;
@@ -307,6 +705,8 @@ mod tests {
         ))
         .unwrap();
         let equipment = Equipment {
+            secondary: None,
+            events: None,
             weapon: 163,
             aim: Some(Aim {
                 fraction: 0.5,
@@ -434,6 +834,8 @@ mod tests {
             r.finish().unwrap();
         }
         let bad = Equipment {
+            secondary: None,
+            events: None,
             weapon: 163,
             aim: None,
             firing: None,
@@ -479,14 +881,40 @@ mod tests {
         assert_eq!(fields.len(), 235);
         for (index, offset, codec, hint) in [
             (0, 0, -97, 0),
+            (1, 0xf4, -75, 0),
             (8, 0x1c, -88, 3),
             (10, 0x24, -88, 3),
             (11, 0x20, -88, 3),
+            (12, 0x18, 8, 3),
+            (13, 0x2c, -88, 3),
+            (14, 0x28, -88, 3),
+            (16, 0x30, -88, 3),
+            (20, 0xc, 32, 0),
+            (21, 0xf8, -94, 0),
+            (22, 0x100, -94, 0),
+            (23, 0x108, -94, 0),
+            (24, 0x110, -94, 0),
             (34, 0x15c, -88, 0),
             (38, 0x158, -8, 0),
             (47, 0xac, 11, 0),
+            (58, 0x258, 0, 0),
+            (60, 0x9c, 16, 0),
             (61, 0x1b4, 16, 0),
+            (63, 0x90, 16, 0),
             (68, 0x1f0, 11, 0),
+            (81, 0x164, -8, 0),
+            (82, 0x218, -101, 2),
+            (89, 0x168, 1, 2),
+            (92, 0x160, 32, 0),
+            (93, 0x240, 1, 2),
+            (98, 0x210, 1, 2),
+            (101, 0x23c, 1, 2),
+            (102, 0xbc, 32, 0),
+            (104, 0x5b4, 16, 2),
+            (106, 0x360, 1, 2),
+            (114, 0xc0, 0, 0),
+            (122, 0x4bc, -57, 2),
+            (217, 0x98, 0, 0),
         ] {
             assert_eq!(fields[index], serde_json::json!([offset, codec, hint]));
         }

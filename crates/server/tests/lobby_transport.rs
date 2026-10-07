@@ -249,6 +249,61 @@ async fn exercise_lobby(local_services: bool) {
         let next = receive(&mut stream, &secrets.data_keys, 8).await;
         assert_eq!(next.kind, 1);
         assert_eq!(&next.body[..9], &[10, 7, 0, 0, 0, 0, 0, 0, 0]);
+
+        // A complete catalogue exceeds the former 64 KiB server frame cap.
+        // Exercise both nested player data and standalone refresh entries
+        // through real TCP/AES/MAC framing, including sentinel owner fields.
+        let items: Vec<u32> = (1..=6772).collect();
+        let account = temp
+            .path()
+            .join("data/profiles/1002")
+            .join(u64::MAX.to_string());
+        std::fs::create_dir_all(&account).unwrap();
+        std::fs::write(
+            account.join("inventory.json"),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "schema_version":1,"client_sha256":codol_protocol::CLIENT_SHA256,
+                "title_id":1002,"user_id":u64::MAX.to_string(),"items":items
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let mut refresh = codol_protocol::task::Writer(vec![80, 3, 203]);
+        refresh.string("");
+        refresh.u16(20000);
+        refresh.0.push(0);
+        for (sequence, opcode, request, records) in [
+            (
+                8,
+                230,
+                vec![80, 3, 230, 16, 0, 0],
+                vec![codol_protocol::task::player_data(u64::MAX, &items).unwrap()],
+            ),
+            (
+                9,
+                203,
+                refresh.0,
+                codol_protocol::task::inventory_records(u64::MAX, &items).unwrap(),
+            ),
+        ] {
+            let packet = lobby::encrypt_application(
+                0x86,
+                &request,
+                &secrets.data_keys,
+                Direction::ClientToServer,
+                sequence,
+                [0x47; 16],
+            )
+            .unwrap();
+            stream.write_all(&packet).await.unwrap();
+            let response = receive(&mut stream, &secrets.data_keys, sequence + 1).await;
+            assert_eq!(response.kind, 1);
+            assert!(response.body.len() > 65536);
+            assert_eq!(
+                response.body,
+                codol_protocol::task::reply(u64::from(sequence), opcode, Ok(&records)).unwrap()
+            );
+        }
     }
     stream.shutdown().await.unwrap();
     let mut rest = Vec::new();

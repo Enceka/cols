@@ -221,6 +221,7 @@ dependencies = [
  "base64",
  "clap",
  "codol-protocol",
+ "crc32fast",
  "httparse",
  "openssl",
  "serde",

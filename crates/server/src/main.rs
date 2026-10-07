@@ -333,6 +333,7 @@ async fn main() -> Result<()> {
                     let endpoint = game.admissions();
                     tracing::info!(address=%endpoint.address(),"experimental Rust game UDP endpoint ready");
                     lobby = lobby.with_game_endpoint(endpoint).await?;
+                    game = game.with_services(lobby.services());
                     tasks.spawn(game.run(wait_for_stop(receiver.clone())));
                 }
                 if let Some(bind) = stun_bind {

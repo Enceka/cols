@@ -3,6 +3,10 @@
 use crate::lobby::LobbyError;
 
 pub const MAX_FILE_BYTES: usize = 60 * 1024;
+/// The target player-data decoder (0xa4a6b0) uses a dynamic inventory array.
+/// 8192 records cover the 6772-item catalogue within the 512 KiB reply frame.
+pub const MAX_INVENTORY_ITEMS: usize = 8192;
+pub const MAX_TASK_RESULTS: usize = 8192;
 pub const NO_FILE: u32 = 1000;
 /// Profile consumer VA 0x6d83e0 explicitly initializes defaults for code 800.
 pub const NO_PROFILE: u32 = 800;
@@ -246,7 +250,7 @@ pub fn reply(
         Err(0) => return Err(LobbyError("zero error code is not a failure")),
         Err(code) => out.u32(code),
         Ok(records) => {
-            if records.len() > 2000 {
+            if records.len() > MAX_TASK_RESULTS {
                 return Err(LobbyError("too many task results"));
             }
             out.u32(0);
@@ -255,7 +259,8 @@ pub fn reply(
             if !records.is_empty() {
                 out.u32(records.len() as u32);
                 for record in records {
-                    if out.0.len() + record.len() > 65000 {
+                    if out.0.len() + record.len() > crate::lobby::MAX_SERVER_APPLICATION_BODY_BYTES
+                    {
                         return Err(LobbyError("task reply exceeds frame budget"));
                     }
                     out.0.extend_from_slice(record);
@@ -326,7 +331,7 @@ pub fn player_data_with_balances(
 }
 
 fn validate_inventory(items: &[u32]) -> Result<(), LobbyError> {
-    if items.len() > 128 || items.contains(&0) {
+    if items.len() > MAX_INVENTORY_ITEMS || items.contains(&0) {
         return Err(LobbyError("invalid local inventory count/item id"));
     }
     let mut seen = std::collections::HashSet::new();
@@ -404,7 +409,47 @@ mod tests {
         );
         assert!(player_data(1, &[792, 792]).is_err());
         assert!(player_data(1, &[0]).is_err());
-        assert!(player_data(1, &(1..=129).collect::<Vec<_>>()).is_err());
+        assert!(player_data(1, &(1..=MAX_INVENTORY_ITEMS as u32 + 1).collect::<Vec<_>>()).is_err());
+    }
+    #[test]
+    fn complete_inventory_and_refresh_fit_the_advertised_target_frame() {
+        let items: Vec<_> = (1..=MAX_INVENTORY_ITEMS as u32).collect();
+        for user in [1, u64::MAX] {
+            let inventory = player_data(user, &items).unwrap();
+            let mut reader = Reader::new(&inventory);
+            assert_eq!(reader.u64().unwrap(), user);
+            assert_eq!(reader.string(16).unwrap(), "");
+            assert_eq!(reader.u32().unwrap(), 0); // currencies
+            assert_eq!(reader.u32().unwrap(), MAX_INVENTORY_ITEMS as u32);
+            let full = reply(1, 230, Ok(&[inventory])).unwrap();
+            let entries = inventory_records(user, &items).unwrap();
+            assert_eq!(entries.len(), items.len());
+            let mut last = Reader::new(entries.last().unwrap());
+            assert_eq!(last.u64().unwrap(), user);
+            assert_eq!(last.string(16).unwrap(), "");
+            assert_eq!(last.u32().unwrap(), MAX_INVENTORY_ITEMS as u32);
+            for body in [full, reply(2, 203, Ok(&entries)).unwrap()] {
+                assert!(body.len() > 65536);
+                let wire = crate::lobby::encrypt_application(
+                    1,
+                    &body,
+                    &[1; 72],
+                    crate::lobby::Direction::ServerToClient,
+                    1,
+                    [2; 16],
+                )
+                .unwrap();
+                assert!(wire.len() - 4 <= crate::lobby::MAX_SERVER_FRAME_BYTES);
+                let decoded = crate::lobby::decrypt_application(
+                    &wire,
+                    &[1; 72],
+                    crate::lobby::Direction::ServerToClient,
+                    1,
+                )
+                .unwrap();
+                assert_eq!(decoded.body, body);
+            }
+        }
     }
     #[test]
     fn empty_player_record_inherits_unsigned_identity_and_uses_u32_counts() {
@@ -468,6 +513,13 @@ mod tests {
             crate::lobby::registration_status(1)
         );
         assert!(reply(1, 4, Err(0)).is_err());
-        assert!(reply(1, 4, Ok(&[vec![0; 65000]])).is_err());
+        assert!(
+            reply(
+                1,
+                4,
+                Ok(&[vec![0; crate::lobby::MAX_SERVER_APPLICATION_BODY_BYTES]])
+            )
+            .is_err()
+        );
     }
 }

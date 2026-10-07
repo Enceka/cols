@@ -57,6 +57,24 @@ pub fn validate_public(arguments: &[u8]) -> Result<(), LobbyError> {
     r.finish()
 }
 
+/// Decode an intact saved public profile using projection offsets recovered
+/// from this build's StructuredDataDef. Do not use the obfuscated live buffer.
+pub fn public_snapshot(arguments: &[u8], projections: &[usize]) -> Result<Vec<u8>, LobbyError> {
+    if projections.len() != 125 {
+        return Err(LobbyError("public projection count"));
+    }
+    let (plain, mut tail) = snapshot_and_tail(arguments)?;
+    for &offset in projections {
+        if !(12..=SNAPSHOT_BYTES - 4).contains(&offset)
+            || plain[offset..offset + 4] != tail.i32()?.to_le_bytes()
+        {
+            return Err(LobbyError("public projection disagrees with snapshot"));
+        }
+    }
+    tail.finish()?;
+    Ok(plain)
+}
+
 /// mp/playersecuredata.def v19: 36 projected leaves, in target walk order.
 /// Addresses come from the runtime offset table; tag 13 is Float32.
 const PRIVATE_PROJECTIONS: &[(u8, usize)] = &[

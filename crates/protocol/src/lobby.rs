@@ -6,6 +6,11 @@ use hkdf::hmac::{Hmac, Mac};
 use sha1::{Digest, Sha1};
 use std::{error::Error, fmt};
 
+/// The shipped protocol-210 hello advertises a 0x80000-byte receive frame.
+/// Reserve space for the application header, AES padding and frame MAC.
+pub const MAX_SERVER_FRAME_BYTES: usize = 512 * 1024;
+pub const MAX_SERVER_APPLICATION_BODY_BYTES: usize = MAX_SERVER_FRAME_BYTES - 64;
+
 #[derive(Debug)]
 pub struct LobbyError(pub &'static str);
 impl fmt::Display for LobbyError {
@@ -155,7 +160,11 @@ pub fn decrypt_application(
     direction: Direction,
     expected_sequence: u32,
 ) -> Result<ApplicationMessage, LobbyError> {
-    if wire.len() < 50 || wire.len() > 65540 || wire[4..6] != [0xab, 0x85] {
+    let frame_limit = match direction {
+        Direction::ClientToServer => 65536,
+        Direction::ServerToClient => MAX_SERVER_FRAME_BYTES,
+    };
+    if wire.len() < 50 || wire.len() > frame_limit + 4 || wire[4..6] != [0xab, 0x85] {
         return Err(LobbyError("invalid encrypted lobby frame"));
     }
     let length =
@@ -205,7 +214,11 @@ pub fn encrypt_application(
     sequence: u32,
     iv: [u8; 16],
 ) -> Result<Vec<u8>, LobbyError> {
-    if body.len() > 65000 {
+    let body_limit = match direction {
+        Direction::ClientToServer => 65000,
+        Direction::ServerToClient => MAX_SERVER_APPLICATION_BODY_BYTES,
+    };
+    if body.len() > body_limit {
         return Err(LobbyError("application body limit"));
     }
     let size = (body.len() + 5).div_ceil(16) * 16;
@@ -424,6 +437,40 @@ mod tests {
             [
                 10, 1, 0, 0, 0, 0, 0, 0, 0, 8, 0, 0, 0, 0, 3, 4, 8, 0, 0, 0, 0
             ]
+        );
+    }
+
+    #[test]
+    fn larger_server_frames_preserve_the_client_to_server_limit() {
+        let hello = include_bytes!("../../../fixtures/protocol/lobby-clienthello-3.3.3.3.bin");
+        assert_eq!(
+            read_client_hello(hello).unwrap().max_receive as usize,
+            MAX_SERVER_FRAME_BYTES
+        );
+        let body = vec![0x3a; MAX_SERVER_APPLICATION_BODY_BYTES];
+        let wire =
+            encrypt_application(1, &body, &[1; 72], Direction::ServerToClient, 1, [2; 16]).unwrap();
+        assert!(wire.len() - 4 <= MAX_SERVER_FRAME_BYTES);
+        assert!(
+            encrypt_application(1, &body, &[1; 72], Direction::ClientToServer, 1, [2; 16]).is_err()
+        );
+        assert!(decrypt_application(&wire, &[1; 72], Direction::ClientToServer, 1).is_err());
+        assert_eq!(
+            decrypt_application(&wire, &[1; 72], Direction::ServerToClient, 1)
+                .unwrap()
+                .body,
+            body
+        );
+        assert!(
+            encrypt_application(
+                1,
+                &vec![0; MAX_SERVER_APPLICATION_BODY_BYTES + 1],
+                &[1; 72],
+                Direction::ServerToClient,
+                1,
+                [2; 16]
+            )
+            .is_err()
         );
     }
 }

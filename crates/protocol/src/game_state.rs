@@ -1,6 +1,30 @@
 //! Target 3.3.3.3 gamestate: 0x46dea0 and configstrings reader 0x46db20.
 use crate::{game_wire::SERVER_EOF, lobby::LobbyError};
 
+/// Target0x42e3b0 consumes individual attachment registry IDs after the three
+/// header integers. C1's item/variant pairs are a different wire format.
+pub fn composed_weapon(base: u16, camo: u8, attachments: &[u16]) -> Result<String, LobbyError> {
+    if !(1..900).contains(&base)
+        || attachments.len() > 16
+        || attachments.iter().any(|&id| id == 0 || id >= 0x3fff)
+        || attachments
+            .iter()
+            .collect::<std::collections::BTreeSet<_>>()
+            .len()
+            != attachments.len()
+    {
+        return Err(LobbyError("invalid composed weapon parts"));
+    }
+    let name = std::iter::once(format!("** {base} {camo} 0"))
+        .chain(attachments.iter().map(ToString::to_string))
+        .collect::<Vec<_>>()
+        .join(" ");
+    if name.len() >= 128 {
+        return Err(LobbyError("composed weapon name too long"));
+    }
+    Ok(name)
+}
+
 #[derive(Default)]
 pub(crate) struct Writer {
     pub(crate) bytes: Vec<u8>,
@@ -91,6 +115,18 @@ impl Gamestate<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn composed_m4_uses_target_default_registry_ids_without_c1_variant_bytes() {
+        assert_eq!(
+            composed_weapon(163, 0, &[2683, 13320, 1690, 2385, 9641, 13370]).unwrap(),
+            "** 163 0 0 2683 13320 1690 2385 9641 13370"
+        );
+        assert_eq!(composed_weapon(163, 3, &[]).unwrap(), "** 163 3 0");
+        assert!(composed_weapon(0, 0, &[]).is_err());
+        for parts in [vec![0], vec![0x3fff], vec![1, 1], (1..=17).collect()] {
+            assert!(composed_weapon(163, 0, &parts).is_err());
+        }
+    }
 
     #[test]
     fn gamestate_matches_independent_target_layout_vector() {

@@ -1,6 +1,7 @@
 //! Application connection bootstrap after authenticated game DATA.
 use anyhow::{Result, ensure};
 use codol_protocol::game_wire::{self, ClientHeader, ReliableCommands, SERVER_EOF};
+use sha2::{Digest, Sha256};
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -16,12 +17,20 @@ pub(crate) struct Connection {
     server_commands: ReliableCommands,
     game_state: Option<Arc<crate::game_state::PreparedGameState>>,
     player: Option<crate::game_player::Player>,
+    motion: Option<crate::game_motion::Motion>,
+    pending_loadout: Option<(u32, Arc<crate::game_state::PreparedGameState>)>,
+    known_weapons: std::collections::BTreeMap<String, u16>,
+    next_weapon: u16,
     gamestate_sent: bool,
     gamestate_acknowledged: bool,
     gamestate_update: Option<u8>,
     client_commands: ReliableCommands,
     snapshot_count: u32,
     snapshot_next: Option<Instant>,
+    snapshot_epoch: Option<Instant>,
+    last_snapshot_time: u32,
+    pending_inputs: std::collections::BTreeMap<u32, codol_protocol::game_usercmd::UserCommand>,
+    predicted_position: Option<(u32, [f32; 3])>,
     snapshot_first_sequence: Option<u32>,
     input_count: u32,
     last_input: Option<codol_protocol::game_usercmd::UserCommand>,
@@ -32,9 +41,64 @@ impl Connection {
     pub fn with_game_state(state: Arc<crate::game_state::PreparedGameState>) -> Self {
         Self {
             player: state.player(),
+            motion: state.motion(),
+            known_weapons: state
+                .weapon_configstrings()
+                .into_iter()
+                .map(|(index, name)| (name, index - 5443))
+                .collect(),
+            next_weapon: state.next_weapon_index(),
             game_state: Some(state),
             ..Self::default()
         }
+    }
+    pub(crate) fn refresh_profile(
+        &mut self,
+        template: &crate::game_state::PreparedGameState,
+        public: &[u8],
+        owned: &[u32],
+    ) -> Result<()> {
+        if !template.dynamic_loadout()
+            || !self.gamestate_acknowledged
+            || self.pending_loadout.is_some()
+        {
+            return Ok(());
+        }
+        let Some(current) = &self.game_state else {
+            return Ok(());
+        };
+        let hash: [u8; 32] = Sha256::digest(public).into();
+        if current.profile_hash == Some(hash) {
+            return Ok(());
+        }
+        let mut state = template.for_profile_at(public, owned, self.next_weapon)?;
+        let names = |s: &crate::game_state::PreparedGameState| {
+            s.weapon_configstrings()
+                .into_iter()
+                .map(|(_, n)| n)
+                .collect::<Vec<_>>()
+        };
+        if names(current) == names(&state) {
+            Arc::make_mut(self.game_state.as_mut().unwrap()).profile_hash = Some(hash);
+            return Ok(());
+        }
+        let mut commands = self.server_commands.clone();
+        let mut known = self.known_weapons.clone();
+        let mut next = self.next_weapon;
+        let additions = state.register_weapons(&mut known, &mut next)?;
+        let new_resources = !additions.is_empty();
+        for (index, name) in additions {
+            commands.push(format!("d {index} {name}").as_bytes())?;
+        }
+        if new_resources {
+            commands.push(format!("d 6800 {next}").as_bytes())?;
+        }
+        self.pending_loadout = Some((commands.sequence(), Arc::new(state)));
+        self.server_commands = commands;
+        self.known_weapons = known;
+        self.next_weapon = next;
+        tracing::info!("queued saved backpack update for client resource acknowledgement");
+        Ok(())
     }
 
     pub fn stage(&self) -> &'static str {
@@ -73,13 +137,39 @@ impl Connection {
         {
             return Ok(None);
         }
+        if self
+            .pending_loadout
+            .as_ref()
+            .is_some_and(|(seq, _)| self.server_commands.acknowledged() >= *seq)
+        {
+            let (_, state) = self.pending_loadout.take().unwrap();
+            if let Some(primary) = state.primary_player() {
+                if let Some(player) = &mut self.player {
+                    player.replace_loadout(primary, state.secondary_player());
+                } else {
+                    self.player = state.player();
+                }
+            }
+            self.game_state = Some(state);
+            tracing::info!("applied acknowledged player backpack update");
+        }
+        // Wall-clock time must keep advancing even if capture I/O misses a
+        // tick. Counting frames made the server clock fall behind the client.
+        let epoch = *self.snapshot_epoch.get_or_insert(now);
+        let server_time = 1000
+            + now
+                .duration_since(epoch)
+                .as_millis()
+                .min(u128::from(i32::MAX as u32 - 1000)) as u32;
+        self.last_snapshot_time = server_time;
+        self.consume_inputs(server_time);
         let state = self.game_state.as_ref().expect("enabled state");
         let angles = if state.has_spawn() {
             self.view_angles()
         } else {
             [0; 3]
         };
-        let server_time = 1000 + self.snapshot_count * 50;
+
         // View and the supported M4 actions are applied by this bootstrap. Advancing commandTime
         // with the snapshot clock suppresses local prediction (0x4522b0).
         let command_time = self
@@ -88,14 +178,23 @@ impl Connection {
             .map_or(1000, |cmd| cmd.time)
             .min(server_time);
         let equipment = self.player.as_ref().map(|p| p.equipment());
-        let body = state.snapshot(
+        let snapshot = state.snapshot(
             server_time,
             command_time,
             self.snapshot_first_sequence
                 .is_none_or(|first| self.native_ack < first),
             angles,
             equipment,
+            self.motion.as_ref(),
         )?;
+        let mut body = Vec::new();
+        for sequence in self.server_commands.acknowledged() + 1..=self.server_commands.sequence() {
+            body.push(1);
+            body.extend_from_slice(&sequence.to_le_bytes());
+            body.extend_from_slice(self.server_commands.command_for(sequence)?);
+            body.push(0);
+        }
+        body.extend_from_slice(&snapshot);
         let ack = self.client_commands.sequence();
         let packet = game_wire::server_packet(
             self.native_sent + 1,
@@ -106,7 +205,12 @@ impl Connection {
             &body,
         )?;
         self.native_sent += 1;
+        self.server_commands
+            .mark_sent(self.server_commands.sequence())?;
         let mut base = state.input_base();
+        if let Some(equipment) = equipment {
+            base.weapons[0] = equipment.weapon;
+        }
         // 0x5a18e0 copies pitch/yaw only; the default command's roll stays0.
         base.angles = [angles[0], angles[1], 0];
         // 0x5a18e0 sets BUTTON_ADS whenever the acknowledged PS fraction is
@@ -124,11 +228,30 @@ impl Connection {
         }
         self.snapshot_first_sequence.get_or_insert(self.native_sent);
         self.snapshot_count += 1;
-        self.snapshot_next = Some(now + Duration::from_millis(50));
+        let next = self.snapshot_next.map_or(now, |n| n) + Duration::from_millis(50);
+        self.snapshot_next = Some(if next > now {
+            next
+        } else {
+            now + Duration::from_millis(50)
+        });
         Ok(Some(packet))
     }
     pub fn input_progress(&self) -> (u32, Option<u32>) {
         (self.input_count, self.last_input.as_ref().map(|c| c.time))
+    }
+    pub fn prediction_progress(&self) -> Option<(u32, [f32; 3], u32)> {
+        self.predicted_position.map(|(time, origin)| {
+            (
+                time,
+                origin,
+                self.motion.as_ref().map_or(0, |m| m.command_time),
+            )
+        })
+    }
+    pub fn motion_progress(&self) -> Option<([f32; 3], [f32; 3], u32)> {
+        self.motion
+            .as_ref()
+            .map(|m| (m.origin, m.velocity, m.command_time))
     }
     pub fn view_angles(&self) -> [u16; 3] {
         self.last_input.as_ref().map_or([0; 3], |c| c.angles)
@@ -260,26 +383,14 @@ impl Connection {
         self.server_commands = commands;
         self.client_commands = client_commands;
         if let Some(movement) = received.movement {
+            self.predicted_position = Some((
+                movement.predicted_time,
+                movement.predicted_origin_bits.map(f32::from_bits),
+            ));
             for input in movement.commands {
-                // A future timestamp must not freeze the input clock or burn
-                // ammunition. Current clients generate commands behind the
-                // newest emitted snapshot; ignore premature commands.
-                let newest_snapshot_time = 1000 + self.snapshot_count.saturating_sub(1) * 50;
-                if input.time < 1000 || input.time > newest_snapshot_time {
-                    continue;
-                }
-                if self
-                    .last_input
-                    .as_ref()
-                    .is_none_or(|last| input.time > last.time)
-                {
-                    if let Some(player) = &mut self.player {
-                        player.apply(&input);
-                    }
-                    self.input_count += 1;
-                    self.last_input = Some(input);
-                }
+                self.queue_input(input);
             }
+            self.consume_inputs(self.last_snapshot_time.max(1000));
         }
         self.gamestate_sent |= sending_gamestate;
         self.gamestate_acknowledged |=
@@ -292,6 +403,76 @@ impl Connection {
         Ok(reply)
     }
 
+    fn queue_input(&mut self, input: codol_protocol::game_usercmd::UserCommand) {
+        if input.time < 1000
+            || input.time > self.last_snapshot_time.max(1000).saturating_add(250)
+            || self
+                .last_input
+                .as_ref()
+                .is_some_and(|old| input.time <= old.time)
+            || self.pending_inputs.len() >= 256
+        {
+            return;
+        }
+        self.pending_inputs.entry(input.time).or_insert(input);
+    }
+    fn consume_inputs(&mut self, through: u32) {
+        while self
+            .pending_inputs
+            .first_key_value()
+            .is_some_and(|(&time, _)| time <= through)
+        {
+            let (_, input) = self.pending_inputs.pop_first().unwrap();
+            if self
+                .last_input
+                .as_ref()
+                .is_some_and(|last| input.time <= last.time)
+            {
+                continue;
+            }
+            if let Some(player) = &mut self.player {
+                player.apply(&input);
+            }
+            if let Some(motion) = &mut self.motion
+                && let Some(collision) = self.game_state.as_ref().and_then(|s| s.collision.as_ref())
+            {
+                let scale = self.player.as_ref().map_or(1.0, |p| p.move_scale());
+                let ads = self
+                    .player
+                    .as_ref()
+                    .and_then(|p| p.equipment().aim)
+                    .is_some_and(|a| a.movement_slow);
+                let old_bob = motion.bob_cycle;
+                let was_ground = motion.ground_entity != 2047;
+                motion.apply(&input, scale, ads, collision);
+                if let Some(player) = &mut self.player {
+                    let surface = (motion.surface_flags >> 20) & 31;
+                    if was_ground
+                        && motion.ground_entity == 2047
+                        && motion.velocity[2] > 0.0
+                        && input.buttons & 0x400 != 0
+                    {
+                        player.movement_event(codol_protocol::game_events::JUMP, surface);
+                    }
+                    if (old_bob ^ motion.bob_cycle) & 128 != 0 && motion.ground_entity != 2047 {
+                        let event = match motion.stance {
+                            crate::game_motion::Stance::Prone => {
+                                codol_protocol::game_events::FOOTSTEP_PRONE
+                            }
+                            _ if input.buttons & 2 != 0 => {
+                                codol_protocol::game_events::FOOTSTEP_SPRINT
+                            }
+                            _ if ads => codol_protocol::game_events::FOOTSTEP_WALK,
+                            _ => codol_protocol::game_events::FOOTSTEP_RUN,
+                        };
+                        player.movement_event(event, surface);
+                    }
+                }
+            }
+            self.input_count += 1;
+            self.last_input = Some(input);
+        }
+    }
     pub fn handle(&mut self, payload: &[u8], owner: u64, build: i32) -> Result<Option<Vec<u8>>> {
         let Some(command) = payload.strip_prefix(&[255; 4]) else {
             return self.native(payload);
@@ -445,6 +626,50 @@ fn validate_connect(body: &[u8], owner: u64, build: i32, challenge: u32) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn predicted_inputs_are_queued_until_the_clock_reaches_them_without_losing_transitions() {
+        let mut c = Connection {
+            last_snapshot_time: 1000,
+            ..Default::default()
+        };
+        for (time, direction) in [(1010, 1), (1030, 0), (1020, 1), (4000, 1)] {
+            c.queue_input(codol_protocol::game_usercmd::UserCommand {
+                time,
+                direction,
+                ..Default::default()
+            });
+        }
+        c.consume_inputs(1000);
+        assert_eq!(c.input_count, 0);
+        c.consume_inputs(1025);
+        assert_eq!(c.input_count, 2);
+        assert_eq!(c.last_input.as_ref().unwrap().direction, 1);
+        c.consume_inputs(1030);
+        assert_eq!(c.input_count, 3);
+        assert_eq!(c.last_input.as_ref().unwrap().direction, 0);
+        c.consume_inputs(5000);
+        assert_eq!(c.input_count, 3);
+    }
+    #[test]
+    fn missed_snapshot_ticks_do_not_slow_the_server_clock_or_acknowledge_unapplied_input() {
+        let now = Instant::now();
+        let mut c = Connection::with_game_state(Arc::new(
+            crate::game_state::synthetic()
+                .with_snapshot_frames(60)
+                .unwrap(),
+        ));
+        c.challenge = Some(0x75);
+        c.native_sent = 3;
+        c.gamestate_update = Some(6);
+        c.poll_snapshot(now).unwrap().unwrap();
+        let mut packet = c
+            .poll_snapshot(now + Duration::from_millis(275))
+            .unwrap()
+            .unwrap();
+        game_wire::xor_stream(&mut packet[8..], 0x75 ^ 5, b"");
+        assert_eq!(&packet[9..13], &1275u32.to_le_bytes());
+        assert_eq!(&packet[17..21], &1000u32.to_le_bytes());
+    }
     #[test]
     fn input_baseline_follows_acknowledged_snapshot_not_latest_view() {
         let mut c = Connection::default();
