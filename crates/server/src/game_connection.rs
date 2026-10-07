@@ -80,20 +80,21 @@ impl Connection {
             [0; 3]
         };
         let server_time = 1000 + self.snapshot_count * 50;
-        // Only view input is applied by this bootstrap. Advancing commandTime
+        // View and the supported M4 actions are applied by this bootstrap. Advancing commandTime
         // with the snapshot clock suppresses local prediction (0x4522b0).
         let command_time = self
             .last_input
             .as_ref()
             .map_or(1000, |cmd| cmd.time)
             .min(server_time);
+        let equipment = self.player.as_ref().map(|p| p.equipment());
         let body = state.snapshot(
             server_time,
             command_time,
             self.snapshot_first_sequence
                 .is_none_or(|first| self.native_ack < first),
             angles,
-            self.player.as_ref().map(|p| p.equipment()),
+            equipment,
         )?;
         let ack = self.client_commands.sequence();
         let packet = game_wire::server_packet(
@@ -108,6 +109,14 @@ impl Connection {
         let mut base = state.input_base();
         // 0x5a18e0 copies pitch/yaw only; the default command's roll stays0.
         base.angles = [angles[0], angles[1], 0];
+        // 0x5a18e0 sets BUTTON_ADS whenever the acknowledged PS fraction is
+        // nonzero, including the exit transition after the physical release.
+        if equipment
+            .and_then(|e| e.aim)
+            .is_some_and(|a| a.fraction != 0.0)
+        {
+            base.buttons |= 0x800;
+        }
         self.snapshot_input_bases
             .push_back((self.native_sent, base));
         while self.snapshot_input_bases.len() > 256 {
@@ -446,6 +455,7 @@ mod tests {
         };
         let second = codol_protocol::game_usercmd::UserCommand {
             angles: [300, 400, 0],
+            buttons: 0x800,
             ..first.clone()
         };
         c.snapshot_input_bases.push_back((4, first.clone()));

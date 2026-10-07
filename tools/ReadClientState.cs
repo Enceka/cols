@@ -190,6 +190,7 @@ class ReadClientState {
                     Field(process,"client_angle_offset_pitch_bits",checked(active+0x361c),4);
                     Field(process,"client_angle_offset_yaw_bits",checked(active+0x3620),4);
                     uint cmd=Read(process,checked(active+0x625c),4);
+                    Field(process,"last_local_cmd_buttons",checked(active+0x365c+(cmd&255)*44+4),4);
                     Field(process,"last_local_cmd_pitch",checked(active+0x365c+(cmd&255)*44+8),4);
                     Field(process,"last_local_cmd_yaw",checked(active+0x365c+(cmd&255)*44+12),4);
                     Field(process,"current_pm_flags",checked(active+0x18),4);
@@ -212,6 +213,7 @@ class ReadClientState {
                     Field(process,"current_clip_ammo_0",checked(active+0xc+0x3e0),4);
                     Field(process,"current_reserve_ammo_0",checked(active+0xc+0x368),4);
                     Field(process,"current_weapon_time",checked(active+0xc+0x270),4);
+                    Field(process,"current_ads_fraction_bits",checked(active+0xc+0x34c),4);
                 }
                 Field(process,"config_version",0x078a06bc,4);
                 Field(process,"playlist_version",0x031fe614,4);

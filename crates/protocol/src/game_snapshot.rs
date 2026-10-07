@@ -15,6 +15,13 @@ pub struct Equipment {
     pub ammo: Option<Ammo>,
     pub viewmodel: Option<u16>,
     pub firing: Option<Firing>,
+    pub aim: Option<Aim>,
+}
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Aim {
+    pub fraction: f32,
+    pub button: bool,
+    pub movement_slow: bool,
 }
 #[derive(Debug, Clone, Copy)]
 pub struct Firing {
@@ -88,6 +95,10 @@ pub fn player_frame(
     let ammo = equipment.and_then(|e| e.ammo);
     let viewmodel = equipment.and_then(|e| e.viewmodel);
     let firing = equipment.and_then(|e| e.firing);
+    let aim = equipment.and_then(|e| e.aim);
+    if aim.is_some_and(|a| !a.fraction.is_finite() || !(0.0..=1.0).contains(&a.fraction)) {
+        return Err(LobbyError("invalid bootstrap ADS fraction"));
+    }
     if firing.is_some_and(|f| {
         f.animation > 2047 || f.remaining_msec > 32767 || f.delay_msec > 32767 || f.state > 63
     }) {
@@ -166,6 +177,17 @@ pub fn player_frame(
         }
         if let Some(model) = viewmodel {
             fields.push((56, u32::from(model), 10));
+        }
+        if let Some(aim) = aim {
+            // Target PS+0xc, field20; PS+0x34c, field41. 0x4224e0 owns
+            // the fraction, not the first-person rendering animation clock.
+            let flags = (u32::from(aim.button) * 0x10) | (u32::from(aim.movement_slow) * 0x40);
+            if flags != 0 {
+                fields.push((20, flags, 32));
+            }
+            if aim.fraction != 0.0 {
+                fields.push((41, aim.fraction.to_bits(), 0));
+            }
         }
         // Marker87 is the target's -87 short-angle codec, with no nonzero bit.
         for (index, value) in [(19, angles[0]), (18, angles[1]), (29, angles[2])] {
@@ -286,6 +308,11 @@ mod tests {
         .unwrap();
         let equipment = Equipment {
             weapon: 163,
+            aim: Some(Aim {
+                fraction: 0.5,
+                button: true,
+                movement_slow: true,
+            }),
             firing: Some(Firing {
                 animation: 0x402,
                 remaining_msec: 79,
@@ -359,6 +386,8 @@ mod tests {
             assert_eq!(fields[&9], 0x402);
             assert_eq!(fields[&3], 79);
             assert_eq!(fields[&17], 6);
+            assert_eq!(fields[&20], 0x50);
+            assert_eq!(fields[&41], 0.5f32.to_bits());
             assert_eq!(fields[&44], 40);
             assert_eq!(fields[&19], 65535);
             assert_eq!(fields[&18], 16384);
@@ -406,6 +435,7 @@ mod tests {
         }
         let bad = Equipment {
             weapon: 163,
+            aim: None,
             firing: None,
             viewmodel: None,
             ammo: Some(Ammo {

@@ -1,6 +1,6 @@
-//! Minimal single-M4 ammo/reload ownership. No hit events, ADS or physics yet.
+//! Minimal single-M4 ammo/reload/ADS ownership. No hit events or physics yet.
 use codol_protocol::{
-    game_snapshot::{Equipment, Firing},
+    game_snapshot::{Aim, Equipment, Firing},
     game_usercmd::UserCommand,
 };
 
@@ -21,6 +21,24 @@ impl ReloadTiming {
     }
 }
 
+#[derive(Debug, Clone, Copy, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct AdsTiming {
+    pub in_rate: f32,
+    pub out_rate: f32,
+    pub reload_allowed: bool,
+    pub reload_interruptible: bool,
+    pub reload_end_msec: u16,
+}
+impl AdsTiming {
+    pub fn valid(&self) -> bool {
+        [self.in_rate, self.out_rate]
+            .into_iter()
+            .all(|r| r.is_finite() && r > 0.0 && r <= 1.0)
+            && self.reload_end_msec <= 15000
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct Player {
     equipment: Equipment,
@@ -29,6 +47,7 @@ pub(crate) struct Player {
     reload: Option<ReloadTiming>,
     magazine_capacity: u16,
     reload_transfer_pending: bool,
+    ads: Option<AdsTiming>,
 }
 
 impl Player {
@@ -36,7 +55,9 @@ impl Player {
         mut equipment: Equipment,
         fire_interval: Option<u16>,
         reload: Option<ReloadTiming>,
+        ads: Option<AdsTiming>,
     ) -> Self {
+        equipment.aim = ads.map(|_| Aim::default());
         if fire_interval.is_some() {
             equipment.firing = Some(Firing {
                 animation: 0x400,
@@ -52,6 +73,7 @@ impl Player {
             last_time: 1000,
             reload,
             reload_transfer_pending: false,
+            ads,
         }
     }
 
@@ -65,6 +87,36 @@ impl Player {
         }
         let elapsed = cmd.time - self.last_time;
         self.last_time = cmd.time;
+        self.apply_weapon(cmd, elapsed);
+        self.apply_aim(cmd, elapsed);
+    }
+
+    fn apply_aim(&mut self, cmd: &UserCommand, elapsed: u32) {
+        let (Some(timing), Some(aim)) = (self.ads, self.equipment.aim.as_mut()) else {
+            return;
+        };
+        let firing = self.equipment.firing;
+        let reloading = firing.is_some_and(|f| f.state == 8);
+        // Verified PMF_ADS_BUTTON0x10 and input BUTTON_ADS0x800. This
+        // bootstrap only executes normal, firing and reload weapon states.
+        aim.button = cmd.buttons & 0x800 != 0
+            && cmd.buttons & (4 | 0x10000000) == 0
+            && cmd.weapons[0] == self.equipment.weapon;
+        aim.movement_slow = aim.button && !reloading;
+        let reload_blocks = reloading
+            && !timing.reload_allowed
+            && (timing.reload_interruptible
+                || firing.is_some_and(|f| f.remaining_msec > timing.reload_end_msec));
+        // 0x4224e0: elapsed msec times the registered per-msec rate, clamped
+        // to exact0/1. No ability, turret or offhand modifiers are guessed.
+        aim.fraction = if aim.button && !reload_blocks {
+            (aim.fraction + elapsed as f32 * timing.in_rate).min(1.0)
+        } else {
+            (aim.fraction - elapsed as f32 * timing.out_rate).max(0.0)
+        };
+    }
+
+    fn apply_weapon(&mut self, cmd: &UserCommand, elapsed: u32) {
         let (Some(interval), Some(ammo), Some(firing)) = (
             self.fire_interval,
             self.equipment.ammo.as_mut(),
@@ -151,6 +203,7 @@ mod tests {
         Player::new(
             Equipment {
                 weapon: 352,
+                aim: None,
                 viewmodel: None,
                 firing: None,
                 ammo: Some(Ammo {
@@ -162,6 +215,7 @@ mod tests {
             },
             Some(79),
             None,
+            None,
         )
     }
     fn cmd(time: u32, buttons: u32) -> UserCommand {
@@ -171,6 +225,54 @@ mod tests {
             weapons: [352, 0, 0],
             ..Default::default()
         }
+    }
+    fn aiming_player() -> Player {
+        let mut p = player();
+        p.ads = Some(AdsTiming {
+            in_rate: 0.004,
+            out_rate: 0.004,
+            reload_allowed: false,
+            reload_interruptible: false,
+            reload_end_msec: 349,
+        });
+        p.equipment.aim = Some(Aim::default());
+        p.reload = Some(reload_timing());
+        p
+    }
+    #[test]
+    fn ads_progress_survives_frames_reverses_smoothly_and_reaches_exact_endpoints() {
+        let mut p = aiming_player();
+        p.apply(&cmd(1100, 0x800));
+        assert!((p.equipment().aim.unwrap().fraction - 0.4).abs() < 1e-6);
+        p.apply(&cmd(1100, 0x800)); // duplicate does not advance ADS
+        assert!((p.equipment().aim.unwrap().fraction - 0.4).abs() < 1e-6);
+        p.apply(&cmd(1150, 0));
+        let aim = p.equipment().aim.unwrap();
+        assert!(!aim.button && (aim.fraction - 0.2).abs() < 1e-6);
+        p.apply(&cmd(1500, 0x800));
+        assert_eq!(p.equipment().aim.unwrap().fraction, 1.0);
+        p.apply(&cmd(1800, 0));
+        assert_eq!(p.equipment().aim.unwrap().fraction, 0.0);
+        p.apply(&cmd(2200, 0x10000800));
+        assert_eq!(p.equipment().aim.unwrap().fraction, 0.0);
+    }
+    #[test]
+    fn ads_leaves_scope_during_reload_and_reenters_only_at_target_threshold() {
+        let mut p = aiming_player();
+        p.apply(&cmd(1250, 0x800));
+        p.apply(&cmd(1300, 0x801)); // make room for a partial reload
+        p.apply(&cmd(1400, 0x810));
+        assert_eq!(p.equipment().firing.unwrap().state, 8);
+        p.apply(&cmd(1700, 0x800));
+        assert_eq!(p.equipment().aim.unwrap().fraction, 0.0);
+        p.apply(&cmd(3079, 0x800)); //350ms left, still blocked
+        assert_eq!(p.equipment().aim.unwrap().fraction, 0.0);
+        p.apply(&cmd(3080, 0x800)); //349ms left, allowed
+        assert!((p.equipment().aim.unwrap().fraction - 0.004).abs() < 1e-6);
+        p.apply(&cmd(3330, 0x800));
+        assert_eq!(p.equipment().aim.unwrap().fraction, 1.0);
+        assert_eq!(p.equipment().ammo.unwrap().clip, 30);
+        assert_eq!(p.equipment().ammo.unwrap().reserve, 89);
     }
     #[test]
     fn shots_obey_cooldown_and_duplicate_inputs_never_consume_twice() {

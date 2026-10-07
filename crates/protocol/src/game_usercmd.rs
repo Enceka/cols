@@ -233,11 +233,13 @@ mod tests {
         w.bits(3, 3);
         let mut base = UserCommand::default();
         base.weapons[0] = 163;
+        base.buttons = 0x800; // target default command from a nonzero ADS fraction
         base.melee_entity = 2047;
         let message = crate::game_wire::client_message_with_base(&w.bytes, Some(0), &base).unwrap();
         let command = &message.movement.unwrap().commands[0];
         assert_eq!(command.time, 1000);
         assert_eq!(command.weapons, [163, 0, 0]);
+        assert_eq!(command.buttons, 0x800);
         assert_eq!(command.melee_entity, 2047);
     }
 }

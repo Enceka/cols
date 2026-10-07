@@ -301,6 +301,11 @@ class ClientAssets {
             // earlier ammo-transfer marker (zero means the full duration).
             "reload_msec",Word(at+0x71c),"reload_empty_msec",Word(at+0x728),
             "reload_add_msec",Word(at+0x730),"reload_empty_add_msec",Word(at+0x738),
+            // 0x4224e0: fraction +=/-= frameMsec * def+0xbac/+0xbb0;
+            // reload gates use+0xd78/+0xd86 and+0xb38. Keep float bits exact.
+            "ads_enabled",Read(at+0xd76,1)[0],"ads_in_rate_bits",Word(at+0xbac),"ads_out_rate_bits",Word(at+0xbb0),
+            "ads_reload_allowed",Read(at+0xd78,1)[0],"ads_reload_interruptible",Read(at+0xd86,1)[0],
+            "ads_reload_end_msec",Word(at+0xb38),
             "animation_name_fields",names);
     }
     public static void ExportWeaponModels(IntPtr process) {

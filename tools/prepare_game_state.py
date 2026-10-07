@@ -8,6 +8,7 @@ import json
 import math
 from pathlib import Path
 import re
+import struct
 import zlib
 
 CLIENT_SHA256 = "e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b"
@@ -152,6 +153,23 @@ def weapon_ammo(raw, crc, weapon):
                 or not 50 <= interval <= 2000):
             raise ValueError("unsupported M4 fire timing")
         result["fire_interval_msec"] = interval
+        if "ads_enabled" in runtime:
+            if any(type(runtime.get(k)) is not int or runtime[k] not in (0,1)
+                   for k in ("ads_enabled","ads_reload_allowed","ads_reload_interruptible")):
+                raise ValueError("invalid ADS flags")
+            if runtime["ads_enabled"]:
+                rates=[]
+                for key in ("ads_in_rate_bits","ads_out_rate_bits"):
+                    bits=runtime.get(key)
+                    if type(bits) is not int or not 0<=bits<=0xffffffff:raise ValueError("invalid ADS rate bits")
+                    rate=struct.unpack("<f",struct.pack("<I",bits))[0]
+                    if not math.isfinite(rate) or not 0<rate<=1:raise ValueError("invalid ADS rate")
+                    rates.append(rate)
+                end=runtime.get("ads_reload_end_msec")
+                if type(end) is not int or not 0<=end<=15000:raise ValueError("invalid ADS reload threshold")
+                result["ads"]={"in_rate":rates[0],"out_rate":rates[1],
+                    "reload_allowed":bool(runtime["ads_reload_allowed"]),
+                    "reload_interruptible":bool(runtime["ads_reload_interruptible"]),"reload_end_msec":end}
         keys=("reload_msec","reload_empty_msec","reload_add_msec","reload_empty_add_msec")
         if any(key in runtime for key in keys):
             values=[runtime.get(key) for key in keys]

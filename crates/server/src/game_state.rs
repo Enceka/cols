@@ -30,6 +30,8 @@ struct BootstrapAmmo {
     fire_interval_msec: Option<u16>,
     #[serde(default)]
     reload: Option<crate::game_player::ReloadTiming>,
+    #[serde(default)]
+    ads: Option<crate::game_player::AdsTiming>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -116,6 +118,7 @@ impl PreparedGameState {
                             .reload
                             .is_none_or(|r| r.valid() && ammo.fire_interval_msec.is_some())
                         && ammo.source_sha256.len() == 64
+                        && ammo.ads.is_none_or(|a| a.valid())
                         && ammo.source_sha256.bytes().all(|b| b.is_ascii_hexdigit()),
                     "invalid bootstrap ammo seed"
                 );
@@ -241,6 +244,7 @@ impl PreparedGameState {
                     weapon: w.index,
                     viewmodel: w.viewmodel_index,
                     firing: None,
+                    aim: None,
                     ammo: w
                         .ammo
                         .as_ref()
@@ -253,6 +257,7 @@ impl PreparedGameState {
                 },
                 w.ammo.as_ref().and_then(|a| a.fire_interval_msec),
                 w.ammo.as_ref().and_then(|a| a.reload),
+                w.ammo.as_ref().and_then(|a| a.ads),
             )
         })
     }
