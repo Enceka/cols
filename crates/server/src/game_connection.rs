@@ -21,6 +21,10 @@ impl Connection {
         }
     }
 
+    pub fn challenge_value(&self) -> Option<u32> {
+        self.challenge
+    }
+
     pub fn handle(&mut self, payload: &[u8], owner: u64, build: i32) -> Result<Option<Vec<u8>>> {
         let Some(command) = payload.strip_prefix(&[255; 4]) else {
             // Inner packets are captured for netchan/gamestate recovery. Do
