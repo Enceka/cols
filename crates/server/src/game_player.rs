@@ -102,7 +102,9 @@ impl Player {
                 && cmd.weapons[0] == self.equipment.weapon
                 && ammo.clip < self.magazine_capacity
                 && ammo.reserve > 0
-                && (cmd.buttons & 0x20 != 0 || ammo.clip == 0)
+                // 3.3.3.3 VA0x424660: test byte ptr [pmove+8],0x10.
+                // pmove+4 is cmd.time, +8 is cmd.buttons. 0x20 is not R.
+                && (cmd.buttons & 0x10 != 0 || ammo.clip == 0)
             {
                 let empty = ammo.clip == 0;
                 // Target0x4232d0: state8, animation13 normal /15 empty;
@@ -221,7 +223,7 @@ mod tests {
         let mut p = player();
         p.reload = Some(reload_timing());
         p.apply(&cmd(1100, 1));
-        p.apply(&cmd(1200, 0x20));
+        p.apply(&cmd(1200, 0x10));
         assert_eq!(p.equipment().firing.unwrap().state, 8);
         p.apply(&cmd(2598, 1));
         assert_eq!(p.equipment().ammo.unwrap().clip, 29);
@@ -252,8 +254,23 @@ mod tests {
         assert_eq!(p.equipment().ammo.unwrap().clip, 7);
         assert_eq!(p.equipment().ammo.unwrap().reserve, 0);
         p.apply(&cmd(3899, 0));
-        p.apply(&cmd(4000, 0x20));
+        p.apply(&cmd(4000, 0x10));
         assert_eq!(p.equipment().firing.unwrap().state, 0);
         assert_eq!(p.equipment().ammo.unwrap().clip, 7);
+    }
+    #[test]
+    fn target_reload_button_starts_partial_magazine_reload_but_bit32_does_not() {
+        let mut p = player();
+        p.reload = Some(reload_timing());
+        p.apply(&cmd(1100, 1));
+        p.apply(&cmd(1200, 0x20));
+        assert_eq!(p.equipment().firing.unwrap().state, 0);
+        assert_eq!(p.equipment().ammo.unwrap().clip, 29);
+        p.apply(&cmd(1300, 0x10));
+        assert_eq!(p.equipment().firing.unwrap().state, 8);
+        assert_eq!(p.equipment().firing.unwrap().animation & !0x400, 13);
+        p.apply(&cmd(2699, 0));
+        assert_eq!(p.equipment().ammo.unwrap().clip, 30);
+        assert_eq!(p.equipment().ammo.unwrap().reserve, 89);
     }
 }
