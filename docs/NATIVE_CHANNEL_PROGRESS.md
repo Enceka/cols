@@ -49,3 +49,24 @@ S2C探针2：收到 messageAck=1 后，`sequence=2, clientCommandAck=0, body=[1,
 先只读提取目标运行时 net-constant 资产/CRC及configstring类型，再依据真实资源生成消息。不要用零CRC或关闭校验代替恢复来源。
 
 验证：fmt/Clippy、77项Rust、13项Python。状态测试覆盖stats前拒绝、未发送ACK拒绝、无EOF/错误序号不推进、探针保持client ACK=0、完整EOF、可靠ACK推进。原始包位于忽略目录，账号和密钥不提交Git。
+
+## 网络常量只读采集
+
+`tools/client_state.py --net-constants` 已加入固定资源提取模式：扫描当前 asset hash bucket 的 type44（netconststrings）头，导出其 name/category/source/count 与原始字符串字节，以及 NCS 类型布局、初始化状态、common/current CRC 和已经链接的资源列表。只使用 ReadProcessMemory，不调用游戏函数；查询中没有 AUTH/DTLS 密钥。解析错误会保留为 `error`，summary 的 `asset_errors` 非零时不能当成完整资源集。
+
+编译与采集：
+
+```sh
+python3 tools/client_state.py --build --prefix-name wine10-recovered-20261007
+python3 tools/client_state.py --experiment research-output/gamehub/实际实验/experiment.json --net-constants
+```
+
+编译必须在该 prefix 的客户端实验停止后进行；普通采集则要求对应实验仍在运行。新 `--prefix-name` 只用于 build，沿用 ownership marker 与路径校验。`ReadClientState` 普通模式同时新增 connection_state、server_message_sequence、client_command_ack、server_command_sequence 和 net_constants_crc，便于确认接收状态。
+
+`client-1791339446435/net-constants-1791339501447.json`：大厅 state0、NCS initialized1、current CRC `0x396299aa`、common CRC `0xcdb31851`、26个链接资源。旧采集器按 flags 过滤资源只找到18个空 level 表，此过滤已撤销，不能据该数量宣称地图常量缺失。同实验 `net-constants-1791340054465.json` 在 state7 时读取 initialized0/current CRC0/linked0，说明加载状态存在未初始化阶段；不能把这个0或大厅 CRC 直接下发。
+
+修正哈希遍历后的 `client-1791340243685/net-constants-1791340629268.json`：大厅 state0 下43条 type44记录，其中42条按结构解析，1条默认 `void/category21/source4` 被记录为错误；26个linked记录。含 common、localized、level 资源和运行时生成的 codinfo/net dvar 表。校验步骤尚未完成：按当前 linked 顺序简单拼接字符串的 CRC 与实际 CRC 不同，不将读取值硬编码为地图的合法校验值。
+
+目标来源：类型名表0xce0ea0确认type44；0x585000按source、category、名称后缀类别与名称排序；0x584d80去重；0x584ed0将字符串字节送入CRC32链；0x5850b0组合运行时/关卡表。`0xc57118` 是21组(category base, capacity, reserved)布局：动态dvar名从24开始、值从344开始，容量各320；武器从5443开始、容量900；这些不同于Alpha布局。
+
+下一步采集一次修正工具的 **state7地图资源集**，恢复排序、去重和公共seed来源，得到能独立复算的CRC，再编写目标gamestate。当前只有大厅修正提取完整走通，不能声称已取得可用的 mp_afghan CRC。

@@ -1,4 +1,4 @@
-// Read-only extraction of two known profile schemas and selected data tables.
+// Read-only extraction of fixed profile/table allowlists and net-constant resources.
 // Asset hash lookup: target VA 0x49e170/0x49e370; no calls inside the game.
 using System;
 using System.Collections.Generic;
@@ -164,5 +164,52 @@ class ClientAssets {
             "public_snapshot",Convert.ToBase64String(r.Read(0x0c95be0c,32768)),
             "private_snapshot",Convert.ToBase64String(r.Read(0x0c964f34,32768)));
         Console.WriteLine(new JavaScriptSerializer().Serialize(output));
+    }
+
+    object NetConstant(uint at) {
+        // NetConstStrings type 44: name, category, source, count, string**.
+        byte[] h=Read(at,20); int count=Count(U(h,12),8192);
+        if(U(h,4)>20) throw new Exception("net-constant category out of range: "+Name(U(h,0))+" category="+U(h,4)+" source="+U(h,8));
+        var values=new List<string>();
+        byte[] ptrs=count==0?new byte[0]:Read(U(h,16),count*4);
+        for(int i=0;i<count;i++) values.Add(Convert.ToBase64String(StringBytes(U(ptrs,i*4))));
+        return Obj("name",Name(U(h,0)),"category",U(h,4),"source",U(h,8),"count",count,"strings_base64",values);
+    }
+    public static void ExportNetConstants(IntPtr process) {
+        var r=new ClientAssets(process);var assets=new List<object>();var linked=new List<object>();
+        // Only type-44 resources reachable from current asset hash buckets.
+        // Do not filter by entry flags: the default/level and common records differ.
+        byte[] entries=r.Read(0x01fc4e28,100000*28),heads=r.Read(0x01bc9f20,80000*4);
+        var visited=new HashSet<uint>();
+        for(int bucket=0;bucket<80000;bucket++) {
+            uint index=U(heads,bucket*4);int length=0;
+            while(index!=0) {
+                if(index>=100000||!visited.Add(index)||++length>128)throw new Exception("invalid asset bucket chain");
+                int at=(int)index*28;
+                if(U(entries,at)==44) {
+                    if(assets.Count>=512)throw new Exception("net-constant asset budget");
+                    try { assets.Add(r.NetConstant(U(entries,at+8))); }
+                    catch(Exception e) { assets.Add(Obj("error",e.Message)); }
+                }
+                index=U(entries,at+20);
+            }
+        }
+        var seen=new HashSet<uint>();
+        for(uint category=0;category<21;category++) {
+            uint node=r.Word(0x02df7ce8+category*8);
+            while(node!=0) {
+                if(!seen.Add(node)||seen.Count>512)throw new Exception("invalid net-constant linked list");
+                byte[] item=r.Read(node,8); linked.Add(r.NetConstant(U(item,0)));node=U(item,4);
+            }
+        }
+        var output=Obj("schema_version",1,"read_only",true,
+            "client_sha256","e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b",
+            "connection_state",r.Word(0x01a2e7ec),"initialized",r.Word(0x02df9934),
+            "checksum",r.Word(0x02df7d90),"common_checksum",r.Word(0x02df9d38),
+            "category_layout_base64",Convert.ToBase64String(r.Read(0x00c57118,21*12)),
+            "index_types_base64",Convert.ToBase64String(r.Read(0x02df7da0,7058)),
+            "assets",assets,"linked",linked);
+        var serializer=new JavaScriptSerializer();serializer.MaxJsonLength=32*1024*1024;
+        Console.WriteLine(serializer.Serialize(output));
     }
 }

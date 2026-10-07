@@ -8,6 +8,7 @@ import argparse
 import fcntl
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import time
@@ -21,16 +22,20 @@ def main():
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--build", action="store_true")
     mode.add_argument("--experiment", type=Path, help="a running experiment.json")
+    parser.add_argument("--prefix-name", help="project-owned build prefix; experiment selects its own prefix")
     extract = parser.add_mutually_exclusive_group()
     extract.add_argument("--assets", action="store_true", help="extract the fixed profile-schema and data-table allowlist")
     extract.add_argument("--profiles", action="store_true", help="save this client's two fixed profile buffers to the ignored experiment directory")
+    extract.add_argument("--net-constants", action="store_true", help="read loaded type-44 net-constant assets and CRC state")
     args = parser.parse_args()
-    if args.build and (args.assets or args.profiles):
+    if args.prefix_name and (not args.build or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", args.prefix_name)):
+        parser.error("prefix-name requires build and a simple project directory name")
+    if args.build and (args.assets or args.profiles or args.net_constants):
         parser.error("extraction options require a running experiment")
     state = json.loads(args.experiment.read_text()) if args.experiment else None
     engine_id = state["engine_id"] if state else "10000033"
     engine = Path(engines()[engine_id]["install_path"])
-    prefix = Path(state["prefix"]) if state else REPO / "client-work/wine10-prefix"
+    prefix = Path(state["prefix"]) if state else REPO / "client-work" / (args.prefix_name or "wine10-prefix")
     if not prefix.resolve().is_relative_to((REPO / "client-work").resolve()):
         parser.error("prefix must belong to this project")
     marker = prefix / ".codol-prefix.json"
@@ -76,14 +81,16 @@ def main():
         hashes = json.loads(stamp.read_text())
         if hashes != {"sources_sha256": source_hashes, "binary_sha256": sha256(binary)}:
             parser.error("probe changed; rebuild it")
-        result = subprocess.run([wine, str(binary)] + (["--assets"] if args.assets else ["--profiles"] if args.profiles else []), env=env, capture_output=True, text=True, timeout=30)
+        result = subprocess.run([wine, str(binary)] + (["--assets"] if args.assets else ["--profiles"] if args.profiles else ["--net-constants"] if args.net_constants else []), env=env, capture_output=True, text=True, timeout=30)
         if result.returncode:
             raise RuntimeError((result.stdout + result.stderr)[-2000:])
         decoded = json.loads(result.stdout)
-        output = args.experiment.parent / (("client-assets-" if args.assets else "client-profiles-" if args.profiles else "client-state-") + str(int(time.time() * 1000)) + ".json")
+        output = args.experiment.parent / (("client-assets-" if args.assets else "client-profiles-" if args.profiles else "net-constants-" if args.net_constants else "client-state-") + str(int(time.time() * 1000)) + ".json")
         output.write_text(json.dumps(decoded, indent=2) + "\n")
         summary = {"schemas": {k: {f: v[f] for f in ("found", "error") if f in v} for k, v in decoded["schemas"].items()},
                    "tables": {k: {f: v[f] for f in ("found", "rows", "columns", "error") if f in v} for k, v in decoded["tables"].items()}} if args.assets else {"read_only": True, "profile_buffers": 2} if args.profiles else decoded
+        if args.net_constants:
+            summary = {"read_only": True, "connection_state": decoded["connection_state"], "initialized": decoded["initialized"], "checksum": decoded["checksum"], "assets": len(decoded["assets"]), "linked": len(decoded["linked"]), "asset_errors": sum("error" in asset for asset in decoded["assets"])}
         print(json.dumps({"output": str(output), "state": summary}))
 
 

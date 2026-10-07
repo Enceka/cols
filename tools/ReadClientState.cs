@@ -41,7 +41,8 @@ class ReadClientState {
         try {
             bool assets=args.Length==1 && args[0]=="--assets";
             bool profiles=args.Length==1 && args[0]=="--profiles";
-            if(args.Length!=0 && !assets && !profiles) throw new Exception("only fixed extraction modes are supported");
+            bool netConstants=args.Length==1 && args[0]=="--net-constants";
+            if(args.Length!=0 && !assets && !profiles && !netConstants) throw new Exception("only fixed extraction modes are supported");
             IntPtr snapshot=CreateToolhelp32Snapshot(2,0); uint found=0;
             if(snapshot==new IntPtr(-1)) throw new Exception("process snapshot failed");
             try {
@@ -70,7 +71,17 @@ class ReadClientState {
                 }
                 if(assets) { ClientAssets.Export(process);return 0; }
                 if(profiles) { ClientAssets.ExportProfiles(process);return 0; }
+                if(netConstants) { ClientAssets.ExportNetConstants(process);return 0; }
                 Console.WriteLine("{");
+                Field(process,"connection_state",0x01a2e7ec,4);
+                Field(process,"net_constants_initialized",0x02df9934,4);
+                Field(process,"net_constants_crc",0x02df7d90,4);
+                uint connection=Read(process,0x01a2a538,4)^0xd362501f;
+                if(connection>=0x10000 && connection<0x7ff00000) {
+                    Field(process,"server_message_sequence",checked(connection+0x40148),4);
+                    Field(process,"client_command_ack",checked(connection+0x144),4);
+                    Field(process,"server_command_sequence",checked(connection+0x4014c),4);
+                }
                 Field(process,"config_version",0x078a06bc,4);
                 Field(process,"playlist_version",0x031fe614,4);
                 Field(process,"server_time",0x0c9e34e0,4);
