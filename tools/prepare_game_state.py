@@ -20,7 +20,7 @@ def strings(values):
     return result
 
 
-def compute(capture):
+def compute(capture, weapon_name=None, compose=False, viewhands=False):
     if (capture.get("schema_version") != 1 or capture.get("read_only") is not True
             or capture.get("client_sha256") != CLIENT_SHA256):
         raise ValueError("unsupported resource capture identity")
@@ -64,6 +64,8 @@ def compute(capture):
         if asset["category"] in (18, 19, 20):
             previous[asset["category"]].update(strings(asset["strings_base64"]))
     crc, count, included = seed, 0, 0
+    weapons = []
+    models = []
     for key, values in sorted(parsed):
         category = key[1]
         if category == 15:
@@ -71,6 +73,10 @@ def compute(capture):
         # Dedup only against EARLIER assets of the same category. Repeated
         # strings inside this asset still contribute (0x584d80).
         kept = [v for v in values if v not in previous[category]]
+        if category == 13:
+            weapons.extend(kept)
+        if category == 0:
+            models.extend(kept)
         for value in kept:
             crc = zlib.crc32(value, crc)
         previous[category].update(kept)
@@ -78,8 +84,24 @@ def compute(capture):
         included += 1
     if capture["initialized"] and crc != capture["checksum"]:
         raise ValueError("computed CRC differs from initialized client")
-    return {"ncs_crc": crc, "common_crc": seed, "constant_count": count,
-            "asset_count": included, "observed_crc_verified": bool(capture["initialized"])}
+    result = {"ncs_crc": crc, "common_crc": seed, "constant_count": count,
+              "asset_count": included, "observed_crc_verified": bool(capture["initialized"])}
+    if weapon_name is not None:
+        if weapon_name != "m4_mp" or weapons.count(weapon_name.encode("ascii")) != 1:
+            raise ValueError("expected one basic M4 in target weapon constants")
+        index = weapons.index(weapon_name.encode("ascii")) + 1
+        if not 1 <= index < 900:
+            raise ValueError("weapon index outside target category")
+        result["bootstrap_weapon"] = {"name": weapon_name, "index": index}
+        if compose:
+            if len(weapons)+1>=900:raise ValueError("no free bootstrap weapon slot")
+            result["bootstrap_weapon"].update(base_index=index,index=len(weapons)+1,
+                composed_name="** %d 3 0" % index)
+        if viewhands:
+            name=b"viewhands_player_tf141"
+            if models.count(name)!=1:raise ValueError("expected one TF141 viewhands model")
+            result["bootstrap_weapon"]["viewmodel_index"]=models.index(name)+1
+    return result
 
 
 def spawn_origin(capture):
@@ -107,17 +129,46 @@ def spawn_origin(capture):
     raise ValueError("training spawn not found in map resource")
 
 
+def weapon_ammo(raw, crc, weapon):
+    capture=json.loads(raw)
+    if (capture.get("schema_version") != 1 or capture.get("read_only") is not True
+            or capture.get("client_sha256") != CLIENT_SHA256 or capture.get("ncs_crc") != crc):
+        raise ValueError("weapon runtime capture identity/CRC mismatch")
+    w=capture.get("composed_weapon") if "composed_name" in weapon else capture["weapon"]
+    if not w or w["name"] != weapon.get("composed_name",weapon["name"]) or w["index"] != weapon["index"]:
+        raise ValueError("runtime weapon differs from net constants")
+    if (type(w["ammo_key"]) is not int or type(w["clip_key"]) is not int
+            or not 0 <= w["ammo_key"] <= 1023 or not 0 <= w["clip_key"] <= 1022):
+        raise ValueError("unsupported weapon ammo keys")
+    return {"reserve_key":w["ammo_key"],"clip_key":w["clip_key"],
+            "clip":30,"reserve":90,"source_sha256":hashlib.sha256(raw).hexdigest()}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("capture", type=Path)
     parser.add_argument("--output", type=Path, help="prepare opt-in mp_afghan/war training gamestate")
     parser.add_argument("--map-entities", type=Path, help="include a map-derived training spawn in the snapshot probe")
+    parser.add_argument("--weapon", choices=["m4_mp"], help="derive the basic M4 wire index for equipment bootstrap")
+    parser.add_argument("--weapon-runtime", type=Path, help="registered ammo keys for a diagnostic 30/90 ammunition seed")
+    parser.add_argument("--compose-weapon", action="store_true", help="register a model-composed M4 in the next unused weapon slot")
+    parser.add_argument("--viewhands", action="store_true", help="bind the inherited TF141 first-person hand model")
     args = parser.parse_args()
     raw = args.capture.read_bytes()
     if len(raw) > 32 * 1024 * 1024:
         parser.error("capture size limit")
     capture = json.loads(raw)
-    summary = compute(capture)
+    if args.weapon and not args.map_entities:
+        parser.error("weapon bootstrap requires map-entities")
+    if args.compose_weapon and not args.weapon:parser.error("compose-weapon requires weapon")
+    if args.viewhands and not args.weapon:parser.error("viewhands requires weapon")
+    summary = compute(capture, args.weapon, args.compose_weapon,args.viewhands)
+    if args.weapon_runtime:
+        if not args.weapon:
+            parser.error("weapon-runtime requires weapon")
+        weapon_raw=args.weapon_runtime.read_bytes()
+        if len(weapon_raw)>4096:parser.error("weapon capture size limit")
+        summary["bootstrap_weapon"]["ammo"]=weapon_ammo(weapon_raw,summary["ncs_crc"],summary["bootstrap_weapon"])
     if args.map_entities:
         map_raw = args.map_entities.read_bytes()
         if len(map_raw) > 16 * 1024 * 1024:

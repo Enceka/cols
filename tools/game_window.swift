@@ -1,5 +1,5 @@
 // macOS-only helper for a currently running, marked GameHub research copy.
-// Usage: game-window EXPERIMENT_JSON info|capture|click X_FRACTION Y_FRACTION
+// Usage: game-window EXPERIMENT_JSON info|capture|click|move X_FRACTION Y_FRACTION
 // Targets the recorded PID; never searches or clicks unrelated application windows.
 import AppKit
 import CoreGraphics
@@ -22,7 +22,7 @@ func run(_ executable: String, _ arguments: [String]) throws -> String {
     return String(decoding: output, as: UTF8.self)
 }
 let args = CommandLine.arguments
-guard args.count >= 3 else { fail("expected experiment.json and info, capture, or click x y") }
+guard args.count >= 3 else { fail("expected experiment.json and info, capture, click x y, or move x y") }
 let experiment = URL(fileURLWithPath: args[1]).standardizedFileURL
 guard let state = try JSONSerialization.jsonObject(with: Data(contentsOf: experiment)) as? [String: Any],
       state["finished_unix"] == nil,
@@ -55,7 +55,7 @@ case "capture":
     let output = experiment.deletingLastPathComponent().appendingPathComponent("ui-\(Int(Date().timeIntervalSince1970 * 1000)).png")
     _ = try run("/usr/sbin/screencapture", ["-x", "-o", "-l", String(number), output.path])
     result["path"] = output.path
-case "click":
+case "click", "move":
     guard args.count == 5, let rx = Double(args[3]), let ry = Double(args[4]),
           rx.isFinite, ry.isFinite, (0...1).contains(rx), (0...1).contains(ry)
     else { fail("click coordinates must be fractions from 0 to 1") }
@@ -79,7 +79,8 @@ case "click":
     // Wine games may poll GetCursorPos instead of using an event's coordinates.
     guard CGPreflightPostEventAccess(), CGWarpMouseCursorPosition(point) == .success
     else { fail("mouse event access unavailable; no click sent") }
-    for kind: CGEventType in [.mouseMoved, .leftMouseDown, .leftMouseUp] {
+    let kinds: [CGEventType] = args[2] == "move" ? [.mouseMoved] : [.mouseMoved, .leftMouseDown, .leftMouseUp]
+    for kind in kinds {
         guard let event = CGEvent(mouseEventSource: nil, mouseType: kind, mouseCursorPosition: point, mouseButton: .left)
         else { fail("unable to create mouse event") }
         if kind != .mouseMoved { event.setIntegerValueField(.mouseEventClickState, value: 1) }

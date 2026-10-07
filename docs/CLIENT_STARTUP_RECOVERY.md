@@ -28,3 +28,10 @@ python3 tools/gamehub_run.py client --prefix-name wine10-recovered-20261007 \
 Harness 现在捕获 SIGTERM，使其同 SIGINT 一样进入 finally，停止自己启动的进程并恢复研究副本的临时证书。清理期间忽略第二个 SIGINT/SIGTERM，防止在恢复中途被打断；SIGKILL 无法触发清理。实际 SIGTERM 验证已确认 `finished_unix` 和 `lab_certificate_restored=true`。
 
 Python 13 项测试通过；prefix 克隆/修复实物都在忽略目录，不加入 Git。
+
+
+## 同日第二次恢复
+
+`client-1791354527177` 旧prefix卡在Wine loader IPC；独立prefix的 `client-1791354730132` 文件跟踪再次停在同一个IFS的SetFileAttributes/NtCreateFile。采样见 `research-output/wine-startup-91762.txt` 与 `wine-client-startup-92872.txt`。再次将故障inode6701441保留到 `research-output/blocked-resource-1791354904/`，从原始样本写入新inode7210064，校验SHA-256仍为上文的a4bac3f1…ff667；修复记录为该目录repair.json。不要重新打开保留的故障对象。
+
+当前运行prefix改为 `wine10-play-20261007`。`client-1791355008373` 已恢复认证与游戏连接。只读探针编译使用另一个prefix `wine10-probe-build-20261007`，避免与运行中的游戏争用构建环境。旧prefix和原始客户端均保留。复发进一步确认替换文件对象有效，底层文件系统阻塞原因仍未确定。

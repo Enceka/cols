@@ -250,4 +250,39 @@ class ClientAssets {
         var serializer=new JavaScriptSerializer();serializer.MaxJsonLength=16*1024*1024;
         Console.WriteLine(serializer.Serialize(output));
     }
+
+    public static void ExportBootstrapWeapon(IntPtr process) {
+        var r=new ClientAssets(process);int count=Count(r.Word(0x07817b88),899);
+        // Only identify pointers that are actual type-4 asset headers. Do not
+        // interpret arbitrary weapon words as pointers or guess model roles.
+        var models=new HashSet<uint>();byte[] entries=r.Read(0x01fc4e28,100000*28);
+        for(int j=1;j<100000;j++)if(U(entries,j*28)==4)models.Add(U(entries,j*28+8));
+        object weapon=null,composed=null;uint baseIndex=0;
+        for(uint i=1;i<=count;i++) {
+            uint at=r.Word(0x017f5a40+i*4);string name=r.Name(r.Word(at));
+            if(name!="m4_mp")continue;
+            if(weapon!=null)throw new Exception("duplicate M4 weapon registration");
+            var modelFields=new Dictionary<string,object>();
+            for(uint offset=0x10;offset<=0x50;offset+=4) {
+                uint pointer=r.Word(at+offset);
+                if(pointer!=0 && models.Contains(pointer))modelFields["0x"+offset.ToString("x")]=r.Name(r.Word(pointer));
+            }
+            weapon=Obj("name",name,"index",i,
+                "ammo_name",r.Name(r.Word(at+0x6b4)),"ammo_key",r.Word(at+0x6b8),
+                "clip_name",r.Name(r.Word(at+0x6bc)),"clip_key",r.Word(at+0x6c0),"model_fields",modelFields);
+            baseIndex=i;
+        }
+        if(weapon==null)throw new Exception("M4 not registered; load the training map first");
+        string composedName="** "+baseIndex+" 3 0";
+        for(uint i=1;i<=count;i++) {
+            uint at=r.Word(0x017f5a40+i*4);string name=r.Name(r.Word(at));
+            if(name!=composedName)continue;
+            if(composed!=null)throw new Exception("duplicate composed M4");
+            composed=Obj("name",name,"index",i,"ammo_key",r.Word(at+0x6b8),"clip_key",r.Word(at+0x6c0));
+        }
+        var output=Obj("schema_version",1,"read_only",true,
+            "client_sha256","e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b",
+            "connection_state",r.Word(0x01a2e7ec),"ncs_crc",r.Word(0x02df7d90),"weapon",weapon,"composed_weapon",composed);
+        Console.WriteLine(new JavaScriptSerializer().Serialize(output));
+    }
 }

@@ -43,7 +43,8 @@ class ReadClientState {
             bool profiles=args.Length==1 && args[0]=="--profiles";
             bool netConstants=args.Length==1 && args[0]=="--net-constants";
             bool mapEntities=args.Length==1 && args[0]=="--map-entities";
-            if(args.Length!=0 && !assets && !profiles && !netConstants && !mapEntities) throw new Exception("only fixed extraction modes are supported");
+            bool bootstrapWeapon=args.Length==1 && args[0]=="--bootstrap-weapon";
+            if(args.Length!=0 && !assets && !profiles && !netConstants && !mapEntities && !bootstrapWeapon) throw new Exception("only fixed extraction modes are supported");
             IntPtr snapshot=CreateToolhelp32Snapshot(2,0); uint found=0;
             if(snapshot==new IntPtr(-1)) throw new Exception("process snapshot failed");
             try {
@@ -74,9 +75,18 @@ class ReadClientState {
                 if(profiles) { ClientAssets.ExportProfiles(process);return 0; }
                 if(netConstants) { ClientAssets.ExportNetConstants(process);return 0; }
                 if(mapEntities) { ClientAssets.ExportMapEntities(process);return 0; }
+                if(bootstrapWeapon) { ClientAssets.ExportBootstrapWeapon(process);return 0; }
                 Console.WriteLine("{");
                 Field(process,"connection_state",0x01a2e7ec,4);
                 Field(process,"client_realtime",0x078b0a58,4);
+                Field(process,"client_input_catchers",0x01a2e7e4,4);
+                // 0x45f120 divides by this value; it is a time interval, not
+                // a boolean mouse-enable flag (0x45f260 also tests nonzero).
+                Field(process,"mouse_interval_msec",0x01a2e7ac,4);
+                Field(process,"input_frame_msec",0x078b0a50,4);
+                Field(process,"mouse_sensitivity_bits",checked(Read(process,0x01a2a540,4)+12),4);
+                Field(process,"mouse_yaw_scale_bits",checked(Read(process,0x01a2a560,4)+12),4);
+                Field(process,"mouse_pitch_scale_bits",checked(Read(process,0x01a2a568,4)+12),4);
                 Field(process,"frame_scale_bits",0x00cdcd3c,4);
                 Field(process,"script_time_scale_bits",0x02e8cf88,4);
                 uint fixedTime=Read(process,0x02e8a98c,4);
@@ -90,6 +100,18 @@ class ReadClientState {
                 Field(process,"full_snapshot_message",0x07999658,4);
                 Field(process,"full_snapshot_command_time",0x07996128,4);
                 Field(process,"full_snapshot_health",0x079962b8,4);
+                Field(process,"full_snapshot_max_health",0x079962c0,4);
+                Field(process,"full_snapshot_other_flags",0x07996138,4);
+                // 0x46d673 caches a 0x3564 snapshot at 0x07996128.
+                // 0x5a4230: clip entries at PS+0x3dc, reserve at PS+0x364.
+                Field(process,"full_snapshot_clip_key_0",0x07996128+0x3dc,4);
+                Field(process,"full_snapshot_clip_ammo_0",0x07996128+0x3e0,4);
+                Field(process,"full_snapshot_reserve_key_0",0x07996128+0x364,4);
+                Field(process,"full_snapshot_reserve_ammo_0",0x07996128+0x368,4);
+                // 0x46c1c0 increments snapshot+0x3540; cached entity records
+                // start at 0x07999690 and eType is their second word.
+                Field(process,"full_snapshot_entity_count",0x07996128+0x3540,4);
+                Field(process,"full_entity_0_type",0x07999690+4,4);
                 Field(process,"full_snapshot_origin_x_bits",0x07996144,4);
                 Field(process,"full_snapshot_origin_y_bits",0x07996148,4);
                 Field(process,"full_snapshot_origin_z_bits",0x0799614c,4);
@@ -105,7 +127,50 @@ class ReadClientState {
                     Field(process,"server_command_sequence",checked(connection+0x4014c),4);
                 }
                 uint active=Read(process,0x01a2e838,4)^0x6891d1c7;
+                // 0x45f260 / 0x50b8b0 decode the local cg pointer this way;
+                // cg starts with the predicted playerState.
+                uint cgSlot=Read(process,0x07817ba8,4);
+                Field(process,"cg_pointer_slot",0x07817ba8,4);
+                if(cgSlot<256) {
+                    uint cg=Read(process,checked(0x01a19510+cgSlot*4),4)^0xfbb2c97a;
+                    if(cg>=0x10000 && cg<0xff000000) {
+                        Field(process,"predicted_command_time",cg,4);
+                        Field(process,"predicted_pm_type",checked(cg+4),4);
+                        Field(process,"predicted_pm_flags",checked(cg+0xc),4);
+                        Field(process,"predicted_other_flags",checked(cg+0x10),4);
+                        Field(process,"predicted_view_pitch_bits",checked(cg+0x14c),4);
+                        Field(process,"predicted_view_yaw_bits",checked(cg+0x150),4);
+                        Field(process,"predicted_weapon_animation",checked(cg+0x26c),4);
+                        Field(process,"cg_frame_msec",checked(cg+0xae4c4),4);
+                        Field(process,"cg_time",checked(cg+0xae4c8),4);
+                    }
+                }
                 if(active>=0x10000 && active<0x7ff00000) {
+                    // 0x45f090 consumes two alternating raw-delta buckets.
+                    Field(process,"mouse_raw_x_0",checked(active+0x35e4),4);
+                    Field(process,"mouse_raw_x_1",checked(active+0x35e8),4);
+                    Field(process,"mouse_raw_y_0",checked(active+0x35ec),4);
+                    Field(process,"mouse_raw_y_1",checked(active+0x35f0),4);
+                    Field(process,"mouse_raw_bucket",checked(active+0x35f4),4);
+                    // 0x45f120 multiplies sensitivity by this game-side scale.
+                    Field(process,"mouse_game_scale_bits",checked(active+0x3610),4);
+                    // 0x50b8b0 only applies motion when this aim state is ready;
+                    // the caller 0x45f577 explicitly selects local client0.
+                    Field(process,"mouse_aim_state_ready",0x02c27640,1);
+                    // CL_CreateCmd/MouseMove use active+0x3650/54 for live
+                    // view angles; active+0xc is the current snapshot PS.
+                    Field(process,"client_view_pitch_bits",checked(active+0x3650),4);
+                    Field(process,"client_view_yaw_bits",checked(active+0x3654),4);
+                    // 0x45f9be adds these offsets to live view angles before
+                    // producing short angles in the 44-byte command ring.
+                    Field(process,"client_angle_offset_pitch_bits",checked(active+0x361c),4);
+                    Field(process,"client_angle_offset_yaw_bits",checked(active+0x3620),4);
+                    uint cmd=Read(process,checked(active+0x625c),4);
+                    Field(process,"last_local_cmd_pitch",checked(active+0x365c+(cmd&255)*44+8),4);
+                    Field(process,"last_local_cmd_yaw",checked(active+0x365c+(cmd&255)*44+12),4);
+                    Field(process,"current_pm_flags",checked(active+0x18),4);
+                    Field(process,"current_clamp_pitch_bits",checked(active+0xc+0x174),4);
+                    Field(process,"current_clamp_yaw_bits",checked(active+0xc+0x178),4);
                     Field(process,"client_command_number",checked(active+0x625c),4);
                     uint sent=Read(process,checked(connection+0x80158),4);
                     uint mask=Read(process,checked(active+0x8668),4);
@@ -116,6 +181,10 @@ class ReadClientState {
                     Field(process,"current_snapshot_flags",checked(active+0x3534),4);
                     Field(process,"current_snapshot_server_time",checked(active+0x3538),4);
                     Field(process,"current_snapshot_message",checked(active+0x353c),4);
+                    // Current snapshot is active+0xc (0x46d686); PS table
+                    // indices19/18 store pitch/yaw at0x14c/0x150, codec -87.
+                    Field(process,"current_view_pitch_bits",checked(active+0xc+0x14c),4);
+                    Field(process,"current_view_yaw_bits",checked(active+0xc+0x150),4);
                 }
                 Field(process,"config_version",0x078a06bc,4);
                 Field(process,"playlist_version",0x031fe614,4);

@@ -245,6 +245,17 @@ pub fn client_message(
     body: &[u8],
     movement_key: Option<u32>,
 ) -> Result<ClientCommands, LobbyError> {
+    client_message_with_base(
+        body,
+        movement_key,
+        &crate::game_usercmd::UserCommand::default(),
+    )
+}
+pub fn client_message_with_base(
+    body: &[u8],
+    movement_key: Option<u32>,
+    base: &crate::game_usercmd::UserCommand,
+) -> Result<ClientCommands, LobbyError> {
     let mut reader = Reader::new(body);
     let mut commands = Vec::new();
     let mut movement = None;
@@ -266,10 +277,11 @@ pub fn client_message(
             }
             op @ (0 | 1) => {
                 let key = movement_key.ok_or(LobbyError("movement before bootstrap snapshot"))?;
-                movement = Some(crate::game_usercmd::read_movement(
+                movement = Some(crate::game_usercmd::read_movement_from(
                     &mut reader,
                     key,
                     op == 0,
+                    base,
                 )?);
                 if reader.bits(3)? != 3 {
                     return Err(LobbyError("movement must end with EOF"));

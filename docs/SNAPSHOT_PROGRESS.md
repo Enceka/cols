@@ -72,3 +72,6 @@ python3 tools/gamehub_run.py client --prefix-name wine10-recovered-20261007 --se
 快照调度使用tokio interval给出的计划时间，而非处理时刻，避免微小调度抖动把下一帧判成“尚未到期”而跳帧。仍有显式帧数、admission期限及实验运行时间限制；到预算末尾停止发送或进程关闭是实验边界，不能承诺永不断线。
 
 最终检查：fmt、Clippy、87项Rust和17项Python测试全部通过；服务端调试可执行文件已重建。覆盖实际接受快照向量、14段结构、PS字段源表、出生数据校验、输入截断/tag/新增melee字段、发送节奏与预算、ACK后基线切换。只读探针已重新编译并在目标进程中验证。
+
+
+后续进展见 [玩家出生与装备](PLAYER_BOOTSTRAP_PROGRESS.md)：时钟已修复、组合M4和30/90弹药已下发、输入基线随ACK选择；视角与模型姿态仍未通过实际操作验收。当前运行prefix为wine10-play-20261007。

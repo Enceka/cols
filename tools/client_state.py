@@ -28,10 +28,11 @@ def main():
     extract.add_argument("--profiles", action="store_true", help="save this client's two fixed profile buffers to the ignored experiment directory")
     extract.add_argument("--net-constants", action="store_true", help="read loaded type-44 net-constant assets and CRC state")
     extract.add_argument("--map-entities", action="store_true", help="read loaded type-19 map entity strings")
+    extract.add_argument("--bootstrap-weapon", action="store_true", help="read the registered basic M4 and ammo keys")
     args = parser.parse_args()
     if args.prefix_name and (not args.build or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", args.prefix_name)):
         parser.error("prefix-name requires build and a simple project directory name")
-    if args.build and (args.assets or args.profiles or args.net_constants or args.map_entities):
+    if args.build and (args.assets or args.profiles or args.net_constants or args.map_entities or args.bootstrap_weapon):
         parser.error("extraction options require a running experiment")
     state = json.loads(args.experiment.read_text()) if args.experiment else None
     engine_id = state["engine_id"] if state else "10000033"
@@ -82,11 +83,11 @@ def main():
         hashes = json.loads(stamp.read_text())
         if hashes != {"sources_sha256": source_hashes, "binary_sha256": sha256(binary)}:
             parser.error("probe changed; rebuild it")
-        result = subprocess.run([wine, str(binary)] + (["--assets"] if args.assets else ["--profiles"] if args.profiles else ["--net-constants"] if args.net_constants else ["--map-entities"] if args.map_entities else []), env=env, capture_output=True, text=True, timeout=30)
+        result = subprocess.run([wine, str(binary)] + (["--assets"] if args.assets else ["--profiles"] if args.profiles else ["--net-constants"] if args.net_constants else ["--map-entities"] if args.map_entities else ["--bootstrap-weapon"] if args.bootstrap_weapon else []), env=env, capture_output=True, text=True, timeout=30)
         if result.returncode:
             raise RuntimeError((result.stdout + result.stderr)[-2000:])
         decoded = json.loads(result.stdout)
-        output = args.experiment.parent / (("client-assets-" if args.assets else "client-profiles-" if args.profiles else "net-constants-" if args.net_constants else "map-entities-" if args.map_entities else "client-state-") + str(int(time.time() * 1000)) + ".json")
+        output = args.experiment.parent / (("client-assets-" if args.assets else "client-profiles-" if args.profiles else "net-constants-" if args.net_constants else "map-entities-" if args.map_entities else "bootstrap-weapon-" if args.bootstrap_weapon else "client-state-") + str(int(time.time() * 1000)) + ".json")
         output.write_text(json.dumps(decoded, indent=2) + "\n")
         summary = {"schemas": {k: {f: v[f] for f in ("found", "error") if f in v} for k, v in decoded["schemas"].items()},
                    "tables": {k: {f: v[f] for f in ("found", "rows", "columns", "error") if f in v} for k, v in decoded["tables"].items()}} if args.assets else {"read_only": True, "profile_buffers": 2} if args.profiles else decoded

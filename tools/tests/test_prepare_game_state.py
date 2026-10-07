@@ -6,7 +6,8 @@ from pathlib import Path
 import zlib
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from prepare_game_state import CLIENT_SHA256, compute, spawn_origin
+from prepare_game_state import CLIENT_SHA256, compute, spawn_origin, weapon_ammo
+import json
 
 
 def encoded(values):
@@ -32,6 +33,29 @@ def capture():
 
 
 class GameStatePreparation(unittest.TestCase):
+    def test_ammo_keys_are_bound_to_runtime_build_map_and_weapon(self):
+        weapon={"name":"m4_mp","index":163}
+        data=dict(schema_version=1,read_only=True,client_sha256=CLIENT_SHA256,ncs_crc=123,
+                  weapon={**weapon,"ammo_key":163,"clip_key":163})
+        result=weapon_ammo(json.dumps(data).encode(),123,weapon)
+        self.assertEqual((result["clip"],result["reserve"]),(30,90))
+        for key,value in [("ammo_key",1024),("clip_key",-1),("index",164),("ammo_key",1.5)]:
+            invalid=copy.deepcopy(data);invalid["weapon"][key]=value
+            with self.assertRaises(ValueError):weapon_ammo(json.dumps(invalid).encode(),123,weapon)
+        with self.assertRaises(ValueError):weapon_ammo(json.dumps(data).encode(),124,weapon)
+    def test_weapon_id_uses_deduplicated_constant_order_not_marketplace_item(self):
+        data=capture()
+        data["assets"] += [asset("ncs_wep_level",13,3,[b"default",b"m4_mp"]),
+                           asset("ncs_wep_common",13,0,[b"default",b"another"])]
+        self.assertEqual(compute(data,"m4_mp")["bootstrap_weapon"],{"name":"m4_mp","index":3})
+        self.assertEqual(compute(data,"m4_mp",True)["bootstrap_weapon"],
+            {"name":"m4_mp","index":4,"base_index":3,"composed_name":"** 3 3 0"})
+        data["assets"].append(asset("ncs_mdl_hands",0,0,[b"viewhands_player_tf141"]))
+        self.assertEqual(compute(data,"m4_mp",True,True)["bootstrap_weapon"]["viewmodel_index"],4)
+        with self.assertRaises(ValueError):compute(data,"missing")
+        data["assets"][-3]["strings_base64"] = encoded([b"default",b"missing"])
+        with self.assertRaises(ValueError):compute(data,"m4_mp")
+
     def test_spawn_comes_from_expected_map_and_rejects_invalid_coordinates(self):
         def capture_map(text):
             return dict(schema_version=1,read_only=True,client_sha256=CLIENT_SHA256,maps=[dict(

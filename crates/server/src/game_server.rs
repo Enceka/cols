@@ -382,6 +382,7 @@ impl GameServer {
                 .get(&peer)
                 .and_then(|p| p.connection.gamestate_progress());
             let input_progress = peers.get(&peer).map(|p| p.connection.input_progress());
+            let input_angles = peers.get(&peer).map(|p| p.connection.view_angles());
             let error = handled.as_ref().err().map(ToString::to_string);
             let response = handled.unwrap_or(None);
             if let Some(plain) = &decoded {
@@ -404,7 +405,7 @@ impl GameServer {
             };
             write_private(&self.directory.join(format!("{count:04}-event.json")),&serde_json::to_vec(&serde_json::json!({
                 "peer":peer,"bytes":n,"type":wire.first(),"version_byte":wire.get(1),"admitted_init":admitted,
-                "reply_bytes":response.as_ref().map_or(0,Vec::len),"unix_time_ms":unix_time_ms(),"gamestate_progress":gamestate_progress,"input_progress":input_progress
+                "reply_bytes":response.as_ref().map_or(0,Vec::len),"unix_time_ms":unix_time_ms(),"gamestate_progress":gamestate_progress,"input_progress":input_progress,"input_angles":input_angles
                 ,"connection_stage":connection_stage,"inner_kind":inner_kind,"inner_dropped":inner_dropped,"client_server_id":client_server_id,"client_message_ack":client_message_ack,"client_reliable_ack":client_reliable_ack,"client_body_first":client_body_first,"client_opcode":client_opcode,"mac_verified":decoded.is_some(),"plaintext_bytes":decoded.as_ref().map(|p| p.encrypted.len() + p.cleartext.len()),"encrypted_payload_bytes":decoded.as_ref().map(|p| p.encrypted.len()),"error":error
             }))?).await?;
             tracing::info!(%peer,bytes=n,kind=?wire.first(),admitted_init=admitted,mac_verified=decoded.is_some(),"game UDP datagram captured");

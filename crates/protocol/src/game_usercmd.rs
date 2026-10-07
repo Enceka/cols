@@ -1,4 +1,4 @@
-//! Inverse of target 0x5a1be0, used only with the bootstrap's zero input base.
+//! Inverse of target 0x5a1be0, with an explicit baseline from server playerState.
 //! The 3.3.3.3 writer adds an 11-bit melee entity and a fifth trailing word.
 use crate::{game_wire::Reader, lobby::LobbyError};
 
@@ -104,13 +104,22 @@ pub fn read_movement(
     key: u32,
     delta_snapshot: bool,
 ) -> Result<Movement, LobbyError> {
+    read_movement_from(r, key, delta_snapshot, &UserCommand::default())
+}
+
+pub fn read_movement_from(
+    r: &mut Reader<'_>,
+    key: u32,
+    delta_snapshot: bool,
+    initial: &UserCommand,
+) -> Result<Movement, LobbyError> {
     let count = r.u8()?;
     if !(1..=32).contains(&count) {
         return Err(LobbyError("usercmd count out of range"));
     }
     // 0x5a18e0 builds a fresh base from the current playerState per packet.
-    // The currently emitted probe has zero angles, weapon IDs and buttons.
-    let mut base = UserCommand::default();
+    // The caller must supply the base matching the acknowledged playerState.
+    let mut base = initial.clone();
     let mut commands = Vec::with_capacity(usize::from(count));
     for _ in 0..count {
         base = command(r, key, &base)?;
@@ -210,5 +219,25 @@ mod tests {
         );
         assert_eq!(key(4, 0, b""), 4);
         assert_eq!(key(4, 123, b"a\0ignored"), 4 ^ 123 ^ 11548);
+    }
+    #[test]
+    fn unchanged_command_retains_equipment_and_player_melee_sentinel() {
+        let mut w = Writer::default();
+        w.bits(0, 3);
+        w.bytes.push(1);
+        w.bits(0, 1);
+        w.bytes.extend_from_slice(&1000u32.to_le_bytes());
+        w.bits(0, 1);
+        w.bits(7, 3);
+        w.bytes.extend_from_slice(&[0; 20]);
+        w.bits(3, 3);
+        let mut base = UserCommand::default();
+        base.weapons[0] = 163;
+        base.melee_entity = 2047;
+        let message = crate::game_wire::client_message_with_base(&w.bytes, Some(0), &base).unwrap();
+        let command = &message.movement.unwrap().commands[0];
+        assert_eq!(command.time, 1000);
+        assert_eq!(command.weapons, [163, 0, 0]);
+        assert_eq!(command.melee_entity, 2047);
     }
 }

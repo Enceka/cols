@@ -6,6 +6,30 @@ use std::path::Path;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+struct BootstrapWeapon {
+    name: String,
+    index: u16,
+    #[serde(default)]
+    ammo: Option<BootstrapAmmo>,
+    #[serde(default)]
+    base_index: Option<u16>,
+    #[serde(default)]
+    composed_name: Option<String>,
+    #[serde(default)]
+    viewmodel_index: Option<u16>,
+}
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BootstrapAmmo {
+    clip_key: u16,
+    reserve_key: u16,
+    clip: u16,
+    reserve: u16,
+    source_sha256: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PreparedGameState {
     schema_version: u32,
     client_sha256: String,
@@ -23,6 +47,8 @@ pub struct PreparedGameState {
     spawn_origin: Option<[f32; 3]>,
     #[serde(default)]
     map_entities_sha256: Option<String>,
+    #[serde(default)]
+    bootstrap_weapon: Option<BootstrapWeapon>,
     #[serde(skip)]
     snapshot_probe: bool,
     #[serde(skip)]
@@ -50,6 +76,41 @@ impl PreparedGameState {
             "prepared game state size"
         );
         let state: Self = serde_json::from_slice(&std::fs::read(path)?)?;
+        if let Some(weapon) = &state.bootstrap_weapon {
+            ensure!(
+                state.spawn_origin.is_some()
+                    && weapon.name == "m4_mp"
+                    && (1..900).contains(&weapon.index),
+                "invalid bootstrap weapon or missing spawn"
+            );
+            ensure!(
+                weapon.viewmodel_index.is_none_or(|i| i > 0 && i < 1024),
+                "invalid viewmodel index"
+            );
+            ensure!(
+                weapon.base_index.is_some() == weapon.composed_name.is_some(),
+                "incomplete composed weapon identity"
+            );
+            if let Some(base) = weapon.base_index {
+                ensure!(
+                    base > 0
+                        && base < weapon.index
+                        && weapon.composed_name.as_deref() == Some(&format!("** {base} 3 0")),
+                    "unsupported bootstrap weapon composition"
+                );
+            }
+            if let Some(ammo) = &weapon.ammo {
+                ensure!(
+                    ammo.clip_key <= 1022
+                        && ammo.reserve_key <= 1023
+                        && ammo.clip <= 511
+                        && ammo.reserve <= 2047
+                        && ammo.source_sha256.len() == 64
+                        && ammo.source_sha256.bytes().all(|b| b.is_ascii_hexdigit()),
+                    "invalid bootstrap ammo seed"
+                );
+            }
+        }
         ensure!(
             state.spawn_origin.is_some() == state.map_entities_sha256.is_some(),
             "spawn evidence missing"
@@ -113,7 +174,7 @@ impl PreparedGameState {
     pub(crate) fn body(&self, command_sequence: u32) -> Result<Vec<u8>> {
         // CS0 keys mapname/g_gametype confirmed at 0x465aa2/0x465abf.
         // 0x46d830 parses CS3 into C2S serverId. CS16 is map-center text.
-        let values = [
+        let mut values = vec![
             (
                 0,
                 format!("\\mapname\\{}\\g_gametype\\{}", self.map, self.mode),
@@ -127,6 +188,14 @@ impl PreparedGameState {
             // uninitialized slow-motion values and nearly stops client time.
             (6415, "0 0 1 1".to_owned()),
         ];
+        if let Some(weapon) = &self.bootstrap_weapon
+            && let Some(name) = &weapon.composed_name
+        {
+            // NCS inherited weapon bank starts at5443; unused indices are
+            // untyped and accept a regular configstring. Parser0x42e3b0.
+            values.push((5443 + weapon.index, name.clone()));
+            values.sort_by_key(|v| v.0);
+        }
         Ok(Gamestate {
             command_sequence,
             map: &self.map,
@@ -138,12 +207,44 @@ impl PreparedGameState {
         }
         .encode()?)
     }
-    pub(crate) fn snapshot(&self, server_time: u32, establish_baseline: bool) -> Result<Vec<u8>> {
-        Ok(codol_protocol::game_snapshot::frame(
+    pub(crate) fn snapshot(
+        &self,
+        server_time: u32,
+        establish_baseline: bool,
+        angles: [u16; 3],
+    ) -> Result<Vec<u8>> {
+        Ok(codol_protocol::game_snapshot::aimed_frame(
             server_time,
             self.spawn_origin,
             establish_baseline,
+            self.bootstrap_weapon
+                .as_ref()
+                .map(|w| codol_protocol::game_snapshot::Equipment {
+                    weapon: w.index,
+                    viewmodel: w.viewmodel_index,
+                    ammo: w
+                        .ammo
+                        .as_ref()
+                        .map(|a| codol_protocol::game_snapshot::Ammo {
+                            clip_key: a.clip_key,
+                            reserve_key: a.reserve_key,
+                            clip: a.clip,
+                            reserve: a.reserve,
+                        }),
+                }),
+            angles,
         )?)
+    }
+    pub(crate) fn input_base(&self) -> codol_protocol::game_usercmd::UserCommand {
+        let mut base = codol_protocol::game_usercmd::UserCommand::default();
+        if let Some(weapon) = &self.bootstrap_weapon {
+            base.weapons[0] = weapon.index;
+            base.melee_entity = 2047; // target 0x5a18e0, POF_PLAYER (0x1000)
+        }
+        base
+    }
+    pub(crate) fn has_spawn(&self) -> bool {
+        self.spawn_origin.is_some()
     }
 }
 
@@ -164,6 +265,7 @@ pub(crate) fn synthetic() -> PreparedGameState {
         observed_crc_verified: false,
         spawn_origin: None,
         map_entities_sha256: None,
+        bootstrap_weapon: None,
         snapshot_probe: false,
         snapshot_frames: 0,
     }

@@ -1,6 +1,7 @@
 //! Application connection bootstrap after authenticated game DATA.
 use anyhow::{Result, ensure};
 use codol_protocol::game_wire::{self, ClientHeader, ReliableCommands, SERVER_EOF};
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -23,6 +24,7 @@ pub(crate) struct Connection {
     snapshot_first_sequence: Option<u32>,
     input_count: u32,
     last_input: Option<codol_protocol::game_usercmd::UserCommand>,
+    snapshot_input_bases: VecDeque<(u32, codol_protocol::game_usercmd::UserCommand)>,
 }
 
 impl Connection {
@@ -69,10 +71,17 @@ impl Connection {
         {
             return Ok(None);
         }
-        let body = self.game_state.as_ref().expect("enabled state").snapshot(
+        let state = self.game_state.as_ref().expect("enabled state");
+        let angles = if state.has_spawn() {
+            self.view_angles()
+        } else {
+            [0; 3]
+        };
+        let body = state.snapshot(
             1000 + self.snapshot_count * 50,
             self.snapshot_first_sequence
                 .is_none_or(|first| self.native_ack < first),
+            angles,
         )?;
         let ack = self.client_commands.sequence();
         let packet = game_wire::server_packet(
@@ -84,6 +93,14 @@ impl Connection {
             &body,
         )?;
         self.native_sent += 1;
+        let mut base = state.input_base();
+        // 0x5a18e0 copies pitch/yaw only; the default command's roll stays0.
+        base.angles = [angles[0], angles[1], 0];
+        self.snapshot_input_bases
+            .push_back((self.native_sent, base));
+        while self.snapshot_input_bases.len() > 256 {
+            self.snapshot_input_bases.pop_front();
+        }
         self.snapshot_first_sequence.get_or_insert(self.native_sent);
         self.snapshot_count += 1;
         self.snapshot_next = Some(now + Duration::from_millis(50));
@@ -91,6 +108,17 @@ impl Connection {
     }
     pub fn input_progress(&self) -> (u32, Option<u32>) {
         (self.input_count, self.last_input.as_ref().map(|c| c.time))
+    }
+    pub fn view_angles(&self) -> [u16; 3] {
+        self.last_input.as_ref().map_or([0; 3], |c| c.angles)
+    }
+    fn input_base_for(&self, ack: u32) -> Result<codol_protocol::game_usercmd::UserCommand> {
+        self.snapshot_input_bases
+            .iter()
+            .rev()
+            .find(|(sequence, _)| *sequence <= ack)
+            .map(|(_, base)| base.clone())
+            .ok_or_else(|| anyhow::anyhow!("no retained input base for snapshot ACK"))
     }
 
     pub fn decode_native(&self, payload: &[u8]) -> Result<(ClientHeader, Vec<u8>)> {
@@ -124,16 +152,24 @@ impl Connection {
             header.message_ack >= self.native_ack && header.message_ack <= self.native_sent,
             "native ACK outside sent range"
         );
-        let key = (self.snapshot_count > 0).then(|| {
-            codol_protocol::game_usercmd::key(
-                header.message_ack,
-                0,
-                self.server_commands
-                    .command_for(header.reliable_ack)
-                    .expect("decoded slot"),
-            )
-        });
-        let received = game_wire::client_message(&clear, key)?;
+        let key = self
+            .snapshot_first_sequence
+            .filter(|first| header.message_ack >= *first)
+            .map(|_| {
+                codol_protocol::game_usercmd::key(
+                    header.message_ack,
+                    0,
+                    self.server_commands
+                        .command_for(header.reliable_ack)
+                        .expect("decoded slot"),
+                )
+            });
+        let base = if key.is_some() {
+            self.input_base_for(header.message_ack)?
+        } else {
+            Default::default()
+        };
+        let received = game_wire::client_message_with_base(&clear, key, &base)?;
         ensure!(
             self.gamestate_sent || received.commands.is_empty(),
             "client commands before gamestate"
@@ -378,6 +414,25 @@ fn validate_connect(body: &[u8], owner: u64, build: i32, challenge: u32) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn input_baseline_follows_acknowledged_snapshot_not_latest_view() {
+        let mut c = Connection::default();
+        let first = codol_protocol::game_usercmd::UserCommand {
+            angles: [100, 200, 0],
+            weapons: [352, 0, 0],
+            ..Default::default()
+        };
+        let second = codol_protocol::game_usercmd::UserCommand {
+            angles: [300, 400, 0],
+            ..first.clone()
+        };
+        c.snapshot_input_bases.push_back((4, first.clone()));
+        c.snapshot_input_bases.push_back((6, second.clone()));
+        assert!(c.input_base_for(3).is_err());
+        assert_eq!(c.input_base_for(4).unwrap(), first);
+        assert_eq!(c.input_base_for(5).unwrap(), first); // reliable-only message
+        assert_eq!(c.input_base_for(6).unwrap(), second);
+    }
     #[test]
     fn snapshot_probe_requires_opt_in_initialization_and_has_rate_and_count_limits() {
         let now = Instant::now();
