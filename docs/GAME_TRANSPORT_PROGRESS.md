@@ -143,6 +143,8 @@ Rust `game_wire::NativeXor` 已把两个方向分开：`incoming_xor(sequence_by
 
 方向边界的独立向量已加入：C2S 样本 `01 00 00 00 00 00 00 00 00 00 00 00 00 76` 解析为 sequence=1、serverId=0、messageAck=0、reliableAck=0、单字节 body=0x76；S2C writer 保持 sequence 与 clientCommandAck 两个 LE32 字段明文，再只对正文 XOR。这个边界与目标 `0x467520` 接收流程及参考 `SV_Netchan_Encode` 一致。
 
+目标 `0x5a5720` 的重组器还显示了版本特有的分片阈值：普通路径比较 `0x4d8`，关联类型为 2 时比较 `0x482`；超过阈值会进入内部片段 ring，而不是简单把完整正文当一个 UDP 包。AlphaBuild 的旧 `CODOL_FRAGMENT_SIZE=1162 (0x48a)` 不能直接套用。Rust 当前 server packet 明确拒绝超过阈值的正文，防止向目标发错片段；下一步需从目标实包恢复片段头字段后再实现。
+
 feed 来源已进一步确认：0x46d830 在调用 0x4f9850 前把 `ECX=3`，即读取 configstring index 3；随后 0xaf6e68 调用十进制 `strtol`（base=10），结果写入 `DAT_0796f2d8`。因此服务端未来应从 gamestate 的 server-id/configstring 3 生成 `feed_byte = parsed_u32 as u8`，不能从 challenge、DTLS key 或用户 UID 派生。Rust 已加入 `native_feed_byte` 纯函数和边界测试；command ring 与 `+0x40148/+0x138` 的运行时值仍待目标包确认。
 
 真实内层包在 heartbeat 后是 14 字节：`LE32(sequence) || 9 个零字节 || 末尾值`，不同实验末尾分别观察到 `0x37` 和 `0x76`；这不是可直接当作 gamestate 的明文。目标接收器 0x46e6a0 使用 0x5a1180 读取四字节序号、再按消息码分派；0x46dea0 的 gamestate 路径会读取可靠确认号、检查 configstring/服务器校验并推进状态。此前 152 字节原型没有经过这些状态前置，不能单独用它推断配置内容不足。
