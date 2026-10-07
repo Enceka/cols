@@ -3,8 +3,10 @@
 pub mod auth;
 pub mod bootstrap;
 pub mod game;
+pub mod game_snapshot;
 pub mod game_state;
 pub mod game_stats;
+pub mod game_usercmd;
 pub mod game_wire;
 pub mod lobby;
 pub mod profile;

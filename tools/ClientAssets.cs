@@ -224,4 +224,30 @@ class ClientAssets {
         var serializer=new JavaScriptSerializer();serializer.MaxJsonLength=32*1024*1024;
         Console.WriteLine(serializer.Serialize(output));
     }
+
+    public static void ExportMapEntities(IntPtr process) {
+        var r=new ClientAssets(process);var maps=new List<object>();
+        byte[] entries=r.Read(0x01fc4e28,100000*28),heads=r.Read(0x01bc9f20,80000*4);
+        var seen=new HashSet<uint>();
+        for(int bucket=0;bucket<80000;bucket++) {
+            uint index=U(heads,bucket*4);int length=0;
+            while(index!=0) {
+                if(index>=100000||!seen.Add(index)||++length>128)throw new Exception("invalid asset chain");
+                int offset=(int)index*28;
+                if(U(entries,offset)==19) {
+                    if(maps.Count>=16)throw new Exception("map resource budget");
+                    byte[] h=r.Read(U(entries,offset+8),12);string name=r.Name(U(h,0));
+                    int count=Count(U(h,8),4*1024*1024);
+                    byte[] text=count==0?new byte[0]:r.Read(U(h,4),count);
+                    maps.Add(Obj("name",name,"byte_count",count,"entity_string_base64",Convert.ToBase64String(text)));
+                }
+                index=U(entries,offset+20);
+            }
+        }
+        var output=Obj("schema_version",1,"read_only",true,
+            "client_sha256","e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b",
+            "connection_state",r.Word(0x01a2e7ec),"maps",maps);
+        var serializer=new JavaScriptSerializer();serializer.MaxJsonLength=16*1024*1024;
+        Console.WriteLine(serializer.Serialize(output));
+    }
 }

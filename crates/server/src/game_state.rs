@@ -19,8 +19,27 @@ pub struct PreparedGameState {
     constant_count: u32,
     asset_count: u32,
     observed_crc_verified: bool,
+    #[serde(skip)]
+    snapshot_probe: bool,
+    #[serde(skip)]
+    snapshot_frames: u32,
 }
 impl PreparedGameState {
+    pub fn with_snapshot_frames(mut self, frames: u32) -> Result<Self> {
+        ensure!(
+            (1..=18000).contains(&frames),
+            "snapshot frame budget out of range"
+        );
+        self.snapshot_probe = true;
+        self.snapshot_frames = frames;
+        Ok(self)
+    }
+    pub(crate) fn snapshot_limit(&self) -> u32 {
+        self.snapshot_frames
+    }
+    pub(crate) fn snapshot_probe(&self) -> bool {
+        self.snapshot_probe
+    }
     pub fn load(path: &Path) -> Result<Self> {
         ensure!(
             std::fs::metadata(path)?.len() <= 4096,
@@ -112,6 +131,8 @@ pub(crate) fn synthetic() -> PreparedGameState {
         constant_count: 2,
         asset_count: 1,
         observed_crc_verified: false,
+        snapshot_probe: false,
+        snapshot_frames: 0,
     }
 }
 

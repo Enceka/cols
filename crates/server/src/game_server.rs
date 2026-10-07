@@ -240,11 +240,38 @@ impl GameServer {
         let mut count = 0;
         let mut total = 0;
         let mut peers = HashMap::<SocketAddrV4, Peer>::new();
+        let datagram_limit = 2048
+            + self
+                .game_state
+                .as_ref()
+                .map_or(0, |s| s.snapshot_limit() * 4);
+        let mut tick = tokio::time::interval(std::time::Duration::from_millis(50));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut snapshots = 0u32;
         loop {
             let (n, peer) = tokio::select! {result=&mut shutdown=>{result?;return Ok(())},
+            _=tick.tick()=>{
+                let now=(unix_time_ms()/1000) as u32;
+                peers.retain(|_,p|self.admissions.get(&p.id,now).is_some());
+                for (address,p) in &mut peers {
+                    let Some(records)=p.records.as_mut() else { continue };
+                    if let Some(plain)=p.connection.poll_snapshot(std::time::Instant::now())? {
+                        let wire=records.seal(&plain,p.remote_tag)?;
+                        self.socket.send_to(&wire,*address).await?;
+                        snapshots+=1;
+                        write_private(&self.directory.join(format!("snapshot-{snapshots:04}-plaintext.bin")),&plain).await?;
+                        write_private(&self.directory.join(format!("snapshot-{snapshots:04}-reply.bin")),&wire).await?;
+                        write_private(&self.directory.join(format!("snapshot-{snapshots:04}.json")),&serde_json::to_vec(&serde_json::json!({
+                            "peer":address,"native_sequence":u32::from_le_bytes(plain[..4].try_into()?),
+                            "bytes":wire.len(),"unix_time_ms":unix_time_ms(),"mode":"bounded_bootstrap_probe"
+                        }))?).await?;
+                    }
+                }
+                continue;
+            },
             result=self.socket.recv_from(&mut buffer)=>result?};
             let SocketAddr::V4(peer) = peer else { continue };
-            if !peer.ip().is_loopback() || count >= 2048 || total + n > 8 * 1024 * 1024 {
+            if !peer.ip().is_loopback() || count >= datagram_limit || total + n > 32 * 1024 * 1024 {
                 continue;
             }
             count += 1;
@@ -354,6 +381,7 @@ impl GameServer {
             let gamestate_progress = peers
                 .get(&peer)
                 .and_then(|p| p.connection.gamestate_progress());
+            let input_progress = peers.get(&peer).map(|p| p.connection.input_progress());
             let error = handled.as_ref().err().map(ToString::to_string);
             let response = handled.unwrap_or(None);
             if let Some(plain) = &decoded {
@@ -376,7 +404,7 @@ impl GameServer {
             };
             write_private(&self.directory.join(format!("{count:04}-event.json")),&serde_json::to_vec(&serde_json::json!({
                 "peer":peer,"bytes":n,"type":wire.first(),"version_byte":wire.get(1),"admitted_init":admitted,
-                "reply_bytes":response.as_ref().map_or(0,Vec::len),"unix_time_ms":unix_time_ms(),"gamestate_progress":gamestate_progress
+                "reply_bytes":response.as_ref().map_or(0,Vec::len),"unix_time_ms":unix_time_ms(),"gamestate_progress":gamestate_progress,"input_progress":input_progress
                 ,"connection_stage":connection_stage,"inner_kind":inner_kind,"inner_dropped":inner_dropped,"client_server_id":client_server_id,"client_message_ack":client_message_ack,"client_reliable_ack":client_reliable_ack,"client_body_first":client_body_first,"client_opcode":client_opcode,"mac_verified":decoded.is_some(),"plaintext_bytes":decoded.as_ref().map(|p| p.encrypted.len() + p.cleartext.len()),"encrypted_payload_bytes":decoded.as_ref().map(|p| p.encrypted.len()),"error":error
             }))?).await?;
             tracing::info!(%peer,bytes=n,kind=?wire.first(),admitted_init=admitted,mac_verified=decoded.is_some(),"game UDP datagram captured");

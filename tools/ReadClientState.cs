@@ -42,7 +42,8 @@ class ReadClientState {
             bool assets=args.Length==1 && args[0]=="--assets";
             bool profiles=args.Length==1 && args[0]=="--profiles";
             bool netConstants=args.Length==1 && args[0]=="--net-constants";
-            if(args.Length!=0 && !assets && !profiles && !netConstants) throw new Exception("only fixed extraction modes are supported");
+            bool mapEntities=args.Length==1 && args[0]=="--map-entities";
+            if(args.Length!=0 && !assets && !profiles && !netConstants && !mapEntities) throw new Exception("only fixed extraction modes are supported");
             IntPtr snapshot=CreateToolhelp32Snapshot(2,0); uint found=0;
             if(snapshot==new IntPtr(-1)) throw new Exception("process snapshot failed");
             try {
@@ -72,9 +73,16 @@ class ReadClientState {
                 if(assets) { ClientAssets.Export(process);return 0; }
                 if(profiles) { ClientAssets.ExportProfiles(process);return 0; }
                 if(netConstants) { ClientAssets.ExportNetConstants(process);return 0; }
+                if(mapEntities) { ClientAssets.ExportMapEntities(process);return 0; }
                 Console.WriteLine("{");
                 Field(process,"connection_state",0x01a2e7ec,4);
                 Field(process,"native_server_id",0x0796f2d8,4);
+                Field(process,"full_snapshot_valid",0x0799964c,4);
+                Field(process,"full_snapshot_flags",0x07999650,4);
+                Field(process,"full_snapshot_server_time",0x07999654,4);
+                Field(process,"full_snapshot_message",0x07999658,4);
+                Field(process,"full_snapshot_command_time",0x07996128,4);
+                Field(process,"full_snapshot_health",0x079962b8,4);
                 Field(process,"net_constants_initialized",0x02df9934,4);
                 Field(process,"net_constants_crc",0x02df7d90,4);
                 uint connection=Read(process,0x01a2a538,4)^0xd362501f;

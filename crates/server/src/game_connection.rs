@@ -2,6 +2,7 @@
 use anyhow::{Result, ensure};
 use codol_protocol::game_wire::{self, ClientHeader, ReliableCommands, SERVER_EOF};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 #[derive(Default)]
 pub(crate) struct Connection {
@@ -17,6 +18,10 @@ pub(crate) struct Connection {
     gamestate_acknowledged: bool,
     gamestate_update: Option<u8>,
     client_commands: ReliableCommands,
+    snapshot_count: u32,
+    snapshot_next: Option<Instant>,
+    input_count: u32,
+    last_input: Option<codol_protocol::game_usercmd::UserCommand>,
 }
 
 impl Connection {
@@ -53,6 +58,35 @@ impl Connection {
         self.gamestate_update
     }
 
+    /// An explicitly bounded stream at 20 Hz. The probe has no physics/input
+    /// execution and is disabled unless explicitly selected by the operator.
+    pub fn poll_snapshot(&mut self, now: Instant) -> Result<Option<Vec<u8>>> {
+        if self.gamestate_update != Some(6)
+            || self.snapshot_count >= self.game_state.as_ref().map_or(0, |s| s.snapshot_limit())
+            || !self.game_state.as_ref().is_some_and(|s| s.snapshot_probe())
+            || self.snapshot_next.is_some_and(|next| now < next)
+        {
+            return Ok(None);
+        }
+        let body = codol_protocol::game_snapshot::bootstrap(1000 + self.snapshot_count * 50)?;
+        let ack = self.client_commands.sequence();
+        let packet = game_wire::server_packet(
+            self.native_sent + 1,
+            ack,
+            self.challenge
+                .ok_or_else(|| anyhow::anyhow!("snapshot before challenge"))?,
+            self.client_commands.command_for(ack)?,
+            &body,
+        )?;
+        self.native_sent += 1;
+        self.snapshot_count += 1;
+        self.snapshot_next = Some(now + Duration::from_millis(50));
+        Ok(Some(packet))
+    }
+    pub fn input_progress(&self) -> (u32, Option<u32>) {
+        (self.input_count, self.last_input.as_ref().map(|c| c.time))
+    }
+
     pub fn decode_native(&self, payload: &[u8]) -> Result<(ClientHeader, Vec<u8>)> {
         let challenge = self
             .challenge
@@ -84,7 +118,16 @@ impl Connection {
             header.message_ack >= self.native_ack && header.message_ack <= self.native_sent,
             "native ACK outside sent range"
         );
-        let received = game_wire::client_commands(&clear)?;
+        let key = (self.snapshot_count > 0).then(|| {
+            codol_protocol::game_usercmd::key(
+                header.message_ack,
+                0,
+                self.server_commands
+                    .command_for(header.reliable_ack)
+                    .expect("decoded slot"),
+            )
+        });
+        let received = game_wire::client_message(&clear, key)?;
         ensure!(
             self.gamestate_sent || received.commands.is_empty(),
             "client commands before gamestate"
@@ -153,6 +196,18 @@ impl Connection {
         };
         self.server_commands = commands;
         self.client_commands = client_commands;
+        if let Some(movement) = received.movement {
+            for input in movement.commands {
+                if self
+                    .last_input
+                    .as_ref()
+                    .is_none_or(|last| input.time > last.time)
+                {
+                    self.input_count += 1;
+                    self.last_input = Some(input);
+                }
+            }
+        }
         self.gamestate_sent |= sending_gamestate;
         self.gamestate_acknowledged |=
             self.gamestate_sent && header.message_ack >= 3 && header.server_id == 1;
@@ -317,6 +372,43 @@ fn validate_connect(body: &[u8], owner: u64, build: i32, challenge: u32) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn snapshot_probe_requires_opt_in_initialization_and_has_rate_and_count_limits() {
+        let now = Instant::now();
+        let mut disabled = Connection::with_game_state(Arc::new(crate::game_state::synthetic()));
+        disabled.gamestate_update = Some(6);
+        assert!(disabled.poll_snapshot(now).unwrap().is_none());
+        let mut c = Connection::with_game_state(Arc::new(
+            crate::game_state::synthetic()
+                .with_snapshot_frames(60)
+                .unwrap(),
+        ));
+        c.challenge = Some(0x75);
+        c.native_sent = 3;
+        assert!(c.poll_snapshot(now).unwrap().is_none());
+        c.gamestate_update = Some(5);
+        assert!(c.poll_snapshot(now).unwrap().is_none());
+        c.gamestate_update = Some(6);
+        for i in 0..60u32 {
+            let at = now + Duration::from_millis(u64::from(i) * 50);
+            let mut packet = c.poll_snapshot(at).unwrap().unwrap();
+            assert_eq!(&packet[..4], &(i + 4).to_le_bytes());
+            game_wire::xor_stream(&mut packet[8..], 0x75 ^ (i + 4) as u8, b"");
+            assert_eq!(&packet[9..13], &(1000 + i * 50).to_le_bytes());
+            assert!(
+                c.poll_snapshot(at + Duration::from_millis(49))
+                    .unwrap()
+                    .is_none()
+            );
+        }
+        assert!(
+            c.poll_snapshot(now + Duration::from_secs(60))
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(c.native_sent, 63);
+        assert_eq!(c.native_received, 0); // sending must never invent client ACKs
+    }
     #[test]
     fn stats_and_heartbeat_require_prior_stages_and_all_fragments() {
         let mut connection = Connection::default();

@@ -204,6 +204,17 @@ impl<'a> Reader<'a> {
         self.at += 4;
         Ok(u32::from_le_bytes(bytes.try_into().expect("four bytes")))
     }
+    pub fn u8(&mut self) -> Result<u8, LobbyError> {
+        let value = *self
+            .bytes
+            .get(self.at)
+            .ok_or(LobbyError("native byte truncated"))?;
+        self.at += 1;
+        Ok(value)
+    }
+    pub fn u16(&mut self) -> Result<u16, LobbyError> {
+        Ok(u16::from_le_bytes([self.u8()?, self.u8()?]))
+    }
     pub fn string(&mut self) -> Result<&'a [u8], LobbyError> {
         let left = &self.bytes[self.at..];
         let len = left
@@ -225,10 +236,18 @@ impl<'a> Reader<'a> {
 #[derive(Debug, PartialEq, Eq)]
 pub struct ClientCommands {
     pub commands: Vec<(u32, Vec<u8>)>,
+    pub movement: Option<crate::game_usercmd::Movement>,
 }
 pub fn client_commands(body: &[u8]) -> Result<ClientCommands, LobbyError> {
+    client_message(body, None)
+}
+pub fn client_message(
+    body: &[u8],
+    movement_key: Option<u32>,
+) -> Result<ClientCommands, LobbyError> {
     let mut reader = Reader::new(body);
     let mut commands = Vec::new();
+    let mut movement = None;
     loop {
         match reader.bits(3)? {
             2 => {
@@ -243,12 +262,23 @@ pub fn client_commands(body: &[u8]) -> Result<ClientCommands, LobbyError> {
             }
             3 => {
                 reader.finish()?;
-                return Ok(ClientCommands { commands });
+                return Ok(ClientCommands { commands, movement });
+            }
+            op @ (0 | 1) => {
+                let key = movement_key.ok_or(LobbyError("movement before bootstrap snapshot"))?;
+                movement = Some(crate::game_usercmd::read_movement(
+                    &mut reader,
+                    key,
+                    op == 0,
+                )?);
+                if reader.bits(3)? != 3 {
+                    return Err(LobbyError("movement must end with EOF"));
+                }
+                reader.finish()?;
+                return Ok(ClientCommands { commands, movement });
             }
             _ => {
-                return Err(LobbyError(
-                    "unsupported client native opcode (movement pending)",
-                ));
+                return Err(LobbyError("unsupported client native opcode"));
             }
         }
     }

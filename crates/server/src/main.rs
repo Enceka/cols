@@ -93,6 +93,9 @@ enum Command {
         /// Resource-derived gamestate for the controlled training playlist.
         #[arg(long, requires = "game_bind")]
         game_state: Option<PathBuf>,
+        /// Bootstrap frames at 20 Hz (default 60, maximum 18000); no simulation.
+        #[arg(long, requires = "game_state", num_args = 0..=1, default_missing_value = "60", value_parser = clap::value_parser!(u32).range(1..=18000))]
+        snapshot_probe: Option<u32>,
     },
     /// Parse an observed task-10 JSON body; identifiers are omitted from output.
     InspectAuth {
@@ -291,6 +294,7 @@ async fn main() -> Result<()> {
             stun_alt,
             game_bind,
             game_state,
+            snapshot_probe,
         } => {
             let server = AuthServer::bind(AuthOptions {
                 bind,
@@ -320,9 +324,11 @@ async fn main() -> Result<()> {
                     )
                     .await?;
                     if let Some(path) = game_state {
-                        game = game.with_game_state(
-                            codol_server::game_state::PreparedGameState::load(&path)?,
-                        );
+                        let mut state = codol_server::game_state::PreparedGameState::load(&path)?;
+                        if let Some(frames) = snapshot_probe {
+                            state = state.with_snapshot_frames(frames)?;
+                        }
+                        game = game.with_game_state(state);
                     }
                     let endpoint = game.admissions();
                     tracing::info!(address=%endpoint.address(),"experimental Rust game UDP endpoint ready");

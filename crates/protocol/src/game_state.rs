@@ -2,12 +2,12 @@
 use crate::{game_wire::SERVER_EOF, lobby::LobbyError};
 
 #[derive(Default)]
-struct Writer {
-    bytes: Vec<u8>,
+pub(crate) struct Writer {
+    pub(crate) bytes: Vec<u8>,
     bit: usize,
 }
 impl Writer {
-    fn bits(&mut self, value: u32, count: usize) {
+    pub(crate) fn bits(&mut self, value: u32, count: usize) {
         for i in 0..count {
             if self.bit.is_multiple_of(8) {
                 self.bit = self.bytes.len() * 8;
