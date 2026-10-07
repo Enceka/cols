@@ -304,7 +304,8 @@ class ClientAssets {
             "animation_name_fields",names);
     }
     public static void ExportWeaponModels(IntPtr process) {
-        var r=new ClientAssets(process);var names=new SortedSet<string>();
+        var r=new ClientAssets(process);var names=new SortedSet<string>();var itemNames=new SortedSet<string>();
+        if(r.Word(0x01a2e7ec)!=10)throw new Exception("load the training map before capturing weapon models");
         byte[] entries=r.Read(0x01fc4e28,100000*28),heads=r.Read(0x01bc9f20,80000*4);
         var seen=new HashSet<uint>();var modelHeaders=new HashSet<uint>();var animHeaders=new Dictionary<uint,string>();
         for(int bucket=0;bucket<80000;bucket++) {
@@ -320,6 +321,10 @@ class ClientAssets {
                         if(names.Count>=1024)throw new Exception("model table name budget");
                         names.Add(name);
                     }
+                    if(name.StartsWith("mp/coWeapItems",StringComparison.OrdinalIgnoreCase)) {
+                        if(itemNames.Count>=256)throw new Exception("item table name budget");
+                        itemNames.Add(name);
+                    }
                 }
                 index=U(entries,offset+20);
             }
@@ -329,8 +334,16 @@ class ClientAssets {
             if(tables.Count>=32)throw new Exception("M4 table budget");
             try{tables[name]=r.Table(name);}catch(Exception e){tables[name]=Obj("error",e.Message);}
         }
-        foreach(string name in new string[]{"mp/coWeapItems/ast.csv","mp/coCharItemStatsTable.csv","mp/coWeapSlotDefs.csv"}) {
+        foreach(string name in new string[]{"mp/coWeapItems/ast.csv","mp/coCharItemStatsTable.csv","mp/coWeapSlotDefs.csv",
+            "mp/coWeapItemswea.csv","mp/coWeapItems/gri.csv","mp/coWeapItems/sto.csv","mp/coWeapItems/mag.csv","mp/coWeapItems/iro.csv","mp/coWeapItems/rai.csv","mp/coWeapItems/muz.csv"}) {
             try{tables[name]=r.Table(name);}catch(Exception e){tables[name]=Obj("error",e.Message);}
+        }
+        var defaults=new List<object>();byte[] attachmentNames=r.Read(0x017e5848,16384*4);
+        for(uint id=1;id<16384;id++) {
+            uint at=U(attachmentNames,(int)id*4);if(at<0x10000 || at>=0xfff00000)continue;
+            string name=r.Name(at);
+            if(name.EndsWith("_default",StringComparison.Ordinal)||name.EndsWith("_none",StringComparison.Ordinal))
+                defaults.Add(Obj("index",id,"name",name));
         }
         var weapons=new List<object>();var compatible=new List<object>();uint baseIndex=0;int count=Count(r.Word(0x07817b88),899);
         for(uint i=1;i<=count;i++) {
@@ -439,7 +452,7 @@ class ClientAssets {
         }
         var output=Obj("schema_version",1,"read_only",true,
             "client_sha256","e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b",
-            "connection_state",r.Word(0x01a2e7ec),"ncs_crc",r.Word(0x02df7d90),"model_table_names",names,"tables",tables,"weapons",weapons,"compatible_attachments",compatible,"first_person",firstPerson,"candidate_hands",candidateHands);
+            "connection_state",r.Word(0x01a2e7ec),"ncs_crc",r.Word(0x02df7d90),"model_table_names",names,"item_table_names",itemNames,"tables",tables,"weapons",weapons,"compatible_attachments",compatible,"default_attachment_names",defaults,"first_person",firstPerson,"candidate_hands",candidateHands);
         var serializer=new JavaScriptSerializer();serializer.MaxJsonLength=8*1024*1024;
         Console.WriteLine(serializer.Serialize(output));
     }

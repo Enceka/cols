@@ -8,6 +8,7 @@
 - [工程基础与运行手册](FOUNDATION.md)：已经实现的能力、构建/测试/观测命令、输出格式与限制。
 - [GameHub 动态调试](GAMEHUB_DEBUG.md)：真实 ClientHello、HTTPS AUTH 请求、title_id 对照实验、运行工具和响应逆向入口。
 - [AlphaBuild 审阅](ALPHA_BUILD_REVIEW.md)：用户提供的 1.1.1.13 实现、与 3.3.3.3 的交叉核对和移植依据。
+- [AlphaBuild逻辑移植路线](ALPHA_RUST_PORT_PLAN.md)：用户确认纯Rust，按完整玩法模块移植并适配3.3差异。
 - [2.6.9.7加载文档对照](LOADING_2697_REVIEW.md)：本版IFS明文清单、M4跨包资源与模型表装配函数的核对。
 - [持枪模型与动画绑定](VIEWMODEL_PROGRESS.md)：实际DObj/XAnim证据、手臂模型单变量对照及默认资源修正。
 - [AUTH 与大厅通道](AUTH_LOBBY_PROGRESS.md)：Rust 认证票据与协议 210 的真实客户端验证、UDP 地址发现、业务帧解密。

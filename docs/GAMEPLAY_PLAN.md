@@ -1,5 +1,7 @@
 # 从已连接到实际对局
 
+架构约束更新：用户明确坚持纯Rust。采用 [AlphaBuild模块移植路线](ALPHA_RUST_PORT_PLAN.md)，复用其完整状态机和转换边界，不引入C/C++运行核心。当前优先默认装备配方、ADS连续状态，再推进碰撞与移动。
+
 更新：2026-10-07。阿富汗场景/HUD、持续鼠标转向及组合M4弹药已实机验证。快照时间与commandTime分离，输入base绑定ACK；单M4扣弹、射击冷却、换弹状态已接入。模型姿态与ADS仍需修复，权威移动/碰撞/命中/AI尚未实现。最新证据见 [PLAYER_BOOTSTRAP_PROGRESS.md](PLAYER_BOOTSTRAP_PROGRESS.md)。
 
 ## 1. 游戏通道与 gamestate

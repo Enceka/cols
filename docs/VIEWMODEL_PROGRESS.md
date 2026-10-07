@@ -41,3 +41,14 @@
 主动换弹修复a331f09已由用户明确确认“换弹可以了”。此前空仓自动换弹的验收不再代替主动换弹验收。
 
 下一步：补齐默认枪械部件，然后为ADS维持服务端连续状态；当前固定PS瞄准进度仍会干扰客户端预测动作。移动/碰撞及命中仍不属于已完成能力。
+
+
+## 默认部件资料接续
+
+用户明确要求复用AlphaBuild逻辑并保持纯Rust，路线见 [ALPHA_RUST_PORT_PLAN.md](ALPHA_RUST_PORT_PLAN.md)。已定位参考 `codol_weapon_compose.c::CODOL_WeaponDeclaredDefaults`：按武器读取默认槽位、再核对部件模型。它的旧版组合名含item/variant对，本版不能直接复制此序列化格式。
+
+`client-1791369851717/weapon-models-1791370636389.json` 在真实对局中成功采集：本版数据库存在 `mp/coweapitemswea.csv`、各group的部件数据与模型表名称；但对应StringTable在当前资产就绪门槛（entry+0x11 & 5）未通过，因此探针报告未加载并未解引用其表体。目标0x49e7d0同样检查此门槛并在需要时触发加载。存在名称与本次可读表体不是同一件事，不以空表代替默认配方。
+
+注册表中for_default、muz_default、mag_default、gri_default、sto_default、iro_default、rai_default等同名项重复出现于多个ID。下一步必须按武器及槽位关联，不能选择第一个同名ID，也不能把所有兼容配件全加进去。参考算法提供表驱动原则，具体行、注册ID及本版替代资源仍需恢复。
+
+两次探针在大厅而非地图运行时失败（未形成有效装配采集），已增加connection_state=10的前置检查，避免把大厅对象当作对局DObj。新模式继续只读；UI进入地图后的上述采集成功。配方读取与真正发送完整组合尚未完成。
