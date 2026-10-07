@@ -20,6 +20,7 @@ pub struct Equipment {
 pub struct Firing {
     pub animation: u16,
     pub remaining_msec: u16,
+    pub delay_msec: u16,
     pub state: u8,
 }
 
@@ -87,7 +88,9 @@ pub fn player_frame(
     let ammo = equipment.and_then(|e| e.ammo);
     let viewmodel = equipment.and_then(|e| e.viewmodel);
     let firing = equipment.and_then(|e| e.firing);
-    if firing.is_some_and(|f| f.animation > 2047 || f.remaining_msec > 32767 || f.state > 63) {
+    if firing.is_some_and(|f| {
+        f.animation > 2047 || f.remaining_msec > 32767 || f.delay_msec > 32767 || f.state > 63
+    }) {
         return Err(LobbyError("invalid bootstrap firing state"));
     }
     if viewmodel.is_some_and(|i| i == 0 || i >= 1024) {
@@ -155,6 +158,9 @@ pub fn player_frame(
                 }
                 if firing.state != 0 {
                     fields.push((17, u32::from(firing.state), 6));
+                }
+                if firing.delay_msec != 0 {
+                    fields.push((44, u32::from(firing.delay_msec), 16));
                 }
             }
         }
@@ -283,6 +289,7 @@ mod tests {
             firing: Some(Firing {
                 animation: 0x402,
                 remaining_msec: 79,
+                delay_msec: 40,
                 state: 6,
             }),
             viewmodel: Some(53),
@@ -352,6 +359,7 @@ mod tests {
             assert_eq!(fields[&9], 0x402);
             assert_eq!(fields[&3], 79);
             assert_eq!(fields[&17], 6);
+            assert_eq!(fields[&44], 40);
             assert_eq!(fields[&19], 65535);
             assert_eq!(fields[&18], 16384);
             assert_eq!(fields[&54], 0x1000);

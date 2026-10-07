@@ -149,6 +149,14 @@ def weapon_ammo(raw, crc, weapon):
                 or not 50 <= interval <= 2000):
             raise ValueError("unsupported M4 fire timing")
         result["fire_interval_msec"] = interval
+        keys=("reload_msec","reload_empty_msec","reload_add_msec","reload_empty_add_msec")
+        if any(key in runtime for key in keys):
+            values=[runtime.get(key) for key in keys]
+            if any(type(n) is not int or not 0 <= n <= 15000 for n in values) or not all(values[:2]):
+                raise ValueError("unsupported M4 reload timing")
+            normal,empty,add,empty_add=values
+            result["reload"]={"normal_msec":normal,"empty_msec":empty,
+                "add_msec":min(add or normal,normal),"empty_add_msec":min(empty_add or empty,empty)}
     return result
 
 

@@ -46,6 +46,12 @@ class GameStatePreparation(unittest.TestCase):
             with self.assertRaises(ValueError):weapon_ammo(json.dumps(invalid).encode(),123,weapon)
         invalid=copy.deepcopy(data);invalid["weapon"]["runtime_fields"]["fire_delay_msec"]=1
         with self.assertRaises(ValueError):weapon_ammo(json.dumps(invalid).encode(),123,weapon)
+        data["weapon"]["runtime_fields"].update(reload_msec=2029,reload_empty_msec=2799,
+            reload_add_msec=1399,reload_empty_add_msec=0)
+        reload=weapon_ammo(json.dumps(data).encode(),123,weapon)["reload"]
+        self.assertEqual(reload,{"normal_msec":2029,"empty_msec":2799,"add_msec":1399,"empty_add_msec":2799})
+        invalid=copy.deepcopy(data);invalid["weapon"]["runtime_fields"]["reload_msec"]=0
+        with self.assertRaises(ValueError):weapon_ammo(json.dumps(invalid).encode(),123,weapon)
         for key,value in [("ammo_key",1024),("clip_key",-1),("index",164),("ammo_key",1.5)]:
             invalid=copy.deepcopy(data);invalid["weapon"][key]=value
             with self.assertRaises(ValueError):weapon_ammo(json.dumps(invalid).encode(),123,weapon)

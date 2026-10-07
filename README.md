@@ -10,7 +10,7 @@
 
 最新业务层进展、文件持久化测试及公共配置阻塞点见 [docs/SERVICE_INITIALIZATION.md](docs/SERVICE_INITIALIZATION.md)。
 
-当前接续入口为 [docs/PROFILE_INVENTORY_PROGRESS.md](docs/PROFILE_INVENTORY_PROGRESS.md)：目标档案定义、私有档案、8 件初始库存及真实仓库界面。用户已确认仓库可用，下一步是提高测试等级和本地房间/人机。
+当前接续入口为 [docs/PLAYER_BOOTSTRAP_PROGRESS.md](docs/PLAYER_BOOTSTRAP_PROGRESS.md)：场景、鼠标转向与M4弹药状态已恢复；模型姿态、瞄准、移动及完整对局仍在实现。
 
 在 `server/` 下执行：
 

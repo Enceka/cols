@@ -1,29 +1,57 @@
-//! Minimal single-M4 ammo ownership. No reload, hit events, ADS or physics yet.
+//! Minimal single-M4 ammo/reload ownership. No hit events, ADS or physics yet.
 use codol_protocol::{
     game_snapshot::{Equipment, Firing},
     game_usercmd::UserCommand,
 };
+
+#[derive(Debug, Clone, Copy, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ReloadTiming {
+    pub normal_msec: u16,
+    pub empty_msec: u16,
+    pub add_msec: u16,
+    pub empty_add_msec: u16,
+}
+impl ReloadTiming {
+    pub fn valid(&self) -> bool {
+        (1..=15000).contains(&self.normal_msec)
+            && (1..=15000).contains(&self.empty_msec)
+            && (1..=self.normal_msec).contains(&self.add_msec)
+            && (1..=self.empty_msec).contains(&self.empty_add_msec)
+    }
+}
 
 #[derive(Debug)]
 pub(crate) struct Player {
     equipment: Equipment,
     fire_interval: Option<u16>,
     last_time: u32,
+    reload: Option<ReloadTiming>,
+    magazine_capacity: u16,
+    reload_transfer_pending: bool,
 }
 
 impl Player {
-    pub fn new(mut equipment: Equipment, fire_interval: Option<u16>) -> Self {
+    pub fn new(
+        mut equipment: Equipment,
+        fire_interval: Option<u16>,
+        reload: Option<ReloadTiming>,
+    ) -> Self {
         if fire_interval.is_some() {
             equipment.firing = Some(Firing {
                 animation: 0x400,
                 remaining_msec: 0,
+                delay_msec: 0,
                 state: 0,
             });
         }
         Self {
+            magazine_capacity: equipment.ammo.map_or(0, |a| a.clip),
             equipment,
             fire_interval,
             last_time: 1000,
+            reload,
+            reload_transfer_pending: false,
         }
     }
 
@@ -47,9 +75,53 @@ impl Player {
         firing.remaining_msec = firing
             .remaining_msec
             .saturating_sub(elapsed.min(u32::from(u16::MAX)) as u16);
+        firing.delay_msec = firing
+            .delay_msec
+            .saturating_sub(elapsed.min(u32::from(u16::MAX)) as u16);
+        if firing.state == 8 {
+            if self.reload_transfer_pending && firing.delay_msec == 0 {
+                let transfer = self
+                    .magazine_capacity
+                    .saturating_sub(ammo.clip)
+                    .min(ammo.reserve);
+                ammo.clip += transfer;
+                ammo.reserve -= transfer;
+                self.reload_transfer_pending = false;
+            }
+            if firing.remaining_msec == 0 {
+                firing.state = 0;
+                firing.animation = (firing.animation ^ 0x400) & 0x400 | 1;
+            }
+            return;
+        }
         // Target 0x45f660: attack=1, menu capture=0x10000000.
         // Only the equipped M4 is supported, not offhand/melee/weapon switching.
         if firing.remaining_msec == 0 {
+            if let Some(timing) = self.reload
+                && cmd.buttons & (4 | 0x10000000) == 0
+                && cmd.weapons[0] == self.equipment.weapon
+                && ammo.clip < self.magazine_capacity
+                && ammo.reserve > 0
+                && (cmd.buttons & 0x20 != 0 || ammo.clip == 0)
+            {
+                let empty = ammo.clip == 0;
+                // Target0x4232d0: state8, animation13 normal /15 empty;
+                // 0x4230a0 gives the earlier ammunition transfer marker.
+                firing.state = 8;
+                firing.animation = (firing.animation ^ 0x400) & 0x400 | if empty { 15 } else { 13 };
+                firing.remaining_msec = if empty {
+                    timing.empty_msec
+                } else {
+                    timing.normal_msec
+                };
+                firing.delay_msec = if empty {
+                    timing.empty_add_msec
+                } else {
+                    timing.add_msec
+                };
+                self.reload_transfer_pending = true;
+                return;
+            }
             if cmd.buttons & (1 | 4 | 0x10000000) == 1
                 && cmd.weapons[0] == self.equipment.weapon
                 && ammo.clip > 0
@@ -87,6 +159,7 @@ mod tests {
                 }),
             },
             Some(79),
+            None,
         )
     }
     fn cmd(time: u32, buttons: u32) -> UserCommand {
@@ -134,5 +207,53 @@ mod tests {
         assert_eq!(p.equipment().ammo.unwrap().clip, 0);
         assert_eq!(p.equipment().ammo.unwrap().reserve, 90);
         assert_eq!(player().equipment().ammo.unwrap().clip, 30); // new match only
+    }
+    fn reload_timing() -> ReloadTiming {
+        ReloadTiming {
+            normal_msec: 2029,
+            empty_msec: 2799,
+            add_msec: 1399,
+            empty_add_msec: 1399,
+        }
+    }
+    #[test]
+    fn reload_transfers_ammo_once_at_marker_and_blocks_fire_until_finished() {
+        let mut p = player();
+        p.reload = Some(reload_timing());
+        p.apply(&cmd(1100, 1));
+        p.apply(&cmd(1200, 0x20));
+        assert_eq!(p.equipment().firing.unwrap().state, 8);
+        p.apply(&cmd(2598, 1));
+        assert_eq!(p.equipment().ammo.unwrap().clip, 29);
+        p.apply(&cmd(2599, 1));
+        assert_eq!(p.equipment().ammo.unwrap().clip, 30);
+        assert_eq!(p.equipment().ammo.unwrap().reserve, 89);
+        p.apply(&cmd(2599, 1)); // repeated marker must not transfer twice
+        p.apply(&cmd(3228, 1));
+        assert_eq!(p.equipment().ammo.unwrap().clip, 30);
+        assert_eq!(p.equipment().firing.unwrap().state, 8);
+        p.apply(&cmd(3229, 0));
+        assert_eq!(p.equipment().firing.unwrap().state, 0);
+        p.apply(&cmd(3230, 1));
+        assert_eq!(p.equipment().ammo.unwrap().clip, 29);
+        assert_eq!(p.equipment().ammo.unwrap().reserve, 89);
+    }
+    #[test]
+    fn empty_reload_uses_longer_duration_and_cannot_create_missing_reserve() {
+        let mut p = player();
+        p.reload = Some(reload_timing());
+        let ammo = p.equipment.ammo.as_mut().unwrap();
+        ammo.clip = 0;
+        ammo.reserve = 7;
+        p.apply(&cmd(1100, 0)); // empty-magazine automatic reload
+        assert_eq!(p.equipment().firing.unwrap().remaining_msec, 2799);
+        assert_eq!(p.equipment().firing.unwrap().animation & !0x400, 15);
+        p.apply(&cmd(2499, 0));
+        assert_eq!(p.equipment().ammo.unwrap().clip, 7);
+        assert_eq!(p.equipment().ammo.unwrap().reserve, 0);
+        p.apply(&cmd(3899, 0));
+        p.apply(&cmd(4000, 0x20));
+        assert_eq!(p.equipment().firing.unwrap().state, 0);
+        assert_eq!(p.equipment().ammo.unwrap().clip, 7);
     }
 }
