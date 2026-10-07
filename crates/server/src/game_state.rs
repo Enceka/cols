@@ -123,6 +123,9 @@ impl PreparedGameState {
             (2, "cod".to_owned()),
             (3, "1".to_owned()),
             (16, "0 0 0".to_owned()),
+            // 0x579f30 sscanf(CS6415, "%i %i %g %g", ...). Empty text leaves
+            // uninitialized slow-motion values and nearly stops client time.
+            (6415, "0 0 1 1".to_owned()),
         ];
         Ok(Gamestate {
             command_sequence,
@@ -178,5 +181,43 @@ mod tests {
         assert!(!state.matches(0, start));
         assert!(!state.matches(-688906341, &start.replace("playlist 0", "playlist 1")));
         assert!(!state.matches(-688906341, &format!("{start}; map other")));
+    }
+    #[test]
+    fn bootstrap_supplies_a_complete_normal_speed_slowmotion_config() {
+        let body = synthetic().body(1).unwrap();
+        let mut r = codol_protocol::game_wire::Reader::new(&body);
+        assert_eq!(r.u8().unwrap(), 3);
+        r.u32().unwrap();
+        r.string().unwrap();
+        r.string().unwrap();
+        r.u32().unwrap();
+        assert_eq!(r.u8().unwrap(), 4);
+        let count = r.u16().unwrap();
+        let mut index = -1i32;
+        let mut slowmo = None;
+        for _ in 0..count {
+            index = if r.bits(1).unwrap() == 1 {
+                index + 1
+            } else {
+                r.bits(13).unwrap() as i32
+            };
+            let value = r.string().unwrap();
+            if index == 6415 {
+                slowmo = Some(std::str::from_utf8(value).unwrap().to_owned());
+            }
+        }
+        let fields = slowmo
+            .unwrap()
+            .split_whitespace()
+            .map(|v| v.parse::<f32>().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(fields, [0.0, 0.0, 1.0, 1.0]);
+        assert_eq!(r.bits(10).unwrap(), 0);
+        assert_eq!(r.bits(10).unwrap(), 0);
+        assert_eq!(r.u8().unwrap(), 6);
+        r.u32().unwrap();
+        r.u32().unwrap();
+        assert_eq!(r.u8().unwrap(), 6);
+        r.finish().unwrap();
     }
 }

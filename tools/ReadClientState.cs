@@ -76,6 +76,13 @@ class ReadClientState {
                 if(mapEntities) { ClientAssets.ExportMapEntities(process);return 0; }
                 Console.WriteLine("{");
                 Field(process,"connection_state",0x01a2e7ec,4);
+                Field(process,"client_realtime",0x078b0a58,4);
+                Field(process,"frame_scale_bits",0x00cdcd3c,4);
+                Field(process,"script_time_scale_bits",0x02e8cf88,4);
+                uint fixedTime=Read(process,0x02e8a98c,4);
+                if(fixedTime>=0x10000) Field(process,"fixed_frame_time",checked(fixedTime+12),4);
+                uint maxPackets=Read(process,0x01a2e7cc,4);
+                if(maxPackets>=0x10000) Field(process,"client_max_packets",checked(maxPackets+12),4);
                 Field(process,"native_server_id",0x0796f2d8,4);
                 Field(process,"full_snapshot_valid",0x0799964c,4);
                 Field(process,"full_snapshot_flags",0x07999650,4);
@@ -99,6 +106,12 @@ class ReadClientState {
                 }
                 uint active=Read(process,0x01a2e838,4)^0x6891d1c7;
                 if(active>=0x10000 && active<0x7ff00000) {
+                    Field(process,"client_command_number",checked(active+0x625c),4);
+                    uint sent=Read(process,checked(connection+0x80158),4);
+                    uint mask=Read(process,checked(active+0x8668),4);
+                    uint history=Read(process,checked(active+0x867c),4)^0x96b9dc91;
+                    if(history>=0x10000 && history<0x7ff00000 && mask<4096 && sent>0)
+                        Field(process,"last_input_packet_time",checked(history+((sent-1)&mask)*12+8),4);
                     Field(process,"current_snapshot_valid",checked(active+0x3530),4);
                     Field(process,"current_snapshot_flags",checked(active+0x3534),4);
                     Field(process,"current_snapshot_server_time",checked(active+0x3538),4);
