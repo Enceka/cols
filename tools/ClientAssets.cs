@@ -169,7 +169,10 @@ class ClientAssets {
     object NetConstant(uint at) {
         // NetConstStrings type 44: name, category, source, count, string**.
         byte[] h=Read(at,20); int count=Count(U(h,12),8192);
-        if(U(h,4)>20) throw new Exception("net-constant category out of range: "+Name(U(h,0))+" category="+U(h,4)+" source="+U(h,8));
+        string name=Name(U(h,0));
+        if(U(h,4)==21 && U(h,8)==4 && count==0 && name=="void")
+            return Obj("name",name,"category",21,"source",4,"count",0,"placeholder",true,"strings_base64",new string[0]);
+        if(U(h,4)>20) throw new Exception("net-constant category out of range: "+name+" category="+U(h,4)+" source="+U(h,8));
         var values=new List<string>();
         byte[] ptrs=count==0?new byte[0]:Read(U(h,16),count*4);
         for(int i=0;i<count;i++) values.Add(Convert.ToBase64String(StringBytes(U(ptrs,i*4))));
@@ -202,12 +205,21 @@ class ClientAssets {
                 byte[] item=r.Read(node,8); linked.Add(r.NetConstant(U(item,0)));node=U(item,4);
             }
         }
+        var networkDvars=new List<string>();
+        int networkCount=Count(r.Word(0x02dfaba4),266);
+        byte[] networkPointers=r.Read(0x02dfaba8,networkCount*4);
+        for(int i=0;i<networkCount;i++)
+            networkDvars.Add(Convert.ToBase64String(r.StringBytes(r.Word(U(networkPointers,i*4)))));
+        uint language=r.Word(checked(r.Word(0x0315fbec)+12));
+        if(language>14)language=0;
+        string localizedPrefix=r.Name(r.Word(0x00cdbc1c+language*12))+"_";
         var output=Obj("schema_version",1,"read_only",true,
             "client_sha256","e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b",
             "connection_state",r.Word(0x01a2e7ec),"initialized",r.Word(0x02df9934),
             "checksum",r.Word(0x02df7d90),"common_checksum",r.Word(0x02df9d38),
             "category_layout_base64",Convert.ToBase64String(r.Read(0x00c57118,21*12)),
             "index_types_base64",Convert.ToBase64String(r.Read(0x02df7da0,7058)),
+            "network_dvars_base64",networkDvars,"localized_prefix",localizedPrefix,
             "assets",assets,"linked",linked);
         var serializer=new JavaScriptSerializer();serializer.MaxJsonLength=32*1024*1024;
         Console.WriteLine(serializer.Serialize(output));
