@@ -7,6 +7,7 @@ pub(crate) struct Connection {
     connected: bool,
     stats: codol_protocol::game_stats::Upload,
     eof_probe_sent: bool,
+    reliable_probe_sent: bool,
 }
 
 impl Connection {
@@ -30,19 +31,35 @@ impl Connection {
         let Some(command) = payload.strip_prefix(&[255; 4]) else {
             if payload.len() >= 14
                 && self.connected
-                && !self.eof_probe_sent
                 && let Some(challenge) = self.challenge
             {
                 let (_, clear) = codol_protocol::game_wire::open_client(payload, challenge, &[])?;
                 if clear == [3] {
-                    self.eof_probe_sent = true;
-                    return Ok(Some(codol_protocol::game_wire::server_packet(
-                        1,
-                        0,
-                        challenge,
-                        &[],
-                        &[6],
-                    )?));
+                    if !self.eof_probe_sent {
+                        self.eof_probe_sent = true;
+                        return Ok(Some(codol_protocol::game_wire::server_packet(
+                            1,
+                            0,
+                            challenge,
+                            &[],
+                            &[6],
+                        )?));
+                    }
+                    let (header, _) =
+                        codol_protocol::game_wire::open_client(payload, challenge, &[])?;
+                    if header.message_ack >= 1 && !self.reliable_probe_sent {
+                        self.reliable_probe_sent = true;
+                        let mut body = vec![1];
+                        body.extend_from_slice(&1u32.to_le_bytes());
+                        body.extend_from_slice(b"d 3 1\0");
+                        return Ok(Some(codol_protocol::game_wire::server_packet(
+                            2,
+                            1,
+                            challenge,
+                            &[],
+                            &body,
+                        )?));
+                    }
                 }
             }
             // Inner packets are captured for netchan/gamestate recovery. Do
@@ -307,6 +324,11 @@ mod tests {
         let packet = [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x76];
         let reply = connection.handle(&packet, 1, 7).unwrap().unwrap();
         assert_eq!(&reply[..8], &[1, 0, 0, 0, 0, 0, 0, 0]);
-        assert!(connection.handle(&packet, 1, 7).unwrap().is_none());
+        let mut next = packet;
+        next[5..9].copy_from_slice(&1u32.to_le_bytes());
+        next[13] = 0x77; // 0x77 ^ challenge(0x75) ^ messageAck(1) = clc_EOF(3)
+        let second = connection.handle(&next, 1, 7).unwrap().unwrap();
+        assert_eq!(&second[..8], &[2, 0, 0, 0, 1, 0, 0, 0]);
+        assert!(connection.handle(&next, 1, 7).unwrap().is_none());
     }
 }
