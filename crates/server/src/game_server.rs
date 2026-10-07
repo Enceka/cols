@@ -318,11 +318,8 @@ impl GameServer {
                         client_message_ack = Some(header.message_ack);
                         client_reliable_ack = Some(header.reliable_ack);
                         client_body_first = payload.get(13).copied();
-                        if let Some(challenge) = p.connection.challenge_value() {
-                            let (_, clear) =
-                                codol_protocol::game_wire::open_client(&payload, challenge, &[])?;
-                            client_opcode = clear.first().copied();
-                        }
+                        let (_, clear) = p.connection.decode_native(&payload)?;
+                        client_opcode = clear.first().map(|b| b & 7);
                         inner_dropped = previous_sequence
                             .map(|previous| header.sequence.saturating_sub(previous + 1));
                     } else if payload.len() >= 4 && payload[..4] != [255, 255, 255, 255] {

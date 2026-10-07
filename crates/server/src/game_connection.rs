@@ -1,18 +1,23 @@
 //! Application connection bootstrap after authenticated game DATA.
 use anyhow::{Result, ensure};
+use codol_protocol::game_wire::{self, ClientHeader, ReliableCommands, SERVER_EOF};
 
 #[derive(Default)]
 pub(crate) struct Connection {
     challenge: Option<u32>,
     connected: bool,
     stats: codol_protocol::game_stats::Upload,
-    eof_probe_sent: bool,
-    reliable_probe_sent: bool,
+    native_sent: u32,
+    native_received: u32,
+    native_ack: u32,
+    server_commands: ReliableCommands,
 }
 
 impl Connection {
     pub fn stage(&self) -> &'static str {
-        if self.stats.profile().is_some() {
+        if self.server_commands.acknowledged() == 1 {
+            "reliable_probe_acknowledged"
+        } else if self.stats.profile().is_some() {
             "stats_received"
         } else if self.connected {
             "connected"
@@ -23,48 +28,78 @@ impl Connection {
         }
     }
 
-    pub fn challenge_value(&self) -> Option<u32> {
-        self.challenge
+    pub fn decode_native(&self, payload: &[u8]) -> Result<(ClientHeader, Vec<u8>)> {
+        let challenge = self
+            .challenge
+            .ok_or_else(|| anyhow::anyhow!("native message before challenge"))?;
+        let header = ClientHeader::parse(payload)?;
+        let command = self.server_commands.command_for(header.reliable_ack)?;
+        Ok(game_wire::open_client(payload, challenge, command)?)
+    }
+
+    fn native(&mut self, payload: &[u8]) -> Result<Option<Vec<u8>>> {
+        // Observed 2-byte association maintenance packet has no native header.
+        if payload.len() < 4 {
+            return Ok(None);
+        }
+        ensure!(
+            self.connected && self.stats.profile().is_some(),
+            "native message before stats completion"
+        );
+        let (header, clear) = self.decode_native(payload)?;
+        ensure!(
+            header.server_id == 0,
+            "unexpected server id before gamestate"
+        );
+        ensure!(
+            header.sequence > self.native_received,
+            "native sequence replay"
+        );
+        ensure!(
+            header.message_ack >= self.native_ack && header.message_ack <= self.native_sent,
+            "native ACK outside sent range"
+        );
+        // No gameplay or client command execution has been implemented yet.
+        ensure!(
+            game_wire::client_commands(&clear)?.commands.is_empty(),
+            "client commands not yet supported"
+        );
+        let mut commands = self.server_commands.clone();
+        commands.acknowledge(header.reliable_ack)?;
+        let challenge = self.challenge.expect("decoded challenge");
+        let reply = if self.native_sent == 0 {
+            Some(game_wire::server_packet(
+                1,
+                0,
+                challenge,
+                &[],
+                &[SERVER_EOF],
+            )?)
+        } else if self.native_sent == 1 && header.message_ack == 1 {
+            // Empty server command exercises the receiver and command ACK with
+            // no configstring mutation. Client command ACK remains zero.
+            let sequence = commands.push(b"")?;
+            let mut body = vec![1];
+            body.extend_from_slice(&sequence.to_le_bytes());
+            body.extend_from_slice(&[0, SERVER_EOF]);
+            let reply = game_wire::server_packet(2, 0, challenge, &[], &body)?;
+            commands.mark_sent(sequence)?;
+            Some(reply)
+        } else {
+            None
+        };
+        self.server_commands = commands;
+        self.native_received = header.sequence;
+        self.native_ack = header.message_ack;
+        if reply.is_some() {
+            self.native_sent += 1;
+        }
+        Ok(reply)
     }
 
     pub fn handle(&mut self, payload: &[u8], owner: u64, build: i32) -> Result<Option<Vec<u8>>> {
         let Some(command) = payload.strip_prefix(&[255; 4]) else {
-            if payload.len() >= 14
-                && self.connected
-                && let Some(challenge) = self.challenge
-            {
-                let (_, clear) = codol_protocol::game_wire::open_client(payload, challenge, &[])?;
-                if clear == [3] {
-                    if !self.eof_probe_sent {
-                        self.eof_probe_sent = true;
-                        return Ok(Some(codol_protocol::game_wire::server_packet(
-                            1,
-                            0,
-                            challenge,
-                            &[],
-                            &[6],
-                        )?));
-                    }
-                    let (header, _) =
-                        codol_protocol::game_wire::open_client(payload, challenge, &[])?;
-                    if header.message_ack >= 1 && !self.reliable_probe_sent {
-                        self.reliable_probe_sent = true;
-                        let mut body = vec![1];
-                        body.extend_from_slice(&1u32.to_le_bytes());
-                        body.extend_from_slice(b"d 3 1\0");
-                        return Ok(Some(codol_protocol::game_wire::server_packet(
-                            2,
-                            1,
-                            challenge,
-                            &[],
-                            &body,
-                        )?));
-                    }
-                }
-            }
-            // Inner packets are captured for netchan/gamestate recovery. Do
-            // not answer with an unverified gamestate.
-            return Ok(None);
+            return self.native(payload);
         };
         if let Some(chunk) = command.strip_prefix(b"stats\0") {
             ensure!(self.connected, "stats before connect");
@@ -314,21 +349,46 @@ mod tests {
         assert!(connection.handle(&extra, u64::MAX - 1, -688906341).is_err());
     }
 
+    fn eof(sequence: u32, message_ack: u32, reliable_ack: u32) -> Vec<u8> {
+        let mut wire = sequence.to_le_bytes().to_vec();
+        wire.push(0);
+        wire.extend_from_slice(&message_ack.to_le_bytes());
+        wire.extend_from_slice(&reliable_ack.to_le_bytes());
+        wire.push(3 ^ 0x75 ^ message_ack as u8);
+        wire
+    }
+
     #[test]
-    fn first_client_eof_gets_only_a_native_server_eof_probe() {
+    fn probes_keep_client_ack_zero_terminate_stream_and_require_valid_progress() {
         let mut connection = Connection {
             challenge: Some(0x75),
             connected: true,
             ..Default::default()
         };
-        let packet = [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x76];
-        let reply = connection.handle(&packet, 1, 7).unwrap().unwrap();
-        assert_eq!(&reply[..8], &[1, 0, 0, 0, 0, 0, 0, 0]);
-        let mut next = packet;
-        next[5..9].copy_from_slice(&1u32.to_le_bytes());
-        next[13] = 0x77; // 0x77 ^ challenge(0x75) ^ messageAck(1) = clc_EOF(3)
-        let second = connection.handle(&next, 1, 7).unwrap().unwrap();
-        assert_eq!(&second[..8], &[2, 0, 0, 0, 1, 0, 0, 0]);
-        assert!(connection.handle(&next, 1, 7).unwrap().is_none());
+        assert!(connection.handle(&eof(1, 0, 0), 1, 7).is_err());
+        let profile = vec![0; codol_protocol::profile::SNAPSHOT_BYTES];
+        for (i, chunk) in profile
+            .chunks(codol_protocol::game_stats::CHUNK_BYTES)
+            .enumerate()
+        {
+            let mut part = vec![i as u8, 0, 0];
+            part.extend_from_slice(chunk);
+            connection.stats.accept(&part).unwrap();
+        }
+        assert!(connection.handle(&eof(1, 1, 0), 1, 7).is_err());
+        let first = connection.handle(&eof(1, 0, 0), 1, 7).unwrap().unwrap();
+        assert_eq!(&first[..8], &[1, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(first[8], 6 ^ 0x75 ^ 1);
+        assert!(connection.handle(&eof(1, 0, 0), 1, 7).is_err());
+        assert!(connection.handle(&eof(2, 1, 1), 1, 7).is_err());
+        assert_eq!(connection.native_received, 1); // rejection must not consume sequence
+        let mut second = connection.handle(&eof(2, 1, 0), 1, 7).unwrap().unwrap();
+        assert_eq!(&second[..8], &[2, 0, 0, 0, 0, 0, 0, 0]);
+        game_wire::xor_stream(&mut second[8..], 0x75 ^ 2, b"");
+        assert_eq!(&second[8..], &[1, 1, 0, 0, 0, 0, 6]);
+        assert!(connection.handle(&eof(3, 3, 1), 1, 7).is_err());
+        assert!(connection.handle(&eof(3, 2, 1), 1, 7).unwrap().is_none());
+        assert_eq!(connection.stage(), "reliable_probe_acknowledged");
+        assert!(connection.handle(&eof(4, 1, 0), 1, 7).is_err());
     }
 }

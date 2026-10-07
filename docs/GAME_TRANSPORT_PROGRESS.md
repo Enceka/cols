@@ -4,6 +4,8 @@
 
 已实测：人机训练分配、mmbook/mmstart、随机 P-224 握手、双向加密 DATA、challenge/connect、32 KiB stats 上传确认与加载心跳均通过。客户端开始发送序号递增的游戏通道数据包，当前停在“设置游戏”，等待尚未实现的 gamestate/快照。没有出生、Bot AI 或完整对局。启动阻塞已恢复，见 [CLIENT_STARTUP_RECOVERY.md](CLIENT_STARTUP_RECOVERY.md)。
 
+最新接续见 [NATIVE_CHANNEL_PROGRESS.md](NATIVE_CHANNEL_PROGRESS.md)：已实测 message_ack=2 / reliable_ack=1。下面保留各轮研究历史；早期方向命名、opcode 分类和分片阈值推测以该新文档的校正为准。
+
 下一阶段实施顺序见 [GAMEPLAY_PLAN.md](GAMEPLAY_PLAN.md)。
 
 ## 分配与开局控制

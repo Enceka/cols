@@ -16,17 +16,16 @@
 
 用户最新要求：先恢复登录、背包和大厅，然后推进本地房间/人机与双客户端最小对局。优先使用 GameHub Wine/Proton 在 Mac 上运行，Parallels Windows 保留作对照；服务端使用 Rust。
 
-当前入口：[游戏服分配与 UDP](GAME_TRANSPORT_PROGRESS.md)。玩家等级 70、库存、钱包、单人房间和训练列表已恢复；本轮进一步通过真实客户端验证 challenge/connect、完整 stats 上传确认和加载心跳，开始收到序号递增的内层游戏包。当前已验证 stats/heartbeat 和内层包；最小 gamestate 原型被客户端拒绝并超时，已撤回自动发送。完整 gamestate、出生与快照仍缺，尚不能打人机。
+当前入口：[Native 通道最新进展](NATIVE_CHANNEL_PROGRESS.md)。真实客户端已接受 EOF 包和一条空可靠命令，ACK 依次从 `(0,0)` 到 `(1,0)` 再到 `(2,1)`。DTLS、challenge/connect、stats 和 heartbeat 已通过；完整 gamestate、出生、快照及 AI 仍未实现。
 
-[客户端启动恢复](CLIENT_STARTUP_RECOVERY.md)记录了 IIPS 资源文件打开阻塞及副本修复。现使用 `--prefix-name wine10-recovered-20261007`，没有重置账号。71 项 Rust、13 项 Python 及 fmt/Clippy 通过；持久数据仍使用隔离文件，无 SQLite。
+[客户端启动恢复](CLIENT_STARTUP_RECOVERY.md)记录了 IIPS 故障文件打开阻塞及副本修复。现使用 `--prefix-name wine10-recovered-20261007`，保留已有账号和持久数据。77 项 Rust、13 项 Python、fmt/Clippy 通过。
 
 下一次工作：
 
-1. 按 [实际对局实施计划](GAMEPLAY_PLAN.md) 恢复 netchan → gamestate → 首次出生/快照，再推进 Bot/剧情或双客户端。
-2. 复用现有客户端、恢复后的 prefix、publisher 和 profiles，不要重新初始化已有账号。商城切换细节按用户要求暂缓。
-3. 剧情首关没有先发 21/1，尚缺该路径的实时 security key；不得使用零密钥兜底。
-4. AlphaBuild 更新中的连接/世界结构可参考，但目标 3.3.3.3 的加密和 stats 分块已证实不同；实际字段以目标消费者和抓包为准。
-5. 按可验证阶段 Git commit；本地提交即可，没有要求推送。原始抓包、账号、密钥及故障资源备份均留在忽略目录。
+1. 从最新 native 文档的 8/13 字节包头和两种 ACK 接续，不能沿用早期混淆方向的 prototype。
+2. 恢复目标 net-constant 校验值、configstrings 的三类分段和 3/4/6 opcode，再实现 gamestate。当前没有地图世界状态；空可靠命令 ACK 不是出生证明。
+3. 复用客户端、恢复后的 prefix、publisher、profiles；不要重新初始化账号。商城切换暂缓；剧情首关尚缺无 21/1 路径的 security key。
+4. 每个可验证阶段 Git commit；没有要求推送。原始抓包、资源、账号和密钥保留在忽略目录。
 
 研究原件在仓库的上一级：`../CODOL/`、`../CODO_OfflineLauncher.exe`、`../Installer/`。362 个 `.ifs` 容器已核对文件名、大小、nifs 文件头并记录 SHA-256；容器内部块和资源完整性仍未知。没有可用的本地官方成功抓包，实验依赖客户端解析路径及可观察的状态变化。
 

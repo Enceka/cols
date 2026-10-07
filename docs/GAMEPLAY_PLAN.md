@@ -29,12 +29,10 @@
 每一步都分别保留合成回归测试、真实客户端抓包与界面证据，并按可验收阶段提交 Git。当前暂无 Rust 世界模拟循环、地图碰撞加载或 AI，不能把传输 bootstrap 已完成扩大为“服务端已完整联机”。
 
 
-## 5. 最小 gamestate 试验结论
+## 5. 接续校正
 
-本轮用 AlphaBuild `CODOL_WriteGamestate` 的字段顺序，并结合目标 0x46e6a0 分派表修正为 opcode 3（目标 opcode 2 是可靠客户端命令路径），构造了 152 字节原型：command sequence、map、zone type、CRC、configstrings、client number、checksum feed、结束标记。它只包含 map/mode/server ID/systeminfo 三项。Rust bit writer 的低位优先顺序与参考 `codol_msg.c` 一致。
+最新入口为 [NATIVE_CHANNEL_PROGRESS.md](NATIVE_CHANNEL_PROGRESS.md)。已实测真实客户端接受 sequence=1 的 EOF 和 sequence=2 的空可靠命令，返回 message_ack=2 / reliable_ack=1。
 
-真实客户端在收到该原型后没有进入 gamestate ACK 或场景，约 30 秒后弹出“服务器连接超时”。服务端原始事件显示该响应已经通过外层 DATA MAC；后续客户端仍发送少量 14 字节内层包，未发送可确认的 gamestate ACK。结论是 configstring 数量、内容、checksum feed、完整 `mp_afghan` 资源/纯校验或其他可靠命令至少有一项必需，不能把原型接入默认运行路径。
+原型实验 client-1791312016136 未成功；当时缺少明文 client-command ACK、native XOR，并沿用旧版 configstring/EOF 编号，因此不能把失败归因为配置项不足。代码中的旧最小 gamestate 没有接入发送路径，也不应作为目标格式的依据。
 
-`game_wire::minimal_gamestate` 和 4 字节 sequence 原型保留为离线编码测试，但当前 Connection 不自动发送它。下一步需要恢复目标版本完整 configstring bank（AlphaBuild 的 743 项/2992 字节仅作为旧版本结构参考），再用真实 ACK 验证。
-
-静态解析进一步确认：客户端内层消息分派在 0x46e6a0，消息码 0/1/2/3/5 进入不同解析器，消息码 6 读取四字节 client number 后进入快照/可靠流路径；gamestate 解析器入口为 0x46dea0，结束标记和 configstring 读取不能从旧版 opcode 表直接猜测。目标连接后对服务端内层字节还会执行 0x46bf80 的 native XOR：初始 key 来自关联的 outgoing sequence/challenge 状态，并按命令字符串字节和奇偶位滚动。它与 DTLS DATA 密钥独立；Rust 已保留可逆 `xor_stream` 原型，但未接入发送路径，因 key/command 状态尚未被目标抓包确认。
+首先恢复运行时 net-constant 校验值、可覆盖 configstring 类型、正文 opcode 3/4/6 与两类 10-bit 紧凑列表。接着验证 gamestateupdate 与目标连接状态8；最后才能进行实体/playerState 和场景出生。
