@@ -1,6 +1,7 @@
 //! Application connection bootstrap after authenticated game DATA.
 use anyhow::{Result, ensure};
 use codol_protocol::game_wire::{self, ClientHeader, ReliableCommands, SERVER_EOF};
+use std::sync::Arc;
 
 #[derive(Default)]
 pub(crate) struct Connection {
@@ -11,11 +12,31 @@ pub(crate) struct Connection {
     native_received: u32,
     native_ack: u32,
     server_commands: ReliableCommands,
+    game_state: Option<Arc<crate::game_state::PreparedGameState>>,
+    gamestate_sent: bool,
+    gamestate_acknowledged: bool,
+    gamestate_update: Option<u8>,
+    client_commands: ReliableCommands,
 }
 
 impl Connection {
+    pub fn with_game_state(state: Arc<crate::game_state::PreparedGameState>) -> Self {
+        Self {
+            game_state: Some(state),
+            ..Self::default()
+        }
+    }
+
     pub fn stage(&self) -> &'static str {
-        if self.server_commands.acknowledged() == 1 {
+        if self.gamestate_acknowledged {
+            "gamestate_acknowledged"
+        } else if self.gamestate_update == Some(6) {
+            "gamestate_initialized"
+        } else if self.gamestate_update.is_some() {
+            "gamestate_parser_entered"
+        } else if self.gamestate_sent {
+            "gamestate_sent"
+        } else if self.server_commands.acknowledged() == 1 {
             "reliable_probe_acknowledged"
         } else if self.stats.profile().is_some() {
             "stats_received"
@@ -26,6 +47,10 @@ impl Connection {
         } else {
             "unconnected"
         }
+    }
+
+    pub fn gamestate_progress(&self) -> Option<u8> {
+        self.gamestate_update
     }
 
     pub fn decode_native(&self, payload: &[u8]) -> Result<(ClientHeader, Vec<u8>)> {
@@ -48,8 +73,8 @@ impl Connection {
         );
         let (header, clear) = self.decode_native(payload)?;
         ensure!(
-            header.server_id == 0,
-            "unexpected server id before gamestate"
+            header.server_id == 0 || (self.gamestate_sent && header.server_id == 1),
+            "unexpected server id"
         );
         ensure!(
             header.sequence > self.native_received,
@@ -59,20 +84,41 @@ impl Connection {
             header.message_ack >= self.native_ack && header.message_ack <= self.native_sent,
             "native ACK outside sent range"
         );
-        // No gameplay or client command execution has been implemented yet.
+        let received = game_wire::client_commands(&clear)?;
         ensure!(
-            game_wire::client_commands(&clear)?.commands.is_empty(),
-            "client commands not yet supported"
+            self.gamestate_sent || received.commands.is_empty(),
+            "client commands before gamestate"
         );
+        let mut client_commands = self.client_commands.clone();
+        for (sequence, command) in received.commands {
+            if sequence <= client_commands.sequence() {
+                ensure!(
+                    client_commands.command_for(sequence)? == command,
+                    "changed client command retry"
+                );
+            } else {
+                ensure!(
+                    sequence == client_commands.sequence() + 1,
+                    "client command sequence gap"
+                );
+                // Receipt only: no console/gameplay execution is implied by ACK.
+                client_commands.push(&command)?;
+                client_commands.mark_sent(sequence)?;
+                client_commands.acknowledge(sequence)?;
+            }
+        }
         let mut commands = self.server_commands.clone();
         commands.acknowledge(header.reliable_ack)?;
         let challenge = self.challenge.expect("decoded challenge");
+        let client_ack = client_commands.sequence();
+        let client_command = client_commands.command_for(client_ack)?;
+        let mut sending_gamestate = false;
         let reply = if self.native_sent == 0 {
             Some(game_wire::server_packet(
                 1,
-                0,
+                client_ack,
                 challenge,
-                &[],
+                client_command,
                 &[SERVER_EOF],
             )?)
         } else if self.native_sent == 1 && header.message_ack == 1 {
@@ -82,13 +128,34 @@ impl Connection {
             let mut body = vec![1];
             body.extend_from_slice(&sequence.to_le_bytes());
             body.extend_from_slice(&[0, SERVER_EOF]);
-            let reply = game_wire::server_packet(2, 0, challenge, &[], &body)?;
+            let reply = game_wire::server_packet(2, client_ack, challenge, client_command, &body)?;
             commands.mark_sent(sequence)?;
             Some(reply)
+        } else if self.native_sent == 2
+            && header.message_ack == 2
+            && header.reliable_ack == 1
+            && let Some(state) = &self.game_state
+        {
+            let body = state.body(commands.sequence())?;
+            let reply = game_wire::server_packet(3, client_ack, challenge, client_command, &body)?;
+            sending_gamestate = true;
+            Some(reply)
+        } else if client_ack > self.client_commands.sequence() {
+            Some(game_wire::server_packet(
+                self.native_sent + 1,
+                client_ack,
+                challenge,
+                client_command,
+                &[SERVER_EOF],
+            )?)
         } else {
             None
         };
         self.server_commands = commands;
+        self.client_commands = client_commands;
+        self.gamestate_sent |= sending_gamestate;
+        self.gamestate_acknowledged |=
+            self.gamestate_sent && header.message_ack >= 3 && header.server_id == 1;
         self.native_received = header.sequence;
         self.native_ack = header.message_ack;
         if reply.is_some() {
@@ -101,6 +168,16 @@ impl Connection {
         let Some(command) = payload.strip_prefix(&[255; 4]) else {
             return self.native(payload);
         };
+        if let Some(update) = command.strip_prefix(b"gamestateupdate ") {
+            ensure!(self.gamestate_sent, "gamestate update before send");
+            let value = update.strip_suffix(&[0]).unwrap_or(update);
+            ensure!(
+                matches!(value, b"1" | b"2" | b"3" | b"4" | b"5" | b"6"),
+                "invalid gamestate update"
+            );
+            self.gamestate_update = Some(self.gamestate_update.unwrap_or(0).max(value[0] - b'0'));
+            return Ok(None);
+        }
         if let Some(chunk) = command.strip_prefix(b"stats\0") {
             ensure!(self.connected, "stats before connect");
             let missing = self.stats.accept(chunk)?;
@@ -390,5 +467,71 @@ mod tests {
         assert!(connection.handle(&eof(3, 2, 1), 1, 7).unwrap().is_none());
         assert_eq!(connection.stage(), "reliable_probe_acknowledged");
         assert!(connection.handle(&eof(4, 1, 0), 1, 7).is_err());
+    }
+
+    #[test]
+    fn gamestate_requires_probe_ack_and_client_commands_commit_atomically() {
+        let mut connection = Connection::with_game_state(Arc::new(crate::game_state::synthetic()));
+        connection.challenge = Some(0x75);
+        connection.connected = true;
+        let profile = vec![0; codol_protocol::profile::SNAPSHOT_BYTES];
+        for (i, chunk) in profile
+            .chunks(codol_protocol::game_stats::CHUNK_BYTES)
+            .enumerate()
+        {
+            let mut part = vec![i as u8, 0, 0];
+            part.extend_from_slice(chunk);
+            connection.stats.accept(&part).unwrap();
+        }
+        assert!(
+            connection
+                .handle(b"\xff\xff\xff\xffgamestateupdate 1\0", 1, 7)
+                .is_err()
+        );
+        connection.handle(&eof(1, 0, 0), 1, 7).unwrap();
+        connection.handle(&eof(2, 1, 0), 1, 7).unwrap();
+        assert!(connection.handle(&eof(3, 2, 0), 1, 7).unwrap().is_none());
+        let mut packet = connection.handle(&eof(4, 2, 1), 1, 7).unwrap().unwrap();
+        assert_eq!(packet[..8], [3, 0, 0, 0, 0, 0, 0, 0]);
+        game_wire::xor_stream(&mut packet[8..], 0x75 ^ 3, b"");
+        assert_eq!(packet[8], 3);
+        assert_eq!(packet.last(), Some(&6));
+        assert_eq!(connection.stage(), "gamestate_sent");
+        connection
+            .handle(b"\xff\xff\xff\xffgamestateupdate 1\0", 1, 7)
+            .unwrap();
+        assert_eq!(connection.stage(), "gamestate_parser_entered");
+        connection
+            .handle(b"\xff\xff\xff\xffgamestateupdate 6\0", 1, 7)
+            .unwrap();
+        connection
+            .handle(b"\xff\xff\xff\xffgamestateupdate 3\0", 1, 7)
+            .unwrap();
+        assert_eq!(connection.stage(), "gamestate_initialized");
+        assert_eq!(connection.gamestate_progress(), Some(6));
+        assert!(
+            connection
+                .handle(b"\xff\xff\xff\xffgamestateupdate 7\0", 1, 7)
+                .is_err()
+        );
+        // One reliable command, then EOF in the same pool byte (2 | 3<<3).
+        let mut wire = eof(5, 3, 1);
+        wire[4] = 1;
+        wire.truncate(13);
+        let mut body = vec![0x1a, 1, 0, 0, 0, b'a', 0];
+        game_wire::xor_stream(&mut body, 0x75 ^ 3 ^ 1, b"");
+        wire.extend_from_slice(&body);
+        let mut broken = wire.clone();
+        broken.pop();
+        assert!(connection.handle(&broken, 1, 7).is_err());
+        assert_eq!(connection.client_commands.sequence(), 0);
+        let mut response = connection.handle(&wire, 1, 7).unwrap().unwrap();
+        assert_eq!(response[..8], [4, 0, 0, 0, 1, 0, 0, 0]);
+        game_wire::xor_stream(&mut response[8..], 0x75 ^ 4, b"a");
+        assert_eq!(response[8..], [6]);
+        assert_eq!(connection.stage(), "gamestate_acknowledged");
+        wire[..4].copy_from_slice(&6u32.to_le_bytes());
+        assert!(connection.handle(&wire, 1, 7).unwrap().is_none());
+        assert_eq!(connection.client_commands.sequence(), 1);
     }
 }

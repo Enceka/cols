@@ -35,6 +35,6 @@ python3 tools/prepare_game_state.py research-output/gamehub/实际实验/net-con
 
 使用已恢复的独立编译 prefix；不能在运行客户端的 prefix 内编译后执行 wineserver 清理。采集支持运行中的客户端，不调用游戏函数。
 
-生成显式启用的训练配置时，对**确认是该训练地图的 state7 采集**加 `--output research-output/training-game-state.json`。输出包含原始采集 SHA-256、版本、地图/模式、计算 CRC 和计数，不包含常量资源正文。对于 initialized1 的采集，工具必须验证计算值等于目标观察值；对源哈希、公共 seed、记录数量、损坏 base64 和资源错误均拒绝继续。
+生成显式启用的训练配置时，对**确认是该训练地图的 state7 采集**加 `--output research-output/training-game-state.json`。输出包含原始采集 SHA-256、版本、地图/模式、计算 CRC 和计数，不包含常量资源正文。对于 initialized1 的采集，工具必须验证计算值等于目标观察值；对客户端版本不符、公共 seed 不匹配、记录数量错误、损坏 base64 和资源错误均拒绝继续。
 
 测试使用合成资源，覆盖跨资源与资源内去重差异、跨类别同名、语言排序、忽略FX/占位符、seed和已初始化CRC不匹配。实际游戏资源仅用于本地验证。

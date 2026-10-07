@@ -1,14 +1,14 @@
 # 从已连接到实际对局
 
-更新：2026-10-07。登录、训练分配、DTLS、challenge/connect、stats 上传确认、加载心跳均已获 3.3.3.3 客户端接受。现在客户端发送有序游戏包并停在“设置游戏”。本文件只规划尚未完成的世界状态部分；协议证据和实验见 [GAME_TRANSPORT_PROGRESS.md](GAME_TRANSPORT_PROGRESS.md)。
+更新：2026-10-07。登录、训练分配、DTLS、challenge/connect、stats、心跳、可靠消息及 gamestate 已获 3.3.3.3 客户端接受。现在连接进入状态9，停在“等待玩家数据”。本文件规划后续世界状态；最新证据见 [NATIVE_CHANNEL_PROGRESS.md](NATIVE_CHANNEL_PROGRESS.md)。
 
 ## 1. 游戏通道与 gamestate
 
-先确认目标 netchan 的序号、ACK 位、分片、qport 是否存在、压缩范围及 Huffman 表，再实现 Rust 编解码。首批观测为 14 字节 `LE32(seq) || 9×00 || 37`；之后可出现 64 字节包。现在只有外层 DATA 验证成功，不能把这些内层字节直接当成已解析的用户指令。
+已完成 C2S/S2C 独立明文头、native XOR、可靠窗口和有界 gamestate；目标使用保留位池而非旧 Huffman 假设。分片、可靠重发仍待补齐，当前正文足够小，尚不需要分片。
 
-从目标 `CA_GAMESTATE` 字符串 0xc61bb8、引用 0x46a69d，`gamestateupdate %d` 0xc61d90、引用 0x4459b4/0x445cb1/0x46de54/0x46df1c 继续定位真实消息消费者。这些是字符串引用地址，不是已确认的函数入口。AlphaBuild 的 `codol_netchan.c`、`codol_wire.*` 和 gamestate writer 可提供线索，但 qport、opcode、常量表都要在新版本复核。
+gamestate消费入口 `0x46dea0`、三类configstring列表 `0x46db20` 已复核并实现。资源CRC按 [NET_CONSTANTS_CRC.md](NET_CONSTANTS_CRC.md)计算，真实客户端进度1～6完成；CS2游戏标识 `cod` 的缺失错误已修复。AlphaBuild 可继续提供快照线索，但目标结构与常量编号必须独立确认。
 
-为当前训练固定目标地图 mp_afghan、模式 war 建立明确配置；从受控赛单解析所需规则，不能执行收到的 mmstart 文本。恢复 serverinfo/systeminfo、configstrings、资源基线及游戏状态消息，只有实际客户端 ACK 并进入下一连接状态后才计为通过。不要下发随意拼接的空 gamestate 来宣称可玩。
+当前训练固定 mp_afghan、war，通过显式准备文件绑定，并验证已捕获的mmstart字段，不执行控制台文本。尚未覆盖完整server规则或多地图；验收依据为客户端实际CRC、初始化进度和状态9，暂未收到后续native ACK3。不要扩大成已可玩。
 
 ## 2. 单客户端出生
 
@@ -33,6 +33,6 @@
 
 最新入口为 [NATIVE_CHANNEL_PROGRESS.md](NATIVE_CHANNEL_PROGRESS.md)。已实测真实客户端接受 sequence=1 的 EOF 和 sequence=2 的空可靠命令，返回 message_ack=2 / reliable_ack=1。
 
-原型实验 client-1791312016136 未成功；当时缺少明文 client-command ACK、native XOR，并沿用旧版 configstring/EOF 编号，因此不能把失败归因为配置项不足。代码中的旧最小 gamestate 没有接入发送路径，也不应作为目标格式的依据。
+原型实验 client-1791312016136 未成功；当时缺少明文 client-command ACK、native XOR，并沿用旧版 configstring/EOF 编号，因此不能把失败归因为配置项不足。该旧最小原型已删除，当前发送路径使用经实测的新编码器。
 
-首先恢复运行时 net-constant 校验值、可覆盖 configstring 类型、正文 opcode 3/4/6 与两类 10-bit 紧凑列表。接着验证 gamestateupdate 与目标连接状态8；最后才能进行实体/playerState 和场景出生。
+上述gamestate步骤已完成，旧最小原型已移除。下一步直接进入实体/playerState：首个有效快照必须通过完整delta解析，不能仅发送opcode和EOF。需要同时建立服务端时钟及有界重发，并继续验证进图与可操作性。

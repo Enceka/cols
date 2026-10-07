@@ -2,7 +2,9 @@
 
 2026-10-07。本文替代 GAME_TRANSPORT_PROGRESS 后半段中的旧方向/标记推测。目标 EXE hash 保持 `e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b`。
 
-**已实测可靠消息接收确认，尚无 gamestate 或出生。** 实验 `client-1791338632345`：151 个 UDP 事件无错误；0016 收到初始 EOF，回复 native 消息1；0017 客户端 message_ack=1，回复 native 消息2（可靠命令序号1，空字符串）；0018 开始 message_ack=2、reliable_ack=1，连续114个 C2S 包保持该确认。玩家配置没有被修改；最终仍因缺少 gamestate 等待超时。
+**最新：已实测 gamestate 初始化完成，客户端进入状态9（等待玩家数据），尚未出生。** 详见文末“真实 gamestate 验收”。
+
+前序可靠消息实验 `client-1791338632345`：151 个 UDP 事件无错误；0016 收到初始 EOF，回复 native 消息1；0017 客户端 message_ack=1，回复 native 消息2（可靠命令序号1，空字符串）；0018 开始 message_ack=2、reliable_ack=1，连续114个 C2S 包保持该确认。玩家配置没有被修改；当时仍因缺少 gamestate 等待超时。
 
 ## 两种方向的真实格式
 
@@ -24,7 +26,7 @@
 
 ## 当前连接状态与边界
 
-必须先完成 stats，才处理 native 包。当前只接受 serverId=0、单调递增客户端序号、未超出已发送消息范围的 message ACK，以及合法的可靠 ACK；未支持的客户端命令明确失败，不执行也不冒充确认。完整解析成功后才提交序号/ACK。
+必须先完成 stats，才处理 native 包。gamestate 前只接受 serverId=0，发送后允许已配置的1。验证递增客户端序号、未超出已发送范围的 message ACK、合法可靠 ACK；整包解析成功后才提交序号/ACK。客户端可靠命令仅记录接收序号与正文以支持后续 XOR，不执行命令。移动 opcode 仍明确拒绝。
 
 S2C探针1：`sequence=1, clientCommandAck=0, body=[6]`。
 
@@ -34,7 +36,7 @@ S2C探针2：收到 messageAck=1 后，`sequence=2, clientCommandAck=0, body=[1,
 
 可靠窗口按完整序号保留256槽；确认后的当前命令仍供后续包 XOR 使用，不能 ACK 后立即删除或对不存在槽静默返回空字符串。queued、sent、acknowledged 分开；观察字段使用当前已知槽解码，不再对任意 reliableAck 使用空槽。
 
-当前两个探针是有界、一次性诊断。丢包重发、完整服务端可靠命令发布、客户端命令执行、移动解析和 native 分片都未完成。不得把 transport/reliable ACK 扩大为游戏已可玩。
+默认只发两个有界探针；显式 `--game-state` 才在 ACK2/reliableACK1 后发送 gamestate。丢包重发、完整服务端可靠命令发布、客户端命令执行、移动解析和 native 分片都未完成。不得把 transport/reliable ACK 扩大为游戏已可玩。
 
 ## 需要纠正的旧实验解释
 
@@ -69,4 +71,45 @@ python3 tools/client_state.py --experiment research-output/gamehub/实际实验/
 
 目标来源：类型名表0xce0ea0确认type44；0x585000按source、category、名称后缀类别与名称排序；0x584d80去重；0x584ed0将字符串字节送入CRC32链；0x5850b0组合运行时/关卡表。`0xc57118` 是21组(category base, capacity, reserved)布局：动态dvar名从24开始、值从344开始，容量各320；武器从5443开始、容量900；这些不同于Alpha布局。
 
-下一步采集一次修正工具的 **state7地图资源集**，恢复排序、去重和公共seed来源，得到能独立复算的CRC，再编写目标gamestate。当前只有大厅修正提取完整走通，不能声称已取得可用的 mp_afghan CRC。
+以上为早期采集记录。后续已完成 state7 提取及 CRC 复算，并经真实客户端初始化确认；详见 [NET_CONSTANTS_CRC.md](NET_CONSTANTS_CRC.md)。
+
+## 真实 gamestate 验收
+
+`client-1791342759140`：0018在收到 ACK2/reliableACK1 后发送 native序号3；0019～0024收到 `gamestateupdate 1,2,3,4,5,6`。没有服务端解析错误。自动采集 `client-state-1791342877798.json` 显示 connection_state=9、server_message_sequence=3、server_command_sequence=1；`net-constants-1791342878732.json` 显示 initialized1、currentCRC=`0x1f3a0a82`，与独立资源复算值精确一致。
+
+界面 `ui-1791342878839.png` 停在“等待玩家数据”。后续目前只看到 DATA 内2字节 `3c33`（关联维护载荷），**没有后续 native ACK3 或用户移动**。不能把只读 server_message_sequence=3 写成收到 C2S ACK3；服务端的 `gamestate_acknowledged` 分支有合成测试，但实测证据为初始化进度和客户端状态9。
+
+约7分38秒后的 `client-state-1791343336411.json` 再次读到状态9、native_server_id=1、CRC不变、server_message_sequence=3。CS3已应用且初始化状态稳定；持续停留不代表首个快照已到达。日志新增 `gamestate_progress`，进度6标为 `gamestate_initialized`，与native ACK确认明确区分。
+
+前一轮 `client-1791342534273` 同样通过 CRC 与配置读取，进度到4后出现 `186 cod ...`。已定位 `0x445b74` 读取 configstring2、与 `0xc5f4fc` 的 `cod` 比较，`0x445bb6` 抛错误。补上 CS2=`cod` 后进度走完1～6。此错误不是 CRC 失败，也不需要修改客户端校验逻辑。
+
+当前正文由 Rust `game_state::Gamestate` 编码：
+
+1. opcode3、serverCommandSequence=1、两个NUL字符串 `mp_afghan` / `mp`、资源计算CRC。
+2. 内部opcode4、普通覆盖数量u16；有序写入 CS0=`\\mapname\\mp_afghan\\g_gametype\\war`、CS1空、CS2=`cod`、CS3=`1`、CS16=`0 0 0`。
+3. 各索引使用1bit递增标志，必要时追加13bit绝对索引；从-1开始。字符串占整字节但保留旧位池剩余位，新位池须以当前字节游标定位。
+4. 两个10bit紧凑列表计数均为0、内部EOF6、clientNumber32=0、checksumFeed32=0、外部EOF6。
+
+CS0 的 `mapname` / `g_gametype` 字面键来自 `0x465aa2` / `0x465abf`，不是推测的 `gametype`。网络常量由客户端继承加载，不能重复覆盖受保护类别。旧 `minimal_gamestate` 与错误 `MessageKind` 已移除。
+
+启用配置：
+
+```sh
+python3 tools/prepare_game_state.py research-output/gamehub/client-1791341394600/net-constants-1791341887328.json --output research-output/training-game-state.json
+sh tools/cargo.sh build --workspace --locked
+python3 tools/gamehub_run.py client --prefix-name wine10-recovered-20261007 --seconds 900 --title-id-hex 3ea --rust-auth --local-auth-tickets --rust-lobby --rust-stun --rust-game --game-state research-output/training-game-state.json --local-services --trust-lab-cert --quiet-network
+```
+
+服务端校验目标版本、准备文件格式、固定地图/模式及已捕获的训练 mmstart 字段。此处 `playlist 0` 是客户端发送的控制值；publisher 文本对用户展示的赛单编号为1。只比较控制字段，绝不执行收到的控制台文本。未传 `--game-state` 保留原有两探针行为。
+
+新增客户端可靠命令接收使用完整序号存槽、拒绝缺号/冲突重试；整包验证后提交状态，回包以已接收命令做 XOR 并填写 clientCommandAck。这仅确认接收，不宣称 begin/team/cp 等业务执行成功。
+
+## 下一步：首个完整快照
+
+从 `research-output/ghidra/snapshot-entry.c` 接续 `0x46d170`，不要再回头改 CRC。其开头有虚拟化调用，后续可见 serverTime32、delta距离byte、flags byte；无基线且 flags bit8未置时会拒绝。这个位的完整语义须对照指令及实际消费确认，不能发送空快照跳过校验。
+
+之后读取1bit playerState基线选择并调用 `0x5a4230`，再依次调用 `0x46d060`、`0x46cc60`、`0x46c2f0`、`0x46c840` 和 `0x43e070`。每段之间重置消息的实体索引缓存。目标 snapshot结构大小0x3564，不能直接复制Alpha旧版结构。
+
+需要先恢复目标 playerState/netfield布局、实体列表终止编码与初始玩家资料，再建立有界发送/重发循环。验收仍要求实际HUD/武器、出生位置和可操作，不以加载图或状态9代替可玩。
+
+本轮验证：fmt、Clippy、81项Rust测试、16项Python测试均通过，调试可执行文件已重建。一次在运行游戏/Ghidra期间的旧观测器500ms超时测试失败；关闭实验后完整检查通过，没有更改该测试或放宽超时。真实验证实验共126个UDP事件，无服务端错误；结束后实验标记 `lab_certificate_restored=true`，临时CA已恢复。

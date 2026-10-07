@@ -11,58 +11,6 @@ pub const RELIABLE_WINDOW: u32 = 256;
 pub const RELIABLE_COMMAND_BYTES: usize = 1024;
 pub const SERVER_EOF: u8 = 6;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MessageKind {
-    Snapshot,
-    ReliableServerCommand,
-    ReliableClientCommand,
-    Gamestate,
-    Configstring,
-    End,
-    Unknown(u8),
-}
-#[derive(Debug, PartialEq, Eq)]
-pub struct Incoming {
-    pub raw_sequence: u32,
-    pub sequence: u32,
-    pub dropped: u32,
-    pub kind: Option<MessageKind>,
-    pub body: Vec<u8>,
-}
-
-pub fn incoming(wire: &[u8], previous: Option<u32>) -> Result<Incoming, LobbyError> {
-    if wire.len() < 4 {
-        return Err(LobbyError("inner game packet header truncated"));
-    }
-    let raw = u32::from_le_bytes(wire[..4].try_into().unwrap());
-    if raw & ACK_BIT != 0 || raw & FRAGMENT_BIT != 0 {
-        return Err(LobbyError("inner game ACK/fragment requires reassembly"));
-    }
-    let sequence = raw & SEQUENCE_MASK;
-    if sequence == 0
-        || previous.is_some_and(|last| sequence <= last || sequence - last > 0x1000_0000)
-    {
-        return Err(LobbyError("inner game sequence replay/jump"));
-    }
-    let body = wire[4..].to_vec();
-    let kind = body.first().copied().map(|v| match v {
-        0 => MessageKind::Snapshot,
-        1 => MessageKind::ReliableServerCommand,
-        2 => MessageKind::ReliableClientCommand,
-        3 => MessageKind::Gamestate,
-        5 => MessageKind::End,
-        6 => MessageKind::Configstring,
-        n => MessageKind::Unknown(n),
-    });
-    Ok(Incoming {
-        raw_sequence: raw,
-        sequence,
-        dropped: previous.map_or(0, |last| sequence - last - 1),
-        kind,
-        body,
-    })
-}
-
 /// Keep exact sequence identities, including acknowledged slots: incoming
 /// packets mix those command bytes into XOR until the ring overwrites them.
 #[derive(Debug, Default, Clone)]
@@ -213,77 +161,6 @@ pub fn server_packet(
         client_command,
     );
     Ok(packet)
-}
-
-struct Bits {
-    bytes: Vec<u8>,
-    bit: usize,
-}
-impl Bits {
-    fn new() -> Self {
-        Self {
-            bytes: Vec::new(),
-            bit: 0,
-        }
-    }
-    fn bits(&mut self, value: u32, count: usize) {
-        for i in 0..count {
-            if self.bit.is_multiple_of(8) {
-                self.bytes.push(0);
-            }
-            if (value >> i) & 1 != 0 {
-                self.bytes[self.bit / 8] |= 1 << (self.bit % 8);
-            }
-            self.bit += 1;
-        }
-    }
-}
-fn string(out: &mut Vec<u8>, value: &str) {
-    out.extend_from_slice(value.as_bytes());
-    out.push(0);
-}
-
-/// Offline target-shaped gamestate prototype. It is intentionally not sent by
-/// the server until the complete configstring/pure state is recovered.
-pub fn minimal_gamestate(
-    map: &str,
-    mode: &str,
-    server_id: u32,
-    client: u32,
-) -> Result<Vec<u8>, LobbyError> {
-    if map.is_empty() || mode.is_empty() || map.len() > 255 || mode.len() > 63 {
-        return Err(LobbyError("invalid minimal gamestate identity"));
-    }
-    let mut out = vec![3];
-    out.extend_from_slice(&0u32.to_le_bytes());
-    string(&mut out, map);
-    string(&mut out, "mp");
-    out.extend_from_slice(&0u32.to_le_bytes());
-    let values = [
-        (
-            0u32,
-            format!("\\mapname\\{map}\\gametype\\{mode}\\sv_maxclients\\12"),
-        ),
-        (
-            1u32,
-            format!("\\sv_serverid\\{server_id}\\sv_fps\\20\\g_gametype\\{mode}"),
-        ),
-        (3u32, server_id.to_string()),
-    ];
-    out.push(3);
-    out.extend_from_slice(&(values.len() as u16).to_le_bytes());
-    let mut bits = Bits::new();
-    for (index, value) in &values {
-        bits.bits(0, 1);
-        bits.bits(*index, 13);
-        string(&mut bits.bytes, value);
-    }
-    out.extend_from_slice(&bits.bytes);
-    out.push(5);
-    out.extend_from_slice(&client.to_le_bytes());
-    out.extend_from_slice(&0u32.to_le_bytes());
-    out.push(5);
-    Ok(out)
 }
 
 /// Target bit reader 0x40c370/0x5a13a0: byte fields advance the byte cursor

@@ -200,6 +200,7 @@ pub struct GameServer {
     socket: UdpSocket,
     admissions: Arc<GameAdmissions>,
     directory: PathBuf,
+    game_state: Option<Arc<crate::game_state::PreparedGameState>>,
 }
 impl GameServer {
     pub async fn bind(address: SocketAddrV4, directory: PathBuf) -> Result<Self> {
@@ -219,6 +220,7 @@ impl GameServer {
         Ok(Self {
             socket,
             directory,
+            game_state: None,
             admissions: Arc::new(GameAdmissions {
                 address,
                 entries: Mutex::new(HashMap::new()),
@@ -227,6 +229,10 @@ impl GameServer {
     }
     pub fn admissions(&self) -> Arc<GameAdmissions> {
         self.admissions.clone()
+    }
+    pub fn with_game_state(mut self, state: crate::game_state::PreparedGameState) -> Self {
+        self.game_state = Some(Arc::new(state));
+        self
     }
     pub async fn run<F: Future<Output = std::io::Result<()>>>(self, shutdown: F) -> Result<()> {
         tokio::pin!(shutdown);
@@ -259,7 +265,7 @@ impl GameServer {
                 .any(|(_, a)| a.expires > now);
             peers.retain(|_, p| self.admissions.get(&p.id, now).is_some());
             let mut decoded = None;
-            let mut inner_kind = None;
+            let inner_kind: Option<&str> = None;
             let mut inner_dropped = None;
             let mut client_server_id = None;
             let mut client_message_ack = None;
@@ -273,16 +279,28 @@ impl GameServer {
                     return Ok(Some(reply));
                 } else if n == 16 && wire[..2] == [1, 2] {
                     let id: [u8; 8] = wire[8..16].try_into()?;
-                    ensure!(
-                        self.admissions.get(&id, now).is_some(),
-                        "game INIT is not admitted/started"
-                    );
+                    let admission = self
+                        .admissions
+                        .get(&id, now)
+                        .ok_or_else(|| anyhow::anyhow!("game INIT is not admitted/started"))?;
                     if !peers.get(&peer).is_some_and(|p| p.is_retry(wire)) {
                         ensure!(
                             peers.len() < 32 || peers.contains_key(&peer),
                             "game peer capacity"
                         );
-                        peers.insert(peer, Peer::init(wire, peer)?);
+                        let mut connection = Peer::init(wire, peer)?;
+                        if let Some(state) = &self.game_state {
+                            ensure!(
+                                state.matches(
+                                    admission.build,
+                                    admission.start_command.as_deref().unwrap_or("")
+                                ),
+                                "prepared game state does not match admitted training request"
+                            );
+                            connection.connection =
+                                crate::game_connection::Connection::with_game_state(state.clone());
+                        }
+                        peers.insert(peer, connection);
                     }
                     return Ok(Some(peers[&peer].init_reply()));
                 } else if n == 189 && wire[..2] == [3, 2] {
@@ -322,12 +340,6 @@ impl GameServer {
                         client_opcode = clear.first().map(|b| b & 7);
                         inner_dropped = previous_sequence
                             .map(|previous| header.sequence.saturating_sub(previous + 1));
-                    } else if payload.len() >= 4 && payload[..4] != [255, 255, 255, 255] {
-                        let message =
-                            codol_protocol::game_wire::incoming(&payload, p.inner_sequence)?;
-                        p.inner_sequence = Some(message.sequence);
-                        inner_kind = message.kind.map(|kind| format!("{kind:?}"));
-                        inner_dropped = Some(message.dropped);
                     }
                     if let Some(reply) =
                         p.connection
@@ -339,6 +351,9 @@ impl GameServer {
                 Ok(None)
             })();
             let connection_stage = peers.get(&peer).map(|p| p.connection.stage());
+            let gamestate_progress = peers
+                .get(&peer)
+                .and_then(|p| p.connection.gamestate_progress());
             let error = handled.as_ref().err().map(ToString::to_string);
             let response = handled.unwrap_or(None);
             if let Some(plain) = &decoded {
@@ -361,7 +376,7 @@ impl GameServer {
             };
             write_private(&self.directory.join(format!("{count:04}-event.json")),&serde_json::to_vec(&serde_json::json!({
                 "peer":peer,"bytes":n,"type":wire.first(),"version_byte":wire.get(1),"admitted_init":admitted,
-                "reply_bytes":response.as_ref().map_or(0,Vec::len),"unix_time_ms":unix_time_ms()
+                "reply_bytes":response.as_ref().map_or(0,Vec::len),"unix_time_ms":unix_time_ms(),"gamestate_progress":gamestate_progress
                 ,"connection_stage":connection_stage,"inner_kind":inner_kind,"inner_dropped":inner_dropped,"client_server_id":client_server_id,"client_message_ack":client_message_ack,"client_reliable_ack":client_reliable_ack,"client_body_first":client_body_first,"client_opcode":client_opcode,"mac_verified":decoded.is_some(),"plaintext_bytes":decoded.as_ref().map(|p| p.encrypted.len() + p.cleartext.len()),"encrypted_payload_bytes":decoded.as_ref().map(|p| p.encrypted.len()),"error":error
             }))?).await?;
             tracing::info!(%peer,bytes=n,kind=?wire.first(),admitted_init=admitted,mac_verified=decoded.is_some(),"game UDP datagram captured");

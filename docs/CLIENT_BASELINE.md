@@ -131,3 +131,10 @@
 - 93/1 零余额、80/173 空附件、80/70→80/107 空测试目录已接入。只读状态探针测得目录状态 3、完成标志 7，最终截图无忙碌弹窗；不是物品或完整大厅恢复。
 - 在 GameHub 私有 prefix 内用 C# Win32 ReadProcessMemory 实现无附加/注入的状态读取，解决此前 WineDbg 附加导致的异常。只读工具核对 EXE 哈希且只读取固定状态地址。
 - 目标窗口的受控点击后出现 21/5；训练对局未实现。后续重点转向目标物品/角色表、private 档案及引导完成字段。最新完整记录见 ONBOARDING_PROGRESS.md。
+
+**2026-10-07 游戏初始化验收补充（替代早期阶段状态）**
+
+- Rust已完成登录/库存/本地房间/训练分配及DTLS、challenge/connect、stats、心跳、可靠消息引导。最新范围与限制见 [NATIVE_CHANNEL_PROGRESS.md](NATIVE_CHANNEL_PROGRESS.md)。
+- `0x5855d0`（VA）注册dvar名称CRC seed、`0x585000`排序、`0x584d80`去重及`0x584ed0`累加经静态指令与只读资源提取交叉验证。mp_afghan计算CRC=`0x1f3a0a82`，与真实客户端初始化后的内存值一致，置信度高。工具与复现见 [NET_CONSTANTS_CRC.md](NET_CONSTANTS_CRC.md)。
+- `client-1791342759140` 实测gamestateupdate1～6、连接状态9、服务端消息序号3；随后只读确认serverId=1。CS2需字面值`cod`的校验已定位在VA `0x445b74`～`0x445bb6`并修复下发值。
+- 当前界面“等待玩家数据”，尚无出生、玩家移动、快照循环或AI。下一个目标为VA `0x46d170`的完整snapshot解析与VA `0x5a4230`的playerState布局；不得把初始化完成扩大为已经可玩。

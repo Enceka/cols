@@ -74,6 +74,7 @@ class ReadClientState {
                 if(netConstants) { ClientAssets.ExportNetConstants(process);return 0; }
                 Console.WriteLine("{");
                 Field(process,"connection_state",0x01a2e7ec,4);
+                Field(process,"native_server_id",0x0796f2d8,4);
                 Field(process,"net_constants_initialized",0x02df9934,4);
                 Field(process,"net_constants_crc",0x02df7d90,4);
                 uint connection=Read(process,0x01a2a538,4)^0xd362501f;

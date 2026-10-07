@@ -90,6 +90,9 @@ enum Command {
         /// Experimental game UDP handshake endpoint; no world simulation yet.
         #[arg(long, requires_all = ["service_data_dir", "lobby_bind"])]
         game_bind: Option<std::net::SocketAddrV4>,
+        /// Resource-derived gamestate for the controlled training playlist.
+        #[arg(long, requires = "game_bind")]
+        game_state: Option<PathBuf>,
     },
     /// Parse an observed task-10 JSON body; identifiers are omitted from output.
     InspectAuth {
@@ -287,6 +290,7 @@ async fn main() -> Result<()> {
             stun_bind,
             stun_alt,
             game_bind,
+            game_state,
         } => {
             let server = AuthServer::bind(AuthOptions {
                 bind,
@@ -310,11 +314,16 @@ async fn main() -> Result<()> {
                 let (stop, receiver) = tokio::sync::watch::channel(false);
                 let mut tasks = tokio::task::JoinSet::new();
                 if let Some(bind) = game_bind {
-                    let game = codol_server::game_server::GameServer::bind(
+                    let mut game = codol_server::game_server::GameServer::bind(
                         bind,
                         server.directory().join("game"),
                     )
                     .await?;
+                    if let Some(path) = game_state {
+                        game = game.with_game_state(
+                            codol_server::game_state::PreparedGameState::load(&path)?,
+                        );
+                    }
                     let endpoint = game.admissions();
                     tracing::info!(address=%endpoint.address(),"experimental Rust game UDP endpoint ready");
                     lobby = lobby.with_game_endpoint(endpoint).await?;

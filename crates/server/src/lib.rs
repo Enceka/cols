@@ -5,6 +5,7 @@ pub mod config;
 mod game_connection;
 mod game_handshake;
 pub mod game_server;
+pub mod game_state;
 pub mod http;
 pub mod lobby_server;
 mod marketplace;

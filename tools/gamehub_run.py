@@ -68,6 +68,7 @@ def main():
     parser.add_argument("--rust-lobby", action="store_true", help="enable the Rust protocol-210 lobby handshake observer")
     parser.add_argument("--rust-stun", action="store_true", help="enable loopback UDP discovery on 3074/3078")
     parser.add_argument("--rust-game", action="store_true", help="enable experimental game allocation/UDP transport; no simulation yet")
+    parser.add_argument("--game-state", type=Path, help="opt-in prepared training gamestate from prepare_game_state.py")
     parser.add_argument("--local-services", action="store_true", help="enable time/storage services with persistent data in client-work/server-data")
     parser.add_argument("--quiet-network", action="store_true", help="omit verbose Wine winsock tracing during longer UI tests; Rust captures remain enabled")
     parser.add_argument("--trust-lab-cert", action="store_true", help="temporarily add the lab certificate to ONLY the research copy's cacert.pem")
@@ -97,6 +98,8 @@ def main():
         parser.error("local-services requires rust-lobby")
     if args.rust_game and not args.local_services:
         parser.error("rust-game requires local-services")
+    if args.game_state and (not args.rust_game or not args.game_state.is_file()):
+        parser.error("game-state requires rust-game and an existing prepared file")
     if args.trust_lab_cert and not (args.tls_probe or args.rust_auth):
         parser.error("trust-lab-cert requires tls-probe or rust-auth")
     info = available[args.engine_id]
@@ -200,6 +203,9 @@ def main():
                             tls_argv += ["--stun-bind", "127.0.0.1:3074", "--stun-alt", "127.0.0.1:3078"]
                         if args.rust_game:
                             tls_argv += ["--game-bind", "127.0.0.1:39004"]
+                        if args.game_state:
+                            tls_argv += ["--game-state", str(args.game_state.resolve())]
+                            state["game_state_sha256"] = sha256(args.game_state)
                     else:
                         openssl = "/opt/homebrew/bin/openssl" if Path("/opt/homebrew/bin/openssl").exists() else shutil.which("openssl")
                         if openssl is None:
