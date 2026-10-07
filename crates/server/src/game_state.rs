@@ -210,11 +210,13 @@ impl PreparedGameState {
     pub(crate) fn snapshot(
         &self,
         server_time: u32,
+        command_time: u32,
         establish_baseline: bool,
         angles: [u16; 3],
     ) -> Result<Vec<u8>> {
-        Ok(codol_protocol::game_snapshot::aimed_frame(
+        Ok(codol_protocol::game_snapshot::player_frame(
             server_time,
+            command_time,
             self.spawn_origin,
             establish_baseline,
             self.bootstrap_weapon

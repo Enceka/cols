@@ -77,8 +77,17 @@ impl Connection {
         } else {
             [0; 3]
         };
+        let server_time = 1000 + self.snapshot_count * 50;
+        // Only view input is applied by this bootstrap. Advancing commandTime
+        // with the snapshot clock suppresses local prediction (0x4522b0).
+        let command_time = self
+            .last_input
+            .as_ref()
+            .map_or(1000, |cmd| cmd.time)
+            .min(server_time);
         let body = state.snapshot(
-            1000 + self.snapshot_count * 50,
+            server_time,
+            command_time,
             self.snapshot_first_sequence
                 .is_none_or(|first| self.native_ack < first),
             angles,
@@ -460,6 +469,10 @@ mod tests {
             game_wire::xor_stream(&mut packet[8..], 0x75 ^ (i + 4) as u8, b"");
             assert_eq!(packet[14], if i == 0 { 8 } else { 0 });
             assert_eq!(&packet[9..13], &(1000 + i * 50).to_le_bytes());
+            // The frozen captured layout places PS.commandTime at body+9.
+            // Sending more frames without input must not acknowledge input
+            // that the client has not generated yet.
+            assert_eq!(&packet[17..21], &1000u32.to_le_bytes());
             assert!(
                 c.poll_snapshot(at + Duration::from_millis(49))
                     .unwrap()

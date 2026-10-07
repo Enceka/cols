@@ -55,6 +55,27 @@ pub fn aimed_frame(
     equipment: Option<Equipment>,
     angles: [u16; 3],
 ) -> Result<Vec<u8>, LobbyError> {
+    player_frame(
+        server_time,
+        server_time,
+        origin,
+        establish_baseline,
+        equipment,
+        angles,
+    )
+}
+
+/// Snapshot time and the last applied input time are distinct clocks. The
+/// target's 0x4522b0 skips prediction and restores old angles when commandTime
+/// is at or ahead of its newest local command.
+pub fn player_frame(
+    server_time: u32,
+    command_time: u32,
+    origin: Option<[f32; 3]>,
+    establish_baseline: bool,
+    equipment: Option<Equipment>,
+    angles: [u16; 3],
+) -> Result<Vec<u8>, LobbyError> {
     let weapon = equipment.map(|e| e.weapon);
     let ammo = equipment.and_then(|e| e.ammo);
     let viewmodel = equipment.and_then(|e| e.viewmodel);
@@ -79,6 +100,9 @@ pub fn aimed_frame(
     if server_time == 0 || server_time > i32::MAX as u32 {
         return Err(LobbyError("snapshot time out of range"));
     }
+    if command_time > server_time {
+        return Err(LobbyError("input time exceeds snapshot time"));
+    }
     if origin.is_some_and(|v| v.iter().any(|n| !n.is_finite() || n.abs() > 1_000_000.0)) {
         return Err(LobbyError("bootstrap origin out of range"));
     }
@@ -92,7 +116,7 @@ pub fn aimed_frame(
     out.bits(if origin.is_some() { 69 } else { 1 }, 8);
     out.bits(1, 1); // field gap +1 from -1
     out.bits(1, 1); // -97 codec, absolute LE32 (0x5a20c0)
-    out.bytes.extend_from_slice(&server_time.to_le_bytes());
+    out.bytes.extend_from_slice(&command_time.to_le_bytes());
     if let Some(origin) = origin {
         // Target field table 0xc55f70. No hint-2 entries occur below index69.
         // Equipment and angles must also be reflected in the input delta base.
@@ -246,8 +270,9 @@ mod tests {
             }),
         };
         for baseline in [true, false] {
-            let body = aimed_frame(
+            let body = player_frame(
                 1000,
+                925,
                 Some([-472.0, -800.0, -113.4]),
                 baseline,
                 Some(equipment),
@@ -298,6 +323,7 @@ mod tests {
                 fields.insert(index, value);
             }
             assert_eq!(fields[&39], 163);
+            assert_eq!(fields[&0], 925);
             assert_eq!(fields[&56], 53);
             assert_eq!(fields[&9], 0x400);
             assert_eq!(fields[&19], 65535);
@@ -355,6 +381,7 @@ mod tests {
             }),
         };
         assert!(equipped_frame(1000, Some([0.0; 3]), true, Some(bad)).is_err());
+        assert!(player_frame(1000, 1001, None, true, None, [0; 3]).is_err());
     }
     #[test]
     fn target_full_frame_layout_has_fourteen_arrays_and_entity_sentinel() {

@@ -67,3 +67,16 @@ python3 tools/prepare_game_state.py research-output/gamehub/client-1791341394600
 探针来源：0x45f090读取active+0x35e4..0x35f0双缓冲鼠标delta；0x45f120应用灵敏度和active+0x3610缩放；0x45f260调用0x50b8b0再写live angles；0x45f940转为short角度。0x01a2e7ac是被用于除法的鼠标时间间隔，不能命名为mouse_enabled。新增窗口辅助命令move只产生受PID/焦点保护的鼠标移动，用于复现普通窗口输入。
 
 本轮完整检查通过：91项Rust、19项Python，fmt和Clippy无警告。探针重新编译并在目标版本上执行。测试验证字段及协议边界，不代表视角、动画或AI已经可用。
+
+
+## 视角冻结根因：commandTime错误推进（已实机恢复）
+
+`client-1791360581483/client-state-1791361426006.json` 将断点缩小到预测阶段：CG两个快照的pitch/yaw都为62.69348/132.03369，commandTime为810150/810200；预测PS却是0/0，CG渲染时间810197。网络接收正常，预测commandTime在客户端最新命令之前就被推进到了未来。
+
+目标 `0x4522b0` 的精确条件在 `0x4523d6`：比较PS.commandTime与最新本地cmd.time，`jge 0x4525c7`。该分支 `0x4525d0..0x4525ee` 将CG+0x16b54c/+0x16b550/+0x16b554的旧角度写回PS+0x14c/+0x150/+0x154。之前每50ms把snapshot.serverTime同时写入PS.commandTime，让这个分支一直成立。反编译证据保留在 `research-output/ghidra/player-command-replay.c`。
+
+修复：快照时间仍按20Hz推进，PS.commandTime只跟随已接收并回写视角的输入时间，未收到输入时保持出生时刻1000；编码拒绝commandTime超过snapshot时间。此bootstrap只应用视角，**不代表命令中的移动、开枪和换弹已执行**。原点、弹药等仍是诊断固定值。
+
+`client-1791361563810/client-state-1791361794147.json`：预测commandTime=131844、CG时间=131844、最近CG快照commandTime=131771，预测角度3.02124/-63.09448，与客户端输入及快照一致。用户明确确认“可以动视角了”，同时确认模型仍不对、无法移动。视角恢复不能作为后两项完成的证据。
+
+检查：完整91项Rust+19项Python、fmt、Clippy通过；追加既有调度测试中的断言，确保无输入时重复快照不会推进commandTime，针对性测试通过。协议测试对照目标字段表确认快照1000与输入925可独立编码，并拒绝未来输入时间。窗口截图已随方向改变，后续工作集中在武器动画/DObj绑定及权威移动。

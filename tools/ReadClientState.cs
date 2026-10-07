@@ -143,6 +143,15 @@ class ReadClientState {
                         Field(process,"predicted_weapon_animation",checked(cg+0x26c),4);
                         Field(process,"cg_frame_msec",checked(cg+0xae4c4),4);
                         Field(process,"cg_time",checked(cg+0xae4c8),4);
+                        // 0x451720 copies/interpolates these two CG snapshots.
+                        for(uint slot=0;slot<2;slot++) {
+                            uint snap=Read(process,checked(cg+0x3578+slot*4),4);
+                            if(snap>=0x10000 && snap<0xff000000) {
+                                Field(process,"cg_snapshot_"+slot+"_command_time",snap,4);
+                                Field(process,"cg_snapshot_"+slot+"_pitch_bits",checked(snap+0x14c),4);
+                                Field(process,"cg_snapshot_"+slot+"_yaw_bits",checked(snap+0x150),4);
+                            }
+                        }
                     }
                 }
                 if(active>=0x10000 && active<0x7ff00000) {
