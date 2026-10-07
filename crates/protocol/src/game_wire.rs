@@ -403,6 +403,24 @@ mod tests {
             assert!(ClientHeader::parse(&invalid).is_err());
         }
     }
+
+    #[test]
+    fn captured_target_keepalive_header_is_c2s_not_server_body() {
+        // Captured repeatedly after heartbeat in client-1791335109328:
+        // seq=1, serverId=0, messageAck=0, reliableAck=0, one body byte.
+        let packet = [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x76];
+        let (header, body) = open_client(&packet, 0, b"").unwrap();
+        assert_eq!(
+            header,
+            ClientHeader {
+                sequence: 1,
+                server_id: 0,
+                message_ack: 0,
+                reliable_ack: 0
+            }
+        );
+        assert_eq!(body, [0x76]);
+    }
     #[test]
     fn command_pool_reuses_bits_across_byte_fields() {
         // Commands 2/2/EOF3: the EOF consumes two old pool bits and one new.
