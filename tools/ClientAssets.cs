@@ -287,6 +287,27 @@ class ClientAssets {
             "connection_state",r.Word(0x01a2e7ec),"ncs_crc",r.Word(0x02df7d90),"weapon",weapon,"composed_weapon",composed);
         Console.WriteLine(new JavaScriptSerializer().Serialize(output));
     }
+    public static void ExportWeaponRegistry(IntPtr process) {
+        var r=new ClientAssets(process);int count=Count(r.Word(0x07817b88),899);
+        var weapons=new List<object>();
+        for(uint i=1;i<=count;i++) {
+            uint def=r.Word(0x017f5a40+i*4);
+            if(def==0)throw new Exception("registered weapon pointer missing");
+            weapons.Add(Obj("index",i,"name",r.Name(r.Word(def))));
+        }
+        var sources=new List<object>();
+        foreach(string name in new string[]{"csg12ss_mp","ak104_mp","m4_mp","m9_mp"}) {
+            try {
+                uint entry;uint def=r.Find(28,name,out entry);if(def==0)continue;
+                sources.Add(Obj("name",name,"model_name",r.Name(r.Word(def+0xc)),
+                    "alternate_name",r.Name(r.Word(def+0xd20)),"alternate_index",r.Word(def+0xd24),
+                    "secondary_name",r.Name(r.Word(def+0xd34))));
+            } catch(Exception e) {sources.Add(Obj("name",name,"error",e.Message));}
+        }
+        Console.WriteLine(new JavaScriptSerializer().Serialize(Obj("schema_version",1,"read_only",true,
+            "client_sha256","e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b",
+            "connection_state",r.Word(0x01a2e7ec),"weapons",weapons,"sources",sources)));
+    }
     object WeaponRuntimeFields(uint at) {
         // 0x4253e0 writes def+0x6f0 to PS.weaponDelay and def+0xd10 to
         // PS.weaponTime; no capacity field is guessed here. Names below are

@@ -2,8 +2,10 @@
 //!
 //! Target evidence: Pmove 0x41e860 (66 ms chops), PM_CmdScale 0x416aa0,
 //! jump edge 0x40eac0, clipMap 0x02dfb000, brush contents 0x5888e0 and
-//! terrain vertex blocks 0x5881f3. The solver is a Rust swept-box implementation;
-//! it does not claim exact parity with the client's capsule/edge solver.
+//! terrain vertex blocks 0x5881f3. The upright capsule has radius 15 and a
+//! vertical center segment of length `height - 30`. Brush planes use that
+//! capsule's support function; terrain sweeps its full face/edge/vertex distance.
+//! This does not claim exact parity with the client's mesh-border filtering.
 //! Export coverage is world brushes and terrain. Static model collision and
 //! moving entities are not silently replaced with bounding boxes.
 use anyhow::{Context, Result, ensure};
@@ -103,7 +105,7 @@ struct TriangleExport {
 #[derive(Debug)]
 enum Shape {
     Brush(Vec<[f32; 4]>),
-    Triangle { vertices: [V3; 3], axes: Vec<V3> },
+    Triangle { vertices: [V3; 3] },
 }
 #[derive(Debug)]
 struct Primitive {
@@ -253,15 +255,6 @@ impl Collision {
             if length(face) < 0.5 || t.contents & PLAYER_MASK == 0 {
                 continue;
             }
-            let mut axes = vec![face, [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
-            for e in edges {
-                for axis in [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]] {
-                    let n = normalized(cross(e, axis));
-                    if length(n) > 0.5 {
-                        axes.push(n);
-                    }
-                }
-            }
             let bounds = Bounds {
                 min: std::array::from_fn(|i| {
                     t.vertices
@@ -282,7 +275,6 @@ impl Collision {
                 surface_flags: t.surface_flags,
                 shape: Shape::Triangle {
                     vertices: t.vertices,
-                    axes,
                 },
             });
         }
@@ -336,16 +328,17 @@ impl Collision {
         }
         node
     }
-    /// Sweep an upright player hull whose origin is at its feet.
+    /// Sweep an upright player capsule whose origin is at its feet.
     pub fn trace(&self, start: V3, end: V3, height: f32) -> Trace {
-        let half = [15.0, 15.0, height * 0.5];
+        let capsule = Capsule::new(height);
+        let half = [capsule.radius, capsule.radius, height * 0.5];
         let offset = [0.0, 0.0, half[2]];
         let start = add(start, offset);
         let end = add(end, offset);
         let expanded = add(half, [SKIN; 3]);
         let bounds = Bounds::center_half(start, expanded).union(Bounds::center_half(end, expanded));
         let mut result = Trace::default();
-        self.trace_node(0, bounds, start, end, half, &mut result);
+        self.trace_node(0, bounds, start, end, capsule, &mut result);
         result
     }
     fn trace_node(
@@ -354,7 +347,7 @@ impl Collision {
         bounds: Bounds,
         start: V3,
         end: V3,
-        half: V3,
+        capsule: Capsule,
         result: &mut Trace,
     ) {
         if !self.nodes[index].bounds().intersects(bounds) {
@@ -362,8 +355,8 @@ impl Collision {
         }
         match self.nodes[index] {
             Node::Branch { left, right, .. } => {
-                self.trace_node(left, bounds, start, end, half, result);
-                self.trace_node(right, bounds, start, end, half, result);
+                self.trace_node(left, bounds, start, end, capsule, result);
+                self.trace_node(right, bounds, start, end, capsule, result);
             }
             Node::Leaf { first, count, .. } => {
                 for &i in &self.indices[first..first + count] {
@@ -372,9 +365,9 @@ impl Collision {
                         continue;
                     }
                     let hit = match &p.shape {
-                        Shape::Brush(planes) => sweep_brush(planes, start, end, half),
-                        Shape::Triangle { vertices, axes } => {
-                            sweep_triangle(*vertices, axes, start, end, half)
+                        Shape::Brush(planes) => sweep_brush(planes, start, end, capsule),
+                        Shape::Triangle { vertices } => {
+                            sweep_triangle(*vertices, start, end, capsule)
                         }
                     };
                     result.start_solid |= hit.start_solid;
@@ -390,7 +383,29 @@ impl Collision {
     }
 }
 
-fn sweep_brush(planes: &[[f32; 4]], start: V3, end: V3, half: V3) -> Trace {
+#[derive(Clone, Copy)]
+struct Capsule {
+    radius: f32,
+    segment_half: f32,
+}
+impl Capsule {
+    fn new(height: f32) -> Self {
+        let radius = 15.0f32.min(height * 0.5);
+        Self {
+            radius,
+            segment_half: height * 0.5 - radius,
+        }
+    }
+    fn support(self, normal: V3) -> f32 {
+        self.radius * length(normal) + self.segment_half * normal[2].abs()
+    }
+    fn segment(self, center: V3) -> [V3; 2] {
+        let offset = [0.0, 0.0, self.segment_half];
+        [sub(center, offset), add(center, offset)]
+    }
+}
+
+fn sweep_brush(planes: &[[f32; 4]], start: V3, end: V3, capsule: Capsule) -> Trace {
     let mut enter = -f32::INFINITY;
     let mut leave = 1.0f32;
     let mut normal = [0.0; 3];
@@ -398,7 +413,7 @@ fn sweep_brush(planes: &[[f32; 4]], start: V3, end: V3, half: V3) -> Trace {
     let mut end_out = false;
     for p in planes {
         let n = [p[0], p[1], p[2]];
-        let radius = dot(n.map(f32::abs), half);
+        let radius = capsule.support(n);
         let d1 = dot(n, start) - p[3] - radius;
         let d2 = dot(n, end) - p[3] - radius;
         outside |= d1 >= -0.0001;
@@ -441,72 +456,202 @@ fn sweep_brush(planes: &[[f32; 4]], start: V3, end: V3, half: V3) -> Trace {
     }
 }
 
-/// Continuous separating-axis test. The complete axis set includes the face,
-/// box axes, and triangle-edge/box-axis cross products, preventing edge leaks.
-fn sweep_triangle(vertices: [V3; 3], axes: &[V3], start: V3, end: V3, half: V3) -> Trace {
-    let delta = sub(end, start);
-    let mut enter = -f32::INFINITY;
-    let mut leave = f32::INFINITY;
-    let mut normal = [0.0; 3];
-    let mut penetration = f32::INFINITY;
-    for &axis in axes {
-        let radius = dot(axis.map(f32::abs), half);
-        let min = vertices
-            .iter()
-            .map(|v| dot(*v, axis))
-            .fold(f32::INFINITY, f32::min)
-            - radius;
-        let max = vertices
-            .iter()
-            .map(|v| dot(*v, axis))
-            .fold(f32::NEG_INFINITY, f32::max)
-            + radius;
-        let p = dot(start, axis);
-        let speed = dot(delta, axis);
-        penetration = penetration.min((p - min).min(max - p));
-        if speed.abs() < 1e-8 {
-            if p < min || p > max {
-                return Trace::default();
-            }
-            continue;
-        }
-        let (near, far, n) = if speed > 0.0 {
-            ((min - p) / speed, (max - p) / speed, mul(axis, -1.0))
+/// Vector from the nearest point on the triangle to `point`. The interior
+/// region uses the plane normal directly, avoiding rounded barycentric points
+/// that otherwise perturb tangent motion on large terrain triangles.
+fn point_triangle_separation(point: V3, vertices: [V3; 3]) -> V3 {
+    let [a, b, c] = vertices;
+    let ab = sub(b, a);
+    let ac = sub(c, a);
+    let ap = sub(point, a);
+    let d1 = dot(ab, ap);
+    let d2 = dot(ac, ap);
+    if d1 <= 0.0 && d2 <= 0.0 {
+        return ap;
+    }
+    let bp = sub(point, b);
+    let d3 = dot(ab, bp);
+    let d4 = dot(ac, bp);
+    if d3 >= 0.0 && d4 <= d3 {
+        return bp;
+    }
+    let vc = d1 * d4 - d3 * d2;
+    if vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0 {
+        return sub(ap, mul(ab, d1 / (d1 - d3)));
+    }
+    let cp = sub(point, c);
+    let d5 = dot(ab, cp);
+    let d6 = dot(ac, cp);
+    if d6 >= 0.0 && d5 <= d6 {
+        return cp;
+    }
+    let vb = d5 * d2 - d1 * d6;
+    if vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0 {
+        return sub(ap, mul(ac, d2 / (d2 - d6)));
+    }
+    let va = d3 * d6 - d5 * d4;
+    if va <= 0.0 && d4 - d3 >= 0.0 && d5 - d6 >= 0.0 {
+        return sub(bp, mul(sub(c, b), (d4 - d3) / ((d4 - d3) + (d5 - d6))));
+    }
+    let normal = normalized(cross(ab, ac));
+    mul(normal, dot(ap, normal))
+}
+
+/// Closest points between two finite segments, including a zero-length
+/// segment (the prone capsule is a sphere).
+fn segment_segment_separation(a: V3, b: V3, c: V3, d: V3) -> V3 {
+    let first = sub(b, a);
+    let second = sub(d, c);
+    let offset = sub(a, c);
+    let aa = dot(first, first);
+    let bb = dot(first, second);
+    let cc = dot(second, second);
+    let dd = dot(first, offset);
+    let ee = dot(second, offset);
+    let (mut s, mut t);
+    if aa <= 1e-8 {
+        s = 0.0;
+        t = if cc <= 1e-8 {
+            0.0
         } else {
-            ((max - p) / speed, (min - p) / speed, axis)
+            (ee / cc).clamp(0.0, 1.0)
         };
-        if near > enter {
-            enter = near;
-            normal = n;
+    } else if cc <= 1e-8 {
+        t = 0.0;
+        s = (-dd / aa).clamp(0.0, 1.0);
+    } else {
+        let denominator = aa * cc - bb * bb;
+        s = if denominator > aa * cc * 1e-7 {
+            ((bb * ee - cc * dd) / denominator).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        t = (bb * s + ee) / cc;
+        if t < 0.0 {
+            t = 0.0;
+            s = (-dd / aa).clamp(0.0, 1.0);
+        } else if t > 1.0 {
+            t = 1.0;
+            s = ((bb - dd) / aa).clamp(0.0, 1.0);
         }
-        leave = leave.min(far);
-        if enter > leave {
+    }
+    // Work in relative coordinates to preserve small contact distances.
+    sub(add(offset, mul(first, s)), mul(second, t))
+}
+
+/// Minimum segment-to-triangle separation: segment endpoints versus the
+/// triangle, segment versus each edge, and an interior face intersection.
+/// These features cover the cylindrical body as well as both spherical caps.
+fn capsule_triangle_separation(capsule: Capsule, center: V3, vertices: [V3; 3]) -> V3 {
+    let [a, b] = capsule.segment(center);
+    let normal = normalized(cross(
+        sub(vertices[1], vertices[0]),
+        sub(vertices[2], vertices[0]),
+    ));
+    let start_distance = dot(sub(a, vertices[0]), normal);
+    let end_distance = dot(sub(b, vertices[0]), normal);
+    if start_distance * end_distance <= 0.0 && (start_distance - end_distance).abs() > 1e-8 {
+        let point = add(
+            a,
+            mul(sub(b, a), start_distance / (start_distance - end_distance)),
+        );
+        if length(point_triangle_separation(point, vertices)) < 0.001 {
+            return [0.0; 3];
+        }
+    }
+    let mut best = point_triangle_separation(a, vertices);
+    let other = point_triangle_separation(b, vertices);
+    if dot(other, other) < dot(best, best) {
+        best = other;
+    }
+    for i in 0..3 {
+        let other = segment_segment_separation(a, b, vertices[i], vertices[(i + 1) % 3]);
+        if dot(other, other) < dot(best, best) {
+            best = other;
+        }
+    }
+    best
+}
+
+/// Continuous capsule sweep using the exact segment-to-triangle distance.
+/// The closest-feature plane is a separating plane, so advancing by its gap
+/// divided by closing speed cannot skip an earlier edge/vertex collision.
+fn sweep_triangle(vertices: [V3; 3], start: V3, end: V3, capsule: Capsule) -> Trace {
+    const DISTANCE_TOLERANCE: f32 = 0.0005;
+    let delta = sub(end, start);
+    let separation = |fraction: f32| {
+        capsule_triangle_separation(capsule, add(start, mul(delta, fraction)), vertices)
+    };
+    let start_distance = length(separation(0.0));
+    if start_distance < capsule.radius - 0.001 {
+        let all_solid = length(separation(1.0)) < capsule.radius - 0.001;
+        return Trace {
+            fraction: if all_solid { 0.0 } else { 1.0 },
+            start_solid: true,
+            all_solid,
+            ..Trace::default()
+        };
+    }
+    let radius = capsule.radius + SKIN;
+    let mut fraction = 0.0;
+    for _ in 0..32 {
+        let difference = separation(fraction);
+        let distance = length(difference);
+        let normal = mul(difference, 1.0 / distance.max(1e-8));
+        let closing = -dot(delta, normal);
+        // Distance along a line to this convex shape is convex. If it is
+        // stationary or increasing here, it cannot enter later in this sweep.
+        if closing <= 1e-8 {
             return Trace::default();
         }
-    }
-    if leave < 0.0 || enter > 1.0 {
-        return Trace::default();
-    }
-    if enter < -0.00001 {
-        // Touching a face while moving tangentially is not penetration.
-        return if penetration > 0.001 {
-            Trace {
-                fraction: 0.0,
-                start_solid: true,
-                all_solid: leave >= 1.0,
+        let gap = distance - radius;
+        if gap <= DISTANCE_TOLERANCE {
+            return Trace {
+                fraction,
+                normal,
                 ..Trace::default()
-            }
-        } else {
-            Trace::default()
-        };
+            };
+        }
+        let next = fraction + gap / closing;
+        if next > 1.0 {
+            return Trace::default();
+        }
+        if next <= fraction {
+            break;
+        }
+        fraction = next;
     }
-    let approach = -dot(delta, normal);
-    if approach <= 1e-8 {
+    // Grazing sweeps may converge very slowly. Locate the minimum of the
+    // convex distance, then bisect its entering root; do not drop the hit
+    // simply because conservative advancement exhausted its iteration budget.
+    let mut left = fraction;
+    let mut right = 1.0;
+    for _ in 0..48 {
+        let first = left + (right - left) / 3.0;
+        let second = right - (right - left) / 3.0;
+        if length(separation(first)) <= length(separation(second)) {
+            right = second;
+        } else {
+            left = first;
+        }
+    }
+    let minimum = (left + right) * 0.5;
+    if length(separation(minimum)) > radius + DISTANCE_TOLERANCE {
         return Trace::default();
+    }
+    left = fraction;
+    right = minimum;
+    for _ in 0..24 {
+        let middle = (left + right) * 0.5;
+        if length(separation(middle)) <= radius + DISTANCE_TOLERANCE {
+            right = middle;
+        } else {
+            left = middle;
+        }
     }
     Trace {
-        fraction: (enter - SKIN / approach).max(0.0),
-        normal,
+        fraction: right,
+        normal: normalized(separation(right)),
         ..Trace::default()
     }
 }
@@ -692,12 +837,12 @@ impl Motion {
             (self.velocity[0] * self.velocity[0] + self.velocity[1] * self.velocity[1]).sqrt();
         if self.grounded() {
             if horizontal < 1.0 {
-                self.velocity[0] = 0.0;
-                self.velocity[1] = 0.0;
+                self.velocity = [0.0; 3];
             } else {
                 let scale = ((horizontal - horizontal.max(100.0) * 5.5 * dt).max(0.0)) / horizontal;
-                self.velocity[0] *= scale;
-                self.velocity[1] *= scale;
+                // Target PM_Friction 0x416390 measures horizontal speed on
+                // ground but applies the resulting scale to all three axes.
+                self.velocity = mul(self.velocity, scale);
             }
         }
         let yaw = f32::from(cmd.angles[1]) * (std::f32::consts::TAU / 65536.0);
@@ -745,8 +890,13 @@ impl Motion {
                 .bob_cycle
                 .wrapping_add((horizontal / f32::from(self.speed) * dt_ms as f32 * 0.4) as u8);
         }
-        self.step_slide(c, dt, !was_grounded);
-        self.ground(c, if was_grounded { 9.0 } else { 0.25 });
+        // Target WalkMove skips step-slide when horizontal velocity is zero.
+        // In particular a ground-classification probe must not move an idle
+        // player's origin or project its velocity on every input command.
+        if !was_grounded || self.velocity[0] != 0.0 || self.velocity[1] != 0.0 {
+            self.step_slide(c, dt, !was_grounded);
+        }
+        self.ground(c, 0.25);
     }
     fn update_view_height(&mut self) {
         if self.view_height_lerp_time == 0 {
@@ -768,8 +918,10 @@ impl Motion {
         }
     }
     fn ground(&mut self, c: &Collision, distance: f32) {
+        // PM_GroundTrace 0x418500 probes +0.25 -> -0.25. Position changes
+        // belong to StepSlideMove; the probe only classifies the current hull.
         let trace = c.trace(
-            self.origin,
+            add(self.origin, [0.0, 0.0, distance]),
             add(self.origin, [0.0, 0.0, -distance]),
             self.stance.height(),
         );
@@ -783,11 +935,9 @@ impl Motion {
             return;
         }
         if trace.fraction < 1.0 && !trace.start_solid && trace.normal[2] >= 0.7 {
-            self.origin[2] -= distance * trace.fraction;
             self.ground_entity = WORLD;
             self.ground_normal = trace.normal;
             self.surface_flags = trace.surface_flags;
-            self.velocity = project_ground(self.velocity, trace.normal);
             self.flags &= !0x2000;
         } else {
             self.ground_entity = NONE;
@@ -796,43 +946,85 @@ impl Motion {
     fn step_slide(&mut self, c: &Collision, dt: f32, gravity: bool) {
         let start = self.origin;
         let velocity = self.velocity;
+        let on_ground = self.grounded();
         let blocked = self.slide(c, dt, gravity);
-        if !blocked || gravity {
-            return;
-        }
         let down_origin = self.origin;
         let down_velocity = self.velocity;
+        if gravity {
+            // Slide already swept the complete time interval. Sweeping another
+            // velocity*dt here would land on a floor only reached next frame.
+            // GroundTrace's 0.25-unit classification includes the sweep skin.
+            return;
+        }
         let height = if self.stance == Stance::Prone {
             10.0
         } else {
             18.0
         };
-        let up = c.trace(start, add(start, [0.0, 0.0, height]), self.stance.height());
-        if up.start_solid || up.fraction == 0.0 {
-            return;
+        let mut step_up = 0.0;
+        // Target 0x421680 attempts a step on a blocked move or a steep
+        // ground plane, with a one-unit headroom margin.
+        if blocked || (on_ground && self.ground_normal[2] < 0.9) {
+            let up = c.trace(
+                start,
+                add(start, [0.0, 0.0, height + 1.0]),
+                self.stance.height(),
+            );
+            step_up = up.fraction * (height + 1.0) - 1.0;
+            if up.start_solid || step_up < 1.0 {
+                step_up = 0.0;
+            } else {
+                self.origin = add(start, [0.0, 0.0, step_up]);
+                self.velocity = velocity;
+                self.slide(c, dt, gravity);
+            }
         }
-        self.origin = add(start, [0.0, 0.0, height * up.fraction]);
-        self.velocity = velocity;
-        self.slide(c, dt, gravity);
-        let down = c.trace(
-            self.origin,
-            add(self.origin, [0.0, 0.0, -height * up.fraction - 9.0]),
-            self.stance.height(),
-        );
-        let step_distance =
-            (self.origin[0] - start[0]).powi(2) + (self.origin[1] - start[1]).powi(2);
-        let flat_distance =
-            (down_origin[0] - start[0]).powi(2) + (down_origin[1] - start[1]).powi(2);
-        if down.start_solid
-            || down.fraction == 1.0
-            || down.normal[2] < 0.7
-            || step_distance <= flat_distance
-        {
+        if on_ground || step_up != 0.0 {
+            let distance = step_up + if on_ground { 9.0 } else { 0.0 };
+            let down = c.trace(
+                self.origin,
+                add(self.origin, [0.0, 0.0, -distance]),
+                self.stance.height(),
+            );
+            if down.start_solid || (down.fraction < 1.0 && down.normal[2] < 0.3) {
+                self.origin = down_origin;
+                self.velocity = down_velocity;
+                return;
+            }
+            if down.fraction == 1.0 {
+                self.origin[2] -= step_up;
+            } else {
+                self.origin[2] -= distance * down.fraction;
+                self.velocity = project_ground(self.velocity, down.normal);
+            }
+        }
+        // Compare progress along the initial velocity, not squared distance:
+        // a sideways deflection must not win over a useful forward move.
+        let slide_dot =
+            (down_origin[0] - start[0]) * velocity[0] + (down_origin[1] - start[1]) * velocity[1];
+        let step_dot =
+            (self.origin[0] - start[0]) * velocity[0] + (self.origin[1] - start[1]) * velocity[1];
+        if slide_dot + 0.001 >= step_dot {
             self.origin = down_origin;
             self.velocity = down_velocity;
-        } else {
-            self.origin[2] -= (height * up.fraction + 9.0) * down.fraction;
-            self.velocity = project_ground(self.velocity, down.normal);
+            if on_ground {
+                let down = c.trace(
+                    self.origin,
+                    add(self.origin, [0.0, 0.0, -9.0]),
+                    self.stance.height(),
+                );
+                if down.fraction < 1.0 && !down.start_solid {
+                    self.origin[2] -= 9.0 * down.fraction;
+                    self.velocity = clip(self.velocity, down.normal);
+                }
+            }
+        }
+        let dz = self.origin[2] - down_origin[2];
+        if on_ground && dz.abs() > 0.5 && dz.round() != 0.0 {
+            // The client slows a real step. Omitting this produces recurring
+            // prediction corrections when climbing stairs.
+            let scale = (1.0 - (self.origin[2] - start[2]).abs() / height) * 0.8 + 0.2;
+            self.velocity = mul(self.velocity, scale);
         }
     }
     fn slide(&mut self, c: &Collision, dt: f32, gravity: bool) -> bool {
@@ -882,20 +1074,22 @@ impl Motion {
 }
 fn clip(v: V3, n: V3) -> V3 {
     let d = dot(v, n);
-    sub(v, mul(n, if d < 0.0 { d * 1.001 } else { d / 1.001 }))
+    // Target subtracts abs(dot)*0.001; dividing a positive dot by 1.001 is
+    // close but is a different operation after repeated ground clips.
+    sub(v, mul(n, d - d.abs() * 0.001))
 }
 fn project_ground(v: V3, n: V3) -> V3 {
-    if n[2] < 0.001 {
-        return clip(v, n);
+    let horizontal_squared = v[0] * v[0] + v[1] * v[1];
+    if n[2].abs() < 0.001 || horizontal_squared == 0.0 {
+        return v;
     }
     let z = -(v[0] * n[0] + v[1] * n[1]) / n[2];
     let result = [v[0], v[1], z];
-    let before = length(v);
-    let after = length(result);
-    if after > 0.0 {
-        mul(result, before / after)
+    let scale = ((v[2] * v[2] + horizontal_squared) / (z * z + horizontal_squared)).sqrt();
+    if scale < 1.0 || z < 0.0 || v[2] > 0.0 {
+        mul(result, scale)
     } else {
-        [0.0; 3]
+        v
     }
 }
 fn clip_planes(v: V3, planes: &[V3]) -> V3 {
@@ -974,6 +1168,20 @@ mod tests {
         assert!(m.grounded());
     }
     #[test]
+    fn falling_only_advances_the_command_interval_before_landing() {
+        let c = world(vec![floor()], vec![]);
+        let mut m = Motion::new([0.0, 0.0, 5.0]);
+        m.command_time = 1000;
+        m.velocity = [0.0, 0.0, -40.0];
+        m.apply(&cmd(1050, 0, 0), 1.0, false, &c);
+        assert!((m.origin[2] - 2.0).abs() < 0.001, "{:?}", m);
+        assert_eq!(m.velocity[2], -80.0);
+        assert!(!m.grounded());
+        m.apply(&cmd(1100, 0, 0), 1.0, false, &c);
+        assert!((0.0..=0.25).contains(&m.origin[2]), "{:?}", m);
+        assert!(m.grounded());
+    }
+    #[test]
     fn jump_returns_to_real_ground_and_does_not_repeat_while_held() {
         let c = world(vec![floor()], vec![]);
         let mut m = Motion::new([0.0, 0.0, 2.0]);
@@ -983,7 +1191,14 @@ mod tests {
         assert!(m.origin[2] > base + 20.0, "{:?}", m.origin);
         tick(&mut m, &c, 0, 0x400, 100);
         assert!(m.grounded());
-        assert!((m.origin[2] - base).abs() < 0.1);
+        // GroundTrace classifies contact within 0.25 units without snapping
+        // the origin. Check that actual tolerance, rather than requiring the
+        // old second integration to force exactly the previous resting point.
+        assert!((0.0..=0.25).contains(&m.origin[2]), "{m:?}");
+        assert!(
+            (m.origin[2] - base).abs() <= 0.25,
+            "base={base}, motion={m:?}"
+        );
     }
     #[test]
     fn crouch_cannot_stand_through_a_ceiling() {
@@ -1028,8 +1243,9 @@ mod tests {
         let mut m = Motion::new([0.0, 0.0, 100.0]);
         tick(&mut m, &c, 0, 0, 100);
         assert!(m.grounded(), "{:?}", m);
+        let slope_offset = 15.0 * ((1.0f32 + 0.25 * 0.25).sqrt() - 1.0);
         assert!(
-            (m.origin[2] - m.origin[0] * 0.25 - 3.75).abs() < 0.1,
+            (m.origin[2] - m.origin[0] * 0.25 - slope_offset).abs() < 0.1,
             "{:?}",
             m.origin
         );
@@ -1052,7 +1268,8 @@ mod tests {
                 surface_flags: 0,
             }],
         );
-        let mut m = Motion::new([0.0, 0.0, 3.8]);
+        let slope_offset = 15.0 * ((1.0f32 + 0.25 * 0.25).sqrt() - 1.0);
+        let mut m = Motion::new([0.0, 0.0, slope_offset + 0.05]);
         m.velocity = [184.0, 0.0, 46.0];
         m.ground_entity = WORLD;
         m.ground(&c, 0.25);
@@ -1084,5 +1301,132 @@ mod tests {
             "{:?}",
             trace
         );
+    }
+    #[test]
+    fn capsule_support_uses_a_round_cap_instead_of_box_corners() {
+        let normal = normalized([-0.25, 0.0, 1.0]);
+        for height in [70.0, 50.0, 30.0] {
+            let capsule = Capsule::new(height);
+            let expected = 15.0 + (height * 0.5 - 15.0) * normal[2];
+            assert!((capsule.support(normal) - expected).abs() < 0.00001);
+            let foot_offset = capsule.support(normal) / normal[2] - height * 0.5;
+            let expected_offset = 15.0 * ((1.0f32 + 0.25 * 0.25).sqrt() - 1.0);
+            assert!((foot_offset - expected_offset).abs() < 0.00001);
+        }
+    }
+    #[test]
+    fn capsule_brush_slope_uses_the_same_round_cap_as_terrain() {
+        let normal = normalized([-0.25, 0.0, 1.0]);
+        let planes = [[normal[0], normal[1], normal[2], 0.0]];
+        let capsule = Capsule::new(70.0);
+        let trace = sweep_brush(&planes, [0.0, 0.0, 45.0], [0.0, 0.0, 25.0], capsule);
+        let foot = 10.0 - 20.0 * trace.fraction;
+        let expected = 15.0 * ((1.0f32 + 0.25 * 0.25).sqrt() - 1.0) + SKIN / normal[2];
+        assert!((foot - expected).abs() < 0.0001, "{trace:?}, foot={foot}");
+    }
+    #[test]
+    fn capsule_terrain_sweep_covers_edges_vertices_and_cylinder() {
+        let vertices = [[0.0, 0.0, 0.0], [100.0, 0.0, 0.0], [0.0, 100.0, 0.0]];
+        let capsule = Capsule::new(70.0);
+        let edge = sweep_triangle(vertices, [50.0, -100.0, 20.0], [50.0, 100.0, 20.0], capsule);
+        assert!(
+            (edge.fraction - (100.0 - 15.0 - SKIN) / 200.0).abs() < 0.00001,
+            "{edge:?}"
+        );
+        assert!(edge.normal[1] < -0.999, "{edge:?}");
+        let vertex = sweep_triangle(
+            vertices,
+            [-100.0, -100.0, 20.0],
+            [100.0, 100.0, 20.0],
+            capsule,
+        );
+        let expected = (100.0 - (15.0 + SKIN) / 2.0f32.sqrt()) / 200.0;
+        assert!((vertex.fraction - expected).abs() < 0.00001, "{vertex:?}");
+        assert!(
+            vertex.normal[0] < -0.7 && vertex.normal[1] < -0.7,
+            "{vertex:?}"
+        );
+        // A box corner overlaps this triangle, but the round capsule does not.
+        let clear = sweep_triangle(
+            vertices,
+            [-14.0, -14.0, 20.0],
+            [-14.0, -14.0, 20.0],
+            capsule,
+        );
+        assert!(!clear.start_solid && clear.fraction == 1.0, "{clear:?}");
+        // Contact halfway along the vertical segment is outside either end
+        // sphere, proving that the cylinder is included in position tests.
+        let upright = [[0.0, 0.0, 30.0], [0.0, 0.0, 40.0], [0.0, 1.0, 35.0]];
+        let center = [-14.0, 0.0, 20.0];
+        let solid = sweep_triangle(upright, center, center, capsule);
+        assert!(solid.start_solid && solid.all_solid, "{solid:?}");
+    }
+    #[test]
+    fn capsule_terrain_sweep_does_not_tunnel_at_high_speed() {
+        let vertices = [
+            [-1000.0, -1000.0, 0.0],
+            [1000.0, -1000.0, 0.0],
+            [0.0, 1000.0, 0.0],
+        ];
+        let capsule = Capsule::new(70.0);
+        let face = sweep_triangle(vertices, [0.0, 0.0, 10035.0], [0.0, 0.0, -9965.0], capsule);
+        assert!(
+            (face.fraction - (10000.0 - SKIN) / 20000.0).abs() < 0.000001,
+            "{face:?}"
+        );
+        assert!(face.normal[2] > 0.999, "{face:?}");
+        let vertices = [[0.0, 0.0, 0.0], [100.0, 0.0, 0.0], [0.0, 100.0, 0.0]];
+        let edge = sweep_triangle(
+            vertices,
+            [50.0, -10000.0, 20.0],
+            [50.0, 10000.0, 20.0],
+            capsule,
+        );
+        assert!(
+            (edge.fraction - (10000.0 - 15.0 - SKIN) / 20000.0).abs() < 0.000001,
+            "{edge:?}"
+        );
+        assert!(edge.normal[1] < -0.999, "{edge:?}");
+    }
+    #[test]
+    fn capsule_does_not_drift_at_rest_or_catch_a_coplanar_terrain_seam() {
+        let vertices = [
+            [-1000.0, -1000.0, -250.0],
+            [1000.0, -1000.0, 250.0],
+            [1000.0, 1000.0, 250.0],
+            [-1000.0, 1000.0, -250.0],
+        ];
+        let c = world(
+            vec![],
+            vec![
+                TriangleExport {
+                    vertices: [vertices[0], vertices[1], vertices[2]],
+                    contents: 1,
+                    surface_flags: 0,
+                },
+                TriangleExport {
+                    vertices: [vertices[0], vertices[2], vertices[3]],
+                    contents: 1,
+                    surface_flags: 0,
+                },
+            ],
+        );
+        let mut m = Motion::new([-100.0, -50.0, 100.0]);
+        tick(&mut m, &c, 0, 0, 150);
+        assert!(m.grounded(), "{m:?}");
+        let resting = m.origin;
+        tick(&mut m, &c, 0, 0, 600);
+        assert_eq!(m.origin, resting, "{m:?}");
+        for _ in 0..100 {
+            let previous = m.origin;
+            tick(&mut m, &c, 1, 0, 1);
+            assert!(m.grounded(), "{m:?}");
+            assert!(m.origin[0] >= previous[0], "{m:?}");
+        }
+        assert!(m.origin[0] > 100.0, "{m:?}");
+        tick(&mut m, &c, 0, 0, 100);
+        let resting = m.origin;
+        tick(&mut m, &c, 0, 0, 600);
+        assert_eq!(m.origin, resting, "{m:?}");
     }
 }

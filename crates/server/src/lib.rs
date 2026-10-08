@@ -9,6 +9,7 @@ pub mod game_motion;
 mod game_player;
 pub mod game_server;
 pub mod game_state;
+mod game_weapon_registry;
 pub mod http;
 pub mod lobby_server;
 mod marketplace;

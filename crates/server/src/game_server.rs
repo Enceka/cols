@@ -246,6 +246,8 @@ impl GameServer {
         let mut count = 0;
         let mut total = 0;
         let mut peers = HashMap::<SocketAddrV4, Peer>::new();
+        let mut weapon_registries =
+            HashMap::<(u32, u64), Arc<Mutex<crate::game_weapon_registry::WeaponRegistry>>>::new();
         let datagram_limit = 2048
             + self
                 .game_state
@@ -345,6 +347,7 @@ impl GameServer {
                                 ),
                                 "prepared game state does not match admitted training request"
                             );
+                            let mut weapon_registry = None;
                             let state = if state.uses_player_loadout() {
                                 let services = self.services.as_ref().ok_or_else(|| {
                                     anyhow::anyhow!("player loadout requires local services")
@@ -352,12 +355,51 @@ impl GameServer {
                                 let (public, owned) = services
                                     .game_profile(admission.title, admission.owner)
                                     .await?;
-                                Arc::new(state.for_profile(&public, &owned)?)
+                                if state.dynamic_loadout() {
+                                    let registry = weapon_registries
+                                        .entry((admission.title, admission.owner))
+                                        .or_insert_with(|| {
+                                            Arc::new(Mutex::new(
+                                                crate::game_weapon_registry::WeaponRegistry::new(
+                                                    state.first_weapon_index(),
+                                                ),
+                                            ))
+                                        })
+                                        .clone();
+                                    let mut prepared = state.for_profile_at(
+                                        &public,
+                                        &owned,
+                                        state.first_weapon_index(),
+                                    )?;
+                                    {
+                                        let mut guard = registry.lock().map_err(|_| {
+                                            anyhow::anyhow!("weapon registry poisoned")
+                                        })?;
+                                        let mut candidate = guard.clone();
+                                        prepared.register_history(&mut candidate)?;
+                                        codol_protocol::game_wire::server_packet(
+                                            3,
+                                            0,
+                                            0,
+                                            b"",
+                                            &prepared.body(1)?,
+                                        )?;
+                                        *guard = candidate;
+                                    }
+                                    weapon_registry = Some(registry);
+                                    Arc::new(prepared)
+                                } else {
+                                    Arc::new(state.for_profile(&public, &owned)?)
+                                }
                             } else {
                                 state.clone()
                             };
                             connection.connection =
                                 crate::game_connection::Connection::with_game_state(state);
+                            if let Some(registry) = weapon_registry {
+                                connection.connection =
+                                    connection.connection.with_weapon_registry(registry);
+                            }
                         }
                         peers.insert(peer, connection);
                     }
@@ -550,15 +592,26 @@ mod tests {
         init.extend_from_slice(&id);
         let mut buffer = [0; 256];
         client.send_to(&init, a.address()).await.unwrap();
-        // Wait until the server has actually evaluated the rejected INIT;
-        // filesystem capture can be slower than a short socket timeout.
-        tokio::time::timeout(Duration::from_secs(2), async {
+        // This waits for an on-disk observation, not a network reply. Cold
+        // filesystem access during a full test suite can exceed two seconds;
+        // the actual handshake response deadlines below remain two seconds.
+        tokio::time::timeout(Duration::from_secs(10), async {
             while !temp.path().join("game/0001-event.json").exists() {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
         })
         .await
-        .unwrap();
+        .unwrap_or_else(|error| {
+            let files = std::fs::read_dir(temp.path().join("game"))
+                .unwrap()
+                .filter_map(Result::ok)
+                .map(|entry| entry.file_name())
+                .collect::<Vec<_>>();
+            panic!(
+                "rejected INIT observation timed out: {error}; server_finished={}; files={files:?}",
+                task.is_finished()
+            );
+        });
         assert!(
             tokio::time::timeout(Duration::from_millis(100), client.recv_from(&mut buffer))
                 .await

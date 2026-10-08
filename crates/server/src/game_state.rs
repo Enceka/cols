@@ -33,6 +33,8 @@ struct BootstrapWeapon {
     move_scale: Option<f32>,
     #[serde(default)]
     fire_type: Option<u32>,
+    #[serde(default)]
+    alternate_base: Option<u16>,
 }
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -85,6 +87,8 @@ pub struct PreparedGameState {
     pub(crate) collision: Option<Arc<crate::game_motion::Collision>>,
     #[serde(skip)]
     pub(crate) profile_hash: Option<[u8; 32]>,
+    #[serde(skip)]
+    registry_strings: Vec<(u16, String)>,
     #[serde(skip)]
     snapshot_probe: bool,
     #[serde(skip)]
@@ -260,6 +264,9 @@ impl PreparedGameState {
         self.arsenal.is_some()
     }
     pub(crate) fn next_weapon_index(&self) -> u16 {
+        if let Some((index, _)) = self.registry_strings.last() {
+            return index - 5443 + 1;
+        }
         self.bootstrap_weapon
             .iter()
             .chain(&self.secondary_weapon)
@@ -279,6 +286,9 @@ impl PreparedGameState {
         let mut next = self.bootstrap_weapon.as_ref().map_or(1, |w| w.index);
         state.register_weapons(&mut std::collections::BTreeMap::new(), &mut next)?;
         Ok(state)
+    }
+    pub(crate) fn first_weapon_index(&self) -> u16 {
+        self.bootstrap_weapon.as_ref().map_or(1, |w| w.index)
     }
     pub(crate) fn for_profile_at(
         &self,
@@ -388,6 +398,13 @@ impl PreparedGameState {
         };
         let scale = f32::from_bits(word(0x7c8));
         let fire_type = word(0x48c);
+        // 0x42c270 / 0x42dff0 register a composed alternate immediately after
+        // its parent. This inherited index identifies the base alt definition.
+        let alternate_base = match word(0xd24) {
+            0 => None,
+            n if n < 900 => Some(n as u16),
+            _ => anyhow::bail!("alternate weapon base outside registry"),
+        };
         Ok(BootstrapWeapon {
             name: w.name,
             index: w.index,
@@ -405,9 +422,13 @@ impl PreparedGameState {
             switch: Some(switch),
             move_scale: Some(scale),
             fire_type: Some(fire_type),
+            alternate_base,
         })
     }
     pub(crate) fn weapon_configstrings(&self) -> Vec<(u16, String)> {
+        if !self.registry_strings.is_empty() {
+            return self.registry_strings.clone();
+        }
         self.bootstrap_weapon
             .iter()
             .chain(&self.secondary_weapon)
@@ -424,6 +445,7 @@ impl PreparedGameState {
         next: &mut u16,
     ) -> Result<Vec<(u16, String)>> {
         let mut added = Vec::new();
+        let first = known.values().min().copied().unwrap_or(*next);
         for weapon in self
             .bootstrap_weapon
             .iter_mut()
@@ -447,8 +469,46 @@ impl PreparedGameState {
             if let Some(ammo) = &mut weapon.ammo {
                 ammo.clip_key = index;
             }
+            if let Some(base) = weapon.alternate_base {
+                // Def+0xc is empty for the target's shared-model stock alts.
+                // 0x42dff0 retains the camo and parent composition ordinal,
+                // followed by the same parts (format at0xc5da1c/0xc5da2c).
+                let alternate = format!(
+                    "** {base} {} {}{}",
+                    weapon.camo.unwrap_or(0),
+                    index - first,
+                    weapon
+                        .attachments
+                        .iter()
+                        .map(|id| format!(" {id}"))
+                        .collect::<String>()
+                );
+                if !known.contains_key(&alternate) {
+                    ensure!(*next < 900, "alternate weapon registry exhausted");
+                    let id = *next;
+                    *next += 1;
+                    known.insert(alternate.clone(), id);
+                    added.push((5443 + id, alternate));
+                }
+            }
         }
         Ok(added)
+    }
+    pub(crate) fn selected_weapon_names(&self) -> Vec<&str> {
+        self.bootstrap_weapon
+            .iter()
+            .chain(&self.secondary_weapon)
+            .filter_map(|w| w.composed_name.as_deref())
+            .collect()
+    }
+    pub(crate) fn register_history(
+        &mut self,
+        registry: &mut crate::game_weapon_registry::WeaponRegistry,
+    ) -> Result<()> {
+        self.register_weapons(&mut registry.names, &mut registry.next)?;
+        self.registry_strings = registry.configstrings();
+        self.validate()?;
+        Ok(())
     }
 
     pub(crate) fn matches(&self, build: i32, start: &str) -> bool {
@@ -634,6 +694,7 @@ pub(crate) fn synthetic() -> PreparedGameState {
         arsenal: None,
         collision: None,
         profile_hash: None,
+        registry_strings: Vec::new(),
         snapshot_probe: false,
         snapshot_frames: 0,
     }

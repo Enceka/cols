@@ -47,7 +47,8 @@ class ReadClientState {
             bool weaponModels=args.Length==1 && args[0]=="--weapon-models";
             bool arsenal=args.Length==1 && args[0]=="--arsenal";
             bool collision=args.Length==1 && args[0]=="--collision";
-            if(args.Length!=0 && !assets && !profiles && !netConstants && !mapEntities && !bootstrapWeapon && !weaponModels && !arsenal && !collision) throw new Exception("only fixed extraction modes are supported");
+            bool weaponRegistry=args.Length==1 && args[0]=="--weapon-registry";
+            if(args.Length!=0 && !assets && !profiles && !netConstants && !mapEntities && !bootstrapWeapon && !weaponModels && !arsenal && !collision && !weaponRegistry) throw new Exception("only fixed extraction modes are supported");
             IntPtr snapshot=CreateToolhelp32Snapshot(2,0); uint found=0;
             if(snapshot==new IntPtr(-1)) throw new Exception("process snapshot failed");
             try {
@@ -82,6 +83,7 @@ class ReadClientState {
                 if(weaponModels) { ClientAssets.ExportWeaponModels(process);return 0; }
                 if(arsenal) { ClientAssets.ExportArsenal(process);return 0; }
                 if(collision) { ClientAssets.ExportCollision(process);return 0; }
+                if(weaponRegistry) { ClientAssets.ExportWeaponRegistry(process);return 0; }
                 Console.WriteLine("{");
                 Field(process,"connection_state",0x01a2e7ec,4);
                 Field(process,"sound_fade_current_bits",0x0780e4b0,4);
@@ -147,6 +149,7 @@ class ReadClientState {
                         Field(process,"predicted_pm_type",checked(cg+4),4);
                         Field(process,"predicted_pm_flags",checked(cg+0xc),4);
                         Field(process,"predicted_other_flags",checked(cg+0x10),4);
+                        Field(process,"predicted_camera_reference_entity",checked(cg+0x200),4);
                         Field(process,"predicted_weapon",checked(cg+0x340),4);
                         Field(process,"predicted_origin_x_bits",checked(cg+0x1c),4);
                         Field(process,"predicted_origin_y_bits",checked(cg+0x20),4);
@@ -242,6 +245,7 @@ class ReadClientState {
                     Field(process,"current_reserve_ammo_0",checked(active+0xc+0x368),4);
                     Field(process,"current_weapon_time",checked(active+0xc+0x270),4);
                     Field(process,"current_weapon",checked(active+0xc+0x340),4);
+                    Field(process,"current_camera_reference_entity",checked(active+0xc+0x200),4);
                     Field(process,"current_command_time",checked(active+0xc),4);
                     Field(process,"current_origin_x_bits",checked(active+0xc+0x1c),4);
                     Field(process,"current_origin_y_bits",checked(active+0xc+0x20),4);

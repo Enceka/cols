@@ -71,6 +71,7 @@ def main():
     parser.add_argument("--game-state", type=Path, help="opt-in prepared training gamestate from prepare_game_state.py")
     parser.add_argument("--snapshot-probe", nargs="?", type=int, const=60, help="bootstrap frame budget at 20 Hz (1..18000; default 60); requires game-state")
     parser.add_argument("--local-services", action="store_true", help="enable time/storage services with persistent data in client-work/server-data")
+    parser.add_argument("--service-data-dir", type=Path, help="explicit isolated service-data directory for diagnostics; requires --local-services")
     parser.add_argument("--quiet-network", action="store_true", help="omit verbose Wine winsock tracing during longer UI tests; Rust captures remain enabled")
     parser.add_argument("--trust-lab-cert", action="store_true", help="temporarily add the lab certificate to ONLY the research copy's cacert.pem")
     args = parser.parse_args()
@@ -97,6 +98,8 @@ def main():
         parser.error("rust-stun requires rust-lobby")
     if args.local_services and not args.rust_lobby:
         parser.error("local-services requires rust-lobby")
+    if args.service_data_dir and not args.local_services:
+        parser.error("service-data-dir requires local-services")
     if args.rust_game and not args.local_services:
         parser.error("rust-game requires local-services")
     if args.game_state and (not args.rust_game or not args.game_state.is_file()):
@@ -201,7 +204,7 @@ def main():
                         if args.rust_lobby:
                             tls_argv += ["--lobby-bind", "127.0.0.1:39001"]
                         if args.local_services:
-                            tls_argv += ["--service-data-dir", str(lab / "server-data")]
+                            tls_argv += ["--service-data-dir", str(args.service_data_dir.resolve() if args.service_data_dir else lab / "server-data")]
                         if args.rust_stun:
                             tls_argv += ["--stun-bind", "127.0.0.1:3074", "--stun-alt", "127.0.0.1:3078"]
                         if args.rust_game:

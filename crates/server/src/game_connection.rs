@@ -21,6 +21,7 @@ pub(crate) struct Connection {
     pending_loadout: Option<(u32, Arc<crate::game_state::PreparedGameState>)>,
     known_weapons: std::collections::BTreeMap<String, u16>,
     next_weapon: u16,
+    shared_registry: Option<Arc<std::sync::Mutex<crate::game_weapon_registry::WeaponRegistry>>>,
     gamestate_sent: bool,
     gamestate_acknowledged: bool,
     gamestate_update: Option<u8>,
@@ -71,21 +72,39 @@ impl Connection {
         if current.profile_hash == Some(hash) {
             return Ok(());
         }
-        let mut state = template.for_profile_at(public, owned, self.next_weapon)?;
-        let names = |s: &crate::game_state::PreparedGameState| {
-            s.weapon_configstrings()
-                .into_iter()
-                .map(|(_, n)| n)
-                .collect::<Vec<_>>()
-        };
-        if names(current) == names(&state) {
+        // Attribute resolution uses a temporary valid slot; the persistent
+        // registry then assigns the client's canonical name/index identity.
+        let mut state = template.for_profile_at(public, owned, template.first_weapon_index())?;
+        if current.selected_weapon_names() == state.selected_weapon_names() {
             Arc::make_mut(self.game_state.as_mut().unwrap()).profile_hash = Some(hash);
             return Ok(());
         }
         let mut commands = self.server_commands.clone();
         let mut known = self.known_weapons.clone();
         let mut next = self.next_weapon;
-        let additions = state.register_weapons(&mut known, &mut next)?;
+        let shared = self.shared_registry.clone();
+        let mut guard = shared
+            .as_ref()
+            .map(|r| {
+                r.lock()
+                    .map_err(|_| anyhow::anyhow!("weapon registry poisoned"))
+            })
+            .transpose()?;
+        let mut registry = guard.as_ref().map_or_else(
+            || crate::game_weapon_registry::WeaponRegistry {
+                names: known.clone(),
+                next,
+            },
+            |r| (**r).clone(),
+        );
+        state.register_history(&mut registry)?;
+        known = registry.names.clone();
+        next = registry.next;
+        let additions = state
+            .weapon_configstrings()
+            .into_iter()
+            .filter(|(id, name)| self.known_weapons.get(name) != Some(&(id - 5443)))
+            .collect::<Vec<_>>();
         let new_resources = !additions.is_empty();
         for (index, name) in additions {
             commands.push(format!("d {index} {name}").as_bytes())?;
@@ -97,8 +116,18 @@ impl Connection {
         self.server_commands = commands;
         self.known_weapons = known;
         self.next_weapon = next;
+        if let Some(guard) = &mut guard {
+            **guard = registry;
+        }
         tracing::info!("queued saved backpack update for client resource acknowledgement");
         Ok(())
+    }
+    pub(crate) fn with_weapon_registry(
+        mut self,
+        registry: Arc<std::sync::Mutex<crate::game_weapon_registry::WeaponRegistry>>,
+    ) -> Self {
+        self.shared_registry = Some(registry);
+        self
     }
 
     pub fn stage(&self) -> &'static str {

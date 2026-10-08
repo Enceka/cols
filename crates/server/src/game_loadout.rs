@@ -305,6 +305,7 @@ mod tests {
             switch: None,
             move_scale: None,
             fire_type: None,
+            alternate_base: None,
         });
         let part = |item_id, kind, wire_index| Part {
             item_id,
@@ -343,6 +344,66 @@ mod tests {
             ],
         });
         state
+    }
+    #[test]
+    fn reconnect_replays_history_and_keeps_secondary_identity_after_primary_changes() {
+        let mut initial = state();
+        let mut secondary = initial.bootstrap_weapon.clone().unwrap();
+        secondary.name = "m9_mp".into();
+        secondary.base_index = Some(180);
+        secondary.composed_name = Some("** 180 0 0 30 31".into());
+        secondary.attachments = vec![30, 31];
+        secondary.ammo.as_mut().unwrap().reserve_key = 180;
+        initial.secondary_weapon = Some(secondary);
+        initial.player_loadout = None;
+        let mut registry = crate::game_weapon_registry::WeaponRegistry::new(352);
+        initial.register_history(&mut registry).unwrap();
+        assert_eq!(initial.secondary_weapon.as_ref().unwrap().index, 353);
+        let mut changed = initial.clone();
+        let primary = changed.bootstrap_weapon.as_mut().unwrap();
+        primary.attachments = vec![20, 21];
+        primary.composed_name = Some("** 163 0 0 20 21".into());
+        changed.register_history(&mut registry).unwrap();
+        assert_eq!(changed.bootstrap_weapon.as_ref().unwrap().index, 354);
+        assert_eq!(changed.secondary_weapon.as_ref().unwrap().index, 353);
+        // A fresh connection gets every registered name in index order, even
+        // when only the initial primary and secondary are currently equipped.
+        let mut reentered = initial;
+        reentered.register_history(&mut registry).unwrap();
+        assert_eq!(reentered.bootstrap_weapon.as_ref().unwrap().index, 352);
+        assert_eq!(reentered.secondary_weapon.as_ref().unwrap().index, 353);
+        assert_eq!(reentered.next_weapon_index(), 355);
+        assert_eq!(
+            reentered.weapon_configstrings(),
+            vec![
+                (5795, "** 163 0 0 10 11".into()),
+                (5796, "** 180 0 0 30 31".into()),
+                (5797, "** 163 0 0 20 21".into()),
+            ]
+        );
+        let body = reentered.body(1).unwrap();
+        codol_protocol::game_wire::server_packet(3, 0, 0, b"", &body).unwrap();
+    }
+    #[test]
+    fn automatically_composed_alternate_reserves_its_slot_before_the_secondary() {
+        let mut state = state();
+        state.player_loadout = None;
+        let parent = state.bootstrap_weapon.as_mut().unwrap();
+        parent.alternate_base = Some(31);
+        let mut secondary = parent.clone();
+        secondary.alternate_base = None;
+        secondary.base_index = Some(180);
+        secondary.composed_name = Some("** 180 0 0 10 11".into());
+        state.secondary_weapon = Some(secondary);
+        let mut registry = crate::game_weapon_registry::WeaponRegistry::new(352);
+        state.register_history(&mut registry).unwrap();
+        assert_eq!(state.bootstrap_weapon.as_ref().unwrap().index, 352);
+        assert_eq!(registry.names["** 31 0 0 10 11"], 353);
+        assert_eq!(state.secondary_weapon.as_ref().unwrap().index, 354);
+        assert_eq!(state.next_weapon_index(), 355);
+        state.register_history(&mut registry).unwrap();
+        assert_eq!(registry.names.len(), 3);
+        assert_eq!(state.secondary_weapon.as_ref().unwrap().index, 354);
     }
     #[test]
     fn resource_updates_reuse_known_names_including_unchanged_secondary_and_returned_primary() {

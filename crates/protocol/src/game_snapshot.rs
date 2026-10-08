@@ -231,7 +231,7 @@ pub fn player_frame_with_motion(
     out.bits(1, 1); // transmit origin/velocity rather than local prediction
     out.bits(
         if motion.is_some() {
-            218
+            228
         } else if origin.is_some() {
             69
         } else {
@@ -274,6 +274,10 @@ pub fn player_frame_with_motion(
                 (102, motion.jump_time, 32),
                 (114, motion.jump_origin_z.to_bits(), 100),
                 (217, 1f32.to_bits(), 100),
+                // 0x51d2a0 applies this entity's rotation to the camera.
+                // Zero selects entity0 and adds our own body yaw a second
+                // time. An unlinked first-person camera uses ENTITYNUM_NONE.
+                (227, 2047, 11),
             ]);
         }
         if let Some(events) = events {
@@ -654,6 +658,7 @@ mod tests {
                 (102, 700),
                 (114, (-123.75f32).to_bits()),
                 (217, 1f32.to_bits()),
+                (227, 2047),
             ] {
                 assert_eq!(fields[&index], expected, "field {index}");
             }
@@ -915,6 +920,7 @@ mod tests {
             (114, 0xc0, 0, 0),
             (122, 0x4bc, -57, 2),
             (217, 0x98, 0, 0),
+            (227, 0x200, 11, 0),
         ] {
             assert_eq!(fields[index], serde_json::json!([offset, codec, hint]));
         }
