@@ -219,6 +219,9 @@ impl Ballistics {
             && self.near_range.is_finite()
             && self.near_range > 0.0
             && self.near_range <= self.range
+            && self.pellets <= 32
+            && self.spread_degrees.is_finite()
+            && (0.0..=89.0).contains(&self.spread_degrees)
             && self
                 .location_multipliers
                 .is_none_or(|m| m.iter().all(|v| v.is_finite() && (0.0..=10.0).contains(v)))
@@ -228,8 +231,8 @@ impl Ballistics {
     /// the pattern is derived from the shot time, never from client input.
     pub fn rays(self, angles: [u16; 3], seed: u32) -> Vec<[u16; 3]> {
         let count = self.pellets.max(1);
-        if count == 1 || self.spread_degrees <= 0.0 {
-            return vec![angles];
+        if self.spread_degrees <= 0.0 {
+            return vec![angles; usize::from(count)];
         }
         let mut state = seed.wrapping_mul(0x9e37_79b9) | 1;
         let mut next = || {
@@ -238,24 +241,34 @@ impl Ballistics {
             state ^= state << 5;
             f64::from(state) / f64::from(u32::MAX)
         };
-        let units = 65536.0 / 360.0;
+        let direction = forward(angles).map(f64::from);
+        let yaw = f64::from(angles[1]) * std::f64::consts::TAU / 65536.0;
+        let right = [-yaw.sin(), yaw.cos(), 0.0];
+        let up = [
+            direction[1] * right[2] - direction[2] * right[1],
+            direction[2] * right[0] - direction[0] * right[2],
+            direction[0] * right[1] - direction[1] * right[0],
+        ];
+        let units = 65536.0 / std::f64::consts::TAU;
         (0..count)
             .map(|_| {
-                let radius = f64::from(self.spread_degrees) * next().sqrt();
+                let radius = f64::from(self.spread_degrees).to_radians().tan() * next();
                 let theta = next() * std::f64::consts::TAU;
-                let pitch = (radius * theta.sin() * units).round() as i32;
-                let yaw = (radius * theta.cos() * units).round() as i32;
-                [
-                    (i32::from(angles[0]) + pitch) as u16,
-                    (i32::from(angles[1]) + yaw) as u16,
-                    angles[2],
-                ]
+                let ray: [f64; 3] = std::array::from_fn(|i| {
+                    direction[i] + radius * (theta.cos() * right[i] + theta.sin() * up[i])
+                });
+                let pitch = (-ray[2].atan2(ray[0].hypot(ray[1])) * units).round() as i32;
+                let yaw = (ray[1].atan2(ray[0]) * units).round() as i32;
+                [pitch as u16, yaw as u16, angles[2]]
             })
             .collect()
     }
 
     /// Base damage at a distance, or None outside a weapon without stages.
     pub fn damage_at_distance(self, distance: f32) -> Option<u16> {
+        if !distance.is_finite() || distance < 0.0 || distance > self.range {
+            return None;
+        }
         match self.falloff {
             Some(falloff) => Some(falloff.damage(distance)),
             None => (distance <= self.near_range).then_some(self.damage),
@@ -467,6 +480,8 @@ impl CombatWorld {
         self.last_shot_time = Some(time);
         let mut outcome = ShotOutcome::default();
         let mut damage = 0u16;
+        let mut pellets_hit = 0u8;
+        let mut nearest_hit = f32::MAX;
         for ray in ballistics.rays(angles, time) {
             let pose = self.regions.as_deref().map(|regions| BodyPose {
                 regions,
@@ -491,6 +506,8 @@ impl CombatWorld {
                 continue;
             }
             damage = damage.saturating_add(pellet);
+            pellets_hit += 1;
+            nearest_hit = nearest_hit.min(fraction * ballistics.range);
             // Any head pellet makes the shot a headshot.
             if outcome.location.is_none_or(|l| !l.is_head_region()) {
                 outcome.location = location;
@@ -500,6 +517,13 @@ impl CombatWorld {
         if damage == 0 {
             return outcome;
         }
+        tracing::info!(
+            damage,
+            pellets_hit,
+            pellets = ballistics.pellets.max(1),
+            distance = nearest_hit,
+            "authoritative bullet damage"
+        );
         self.health = self.health.saturating_sub(damage);
         let name = if self.config.entity_number == 1 {
             "Training enemy"

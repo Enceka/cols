@@ -354,7 +354,7 @@ impl Connection {
                     (self.death_sequence[1] * 100) as i32,
                     0,
                 ],
-                score_limit: 0,
+                score_limit: 7500,
             };
             for payload in codol_protocol::game_scoreboard::binary_commands(&board)? {
                 self.server_commands.push_binary(&payload)?;
@@ -448,6 +448,8 @@ impl Connection {
                 impacts: &impacts,
                 enemy,
                 enemy_baseline: self.enemy_baseline,
+                players: &[],
+                player_baselines: &[],
                 vitals: self.bot.as_ref().map(|_| self.vitals),
                 local_player,
                 local_player_baseline: self.local_baseline,
@@ -481,7 +483,7 @@ impl Connection {
             .mark_sent(self.server_commands.sequence())?;
         let mut base = state.input_base();
         if let Some(equipment) = equipment {
-            base.weapons[0] = equipment.weapon;
+            base.weapons = equipment.input_weapons();
         }
         // 0x5a18e0 copies pitch/yaw only; the default command's roll stays0.
         base.angles = [angles[0], angles[1], 0];
@@ -902,6 +904,24 @@ impl Connection {
                 input.direction = 0;
             }
             if let Some(player) = &mut self.player {
+                if let Some(motion) = &self.motion {
+                    player.spread_environment(motion);
+                }
+                let equipment = player.equipment();
+                let requested = input.weapons[0];
+                if requested != 0
+                    && !player.owns_weapon(requested)
+                    && self
+                        .last_input
+                        .as_ref()
+                        .is_none_or(|l| l.weapons[0] != requested)
+                {
+                    tracing::info!(
+                        requested,
+                        current = equipment.weapon,
+                        "unowned weapon switch requested"
+                    );
+                }
                 player.apply(&input);
             }
             if let Some(motion) = &mut self.motion
@@ -1202,6 +1222,10 @@ mod tests {
         c.bot = Some(crate::game_bot::BotController::new([0.0; 3], [0; 3], 190.0).unwrap());
         c.player = Some(crate::game_player::Player::new(
             codol_protocol::game_snapshot::Equipment {
+                inventory_weapon: None,
+                alternate_weapon: None,
+                fire_count: 0,
+                spread_scale: 0.0,
                 weapon: 352,
                 secondary: None,
                 events: None,

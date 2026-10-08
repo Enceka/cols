@@ -12,12 +12,25 @@ pub struct Ammo {
 #[derive(Debug, Clone, Copy)]
 pub struct Equipment {
     pub weapon: u16,
+    /// Owned inventory slot for a held alternate mode; the parent owns it.
+    pub inventory_weapon: Option<u16>,
+    /// PS+0x344: paired presentation weapon for a models-only alternate.
+    pub alternate_weapon: Option<u16>,
+    /// PS+0x284: native shots in the current trigger press, clamped at4.
+    pub fire_count: u8,
+    pub spread_scale: f32,
     pub ammo: Option<Ammo>,
     pub viewmodel: Option<u16>,
     pub firing: Option<Firing>,
     pub aim: Option<Aim>,
     pub secondary: Option<EquippedWeapon>,
     pub events: Option<crate::game_events::EventQueue>,
+}
+impl Equipment {
+    /// Native0x5a18e0: primary, paired presentation, then offhand.
+    pub fn input_weapons(self) -> [u16; 3] {
+        [self.weapon, self.alternate_weapon.unwrap_or(0), 0]
+    }
 }
 #[derive(Debug, Clone, Copy)]
 pub struct EquippedWeapon {
@@ -167,6 +180,8 @@ pub fn player_frame_with_motion(
             impacts: &[],
             enemy: None,
             enemy_baseline: None,
+            players: &[],
+            player_baselines: &[],
             hit_feedback: None,
             vitals: None,
             local_player: None,
@@ -184,6 +199,8 @@ pub struct WorldSnapshot<'a> {
     pub impacts: &'a [crate::game_impact::ImpactSnapshot],
     pub enemy: Option<crate::game_enemy::EnemySnapshot>,
     pub enemy_baseline: Option<crate::game_enemy::EnemySnapshot>,
+    pub players: &'a [crate::game_enemy::EnemySnapshot],
+    pub player_baselines: &'a [crate::game_enemy::EnemySnapshot],
     pub hit_feedback: Option<crate::game_hit_feedback::HitFeedbackSnapshot>,
     pub vitals: Option<PlayerVitals>,
     pub local_player: Option<crate::game_enemy::EnemySnapshot>,
@@ -207,6 +224,20 @@ pub fn player_frame_with_world(
         return Err(LobbyError("invalid authoritative player vitals"));
     }
     let weapon = equipment.map(|e| e.weapon);
+    let inventory_weapon = equipment.and_then(|e| e.inventory_weapon).or(weapon);
+    let alternate_weapon = equipment.and_then(|e| e.alternate_weapon);
+    if alternate_weapon.is_some_and(|w| w == 0 || w >= 900)
+        || equipment.is_some_and(|e| {
+            e.fire_count > 4
+                || !e.spread_scale.is_finite()
+                || !(0.0..=255.0).contains(&e.spread_scale)
+        })
+    {
+        return Err(LobbyError("invalid weapon prediction state"));
+    }
+    if inventory_weapon.is_some_and(|w| w == 0 || w >= 900) {
+        return Err(LobbyError("invalid inventory weapon"));
+    }
     let ammo = equipment.and_then(|e| e.ammo);
     let secondary = equipment.and_then(|e| e.secondary);
     let events = equipment.and_then(|e| e.events);
@@ -302,6 +333,8 @@ pub fn player_frame_with_world(
     out.bits(
         if motion.is_some() {
             228
+        } else if weapon.is_some() {
+            88
         } else if origin.is_some() {
             69
         } else {
@@ -372,8 +405,11 @@ pub fn player_frame_with_world(
         if let Some(weapon) = weapon {
             // 0x422e5c/0x42956f select idle0 with the0x400 restart bit.
             fields.extend([
+                (6, equipment.unwrap().spread_scale.to_bits(), 0),
                 (9, u32::from(firing.map_or(0x400, |f| f.animation)), 11),
                 (39, u32::from(weapon), 10),
+                (40, u32::from(alternate_weapon.unwrap_or(0)), 10),
+                (87, u32::from(equipment.unwrap().fire_count), 3),
                 (54, 0x1000, 28),
             ]);
             if let Some(firing) = firing {
@@ -460,7 +496,7 @@ pub fn player_frame_with_world(
     );
     out.bytes
         .extend_from_slice(&vitals.map_or(100, |v| v.health).to_le_bytes());
-    if let Some(weapon) = weapon {
+    if weapon.is_some() {
         out.bytes.extend_from_slice(&100u16.to_le_bytes()); // stats[2], max health
         if let Some(vitals) = vitals {
             out.bytes.push(vitals.spawn_count);
@@ -478,7 +514,7 @@ pub fn player_frame_with_world(
         out.bits(1, 1); // equipped weapon section
         out.bits(1, 1); // slot0 changed
         out.bits(1, 1); // weapon ID present
-        out.bits(u32::from(weapon), 10);
+        out.bits(u32::from(inventory_weapon.unwrap()), 10);
         out.bits(0, 5); // five per-slot flags
         if let Some(other) = secondary {
             out.bits(1, 1); // slot1 changed
@@ -556,6 +592,28 @@ pub fn player_frame_with_world(
             establish_baseline,
         )?;
     }
+    for (index, player) in world.players.iter().enumerate() {
+        if (index > 0 && world.players[index - 1].client_index >= player.client_index)
+            || player.client_index == 0
+            || world.enemy.is_some()
+        {
+            return Err(LobbyError("invalid player snapshot order"));
+        }
+        crate::game_enemy::write_enemy_entity(
+            &mut out,
+            *player,
+            if establish_baseline {
+                None
+            } else {
+                world
+                    .player_baselines
+                    .iter()
+                    .find(|b| b.client_index == player.client_index)
+                    .copied()
+            },
+            establish_baseline,
+        )?;
+    }
     if let Some(target) = world.target {
         crate::game_target::write_target(&mut out, target, establish_baseline)?;
     }
@@ -575,6 +633,7 @@ pub fn player_frame_with_world(
         if let Some(enemy) = world.enemy {
             players.push(enemy);
         }
+        players.extend_from_slice(world.players);
         crate::game_enemy::write_player_clients(&mut out, &players, establish_baseline)?;
     } else if let Some(enemy) = world.enemy {
         crate::game_enemy::write_enemy_client(&mut out, enemy, establish_baseline)?;
@@ -718,6 +777,10 @@ mod tests {
         events.push(game_events::RAISE_WEAPON, 0).unwrap();
         events.push(game_events::FIRE_WEAPON_LAST_SHOT, 0).unwrap();
         let equipment = Equipment {
+            inventory_weapon: None,
+            alternate_weapon: Some(180),
+            fire_count: 1,
+            spread_scale: 0.0,
             weapon: 352,
             ammo: Some(Ammo {
                 clip_key: 352,
@@ -852,6 +915,10 @@ mod tests {
         ))
         .unwrap();
         let equipment = Equipment {
+            inventory_weapon: None,
+            alternate_weapon: Some(180),
+            fire_count: 1,
+            spread_scale: 0.0,
             secondary: None,
             events: None,
             weapon: 163,
@@ -874,6 +941,7 @@ mod tests {
                 reserve: 90,
             }),
         };
+        assert_eq!(equipment.input_weapons(), [163, 180, 0]);
         for baseline in [true, false] {
             let body = player_frame(
                 1000,
@@ -928,6 +996,8 @@ mod tests {
                 fields.insert(index, value);
             }
             assert_eq!(fields[&39], 163);
+            assert_eq!(fields[&40], 180);
+            assert_eq!(fields[&87], 1);
             assert_eq!(fields[&0], 925);
             assert_eq!(fields[&56], 53);
             assert_eq!(fields[&9], 0x402);
@@ -981,6 +1051,10 @@ mod tests {
             r.finish().unwrap();
         }
         let bad = Equipment {
+            inventory_weapon: None,
+            alternate_weapon: None,
+            fire_count: 0,
+            spread_scale: 0.0,
             secondary: None,
             events: None,
             weapon: 163,

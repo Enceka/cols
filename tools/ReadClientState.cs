@@ -164,6 +164,8 @@ class ReadClientState {
                         Field(process,"predicted_other_flags",checked(cg+0x10),4);
                         Field(process,"predicted_camera_reference_entity",checked(cg+0x200),4);
                         Field(process,"predicted_weapon",checked(cg+0x340),4);
+                        Field(process,"predicted_paired_weapon",checked(cg+0x344),4);
+                        Field(process,"predicted_weapon_fire_count",checked(cg+0x284),4);
                         Field(process,"predicted_origin_x_bits",checked(cg+0x1c),4);
                         Field(process,"predicted_origin_y_bits",checked(cg+0x20),4);
                         Field(process,"predicted_origin_z_bits",checked(cg+0x24),4);
@@ -258,6 +260,8 @@ class ReadClientState {
                     Field(process,"current_reserve_ammo_0",checked(active+0xc+0x368),4);
                     Field(process,"current_weapon_time",checked(active+0xc+0x270),4);
                     Field(process,"current_weapon",checked(active+0xc+0x340),4);
+                    Field(process,"current_paired_weapon",checked(active+0xc+0x344),4);
+                    Field(process,"current_weapon_fire_count",checked(active+0xc+0x284),4);
                     Field(process,"current_camera_reference_entity",checked(active+0xc+0x200),4);
                     Field(process,"current_command_time",checked(active+0xc),4);
                     Field(process,"current_origin_x_bits",checked(active+0xc+0x1c),4);

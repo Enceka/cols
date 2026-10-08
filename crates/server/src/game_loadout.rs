@@ -327,6 +327,10 @@ mod tests {
             move_scale: None,
             fire_type: None,
             alternate_base: None,
+            alternate: None,
+            alternate_timing: None,
+            rechamber: None,
+            spread: None,
             ballistics: None,
         });
         let part = |item_id, kind, wire_index| Part {

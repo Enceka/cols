@@ -17,6 +17,7 @@ pub const RELOAD_ADD_AMMO: u8 = 29;
 pub const RAISE_WEAPON: u8 = 30;
 pub const FIRST_RAISE_WEAPON: u8 = 31;
 pub const PUT_AWAY_WEAPON: u8 = 32;
+pub const ALT_WEAPON_SWITCH: u8 = 33;
 pub const WEAPON_SWITCH_STARTED: u8 = 34;
 pub const FIRE_WEAPON: u8 = 36;
 pub const FIRE_WEAPON_LAST_SHOT: u8 = 37;

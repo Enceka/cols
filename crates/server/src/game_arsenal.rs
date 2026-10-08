@@ -74,9 +74,12 @@ struct Table {
 struct CapturedWeapon {
     name: String,
     base_index: u16,
+    #[serde(default)]
+    alternate_only: bool,
+    #[serde(default)]
     item_ids: Vec<u32>,
     definition_base64: String,
-    defaults: Defaults,
+    defaults: Option<Defaults>,
     compatible: Vec<Compatible>,
 }
 
@@ -199,18 +202,26 @@ impl Arsenal {
         let mut weapon_names = BTreeSet::new();
         let mut registry_names = BTreeMap::new();
         for captured in capture.weapons {
+            let captured_defaults = match captured.defaults {
+                Some(defaults) if !captured.alternate_only => defaults,
+                None if captured.alternate_only => Defaults {
+                    weapon: captured.name.clone(),
+                    parts: Vec::new(),
+                },
+                _ => anyhow::bail!("inconsistent alternate weapon catalogue"),
+            };
             ensure!(
                 identifier(&captured.name)
                     && (1..=capture.registered_count).contains(&captured.base_index)
                     && weapon_names.insert(captured.name.clone())
-                    && captured.defaults.weapon == captured.name,
+                    && captured_defaults.weapon == captured.name,
                 "weapon registry identity mismatch: {}",
                 captured.name
             );
             ensure!(
-                !captured.item_ids.is_empty()
+                (captured.alternate_only == captured.item_ids.is_empty())
                     && captured.item_ids.len() <= market.len()
-                    && captured.defaults.parts.len() <= 16
+                    && captured_defaults.parts.len() <= 16
                     && captured.compatible.len() <= 64,
                 "weapon catalogue limits: {}",
                 captured.name
@@ -239,7 +250,7 @@ impl Arsenal {
             let mut items = BTreeMap::new();
             let mut attributes = BTreeMap::new();
             let mut part_wires = BTreeMap::new();
-            for part in captured.defaults.parts {
+            for part in captured_defaults.parts {
                 ensure!(
                     valid_part(&part) && canonical_part(&part, &market),
                     "invalid default part {} for {}",
@@ -352,6 +363,42 @@ impl Arsenal {
 
     pub(crate) fn next_index(&self) -> u16 {
         self.registered_count + 1
+    }
+
+    /// Alternate ownership derives from the already validated parent. Apply
+    /// the same model parts using the alternate's own attribute table.
+    pub(crate) fn resolve_alternate(
+        &self,
+        parent: &ResolvedWeapon,
+    ) -> Result<Option<ResolvedWeapon>> {
+        let base = u32::from_le_bytes(parent.definition[0xd24..0xd28].try_into().unwrap());
+        if base == 0 {
+            return Ok(None);
+        }
+        let base = u16::try_from(base).context("invalid alternate base")?;
+        let weapon = self
+            .weapons
+            .get(&base)
+            .ok_or_else(|| anyhow::anyhow!("alternate definition {base} was not captured"))?;
+        let records: Vec<_> = parent
+            .attachments
+            .iter()
+            .filter_map(|wire| weapon.attributes.get(wire))
+            .flatten()
+            .copied()
+            .collect();
+        Ok(Some(ResolvedWeapon {
+            name: weapon.name.clone(),
+            base_index: base,
+            index: parent.index + 1,
+            attachments: parent.attachments.clone(),
+            composed_name: codol_protocol::game_state::composed_weapon(
+                base,
+                0,
+                &parent.attachments,
+            )?,
+            definition: crate::weapon_attributes::compose(&weapon.definition, &records)?,
+        }))
     }
 
     pub(crate) fn resolve(
@@ -496,6 +543,32 @@ mod tests {
 
     fn word(value: &ResolvedWeapon, offset: usize) -> u32 {
         u32::from_le_bytes(value.definition[offset..offset + 4].try_into().unwrap())
+    }
+
+    #[test]
+    fn alternate_definitions_use_parent_parts_without_becoming_ownable_items() {
+        let mut value = capture();
+        let mut definition = STANDARD
+            .decode(value["weapons"][0]["definition_base64"].as_str().unwrap())
+            .unwrap();
+        definition[0xd24..0xd28].copy_from_slice(&31u32.to_le_bytes());
+        value["weapons"][0]["definition_base64"] = json!(STANDARD.encode(&definition));
+        definition[0xd24..0xd28].fill(0);
+        value["weapons"].as_array_mut().unwrap().push(json!({
+            "name":"altfire_mp", "base_index":31, "alternate_only":true,
+            "definition_base64":STANDARD.encode(definition),
+            "compatible":[{"name":"bar_custom","wire_index":20,"items":[],"attributes_base64":attributes(0xd10,400.0)}]
+        }));
+        let arsenal = load(&value);
+        let parent = arsenal
+            .resolve(10001, &[20659], &[10001, 20659], 352)
+            .unwrap();
+        let alternate = arsenal.resolve_alternate(&parent).unwrap().unwrap();
+        assert_eq!(alternate.attachments, parent.attachments);
+        assert_eq!(word(&alternate, 0xd10), 400);
+        assert!(arsenal.resolve(31, &[], &[31], 355).is_err());
+        value["weapons"].as_array_mut().unwrap().pop();
+        assert!(load(&value).resolve_alternate(&parent).is_err());
     }
 
     #[test]

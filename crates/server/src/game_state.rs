@@ -14,6 +14,8 @@ pub(crate) struct SnapshotWorld<'a> {
     pub impacts: &'a [codol_protocol::game_impact::ImpactSnapshot],
     pub enemy: Option<codol_protocol::game_enemy::EnemySnapshot>,
     pub enemy_baseline: Option<codol_protocol::game_enemy::EnemySnapshot>,
+    pub players: &'a [codol_protocol::game_enemy::EnemySnapshot],
+    pub player_baselines: &'a [codol_protocol::game_enemy::EnemySnapshot],
     pub hit_feedback: Option<codol_protocol::game_hit_feedback::HitFeedbackSnapshot>,
     pub vitals: Option<codol_protocol::game_snapshot::PlayerVitals>,
     pub local_player: Option<codol_protocol::game_enemy::EnemySnapshot>,
@@ -49,6 +51,14 @@ struct BootstrapWeapon {
     fire_type: Option<u32>,
     #[serde(default)]
     alternate_base: Option<u16>,
+    #[serde(skip)]
+    alternate: Option<Box<BootstrapWeapon>>,
+    #[serde(default)]
+    alternate_timing: Option<crate::game_player::AlternateTiming>,
+    #[serde(default)]
+    rechamber: Option<crate::game_player::RechamberTiming>,
+    #[serde(default)]
+    spread: Option<crate::game_player::SpreadTiming>,
     #[serde(default)]
     ballistics: Option<crate::game_combat::Ballistics>,
 }
@@ -470,6 +480,7 @@ impl PreparedGameState {
             );
             ensure!(
                 weapon.switch.is_none_or(|t| t.valid())
+                    && weapon.spread.is_none_or(|s| s.valid())
                     && weapon
                         .move_scale
                         .is_none_or(|s| s.is_finite() && s > 0.0 && s <= 4.0),
@@ -776,17 +787,17 @@ impl PreparedGameState {
                 .bootstrap_weapon
                 .as_ref()
                 .and_then(|w| w.viewmodel_index);
-            state.bootstrap_weapon = Some(Self::resolved_weapon(
+            state.bootstrap_weapon = Some(Self::resolved_with_alternate(
+                arsenal,
                 arsenal.resolve(selections[0].0, &selections[0].1, owned, next_index)?,
-                &arsenal.source_sha256,
                 hands,
             )?);
             state.secondary_weapon = if selections[1].0 == 0 {
                 None
             } else {
-                Some(Self::resolved_weapon(
-                    arsenal.resolve(selections[1].0, &selections[1].1, owned, next_index + 1)?,
-                    &arsenal.source_sha256,
+                Some(Self::resolved_with_alternate(
+                    arsenal,
+                    arsenal.resolve(selections[1].0, &selections[1].1, owned, next_index + 2)?,
                     hands,
                 )?)
             };
@@ -799,6 +810,31 @@ impl PreparedGameState {
         state.validate()?;
         Ok(state)
     }
+    fn resolved_with_alternate(
+        arsenal: &crate::game_arsenal::Arsenal,
+        resolved: crate::game_arsenal::ResolvedWeapon,
+        hands: Option<u16>,
+    ) -> Result<BootstrapWeapon> {
+        let alternate = arsenal.resolve_alternate(&resolved)?;
+        let mut weapon = Self::resolved_weapon(resolved, &arsenal.source_sha256, hands)?;
+        if let Some(resolved) = alternate {
+            // Target 0x42c270: +0xdad aliases the parent's magazine key.
+            ensure!(
+                resolved.definition[0xdad] != 0,
+                "alternate with independent clip is not yet supported"
+            );
+            let mut alternate = Self::resolved_weapon(resolved, &arsenal.source_sha256, hands)?;
+            let parent_ammo = weapon.ammo.as_ref().unwrap();
+            let ammo = alternate.ammo.as_mut().unwrap();
+            ammo.clip_key = parent_ammo.clip_key;
+            ammo.clip = parent_ammo.clip;
+            ammo.reserve_key = parent_ammo.reserve_key;
+            ammo.reserve = parent_ammo.reserve;
+            weapon.alternate = Some(Box::new(alternate));
+        }
+        Ok(weapon)
+    }
+
     fn resolved_weapon(
         w: crate::game_arsenal::ResolvedWeapon,
         source: &str,
@@ -899,14 +935,18 @@ impl PreparedGameState {
                 std::array::from_fn(|i| f32::from_bits(word(0xbf0 + i * 4)));
             let value = crate::game_combat::Ballistics {
                 damage: damage as u16,
-                range: 8192.0,
+                range: if word(0x480) == 4 {
+                    f32::from_bits(word(0xbe0))
+                } else {
+                    8192.0
+                },
                 near_range,
                 // The block is all zero for knives/launchers; keep base damage.
                 location_multipliers: multipliers.iter().any(|m| *m > 0.0).then_some(multipliers),
                 pellets: word(0x6c8).clamp(1, 32) as u8,
                 // Standing hip spread min/max (+0x810/+0x81c), in degrees.
                 spread_degrees: if word(0x6c8) > 1 {
-                    (f32::from_bits(word(0x810)) + f32::from_bits(word(0x81c))) * 0.5
+                    f32::from_bits(word(0x810))
                 } else {
                     0.0
                 },
@@ -917,6 +957,36 @@ impl PreparedGameState {
             };
             if value.valid() { Some(value) } else { None }
         };
+        let alternate_timing = Some(crate::game_player::AlternateTiming {
+            drop_msec: time(0x754)?,
+            raise_msec: time(0xd28)?,
+        });
+        let rechamber = if w.definition[0xd74] != 0 {
+            Some(crate::game_player::RechamberTiming {
+                duration_msec: time(0x700)?,
+                eject_msec: time(0x708)?,
+            })
+        } else {
+            None
+        };
+        let spread = crate::game_player::SpreadTiming {
+            minimum: std::array::from_fn(|i| f32::from_bits(word(0x810 + i * 4))),
+            maximum: std::array::from_fn(|i| f32::from_bits(word(0x81c + i * 4))),
+            decay: f32::from_bits(word(0x828)),
+            fire_add: f32::from_bits(word(0x82c)),
+            turn_add: f32::from_bits(word(0x830)),
+            move_add: f32::from_bits(word(0x834)),
+            stance_decay: [
+                1.0,
+                f32::from_bits(word(0x838)),
+                f32::from_bits(word(0x83c)),
+            ],
+            ads: f32::from_bits(word(0xac0)),
+        };
+        ensure!(spread.valid(), "invalid weapon spread parameters");
+        tracing::info!(weapon = %w.name, ads_in_msec = word(0xad0), ads_out_msec = word(0xad4),
+            fire_msec = word(0xd10), rechamber_msec = rechamber.map_or(0, |t| t.duration_msec),
+            hip_min = ?spread.minimum, hip_max = ?spread.maximum, "resolved weapon gameplay attributes");
         Ok(BootstrapWeapon {
             name: w.name,
             index: w.index,
@@ -935,6 +1005,10 @@ impl PreparedGameState {
             move_scale: Some(scale),
             fire_type: Some(fire_type),
             alternate_base,
+            alternate: None,
+            alternate_timing,
+            rechamber,
+            spread: Some(spread),
             ballistics,
         })
     }
@@ -996,12 +1070,22 @@ impl PreparedGameState {
                         .map(|id| format!(" {id}"))
                         .collect::<String>()
                 );
-                if !known.contains_key(&alternate) {
+                let alternate_index = if let Some(&id) = known.get(&alternate) {
+                    id
+                } else {
                     ensure!(*next < 900, "alternate weapon registry exhausted");
                     let id = *next;
                     *next += 1;
                     known.insert(alternate.clone(), id);
-                    added.push((5443 + id, alternate));
+                    added.push((5443 + id, alternate.clone()));
+                    id
+                };
+                if let Some(other) = &mut weapon.alternate {
+                    other.index = alternate_index;
+                    other.composed_name = Some(alternate);
+                    if let Some(ammo) = &mut other.ammo {
+                        ammo.clip_key = index;
+                    }
                 }
             }
         }
@@ -1113,6 +1197,8 @@ impl PreparedGameState {
                 impacts: world.impacts,
                 enemy: world.enemy,
                 enemy_baseline: world.enemy_baseline,
+                players: world.players,
+                player_baselines: world.player_baselines,
                 hit_feedback: world.hit_feedback,
                 vitals: world.vitals,
                 local_player: world.local_player,
@@ -1153,6 +1239,10 @@ impl PreparedGameState {
     fn make_player(w: &BootstrapWeapon) -> crate::game_player::Player {
         let mut player = crate::game_player::Player::new(
             codol_protocol::game_snapshot::Equipment {
+                inventory_weapon: None,
+                alternate_weapon: None,
+                fire_count: 0,
+                spread_scale: 0.0,
                 secondary: None,
                 events: None,
                 weapon: w.index,
@@ -1176,6 +1266,12 @@ impl PreparedGameState {
         if let Some(timing) = w.switch {
             player.set_switch_timing(timing);
         }
+        if let Some(timing) = w.rechamber {
+            player.set_rechamber_timing(timing);
+        }
+        if let Some(timing) = w.spread {
+            player.set_spread_timing(timing);
+        }
         if let Some(scale) = w.move_scale {
             player.set_move_scale(scale);
         }
@@ -1184,6 +1280,10 @@ impl PreparedGameState {
         }
         if let Some(stats) = w.ballistics {
             player.set_ballistics(stats);
+        }
+        if let Some(alternate) = &w.alternate {
+            player =
+                player.with_alternate(Self::make_player(alternate), w.alternate_timing.unwrap());
         }
         player
     }

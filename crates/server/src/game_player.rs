@@ -87,6 +87,54 @@ impl SwitchTiming {
     }
 }
 
+#[derive(Debug, Clone, Copy, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct AlternateTiming {
+    pub drop_msec: u16,
+    pub raise_msec: u16,
+}
+
+#[derive(Debug, Clone, Copy, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RechamberTiming {
+    pub duration_msec: u16,
+    pub eject_msec: u16,
+}
+
+#[derive(Debug, Clone, Copy, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SpreadTiming {
+    pub minimum: [f32; 3],
+    pub maximum: [f32; 3],
+    pub decay: f32,
+    pub fire_add: f32,
+    pub turn_add: f32,
+    pub move_add: f32,
+    pub stance_decay: [f32; 3],
+    pub ads: f32,
+}
+impl SpreadTiming {
+    pub fn valid(self) -> bool {
+        self.minimum
+            .into_iter()
+            .chain(self.maximum)
+            .chain(self.stance_decay)
+            .chain([
+                self.decay,
+                self.fire_add,
+                self.turn_add,
+                self.move_add,
+                self.ads,
+            ])
+            .all(|v| v.is_finite() && (0.0..=180.0).contains(&v))
+            && self
+                .minimum
+                .into_iter()
+                .zip(self.maximum)
+                .all(|(min, max)| min <= max)
+    }
+}
+
 #[derive(Debug)]
 struct Weapon {
     equipment: Equipment,
@@ -99,6 +147,9 @@ struct Weapon {
     switch: Option<SwitchTiming>,
     move_scale: f32,
     ballistics: Option<crate::game_combat::Ballistics>,
+    rechamber: Option<RechamberTiming>,
+    rechamber_pending: bool,
+    spread: Option<SpreadTiming>,
 }
 impl Weapon {
     fn empty(&self) -> bool {
@@ -120,7 +171,7 @@ impl Weapon {
 
     fn ready(&mut self) {
         self.reload_transfer_pending = false;
-        self.animate(0, 1, 0, 0);
+        self.animate(0, 0, 0, 0);
     }
 }
 
@@ -128,11 +179,20 @@ impl Weapon {
 pub(crate) struct Player {
     current: Weapon,
     secondary: Option<Weapon>,
+    alternate: Option<Weapon>,
+    secondary_alternate: Option<Weapon>,
+    alternate_timing: Option<AlternateTiming>,
+    secondary_alternate_timing: Option<AlternateTiming>,
     last_time: u32,
     events: EventQueue,
     switch_target: Option<u16>,
     attack_held: bool,
     shots: Vec<Shot>,
+    spread_scale: f32,
+    spread_stance: usize,
+    spread_speed: f32,
+    spread_airborne: bool,
+    last_angles: Option<[u16; 3]>,
 }
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Shot {
@@ -172,13 +232,25 @@ impl Player {
                 switch: None,
                 move_scale: 1.0,
                 ballistics: None,
+                rechamber: None,
+                rechamber_pending: false,
+                spread: None,
             },
             secondary: None,
+            alternate: None,
+            secondary_alternate: None,
+            alternate_timing: None,
+            secondary_alternate_timing: None,
             last_time: 1000,
             events: EventQueue::default(),
             switch_target: None,
             attack_held: false,
             shots: Vec::new(),
+            spread_scale: 0.0,
+            spread_stance: 0,
+            spread_speed: 0.0,
+            spread_airborne: false,
+            last_angles: None,
         }
     }
 
@@ -202,6 +274,23 @@ impl Player {
         self.current.move_scale = scale;
     }
 
+    pub fn set_rechamber_timing(&mut self, timing: RechamberTiming) {
+        self.current.rechamber = Some(timing);
+    }
+    pub fn set_spread_timing(&mut self, timing: SpreadTiming) {
+        self.current.spread = Some(timing);
+    }
+    pub fn spread_environment(&mut self, motion: &crate::game_motion::Motion) {
+        self.spread_stance = match motion.stance {
+            crate::game_motion::Stance::Stand => 0,
+            crate::game_motion::Stance::Crouch => 1,
+            crate::game_motion::Stance::Prone => 2,
+        };
+        self.spread_speed =
+            motion.velocity[0].hypot(motion.velocity[1]) / f32::from(motion.speed.max(1));
+        self.spread_airborne = motion.ground_entity == 2047;
+    }
+
     pub fn move_scale(&self) -> f32 {
         self.current.move_scale
     }
@@ -216,8 +305,50 @@ impl Player {
     pub fn with_secondary(mut self, secondary: Player) -> Self {
         if secondary.current.equipment.weapon != self.current.equipment.weapon {
             self.secondary = Some(secondary.current);
+            self.secondary_alternate = secondary.alternate;
+            self.secondary_alternate_timing = secondary.alternate_timing;
         }
         self
+    }
+
+    pub fn with_alternate(mut self, alternate: Player, timing: AlternateTiming) -> Self {
+        self.current.equipment.inventory_weapon = Some(self.current.equipment.weapon);
+        let mut other = alternate.current;
+        other.equipment.inventory_weapon = self.current.equipment.inventory_weapon;
+        other.equipment.alternate_weapon = Some(self.current.equipment.weapon);
+        self.alternate = Some(other);
+        self.alternate_timing = Some(timing);
+        self.sync_ammunition();
+        self
+    }
+
+    pub fn owns_weapon(&self, requested: u16) -> bool {
+        std::iter::once(&self.current)
+            .chain(&self.secondary)
+            .chain(&self.alternate)
+            .chain(&self.secondary_alternate)
+            .any(|w| w.equipment.weapon == requested)
+    }
+
+    fn sync_ammunition(&mut self) {
+        let Some(source) = self.current.equipment.ammo else {
+            return;
+        };
+        for other in self
+            .secondary
+            .iter_mut()
+            .chain(&mut self.alternate)
+            .chain(&mut self.secondary_alternate)
+        {
+            if let Some(ammo) = &mut other.equipment.ammo {
+                if ammo.clip_key == source.clip_key {
+                    ammo.clip = source.clip;
+                }
+                if ammo.reserve_key == source.reserve_key {
+                    ammo.reserve = source.reserve;
+                }
+            }
+        }
     }
 
     /// Called after a saved backpack has been resolved and published. Preserve
@@ -245,8 +376,12 @@ impl Player {
 
     pub fn equipment(&self) -> Equipment {
         let mut equipment = self.current.equipment;
+        equipment.spread_scale = self.spread_scale;
         equipment.secondary = self.secondary.as_ref().map(|other| EquippedWeapon {
-            weapon: other.equipment.weapon,
+            weapon: other
+                .equipment
+                .inventory_weapon
+                .unwrap_or(other.equipment.weapon),
             ammo: other.equipment.ammo,
         });
         equipment.events = Some(self.events);
@@ -259,9 +394,68 @@ impl Player {
         }
         let elapsed = cmd.time - self.last_time;
         self.last_time = cmd.time;
+        self.update_spread(cmd, elapsed);
+        if cmd.buttons & 1 == 0 {
+            self.current.equipment.fire_count = 0;
+        }
         self.apply_weapon(cmd, elapsed);
+        self.sync_ammunition();
         self.apply_aim(cmd, elapsed);
         self.attack_held = cmd.buttons & 1 != 0;
+        self.last_angles = Some(cmd.angles);
+    }
+
+    /// Target0x422aa0/0x425840: PS+0x350 uses0..255. Movement and
+    /// turning add spread; stationary recovery and stance affect decay.
+    fn update_spread(&mut self, cmd: &UserCommand, elapsed: u32) {
+        let Some(timing) = self.current.spread else {
+            return;
+        };
+        let seconds = elapsed.min(200) as f32 * 0.001;
+        let ads = self
+            .current
+            .equipment
+            .aim
+            .is_some_and(|a| a.fraction == 1.0);
+        let turn = self.last_angles.map_or(0.0, |old| {
+            (0..2)
+                .map(|i| {
+                    f32::from(cmd.angles[i].wrapping_sub(old[i]) as i16).abs() * 360.0 / 65536.0
+                })
+                .sum::<f32>()
+        }) * timing.turn_add
+            * 0.01;
+        let movement = if !ads {
+            timing.move_add * self.spread_speed * seconds + turn
+        } else {
+            0.0
+        };
+        let change = if self.spread_airborne && !ads {
+            movement + 2.56 * seconds
+        } else if movement > 0.0 {
+            movement
+        } else {
+            -timing.decay * timing.stance_decay[self.spread_stance] * seconds
+        };
+        self.spread_scale = (self.spread_scale + change * 255.0).clamp(0.0, 255.0);
+    }
+    fn shot_spread(&self) -> f32 {
+        let Some(timing) = self.current.spread else {
+            return self.current.ballistics.map_or(0.0, |b| b.spread_degrees);
+        };
+        let scale = self.spread_scale / 255.0;
+        let min = timing.minimum[self.spread_stance];
+        let max = timing.maximum[self.spread_stance];
+        if self
+            .current
+            .equipment
+            .aim
+            .is_some_and(|a| a.fraction == 1.0)
+        {
+            timing.ads + (max - timing.ads) * scale
+        } else {
+            min + (max - min) * scale
+        }
     }
 
     fn emit(&mut self, id: u8, parameter: u32) {
@@ -446,6 +640,20 @@ impl Player {
         self.emit(events::RAISE_WEAPON, 0);
     }
 
+    fn begin_alternate_drop(&mut self, requested: u16) {
+        if let Some(firing) = self.current.equipment.firing
+            && reloading(firing.state)
+        {
+            self.emit(2, u32::from(firing.state));
+        }
+        self.current.reload_transfer_pending = false;
+        self.switch_target = Some(requested);
+        self.emit(events::WEAPON_SWITCH_STARTED, u32::from(requested));
+        self.emit(events::ALT_WEAPON_SWITCH, 0);
+        self.current
+            .animate(5, 19, self.alternate_timing.unwrap().drop_msec, 0);
+    }
+
     fn apply_weapon(&mut self, cmd: &UserCommand, elapsed: u32) {
         let elapsed = elapsed.min(u32::from(u16::MAX)) as u16;
         if let Some(firing) = self.current.equipment.firing.as_mut() {
@@ -458,6 +666,19 @@ impl Player {
             .equipment
             .firing
             .map_or(0, |f| f.remaining_msec);
+        if state == 5 {
+            if remaining == 0 {
+                if self.switch_target.take() == self.alternate.as_ref().map(|w| w.equipment.weapon)
+                {
+                    self.current.ready();
+                    std::mem::swap(&mut self.current, self.alternate.as_mut().unwrap());
+                }
+                self.current.equipment.aim = self.current.ads.map(|_| Aim::default());
+                self.current
+                    .animate(2, 20, self.alternate_timing.unwrap().raise_msec, 0);
+            }
+            return;
+        }
         if state == 3 {
             // FinishWeaponChange reads the latest owned requested weapon. A
             // request to return during the drop raises the original gun again.
@@ -477,15 +698,29 @@ impl Player {
                 {
                     self.current.ready();
                     std::mem::swap(&mut self.current, other);
+                    std::mem::swap(&mut self.alternate, &mut self.secondary_alternate);
+                    std::mem::swap(
+                        &mut self.alternate_timing,
+                        &mut self.secondary_alternate_timing,
+                    );
                 }
                 self.begin_raise();
             }
             return;
         }
-        if state == 1 {
+        if matches!(state, 1 | 2) {
             if remaining == 0 {
                 self.current.ready();
             }
+            return;
+        }
+        if Self::input_allowed(cmd)
+            && self
+                .alternate
+                .as_ref()
+                .is_some_and(|other| other.equipment.weapon == cmd.weapons[0])
+        {
+            self.begin_alternate_drop(cmd.weapons[0]);
             return;
         }
         if Self::input_allowed(cmd)
@@ -495,6 +730,38 @@ impl Player {
             })
         {
             self.begin_drop(cmd.weapons[0]);
+            return;
+        }
+        if state == 7 {
+            if self.current.equipment.firing.unwrap().delay_msec == 0
+                && self.current.rechamber_pending
+            {
+                self.current.rechamber_pending = false;
+                self.emit(events::EJECT_BRASS, 0);
+            }
+            if remaining == 0 {
+                self.current.ready();
+            }
+            return;
+        }
+        if self.current.rechamber_pending && remaining == 0 {
+            let timing = self.current.rechamber.unwrap();
+            let ads = self
+                .current
+                .equipment
+                .aim
+                .is_some_and(|a| a.fraction > 0.75);
+            self.current.animate(
+                7,
+                if ads { 7 } else { 4 },
+                timing.duration_msec,
+                if timing.eject_msec == 0 || timing.eject_msec >= timing.duration_msec {
+                    1
+                } else {
+                    timing.eject_msec
+                },
+            );
+            self.emit(events::RECHAMBER_WEAPON, 0);
             return;
         }
         if let Some(segmented) = self.current.reload.and_then(|r| r.segmented)
@@ -580,7 +847,8 @@ impl Player {
         let trigger = cmd.buttons & 1 != 0 && (self.current.fire_type == 0 || !self.attack_held);
         if allowed && trigger && ammo.clip > 0 {
             let remaining_clip = ammo.clip - 1;
-            if let Some(ballistics) = self.current.ballistics {
+            if let Some(mut ballistics) = self.current.ballistics {
+                ballistics.spread_degrees = self.shot_spread();
                 self.shots.push(Shot {
                     time: cmd.time,
                     angles: cmd.angles,
@@ -589,8 +857,35 @@ impl Player {
                 });
             }
             self.current.equipment.ammo.as_mut().unwrap().clip = remaining_clip;
-            self.current
-                .animate(6, if remaining_clip == 0 { 3 } else { 2 }, interval, 0);
+            if !self
+                .current
+                .equipment
+                .aim
+                .is_some_and(|a| a.fraction == 1.0)
+                && let Some(timing) = self.current.spread
+            {
+                self.spread_scale = (self.spread_scale + timing.fire_add * 255.0).min(255.0);
+            }
+            if self.current.fire_type != 0 {
+                self.current.equipment.fire_count = (self.current.equipment.fire_count + 1).min(4);
+            }
+            self.current.rechamber_pending = self.current.rechamber.is_some();
+            let ads = self
+                .current
+                .equipment
+                .aim
+                .is_some_and(|a| a.fraction > 0.75);
+            self.current.animate(
+                6,
+                match (ads, remaining_clip == 0) {
+                    (false, false) => 2,
+                    (false, true) => 3,
+                    (true, false) => 5,
+                    (true, true) => 6,
+                },
+                interval,
+                0,
+            );
             self.emit(
                 if remaining_clip == 0 {
                     events::FIRE_WEAPON_LAST_SHOT
@@ -603,6 +898,17 @@ impl Player {
             if state != 0 {
                 self.current.ready();
             }
+            // Target0x424c70 pins weaponTime at1 while a semiautomatic
+            // trigger has exhausted its shot count. Preserve that in the
+            // authority snapshot so prediction cannot begin another shot.
+            if allowed
+                && cmd.buttons & 1 != 0
+                && self.current.fire_type != 0
+                && self.current.equipment.fire_count != 0
+                && let Some(firing) = &mut self.current.equipment.firing
+            {
+                firing.remaining_msec = 1;
+            }
             if allowed && cmd.buttons & 1 != 0 && ammo.clip == 0 && !self.attack_held {
                 self.emit(events::NO_AMMO, 0);
             }
@@ -613,6 +919,114 @@ impl Player {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn single_bullets_use_stance_spread_and_ads_and_movement_changes() {
+        let mut p = aiming_player();
+        p.set_ballistics(crate::game_combat::Ballistics {
+            damage: 33,
+            range: 8192.0,
+            near_range: 500.0,
+            location_multipliers: None,
+            falloff: None,
+            pellets: 1,
+            spread_degrees: 0.0,
+        });
+        p.set_spread_timing(SpreadTiming {
+            minimum: [3.0, 2.0, 1.75],
+            maximum: [6.0, 4.5, 4.0],
+            decay: 4.0,
+            fire_add: 0.6,
+            turn_add: 0.0,
+            move_add: 1.75,
+            stance_decay: [1.0, 1.05, 1.1],
+            ads: 0.0,
+        });
+        p.apply(&cmd(1100, 1));
+        assert_eq!(p.take_shots()[0].ballistics.spread_degrees, 3.0);
+        p.apply(&cmd(1179, 1));
+        assert!(p.take_shots()[0].ballistics.spread_degrees > 3.0);
+        p.apply(&cmd(1600, 0));
+        p.apply(&cmd(1800, 0));
+        p.apply(&cmd(2000, 0));
+        p.spread_stance = 2;
+        assert_eq!(p.shot_spread(), 1.75);
+        p.apply(&cmd(2400, 0x800));
+        p.apply(&cmd(2600, 0x800));
+        assert_eq!(p.shot_spread(), 0.0);
+        p.spread_speed = 1.0;
+        p.apply(&cmd(2700, 0));
+        p.apply(&cmd(2900, 0));
+        assert!(p.equipment().spread_scale > 0.0);
+    }
+    #[test]
+    fn pump_weapon_waits_for_fire_and_rechamber_and_ejects_once() {
+        let mut p = switchable_player(352, 1.0);
+        p.current.fire_interval = Some(192);
+        p.set_rechamber_timing(RechamberTiming {
+            duration_msec: 550,
+            eject_msec: 0,
+        });
+        p.apply(&select(1100, 352, 1));
+        assert_eq!(p.equipment().ammo.unwrap().clip, 29);
+        p.apply(&select(1291, 352, 1));
+        assert_eq!(p.equipment().firing.unwrap().state, 6);
+        p.apply(&select(1292, 352, 1));
+        assert_eq!(p.equipment().firing.unwrap().state, 7);
+        assert_eq!(p.equipment().firing.unwrap().animation & 0x3ff, 4);
+        let sequence = p.equipment().events.unwrap().sequence;
+        p.apply(&select(1293, 352, 0));
+        assert_eq!(
+            p.equipment().events.unwrap().sequence,
+            sequence.wrapping_add(1)
+        );
+        p.apply(&select(1500, 352, 1));
+        assert_eq!(p.equipment().ammo.unwrap().clip, 29);
+        assert_eq!(
+            p.equipment().events.unwrap().sequence,
+            sequence.wrapping_add(1)
+        );
+        p.apply(&select(1842, 352, 0));
+        p.apply(&select(1843, 352, 1));
+        assert_eq!(p.equipment().ammo.unwrap().clip, 28);
+    }
+    #[test]
+    fn alternate_switch_uses_native_phases_and_keeps_shared_ammo_and_secondary() {
+        let mut primary = switchable_player(352, 1.0);
+        primary.current.equipment.ammo.as_mut().unwrap().clip_key = 352;
+        let mut alternate = switchable_player(353, 0.9);
+        alternate.current.equipment.ammo.as_mut().unwrap().clip_key = 352;
+        alternate.current.fire_interval = Some(400);
+        let mut p = primary
+            .with_alternate(
+                alternate,
+                AlternateTiming {
+                    drop_msec: 0,
+                    raise_msec: 1399,
+                },
+            )
+            .with_secondary(switchable_player(354, 1.0));
+        p.apply(&select(1100, 352, 1));
+        assert_eq!(p.equipment().ammo.unwrap().clip, 29);
+        p.apply(&select(1200, 353, 0));
+        assert_eq!(p.equipment().firing.unwrap().state, 5);
+        assert_eq!(p.equipment().firing.unwrap().animation & 0x3ff, 19);
+        p.apply(&select(1250, 353, 1));
+        assert_eq!(p.equipment().weapon, 353);
+        assert_eq!(p.equipment().inventory_weapon, Some(352));
+        assert_eq!(p.equipment().firing.unwrap().state, 2);
+        assert_eq!(p.equipment().ammo.unwrap().clip, 29);
+        p.apply(&select(2649, 353, 0));
+        p.apply(&select(2700, 353, 1));
+        assert_eq!(p.equipment().ammo.unwrap().clip, 28);
+        p.apply(&select(2800, 352, 0));
+        p.apply(&select(2850, 352, 0));
+        p.apply(&select(4249, 352, 0));
+        assert_eq!(p.equipment().weapon, 352);
+        assert_eq!(p.equipment().ammo.unwrap().clip, 28);
+        assert_eq!(p.equipment().secondary.unwrap().weapon, 354);
+        assert!(p.owns_weapon(353));
+        assert!(!p.owns_weapon(355));
+    }
     #[test]
     fn only_authorized_shots_are_forwarded_once_to_the_combat_world() {
         let mut p = player();
@@ -647,6 +1061,10 @@ mod tests {
     fn player() -> Player {
         Player::new(
             Equipment {
+                inventory_weapon: None,
+                alternate_weapon: None,
+                fire_count: 0,
+                spread_scale: 0.0,
                 weapon: 352,
                 secondary: None,
                 events: None,
@@ -755,8 +1173,10 @@ mod tests {
             p.apply(&cmd(1200, 1));
             p.apply(&cmd(1300, 1));
             assert_eq!(p.equipment().ammo.unwrap().clip, 29);
+            assert_eq!(p.equipment().fire_count, 1);
             assert_eq!(p.equipment().events.unwrap().sequence, 1);
             p.apply(&cmd(1301, 0));
+            assert_eq!(p.equipment().fire_count, 0);
             p.apply(&cmd(1302, 1));
             assert_eq!(p.equipment().ammo.unwrap().clip, 28);
             // An early press must not bypass the firing interval or become

@@ -30,10 +30,10 @@ impl ObituarySnapshot {
         }
     }
     fn validate(self) -> Result<(), LobbyError> {
-        if !(21..2046).contains(&self.entity_number)
+        if !(27..2046).contains(&self.entity_number)
             || !(1..900).contains(&self.weapon)
-            || self.victim > 1
-            || self.attacker > 1
+            || self.victim > 18
+            || self.attacker > 18
         {
             return Err(LobbyError("invalid training obituary"));
         }
@@ -50,7 +50,7 @@ pub(crate) fn write_obituaries(
     obituaries: &[ObituarySnapshot],
     establish_baseline: bool,
 ) -> Result<(), LobbyError> {
-    let mut previous_number = 20;
+    let mut previous_number = 26;
     for obituary in obituaries {
         obituary.validate()?;
         if obituary.entity_number <= previous_number {
@@ -223,7 +223,7 @@ mod tests {
                 out.bytes.push(0xa6);
                 let records = [
                     ObituarySnapshot {
-                        entity_number: 21,
+                        entity_number: 27,
                         weapon,
                         headshot,
                         victim: 0,
@@ -329,9 +329,12 @@ mod tests {
                 weapon: 900,
                 ..valid
             },
-            ObituarySnapshot { victim: 2, ..valid },
             ObituarySnapshot {
-                attacker: 2,
+                victim: 19,
+                ..valid
+            },
+            ObituarySnapshot {
+                attacker: 19,
                 ..valid
             },
         ] {
@@ -352,7 +355,7 @@ mod tests {
             [
                 valid,
                 ObituarySnapshot {
-                    entity_number: 21,
+                    entity_number: 27,
                     ..valid
                 },
             ],

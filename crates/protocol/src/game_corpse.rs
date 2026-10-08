@@ -30,7 +30,8 @@ pub struct CorpseSnapshot {
 impl CorpseSnapshot {
     fn validate(self) -> Result<(), LobbyError> {
         let animation = |value: u16| value < 2048 && value & 0x3ff != 0;
-        if !matches!((self.entity_number, self.donor_client), (19, 1) | (20, 0))
+        if !(19..=26).contains(&self.entity_number)
+            || self.donor_client > 18
             || self
                 .origin
                 .iter()
@@ -432,11 +433,11 @@ mod tests {
                 ..c
             },
             CorpseSnapshot {
-                donor_client: 0,
+                donor_client: 19,
                 ..c
             },
             CorpseSnapshot {
-                entity_number: 20,
+                entity_number: 27,
                 ..c
             },
             CorpseSnapshot {

@@ -293,7 +293,9 @@ class ClientAssets {
         for(uint i=1;i<=count;i++) {
             uint def=r.Word(0x017f5a40+i*4);
             if(def==0)throw new Exception("registered weapon pointer missing");
-            weapons.Add(Obj("index",i,"name",r.Name(r.Word(def))));
+            weapons.Add(Obj("index",i,"name",r.Name(r.Word(def)),
+                "type",r.Word(def+0x488),"alternate_index",r.Word(def+0xd24),
+                "clip_key",r.Word(def+0x6c0),"model_name",r.Name(r.Word(def+0xc))));
         }
         var sources=new List<object>();
         foreach(string name in new string[]{"csg12ss_mp","ak104_mp","m4_mp","m9_mp"}) {
@@ -397,9 +399,19 @@ class ClientAssets {
         }
         int count=Count(r.Word(0x07817b88),899);byte[] names=r.Read(0x017e5848,16384*4);
         var weapons=new List<object>();
+        // Alternate modes (def+0xd24, e.g. CSG12SS) have no marketplace item;
+        // export the base alternates of every exported weapon as well.
+        var alternates=new HashSet<uint>();
         for(uint i=1;i<=count;i++) {
             uint def=r.Word(0x017f5a40+i*4);if(def==0)continue;
-            string name=r.Name(r.Word(def));if(!items.ContainsKey(name))continue;
+            if(!items.ContainsKey(r.Name(r.Word(def))))continue;
+            uint alt=r.Word(def+0xd24);if(alt!=0&&alt<=count)alternates.Add(alt);
+        }
+        for(uint i=1;i<=count;i++) {
+            uint def=r.Word(0x017f5a40+i*4);if(def==0)continue;
+            string name=r.Name(r.Word(def));
+            bool alternateOnly=!items.ContainsKey(name);
+            if(alternateOnly&&!alternates.Contains(i))continue;
             var compatible=new List<object>();int n=Count(r.Read(0x017f5848+i,1)[0],64);
             byte[] pairs=r.Read(0x017f8248+i*0x100,n*4);
             for(int j=0;j<n;j++) {
@@ -409,6 +421,11 @@ class ClientAssets {
                 int fields=Count(r.Word(data+4),256);
                 compatible.Add(Obj("name",part,"wire_index",wire,"items",r.AttachmentItems(part,wire),
                     "attributes_base64",Convert.ToBase64String(fields==0?new byte[0]:r.Read(r.Word(data+8),fields*12))));
+            }
+            if(alternateOnly) {
+                weapons.Add(Obj("name",name,"base_index",i,"alternate_only",true,
+                    "definition_base64",Convert.ToBase64String(r.Read(def,0xe28)),"compatible",compatible));
+                continue;
             }
             weapons.Add(Obj("name",name,"base_index",i,"item_ids",items[name],
                 "definition_base64",Convert.ToBase64String(r.Read(def,0xe28)),

@@ -90,6 +90,8 @@ const GAMEPLAY_FIELDS: &[(usize, usize)] = &[
     (0x740, 4),
     (0x744, 4),
     (0x7ac, 4),
+    (0x810, 0x30),
+    (0xac0, 4),
     (0x8c0, 4),
     (0x934, 1),
     (0x938, 4),
@@ -473,6 +475,23 @@ mod tests {
 
     fn number(kind: u8, operation: u8, offset: usize, operand: f32) -> [u8; 12] {
         raw(kind, operation, offset, operand.to_bits())
+    }
+    #[test]
+    fn cheytac_quickdraw_reduces_both_ads_transitions_and_rederives_rates() {
+        let mut b = base();
+        write_word(&mut b, ADS_IN_MSEC, 400);
+        write_word(&mut b, ADS_OUT_MSEC, 400);
+        let c = compose(
+            &b,
+            &[
+                number(9, 8, ADS_IN_MSEC, -0.12),
+                number(9, 8, ADS_OUT_MSEC, -0.12),
+            ],
+        )
+        .unwrap();
+        assert_eq!(read_word(&c, ADS_IN_MSEC), 352);
+        assert_eq!(read_word(&c, ADS_OUT_MSEC), 352);
+        assert_eq!(read_word(&c, ADS_IN_RATE), (1.0f32 / 352.0).to_bits());
     }
 
     #[test]
