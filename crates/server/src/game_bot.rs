@@ -439,6 +439,8 @@ mod tests {
                 near_range: 500.0,
                 location_multipliers: None,
                 falloff: None,
+                pellets: 0,
+                spread_degrees: 0.0,
             },
             fire_interval_msec: 80,
         }

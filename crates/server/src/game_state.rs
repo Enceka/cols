@@ -838,6 +838,16 @@ impl PreparedGameState {
                 } else {
                     empty_add.min(empty)
                 },
+                segmented: (w.definition[0xd86] != 0).then_some(
+                    crate::game_player::SegmentedReload {
+                        start_msec: time(0x740)?,
+                        start_add_msec: match (time(0x740)?, time(0x744)?) {
+                            (start, add) if add != 0 && add < start => add,
+                            _ => 0,
+                        },
+                        end_msec: time(0x748)?,
+                    },
+                ),
             }),
             ads: if w.definition[0xd76] == 0 {
                 None
@@ -874,7 +884,9 @@ impl PreparedGameState {
             n if n < 900 => Some(n as u16),
             _ => anyhow::bail!("alternate weapon base outside registry"),
         };
-        let ballistics = if word(0x480) == 4 || w.definition[0xd79] != 0 {
+        // Weapon class +0x480: grenade/rocket launchers (6/7), riot shield (11)
+        // and melee (12) are not hitscan; spread (4) fires +0x6c8 pellets.
+        let ballistics = if matches!(word(0x480), 6 | 7 | 11 | 12) || w.definition[0xd79] != 0 {
             None
         } else {
             let damage = word(0xbb4);
@@ -891,6 +903,13 @@ impl PreparedGameState {
                 near_range,
                 // The block is all zero for knives/launchers; keep base damage.
                 location_multipliers: multipliers.iter().any(|m| *m > 0.0).then_some(multipliers),
+                pellets: word(0x6c8).clamp(1, 32) as u8,
+                // Standing hip spread min/max (+0x810/+0x81c), in degrees.
+                spread_degrees: if word(0x6c8) > 1 {
+                    (f32::from_bits(word(0x810)) + f32::from_bits(word(0x81c))) * 0.5
+                } else {
+                    0.0
+                },
                 falloff: crate::game_combat::DamageFalloff::from_stages(
                     std::array::from_fn(|i| word(0xbb4 + i * 4)),
                     std::array::from_fn(|i| f32::from_bits(word(0xbcc + i * 4))),

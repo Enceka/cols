@@ -22,7 +22,8 @@ pub struct WorldImpact {
 #[derive(Default, Debug)]
 pub struct ShotOutcome {
     pub feedback: Option<String>,
-    pub impact: Option<WorldImpact>,
+    /// World hits of the rays that missed the target (one per pellet).
+    pub impacts: Vec<WorldImpact>,
     /// Body region of a damaging hit, when a pose capture is loaded.
     pub location: Option<HitLocation>,
 }
@@ -100,6 +101,21 @@ pub fn world_impact(
     trace_shot(eye, angles, ballistics.range, collision, None).1
 }
 
+/// World impacts of every ray of a shot that has no damageable target.
+pub fn world_impacts(
+    eye: [f32; 3],
+    angles: [u16; 3],
+    time: u32,
+    ballistics: Ballistics,
+    collision: &Collision,
+) -> Vec<WorldImpact> {
+    ballistics
+        .rays(angles, time)
+        .into_iter()
+        .filter_map(|ray| world_impact(eye, ray, ballistics, collision))
+        .collect()
+}
+
 /// Coarse player bounds use the recovered collision radius and stance height.
 /// Returns the distance damage; the closest world face wins.
 pub(crate) fn hits_player(
@@ -137,6 +153,12 @@ pub struct Ballistics {
     /// Without it, damage stops after `near_range` as before.
     #[serde(default)]
     pub falloff: Option<DamageFalloff>,
+    /// WeaponDef+0x6c8 rays per shot (shotgun pellets); 0 means one.
+    #[serde(default)]
+    pub pellets: u8,
+    /// Pellet cone half-angle in degrees, from the standing hip spread.
+    #[serde(default)]
+    pub spread_degrees: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Deserialize)]
@@ -200,6 +222,36 @@ impl Ballistics {
             && self
                 .location_multipliers
                 .is_none_or(|m| m.iter().all(|v| v.is_finite() && (0.0..=10.0).contains(v)))
+    }
+
+    /// View angles of each ray. Pellets are spread uniformly over the cone;
+    /// the pattern is derived from the shot time, never from client input.
+    pub fn rays(self, angles: [u16; 3], seed: u32) -> Vec<[u16; 3]> {
+        let count = self.pellets.max(1);
+        if count == 1 || self.spread_degrees <= 0.0 {
+            return vec![angles];
+        }
+        let mut state = seed.wrapping_mul(0x9e37_79b9) | 1;
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            f64::from(state) / f64::from(u32::MAX)
+        };
+        let units = 65536.0 / 360.0;
+        (0..count)
+            .map(|_| {
+                let radius = f64::from(self.spread_degrees) * next().sqrt();
+                let theta = next() * std::f64::consts::TAU;
+                let pitch = (radius * theta.sin() * units).round() as i32;
+                let yaw = (radius * theta.cos() * units).round() as i32;
+                [
+                    (i32::from(angles[0]) + pitch) as u16,
+                    (i32::from(angles[1]) + yaw) as u16,
+                    angles[2],
+                ]
+            })
+            .collect()
     }
 
     /// Base damage at a distance, or None outside a weapon without stages.
@@ -413,33 +465,41 @@ impl CombatWorld {
         self.life_start_time.get_or_insert(time);
         // Misses and shots at a dead target also consume their shot identity.
         self.last_shot_time = Some(time);
-        let pose = self.regions.as_deref().map(|regions| BodyPose {
-            regions,
-            yaw_degrees: self.yaw_degrees,
-        });
-        let (hit, impact) = trace_shot(
-            eye,
-            angles,
-            ballistics.range,
-            collision,
-            (self.health > 0).then_some((&self.config, pose)),
-        );
-        let mut outcome = ShotOutcome {
-            feedback: None,
-            impact,
-            location: None,
-        };
-        let Some((fraction, location)) = hit else {
-            return outcome;
-        };
-        let Some(damage) = ballistics.damage_at_distance(fraction * ballistics.range) else {
-            return outcome;
-        };
-        let damage = ballistics.damage_at(damage, location);
+        let mut outcome = ShotOutcome::default();
+        let mut damage = 0u16;
+        for ray in ballistics.rays(angles, time) {
+            let pose = self.regions.as_deref().map(|regions| BodyPose {
+                regions,
+                yaw_degrees: self.yaw_degrees,
+            });
+            let (hit, impact) = trace_shot(
+                eye,
+                ray,
+                ballistics.range,
+                collision,
+                (self.health > 0).then_some((&self.config, pose)),
+            );
+            outcome.impacts.extend(impact);
+            let Some((fraction, location)) = hit else {
+                continue;
+            };
+            let Some(base) = ballistics.damage_at_distance(fraction * ballistics.range) else {
+                continue;
+            };
+            let pellet = ballistics.damage_at(base, location);
+            if pellet == 0 {
+                continue;
+            }
+            damage = damage.saturating_add(pellet);
+            // Any head pellet makes the shot a headshot.
+            if outcome.location.is_none_or(|l| !l.is_head_region()) {
+                outcome.location = location;
+            }
+        }
+        let location = outcome.location;
         if damage == 0 {
             return outcome;
         }
-        outcome.location = location;
         self.health = self.health.saturating_sub(damage);
         let name = if self.config.entity_number == 1 {
             "Training enemy"
@@ -518,6 +578,8 @@ mod tests {
             near_range: 500.0,
             location_multipliers: None,
             falloff: None,
+            pellets: 0,
+            spread_degrees: 0.0,
         }
     }
 
@@ -626,6 +688,38 @@ mod tests {
         let mut prop = CombatWorld::new(target());
         prop.set_hit_regions(Arc::new(crate::game_hit_location::synthetic()));
         assert!(!prop.has_hit_regions());
+    }
+
+    #[test]
+    fn pellets_spread_inside_the_cone_and_sum_their_damage() {
+        let shotgun = Ballistics {
+            damage: 50,
+            pellets: 8,
+            spread_degrees: 8.0,
+            ..ballistics()
+        };
+        let rays = shotgun.rays([0, 0, 0], 1234);
+        assert_eq!(rays.len(), 8);
+        assert_eq!(rays, shotgun.rays([0, 0, 0], 1234)); // Server-chosen, repeatable.
+        assert_ne!(rays, shotgun.rays([0, 0, 0], 1235));
+        let limit = (8.0 * 65536.0 / 360.0) as i32 + 1;
+        for ray in &rays {
+            let pitch = ray[0] as i16 as i32;
+            let yaw = ray[1] as i16 as i32;
+            assert!(pitch * pitch + yaw * yaw <= limit * limit);
+        }
+        assert_eq!(ballistics().rays([1, 2, 3], 9), vec![[1, 2, 3]]);
+        // Point blank, every pellet lands on the 20-unit target box.
+        let mut world = CombatWorld::new(TargetConfig {
+            health: 1000,
+            ..target()
+        });
+        world.config.origin = [100.0, 0.0, 30.0];
+        world.config.bounds_min = [-10.0, -40.0, -40.0];
+        world.config.bounds_max = [10.0, 40.0, 40.0];
+        let outcome = world.fire(1, [0.0, 0.0, 30.0], [0; 3], shotgun, &collision(None));
+        assert_eq!(world.health(), 600);
+        assert!(outcome.impacts.is_empty());
     }
 
     #[test]
@@ -916,14 +1010,14 @@ mod tests {
         let mut world = CombatWorld::new(target());
         let miss = world.fire(1, [0.0, 50.0, 30.0], [0; 3], ballistics(), &wall);
         assert!(miss.feedback.is_none());
-        let impact = miss.impact.unwrap();
+        let impact = miss.impacts[0];
         assert_eq!(impact.origin, [145.0, 50.0, 30.0]);
         assert_eq!(impact.normal, [-1.0, 0.0, 0.0]);
         assert!(
             world
                 .fire(1, [0.0, 50.0, 30.0], [0; 3], ballistics(), &wall)
-                .impact
-                .is_none()
+                .impacts
+                .is_empty()
         );
         let kill = world.fire(
             2,
@@ -937,17 +1031,17 @@ mod tests {
         );
         assert!(kill.feedback.is_some());
         assert!(
-            kill.impact.is_none(),
+            kill.impacts.is_empty(),
             "live target blocks the wall behind it"
         );
         let dead = world.fire(3, [0.0, 0.0, 30.0], [0; 3], ballistics(), &wall);
         assert!(dead.feedback.is_none());
-        assert_eq!(dead.impact.unwrap().origin, [145.0, 0.0, 30.0]);
+        assert_eq!(dead.impacts[0].origin, [145.0, 0.0, 30.0]);
         let before = collision(Some((50.0, 1)));
         let mut occluded = CombatWorld::new(target());
         let blocked = occluded.fire(1, [0.0, 0.0, 30.0], [0; 3], ballistics(), &before);
         assert!(blocked.feedback.is_none());
-        assert_eq!(blocked.impact.unwrap().origin, [45.0, 0.0, 30.0]);
+        assert_eq!(blocked.impacts[0].origin, [45.0, 0.0, 30.0]);
         assert_eq!(occluded.health(), 100);
     }
 

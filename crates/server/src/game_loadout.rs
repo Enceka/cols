@@ -303,6 +303,7 @@ mod tests {
                 empty_msec: 2799,
                 add_msec: 1399,
                 empty_add_msec: 1399,
+                segmented: None,
             }),
             ads: Some(crate::game_player::AdsTiming {
                 in_rate: 0.004,

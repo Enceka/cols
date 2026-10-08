@@ -12,6 +12,10 @@ pub(crate) struct ReloadTiming {
     pub empty_msec: u16,
     pub add_msec: u16,
     pub empty_add_msec: u16,
+    /// WeaponDef+0xd86 shell-by-shell reload; the normal timings are then
+    /// one shell (anim13, +0x71c, ammo at +0x730).
+    #[serde(default)]
+    pub segmented: Option<SegmentedReload>,
 }
 impl ReloadTiming {
     pub fn valid(&self) -> bool {
@@ -19,7 +23,27 @@ impl ReloadTiming {
             && (1..=15000).contains(&self.empty_msec)
             && (1..=self.normal_msec).contains(&self.add_msec)
             && (1..=self.empty_msec).contains(&self.empty_add_msec)
+            && self.segmented.is_none_or(|s| {
+                s.start_msec <= 15000 && s.start_add_msec <= s.start_msec && s.end_msec <= 15000
+            })
     }
+}
+
+/// Target 0x423490/0x424260/0x4243f0: start (state10, anim17, +0x740, one
+/// shell at +0x744), shells (state8), end (state12, anim18, +0x748). Fire
+/// interrupts as state11/9. Zero times skip that phase.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SegmentedReload {
+    pub start_msec: u16,
+    pub start_add_msec: u16,
+    pub end_msec: u16,
+}
+
+/// Weapon states 8..=12 are reloading, its interrupt, start, start
+/// interrupt and end (target 0x424660 groups them).
+fn reloading(state: u8) -> bool {
+    (8..=12).contains(&state)
 }
 
 #[derive(Debug, Clone, Copy, serde::Deserialize)]
@@ -261,7 +285,7 @@ impl Player {
             return;
         };
         let firing = self.current.equipment.firing;
-        let reloading = firing.is_some_and(|f| f.state == 8);
+        let reloading = firing.is_some_and(|f| reloading(f.state));
         let switching = firing.is_some_and(|f| (1..=5).contains(&f.state));
         aim.button = cmd.buttons & 0x800 != 0
             && Self::input_allowed(cmd)
@@ -280,10 +304,109 @@ impl Player {
         };
     }
 
+    fn needs_shell(&self) -> bool {
+        self.current
+            .equipment
+            .ammo
+            .is_some_and(|a| a.clip < self.current.magazine_capacity && a.reserve > 0)
+    }
+
+    fn add_shells(&mut self, count: u16) {
+        if let Some(ammo) = self.current.equipment.ammo.as_mut() {
+            let transfer = self
+                .current
+                .magazine_capacity
+                .saturating_sub(ammo.clip)
+                .min(ammo.reserve)
+                .min(count);
+            ammo.clip += transfer;
+            ammo.reserve -= transfer;
+            if transfer != 0 {
+                self.emit(events::RELOAD_ADD_AMMO, 0);
+            }
+        }
+    }
+
+    /// Target 0x4232d0: one shell, normal or empty variant.
+    fn begin_shell(&mut self) {
+        let timing = self.current.reload.expect("segmented reload timing");
+        let empty = self.current.empty();
+        self.current.animate(
+            8,
+            if empty { 15 } else { 13 },
+            if empty {
+                timing.empty_msec
+            } else {
+                timing.normal_msec
+            },
+            if empty {
+                timing.empty_add_msec
+            } else {
+                timing.add_msec
+            },
+        );
+        self.current.reload_transfer_pending = true;
+        self.emit(
+            if empty {
+                events::RELOAD_FROM_EMPTY
+            } else {
+                events::RELOAD
+            },
+            0,
+        );
+    }
+
+    fn apply_segmented_reload(
+        &mut self,
+        cmd: &UserCommand,
+        mut state: u8,
+        remaining: u16,
+        segmented: SegmentedReload,
+    ) {
+        let delay = self.current.equipment.firing.unwrap().delay_msec;
+        if self.current.reload_transfer_pending && delay == 0 {
+            self.add_shells(1);
+            self.current.reload_transfer_pending = false;
+        }
+        if state == 12 {
+            if remaining == 0 {
+                self.current.ready();
+            }
+            return;
+        }
+        // Pressing fire with a loaded shell interrupts after this phase.
+        let loaded = self.current.equipment.ammo.is_some_and(|a| a.clip > 0);
+        if Self::input_allowed(cmd) && cmd.buttons & 1 != 0 && loaded && matches!(state, 8 | 10) {
+            state += 1;
+            if let Some(firing) = self.current.equipment.firing.as_mut() {
+                firing.state = state;
+            }
+        }
+        if remaining != 0 {
+            return;
+        }
+        let interrupted = matches!(state, 9 | 11) && loaded;
+        if !interrupted && self.needs_shell() {
+            self.begin_shell();
+        } else if segmented.end_msec != 0 {
+            self.current.reload_transfer_pending = false;
+            self.current.animate(12, 18, segmented.end_msec, 0);
+            self.emit(events::RELOAD_END, 0);
+        } else {
+            self.current.ready();
+        }
+    }
+
     fn begin_drop(&mut self, requested: u16) {
         let timing = self.current.switch.expect("switching timings checked");
-        if self.current.equipment.firing.is_some_and(|f| f.state == 8) {
-            self.emit(2, 8); // EV_STOP_WEAPON_SOUND carries the interrupted state.
+        if let Some(state) = self
+            .current
+            .equipment
+            .firing
+            .map(|f| f.state)
+            .filter(|s| reloading(*s))
+        {
+            self.emit(2, u32::from(state)); // EV_STOP_WEAPON_SOUND carries the interrupted state.
         }
         self.current.reload_transfer_pending = false;
         self.switch_target = Some(requested);
@@ -374,6 +497,12 @@ impl Player {
             self.begin_drop(cmd.weapons[0]);
             return;
         }
+        if let Some(segmented) = self.current.reload.and_then(|r| r.segmented)
+            && reloading(state)
+        {
+            self.apply_segmented_reload(cmd, state, remaining, segmented);
+            return;
+        }
         if state == 8 {
             let delay = self.current.equipment.firing.unwrap().delay_msec;
             if self.current.reload_transfer_pending && delay == 0 {
@@ -414,6 +543,15 @@ impl Player {
             let empty = ammo.clip == 0;
             self.emit(events::RESET_ADS, 0);
             self.emit(events::RELOAD_START_NOTIFY, 0);
+            if let Some(segmented) = timing.segmented
+                && segmented.start_msec != 0
+            {
+                self.emit(events::RELOAD_START, 0);
+                self.current
+                    .animate(10, 17, segmented.start_msec, segmented.start_add_msec);
+                self.current.reload_transfer_pending = segmented.start_add_msec != 0;
+                return;
+            }
             self.emit(
                 if empty {
                     events::RELOAD_FROM_EMPTY
@@ -484,6 +622,8 @@ mod tests {
             near_range: 500.0,
             location_multipliers: None,
             falloff: None,
+            pellets: 0,
+            spread_degrees: 0.0,
         });
         for c in [
             cmd(1100, 1),
@@ -663,7 +803,66 @@ mod tests {
             empty_msec: 2799,
             add_msec: 1399,
             empty_add_msec: 1399,
+            segmented: None,
         }
+    }
+    /// spas12_mp: start1000 (+shell at600), shell550 (+200), end850.
+    fn shotgun() -> Player {
+        let mut p = player();
+        p.current.reload = Some(ReloadTiming {
+            normal_msec: 550,
+            empty_msec: 550,
+            add_msec: 200,
+            empty_add_msec: 400,
+            segmented: Some(SegmentedReload {
+                start_msec: 1000,
+                start_add_msec: 600,
+                end_msec: 850,
+            }),
+        });
+        p.current.magazine_capacity = 4;
+        let ammo = p.current.equipment.ammo.as_mut().unwrap();
+        ammo.clip = 1;
+        ammo.reserve = 10;
+        p
+    }
+    fn state(p: &Player) -> (u8, u16, u16) {
+        let firing = p.equipment().firing.unwrap();
+        let ammo = p.equipment().ammo.unwrap();
+        (firing.state, firing.animation & 0x3ff, ammo.clip)
+    }
+    #[test]
+    fn shotgun_reload_starts_loads_one_shell_per_cycle_and_ends() {
+        let mut p = shotgun();
+        p.apply(&cmd(1100, 0x10));
+        assert_eq!(state(&p), (10, 17, 1));
+        p.apply(&cmd(1700, 0));
+        assert_eq!(state(&p), (10, 17, 2)); // Shell inserted during the start.
+        p.apply(&cmd(2100, 0));
+        assert_eq!(state(&p), (8, 13, 2));
+        p.apply(&cmd(2300, 0));
+        assert_eq!(state(&p), (8, 13, 3));
+        p.apply(&cmd(2650, 0));
+        assert_eq!(state(&p), (8, 13, 3)); // Next shell began.
+        p.apply(&cmd(2850, 0));
+        assert_eq!(state(&p), (8, 13, 4));
+        p.apply(&cmd(3200, 0));
+        assert_eq!(state(&p), (12, 18, 4)); // Full: reload end.
+        p.apply(&cmd(4050, 0));
+        assert_eq!(state(&p).0, 0);
+        assert_eq!(p.equipment().ammo.unwrap().reserve, 7);
+    }
+    #[test]
+    fn firing_interrupts_a_shotgun_reload_after_the_current_shell() {
+        let mut p = shotgun();
+        p.apply(&cmd(1100, 0x10));
+        p.apply(&cmd(2100, 0));
+        assert_eq!(state(&p), (8, 13, 2));
+        p.apply(&cmd(2200, 1)); // Fire pressed during the shell.
+        assert_eq!(state(&p).0, 9);
+        p.apply(&cmd(2650, 0));
+        assert_eq!(state(&p), (12, 18, 3)); // Shell completed, then end.
+        assert!(p.take_shots().is_empty());
     }
     #[test]
     fn reload_transfers_ammo_once_at_marker_and_blocks_fire_until_finished() {

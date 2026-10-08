@@ -957,14 +957,14 @@ impl Connection {
                     for shot in shots {
                         let outcome = self.combat.as_mut().map_or_else(
                             || crate::game_combat::ShotOutcome {
-                                feedback: None,
-                                impact: crate::game_combat::world_impact(
+                                impacts: crate::game_combat::world_impacts(
                                     eye,
                                     shot.angles,
+                                    shot.time,
                                     shot.ballistics,
                                     &collision,
                                 ),
-                                location: None,
+                                ..Default::default()
                             },
                             |combat| {
                                 combat.fire(
@@ -976,10 +976,10 @@ impl Connection {
                                 )
                             },
                         );
-                        if let Some(hit) = outcome.impact
-                            && let Some(event) = self.impacts.push(through, shot.weapon, hit)
-                        {
-                            tracing::info!(shot_time = shot.time, entity = event.entity_number, origin = ?event.origin, normal = event.normal_byte, surface = event.surface, weapon = event.weapon, "world bullet impact");
+                        for hit in &outcome.impacts {
+                            if let Some(event) = self.impacts.push(through, shot.weapon, *hit) {
+                                tracing::info!(shot_time = shot.time, entity = event.entity_number, origin = ?event.origin, normal = event.normal_byte, surface = event.surface, weapon = event.weapon, "world bullet impact");
+                            }
                         }
                         let headshot = outcome.headshot();
                         let location = outcome.location.map(|l| l.name());
