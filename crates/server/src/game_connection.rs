@@ -842,7 +842,7 @@ impl Connection {
             self.bot_fire_time = Some(now);
             self.bot_fire_toggle = !self.bot_fire_toggle;
             if self.vitals.health > 0
-                && crate::game_combat::hits_player(
+                && let Some(damage) = crate::game_combat::hits_player(
                     shot.eye,
                     shot.angles,
                     shot.ballistics,
@@ -851,10 +851,10 @@ impl Connection {
                     collision,
                 )
             {
-                self.vitals.health = self.vitals.health.saturating_sub(shot.ballistics.damage);
+                self.vitals.health = self.vitals.health.saturating_sub(damage);
                 self.health_recovery.damaged(now, self.vitals.health);
                 self.vitals.damage_event = self.vitals.damage_event.wrapping_add(1);
-                self.vitals.damage_count = shot.ballistics.damage.min(127) as u8;
+                self.vitals.damage_count = damage.min(127) as u8;
                 tracing::info!(
                     shot_time = now,
                     health = self.vitals.health,

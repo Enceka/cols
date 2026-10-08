@@ -1,7 +1,7 @@
 //! One server-owned training prop with coarse model bounds and real world occlusion.
 //!
-//! WeaponDef +0xbb4 supplies damage only inside its first distance band (+0xbcc).
-//! Later damage bands are not recovered. With a captured static NPC pose,
+//! WeaponDef +0xbb4.. holds six damage stages and +0xbcc.. their ranges; damage
+//! is interpolated between the used stages. With a captured static NPC pose,
 //! the coarse bounds only gate a body-region ray (see game_hit_location).
 //! Authorised, de-duplicated weapon shots are supplied by the player simulation.
 use anyhow::{Result, ensure};
@@ -101,7 +101,7 @@ pub fn world_impact(
 }
 
 /// Coarse player bounds use the recovered collision radius and stance height.
-/// Damage remains in the measured first band and the closest world face wins.
+/// Returns the distance damage; the closest world face wins.
 pub(crate) fn hits_player(
     eye: [f32; 3],
     angles: [u16; 3],
@@ -109,19 +109,16 @@ pub(crate) fn hits_player(
     origin: [f32; 3],
     height: f32,
     collision: &Collision,
-) -> bool {
+) -> Option<u16> {
     let direction = forward(angles);
     let end = std::array::from_fn(|i| eye[i] + direction[i] * ballistics.range);
     let min = [origin[0] - 15.0, origin[1] - 15.0, origin[2]];
     let max = [origin[0] + 15.0, origin[1] + 15.0, origin[2] + height];
-    let Some(fraction) = ray_aabb(eye, end, min, max) else {
-        return false;
-    };
-    if fraction * ballistics.range > ballistics.near_range {
-        return false;
-    }
+    let fraction = ray_aabb(eye, end, min, max)?;
+    let damage = ballistics.damage_at_distance(fraction * ballistics.range)?;
     let world = collision.raycast(eye, end);
-    !world.start_solid && !world.all_solid && (world.contents == 0 || world.fraction > fraction)
+    (!world.start_solid && !world.all_solid && (world.contents == 0 || world.fraction > fraction))
+        .then_some(damage)
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
@@ -136,6 +133,59 @@ pub struct Ballistics {
     /// Inferred from consistent resource values, not a named field table.
     #[serde(default)]
     pub location_multipliers: Option<[f32; 20]>,
+    /// Used (range, damage) stages in increasing range, from the WeaponDef.
+    /// Without it, damage stops after `near_range` as before.
+    #[serde(default)]
+    pub falloff: Option<DamageFalloff>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DamageFalloff {
+    points: [(f32, u16); 6],
+    len: u8,
+}
+
+impl DamageFalloff {
+    /// Stages with a zero range are unused; ranges must then increase.
+    pub fn from_stages(damage: [u32; 6], range: [f32; 6]) -> Option<Self> {
+        let mut points = [(0.0, 0); 6];
+        let mut len = 0usize;
+        for (damage, range) in damage.into_iter().zip(range) {
+            if range == 0.0 {
+                continue;
+            }
+            let previous = len.checked_sub(1).map(|i| points[i].0);
+            if !(0.0..=65536.0).contains(&range)
+                || damage > u32::from(u16::MAX)
+                || previous.is_some_and(|p| range <= p)
+            {
+                return None;
+            }
+            points[len] = (range, damage as u16);
+            len += 1;
+        }
+        (len > 0).then_some(Self {
+            points,
+            len: len as u8,
+        })
+    }
+
+    /// First stage up to its range, linear between stages, last beyond.
+    pub fn damage(self, distance: f32) -> u16 {
+        let points = &self.points[..usize::from(self.len)];
+        if distance <= points[0].0 {
+            return points[0].1;
+        }
+        for pair in points.windows(2) {
+            let ((near, a), (far, b)) = (pair[0], pair[1]);
+            if distance <= far {
+                let t = (distance - near) / (far - near);
+                return (f32::from(a) + (f32::from(b) - f32::from(a)) * t).round() as u16;
+            }
+        }
+        points[points.len() - 1].1
+    }
 }
 
 impl Ballistics {
@@ -152,13 +202,21 @@ impl Ballistics {
                 .is_none_or(|m| m.iter().all(|v| v.is_finite() && (0.0..=10.0).contains(v)))
     }
 
+    /// Base damage at a distance, or None outside a weapon without stages.
+    pub fn damage_at_distance(self, distance: f32) -> Option<u16> {
+        match self.falloff {
+            Some(falloff) => Some(falloff.damage(distance)),
+            None => (distance <= self.near_range).then_some(self.damage),
+        }
+    }
+
     /// Integer damage after the location multiplier; the fraction truncates.
-    pub fn damage_at(self, location: Option<HitLocation>) -> u16 {
+    pub fn damage_at(self, damage: u16, location: Option<HitLocation>) -> u16 {
         match (location, self.location_multipliers) {
             (Some(location), Some(multipliers)) => {
-                (f32::from(self.damage) * multipliers[location as usize]) as u16
+                (f32::from(damage) * multipliers[location as usize]) as u16
             }
-            _ => self.damage,
+            _ => damage,
         }
     }
 }
@@ -374,10 +432,10 @@ impl CombatWorld {
         let Some((fraction, location)) = hit else {
             return outcome;
         };
-        if fraction * ballistics.range > ballistics.near_range {
+        let Some(damage) = ballistics.damage_at_distance(fraction * ballistics.range) else {
             return outcome;
-        }
-        let damage = ballistics.damage_at(location);
+        };
+        let damage = ballistics.damage_at(damage, location);
         if damage == 0 {
             return outcome;
         }
@@ -459,6 +517,7 @@ mod tests {
             range: 8192.0,
             near_range: 500.0,
             location_multipliers: None,
+            falloff: None,
         }
     }
 
@@ -542,8 +601,8 @@ mod tests {
         assert_eq!(torso.location, Some(HitLocation::TorsoUpper));
         assert!(!torso.headshot());
         assert_eq!(world.health(), 28);
-        assert_eq!(located().damage_at(Some(HitLocation::Gun)), 0);
-        assert_eq!(ballistics().damage_at(Some(HitLocation::Head)), 33);
+        assert_eq!(located().damage_at(33, Some(HitLocation::Gun)), 0);
+        assert_eq!(ballistics().damage_at(33, Some(HitLocation::Head)), 33);
     }
 
     #[test]
@@ -567,6 +626,58 @@ mod tests {
         let mut prop = CombatWorld::new(target());
         prop.set_hit_regions(Arc::new(crate::game_hit_location::synthetic()));
         assert!(!prop.has_hit_regions());
+    }
+
+    #[test]
+    fn captured_damage_stages_interpolate_and_keep_the_last_stage_beyond() {
+        // m9_mp WeaponDef+0xbb4/+0xbcc from the current arsenal capture.
+        let m9 = DamageFalloff::from_stages(
+            [50, 45, 45, 33, 24, 19],
+            [275.0, 276.0, 700.0, 701.0, 900.0, 1200.0],
+        )
+        .unwrap();
+        for (distance, damage) in [
+            (0.0, 50),
+            (275.0, 50),
+            (276.0, 45),
+            (500.0, 45),
+            (701.0, 33),
+            (800.5, 29),
+            (900.0, 24),
+            (1050.0, 22),
+            (1200.0, 19),
+            (8000.0, 19),
+        ] {
+            assert_eq!(m9.damage(distance), damage, "{distance}");
+        }
+        // m4_mp leaves stages 3/4 unused: 33 to 1600 units, then 24.
+        let m4 = DamageFalloff::from_stages(
+            [33, 33, 33, 0, 0, 24],
+            [500.0, 501.0, 1600.0, 0.0, 0.0, 1601.0],
+        )
+        .unwrap();
+        assert_eq!((m4.damage(1200.0), m4.damage(3000.0)), (33, 24));
+        // spas12_mp: 50 to 300, falling to 10 at 450 units.
+        let spas = DamageFalloff::from_stages(
+            [50, 0, 0, 10, 10, 10],
+            [300.0, 0.0, 0.0, 450.0, 451.0, 650.0],
+        )
+        .unwrap();
+        assert_eq!((spas.damage(375.0), spas.damage(1000.0)), (30, 10));
+        for (damage, range) in [
+            ([0; 6], [0.0; 6]),
+            ([33; 6], [500.0, 400.0, 0.0, 0.0, 0.0, 0.0]),
+            ([33; 6], [f32::NAN, 0.0, 0.0, 0.0, 0.0, 0.0]),
+            ([70_000, 0, 0, 0, 0, 0], [500.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+        ] {
+            assert!(DamageFalloff::from_stages(damage, range).is_none());
+        }
+        let staged = Ballistics {
+            falloff: Some(m4),
+            ..ballistics()
+        };
+        assert_eq!(staged.damage_at_distance(2000.0), Some(24));
+        assert_eq!(ballistics().damage_at_distance(2000.0), None);
     }
 
     #[test]

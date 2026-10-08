@@ -438,6 +438,7 @@ mod tests {
                 range: 8192.0,
                 near_range: 500.0,
                 location_multipliers: None,
+                falloff: None,
             },
             fire_interval_msec: 80,
         }

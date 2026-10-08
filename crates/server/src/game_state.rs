@@ -891,6 +891,10 @@ impl PreparedGameState {
                 near_range,
                 // The block is all zero for knives/launchers; keep base damage.
                 location_multipliers: multipliers.iter().any(|m| *m > 0.0).then_some(multipliers),
+                falloff: crate::game_combat::DamageFalloff::from_stages(
+                    std::array::from_fn(|i| word(0xbb4 + i * 4)),
+                    std::array::from_fn(|i| f32::from_bits(word(0xbcc + i * 4))),
+                ),
             };
             if value.valid() { Some(value) } else { None }
         };
