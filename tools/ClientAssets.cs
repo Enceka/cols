@@ -426,13 +426,24 @@ class ClientAssets {
         uint cm=0x02dfb000;byte[] header=r.Read(cm,256);string map=r.Name(U(header,0));
         if(map!="maps/mp/mp_afghan.d3dbsp")throw new Exception("unexpected collision map: "+map);
         var brushes=new List<object>();int count=Count(BitConverter.ToUInt16(header,0x38),65535);
+        int materialCount=Count(U(header,0x10),65536);byte[] materials=r.Read(U(header,0x14),materialCount*12);
         byte[] raw=r.Read(U(header,0x3c),count*36),bounds=r.Read(U(header,0x40),count*24),contents=r.Read(U(header,0x44),count*4);
         for(int b=0;b<count;b++) {
-            uint mask=U(contents,b*4);if((mask&0x02814011)==0)continue;
-            var planes=new List<object>();int sides=Count(BitConverter.ToUInt16(raw,b*36),256);
+            uint mask=U(contents,b*4);if((mask&(0x02814011|0x0280e831))==0)continue;
+            var planes=new List<object>();var surfaceFlags=new List<uint>();int sides=Count(BitConverter.ToUInt16(raw,b*36),256);
             byte[] side=sides==0?new byte[0]:r.Read(U(raw,b*36+4),sides*8);
-            for(int j=0;j<sides;j++) {byte[] plane=r.Read(U(side,j*8),16);planes.Add(Floats(plane,0,4));}
-            brushes.Add(Obj("center",Floats(bounds,b*24,3),"half",Floats(bounds,b*24+12,3),"contents",mask,"planes",planes));
+            // Current0x589520: side+4 holds the material index; brush+0xc
+            // stores -X/-Y/-Z indices and +0x12 stores +X/+Y/+Z indices.
+            for(int j=0;j<sides;j++) {
+                byte[] plane=r.Read(U(side,j*8),16);planes.Add(Floats(plane,0,4));
+                int material=BitConverter.ToUInt16(side,j*8+4);if(material>=materialCount)throw new Exception("brush side material invalid");
+                surfaceFlags.Add(U(materials,material*12+4));
+            }
+            for(int axis=0;axis<3;axis++)foreach(int face in new int[]{0x12+axis*2,0xc+axis*2}) {
+                int material=BitConverter.ToUInt16(raw,b*36+face);if(material>=materialCount)throw new Exception("brush axial material invalid");
+                surfaceFlags.Add(U(materials,material*12+4));
+            }
+            brushes.Add(Obj("center",Floats(bounds,b*24,3),"half",Floats(bounds,b*24+12,3),"contents",mask,"planes",planes,"plane_surface_flags",surfaceFlags));
         }
         int vc=Count(U(header,0x64),300000),tc=Count(U(header,0x6c),600000),pc=Count(U(header,0x80),100000),ac=Count(U(header,0x88),100000);
         byte[] verts=r.Read(U(header,0x68),vc*12),tris=r.Read(U(header,0x70),tc*6),parts=r.Read(U(header,0x84),pc*12),trees=r.Read(U(header,0x8c),ac*32);
@@ -441,7 +452,7 @@ class ClientAssets {
             if(BitConverter.ToUInt16(trees,a*32+14)!=0)continue;
             uint part=U(trees,a*32+28);if(part>=pc)throw new Exception("collision partition index invalid");
             uint mat=BitConverter.ToUInt16(trees,a*32+12);byte[] material=r.Read(U(header,0x14)+mat*12,12);uint mask=U(material,8);
-            if((mask&0x02814011)==0||!done.Add(part))continue;
+            if((mask&(0x02814011|0x0280e831))==0||!done.Add(part))continue;
             uint first=U(parts,(int)part*12+4),block=parts[part*12+2];int n=parts[part*12];
             if(first+n>tc)throw new Exception("collision triangle span invalid");
             for(uint t=first;t<first+n;t++) {
@@ -453,7 +464,81 @@ class ClientAssets {
         var serializer=new JavaScriptSerializer();serializer.MaxJsonLength=64*1024*1024;
         Console.WriteLine(serializer.Serialize(Obj("schema_version",1,"read_only",true,
             "client_sha256","e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b",
-            "map",map,"ncs_crc",r.Word(0x02df7d90),"brushes",brushes,"triangles",triangles)));
+            "map",map,"ncs_crc",r.Word(0x02df7d90),"captured_contents_mask",0x02814011|0x0280e831,"brushes",brushes,"triangles",triangles)));
+    }
+    public static void ExportTrainingTarget(IntPtr process) {
+        var r=new ClientAssets(process);
+        if(r.Word(0x01a2e7ec)!=10)throw new Exception("load the map before training model capture");
+        string name="com_barrel_russian_fuel_dirt";uint entry;uint model=r.Find(4,name,out entry);
+        if(model==0)throw new Exception("training model is not loaded");
+        uint slot=r.Word(0x07817bac);if(slot>=256)throw new Exception("invalid cgs model slot");
+        uint cgs=r.Word(0x01a19510+slot*4)^0xce9af8cf;uint id=0;
+        byte[] models=r.Read(cgs+0xf0,1024*4);
+        for(uint i=1;i<1024;i++)if(U(models,(int)i*4)==model) {if(id!=0)throw new Exception("ambiguous training model index");id=i;}
+        if(id==0)throw new Exception("training model has no network index");
+        byte[] bounds=r.Read(model+0x140,24);float[] center=Floats(bounds,0,3),half=Floats(bounds,12,3);
+        float[] mins=new float[3],maxs=new float[3];for(int i=0;i<3;i++){if(half[i]<=0)throw new Exception("empty model bounds");mins[i]=center[i]-half[i];maxs[i]=center[i]+half[i];}
+        uint entitySlot=r.Word(0x07817bb0);if(entitySlot>=256)throw new Exception("entity slot invalid");
+        uint entities=r.Word(0x01a19510+entitySlot*4)^0x2168f672,entity=entities+19*0x238;
+        Console.WriteLine(new JavaScriptSerializer().Serialize(Obj("schema_version",1,"read_only",true,
+            "client_sha256","e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b",
+            "ncs_crc",r.Word(0x02df7d90),"model_name",name,"model",id,"bounds_min",mins,"bounds_max",maxs,
+            "entity19_model",r.Word(entity+0xf0+0x98),"entity19_origin",r.EntityOrigin(entity+0xf0),
+            "entity19_scale",Floats(r.Read(entity+0xf0+0x54,4),0,1)[0],
+            "entity19_dobj_slot",BitConverter.ToUInt16(r.Read(0x02ef4858+19*2,2),0))));
+    }
+    float[] EntityOrigin(uint state) {
+        // 0x412ce0: protected trBase float bits at ES+0x18/1c/20 are XYZ.
+        float[] origin=new float[3];
+        for(uint axis=0;axis<3;axis++) {
+            uint at=state+0x18+axis*4;
+            uint bits=~Word(0x00cda23c+axis*4)^Word(at)^at;
+            origin[axis]=BitConverter.ToSingle(BitConverter.GetBytes(bits),0);
+            if(Single.IsNaN(origin[axis])||Single.IsInfinity(origin[axis]))throw new Exception("nonfinite entity origin");
+        }
+        return origin;
+    }
+    public static void ExportBulletImpacts(IntPtr process) {
+        var r=new ClientAssets(process);
+        if(r.Word(0x01a2e7ec)!=10)throw new Exception("load the map before bullet impact capture");
+        uint slot=r.Word(0x07817bb0);if(slot>=256)throw new Exception("entity slot invalid");
+        uint entities=r.Word(0x01a19510+slot*4)^0x2168f672;
+        byte[] states=r.Read(entities,2046*0x238);var impacts=new List<object>();
+        for(int id=20;id<2046;id++) {
+            int next=id*0x238+0xf0;
+            if(U(states,next+4)!=96)continue;
+            impacts.Add(Obj("entity",id,"type",96,"normal",U(states,next+0xa8),"surface",U(states,next+0x90),
+                "shooter",U(states,next+0x80),"flags",U(states,next+0xdc),"weapon",U(states,next+0xd0),
+                "hit_entity",U(states,next+0x88),"processed",U(states,id*0x238+0x20c),"origin",r.EntityOrigin(entities+(uint)next)));
+        }
+        // 0x561220 uses the registered WeaponDef's+d0c row, not a fixed M4.
+        int weaponCount=Count(r.Word(0x07817b88),899);var weapons=new List<object>();var rows=new HashSet<uint>();
+        foreach(uint id in new uint[]{352,353,354,355})if(id<=weaponCount) {
+            uint def=r.Word(0x017f5a40+id*4);uint row=r.Word(def+0xd0c);
+            if(row<1||row>9)continue;
+            uint selected=new uint[]{0,0,2,8,4,5,7,10,12,13}[row];rows.Add(selected);
+            weapons.Add(Obj("weapon",id,"name",r.Name(r.Word(def)),"impact_row",row));
+        }
+        uint table=r.Word(0x01a1f920);var fx=new List<object>();
+        if(table>=0x10000) {
+            uint pool=r.Word(table+4);
+            foreach(uint row in rows)foreach(uint surface in new uint[]{0,3,5,6,11,12,13,16,17,18,21,23,25}) {
+                uint pointer=r.Word(pool+(row*35+surface)*4);
+                var types=new List<uint>();
+                if(pointer!=0) {
+                    byte[] definition=r.Read(pointer,0x20);int count=Count(U(definition,0x10)+U(definition,0x14)+U(definition,0x18),128);
+                    byte[] elements=r.Read(U(definition,0x1c),count*0x104);
+                    for(int element=0;element<count;element++)types.Add(elements[element*0x104+0xb0]);
+                }
+                fx.Add(Obj("row",row,"surface",surface,"loaded",pointer!=0,"name",pointer==0?null:r.Name(r.Word(pointer)),"element_types",types));
+            }
+        }
+        Console.WriteLine(new JavaScriptSerializer().Serialize(Obj("schema_version",1,"read_only",true,
+            "client_sha256","e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b",
+            "impacts",impacts,"weapons",weapons,"impact_fx",fx,
+            "mark_enabled_value",r.Word(r.Word(0x02921a48)+0xc),
+            "mark_enable_dvar",r.Name(r.Word(r.Word(0x02921a48))),
+            "mark_disabled_byte",r.Read(0x02928a56,1)[0],"mark_suppressed_word",r.Word(0x02927a18))));
     }
     static float[] Floats(byte[] bytes,int offset,int count) {
         var values=new float[count];for(int i=0;i<count;i++){values[i]=BitConverter.ToSingle(bytes,offset+i*4);if(Single.IsNaN(values[i])||Single.IsInfinity(values[i]))throw new Exception("nonfinite geometry");}return values;

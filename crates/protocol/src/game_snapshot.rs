@@ -136,6 +136,38 @@ pub fn player_frame_with_motion(
     angles: [u16; 3],
     motion: Option<MotionSnapshot>,
 ) -> Result<Vec<u8>, LobbyError> {
+    player_frame_with_world(
+        server_time,
+        command_time,
+        origin,
+        establish_baseline,
+        equipment,
+        angles,
+        WorldSnapshot {
+            motion,
+            target: None,
+            impacts: &[],
+        },
+    )
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct WorldSnapshot<'a> {
+    pub motion: Option<MotionSnapshot>,
+    pub target: Option<crate::game_target::TargetSnapshot>,
+    pub impacts: &'a [crate::game_impact::ImpactSnapshot],
+}
+
+pub fn player_frame_with_world(
+    server_time: u32,
+    command_time: u32,
+    origin: Option<[f32; 3]>,
+    establish_baseline: bool,
+    equipment: Option<Equipment>,
+    angles: [u16; 3],
+    world: WorldSnapshot<'_>,
+) -> Result<Vec<u8>, LobbyError> {
+    let motion = world.motion;
     let weapon = equipment.map(|e| e.weapon);
     let ammo = equipment.and_then(|e| e.ammo);
     let secondary = equipment.and_then(|e| e.secondary);
@@ -434,6 +466,10 @@ pub fn player_frame_with_motion(
             out.bits(u32::from(coordinate.round_ties_even() as i16 as u16), 16);
         }
     }
+    if let Some(target) = world.target {
+        crate::game_target::write_target(&mut out, target, establish_baseline)?;
+    }
+    crate::game_impact::write_impacts(&mut out, world.impacts, establish_baseline)?;
     // Entities (0x46c2f0): explicit 11-bit sentinel, not a presence gate.
     out.bits(0, 1);
     out.bits(1, 1);

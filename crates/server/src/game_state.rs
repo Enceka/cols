@@ -8,6 +8,12 @@ use std::sync::Arc;
 #[path = "game_loadout.rs"]
 mod loadout;
 
+pub(crate) struct SnapshotWorld<'a> {
+    pub motion: Option<&'a crate::game_motion::Motion>,
+    pub target: Option<codol_protocol::game_target::TargetSnapshot>,
+    pub impacts: &'a [codol_protocol::game_impact::ImpactSnapshot],
+}
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct BootstrapWeapon {
@@ -35,6 +41,8 @@ struct BootstrapWeapon {
     fire_type: Option<u32>,
     #[serde(default)]
     alternate_base: Option<u16>,
+    #[serde(default)]
+    ballistics: Option<crate::game_combat::Ballistics>,
 }
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -78,6 +86,8 @@ pub struct PreparedGameState {
     #[serde(default)]
     secondary_weapon: Option<BootstrapWeapon>,
     #[serde(default)]
+    training_target: Option<crate::game_combat::TargetConfig>,
+    #[serde(default)]
     arsenal_file: Option<std::path::PathBuf>,
     #[serde(default)]
     collision_file: Option<std::path::PathBuf>,
@@ -95,6 +105,121 @@ pub struct PreparedGameState {
     snapshot_frames: u32,
 }
 impl PreparedGameState {
+    pub fn prepare_training_target(
+        state_path: &Path,
+        model_path: &Path,
+        output: &Path,
+        distance: f32,
+        scale: f32,
+    ) -> Result<()> {
+        #[derive(Deserialize)]
+        struct ModelCapture {
+            schema_version: u32,
+            read_only: bool,
+            client_sha256: String,
+            ncs_crc: u32,
+            model_name: String,
+            model: u16,
+            bounds_min: [f32; 3],
+            bounds_max: [f32; 3],
+        }
+        ensure!(
+            distance.is_finite() && (64.0..=400.0).contains(&distance),
+            "training target distance must be 64..400 world units"
+        );
+        ensure!(
+            scale.is_finite() && (0.25..=4.0).contains(&scale),
+            "target scale outside supported range"
+        );
+        ensure!(
+            std::fs::metadata(model_path)?.len() <= 65536,
+            "target model capture too large"
+        );
+        let raw = std::fs::read(model_path)?;
+        let model: ModelCapture = serde_json::from_slice(&raw)?;
+        let mut state = Self::load(state_path)?;
+        ensure!(
+            model.schema_version == 1
+                && model.read_only
+                && model.client_sha256 == codol_protocol::CLIENT_SHA256
+                && model.ncs_crc == state.ncs_crc
+                && model.model_name == "com_barrel_russian_fuel_dirt",
+            "training model identity mismatch"
+        );
+        let collision = state
+            .collision
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("target needs map collision"))?;
+        ensure!(
+            collision.captured_contents_mask & crate::game_motion::SHOT_MASK
+                == crate::game_motion::SHOT_MASK,
+            "capture both movement and shooting contents before target preparation"
+        );
+        let spawn = state
+            .spawn_origin
+            .ok_or_else(|| anyhow::anyhow!("target needs player spawn"))?;
+        let floor_at = |x: f32, y: f32| -> Result<f32> {
+            let start = [x, y, spawn[2] + 512.0];
+            let end = [x, y, spawn[2] - 2048.0];
+            let hit = collision.raycast(start, end);
+            ensure!(
+                hit.contents != 0 && hit.fraction < 1.0 && !hit.start_solid && hit.normal[2] >= 0.7,
+                "no walkable ground under target candidate"
+            );
+            Ok(start[2] + (end[2] - start[2]) * hit.fraction)
+        };
+        let mut config = crate::game_combat::TargetConfig {
+            entity_number: 19,
+            model: model.model,
+            origin: [spawn[0] + distance, spawn[1], 0.0],
+            scale,
+            bounds_min: model.bounds_min,
+            bounds_max: model.bounds_max,
+            health: 100,
+            respawn_msec: 3000,
+            source_sha256: format!("{:x}", Sha256::digest(&raw)),
+        };
+        config.origin[2] =
+            (floor_at(config.origin[0], config.origin[1])? - config.bounds_min[2] * scale).ceil();
+        // Entity coordinates use integral world positions; use precisely those
+        // positions for the server's hit volume as well as its visible model.
+        config.origin = config.origin.map(f32::round_ties_even);
+        config.validate()?;
+        let eye = [spawn[0], spawn[1], floor_at(spawn[0], spawn[1])? + 60.0];
+        let center = std::array::from_fn(|i| {
+            config.origin[i] + (config.bounds_min[i] + config.bounds_max[i]) * 0.5 * scale
+        });
+        let sight = collision.raycast(eye, center);
+        ensure!(
+            sight.contents == 0 || sight.fraction >= 1.0,
+            "training target candidate is behind map geometry"
+        );
+        state.training_target = Some(config.clone());
+        state.validate()?;
+        let mut json: serde_json::Value = serde_json::from_slice(&std::fs::read(state_path)?)?;
+        json["training_target"] = serde_json::json!({"entity_number":config.entity_number,"model":config.model,"origin":config.origin,"scale":config.scale,"bounds_min":config.bounds_min,"bounds_max":config.bounds_max,"health":config.health,"respawn_msec":config.respawn_msec,"source_sha256":config.source_sha256});
+        for name in ["arsenal_file", "collision_file"] {
+            if let Some(file) = json[name].as_str() {
+                json[name] = serde_json::Value::String(
+                    state_path
+                        .parent()
+                        .unwrap_or(Path::new("."))
+                        .join(file)
+                        .canonicalize()?
+                        .to_string_lossy()
+                        .into(),
+                );
+            }
+        }
+        use std::io::Write;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(output)?;
+        file.write_all(&serde_json::to_vec_pretty(&json)?)?;
+        file.write_all(b"\n")?;
+        Ok(())
+    }
     pub fn with_snapshot_frames(mut self, frames: u32) -> Result<Self> {
         ensure!(
             (1..=18000).contains(&frames),
@@ -138,6 +263,10 @@ impl PreparedGameState {
     fn validate(&self) -> Result<()> {
         let state = self;
         for weapon in state.bootstrap_weapon.iter().chain(&state.secondary_weapon) {
+            ensure!(
+                weapon.ballistics.is_none_or(|b| b.valid()),
+                "invalid weapon ballistics"
+            );
             ensure!(
                 state.spawn_origin.is_some()
                     && !weapon.name.is_empty()
@@ -207,6 +336,21 @@ impl PreparedGameState {
                     "invalid bootstrap ammo seed"
                 );
             }
+        }
+        if let Some(target) = &state.training_target {
+            target.validate()?;
+            ensure!(
+                state.collision.is_some() && state.arsenal.is_some(),
+                "training combat requires real collision and weapon resources"
+            );
+            ensure!(
+                state
+                    .collision
+                    .as_ref()
+                    .is_some_and(|c| c.captured_contents_mask & crate::game_motion::SHOT_MASK
+                        == crate::game_motion::SHOT_MASK),
+                "training combat requires collision captured with target shot contents"
+            );
         }
         ensure!(
             state.spawn_origin.is_some() == state.map_entities_sha256.is_some(),
@@ -405,6 +549,22 @@ impl PreparedGameState {
             n if n < 900 => Some(n as u16),
             _ => anyhow::bail!("alternate weapon base outside registry"),
         };
+        let ballistics = if word(0x480) == 4 || w.definition[0xd79] != 0 {
+            None
+        } else {
+            let damage = word(0xbb4);
+            let near_range = f32::from_bits(word(0xbcc));
+            ensure!(
+                damage <= u32::from(u16::MAX),
+                "weapon damage outside supported limits"
+            );
+            let value = crate::game_combat::Ballistics {
+                damage: damage as u16,
+                range: 8192.0,
+                near_range,
+            };
+            if value.valid() { Some(value) } else { None }
+        };
         Ok(BootstrapWeapon {
             name: w.name,
             index: w.index,
@@ -423,6 +583,7 @@ impl PreparedGameState {
             move_scale: Some(scale),
             fire_type: Some(fire_type),
             alternate_base,
+            ballistics,
         })
     }
     pub(crate) fn weapon_configstrings(&self) -> Vec<(u16, String)> {
@@ -573,30 +734,35 @@ impl PreparedGameState {
         establish_baseline: bool,
         angles: [u16; 3],
         equipment: Option<codol_protocol::game_snapshot::Equipment>,
-        motion: Option<&crate::game_motion::Motion>,
+        world: SnapshotWorld<'_>,
     ) -> Result<Vec<u8>> {
-        Ok(codol_protocol::game_snapshot::player_frame_with_motion(
+        let motion = world.motion;
+        Ok(codol_protocol::game_snapshot::player_frame_with_world(
             server_time,
             command_time,
             motion.map(|m| m.origin).or(self.spawn_origin),
             establish_baseline,
             equipment,
             angles,
-            motion.map(|m| codol_protocol::game_snapshot::MotionSnapshot {
-                velocity: m.velocity,
-                flags: m.flags,
-                ground_entity: m.ground_entity,
-                view_height: m.view_height,
-                view_height_target: m.view_height_target,
-                speed: m.speed,
-                gravity: m.gravity,
-                bob_cycle: m.bob_cycle,
-                view_height_lerp_time: m.view_height_lerp_time,
-                view_height_lerp_target: m.view_height_lerp_target,
-                view_height_lerp_down: m.view_height_lerp_down,
-                jump_time: m.jump_time,
-                jump_origin_z: m.jump_origin_z,
-            }),
+            codol_protocol::game_snapshot::WorldSnapshot {
+                target: world.target,
+                impacts: world.impacts,
+                motion: motion.map(|m| codol_protocol::game_snapshot::MotionSnapshot {
+                    velocity: m.velocity,
+                    flags: m.flags,
+                    ground_entity: m.ground_entity,
+                    view_height: m.view_height,
+                    view_height_target: m.view_height_target,
+                    speed: m.speed,
+                    gravity: m.gravity,
+                    bob_cycle: m.bob_cycle,
+                    view_height_lerp_time: m.view_height_lerp_time,
+                    view_height_lerp_target: m.view_height_lerp_target,
+                    view_height_lerp_down: m.view_height_lerp_down,
+                    jump_time: m.jump_time,
+                    jump_origin_z: m.jump_origin_z,
+                }),
+            },
         )?)
     }
     pub(crate) fn player(&self) -> Option<crate::game_player::Player> {
@@ -644,6 +810,9 @@ impl PreparedGameState {
         if let Some(kind) = w.fire_type {
             player.set_fire_type(kind).expect("validated fire type");
         }
+        if let Some(stats) = w.ballistics {
+            player.set_ballistics(stats);
+        }
         player
     }
     pub(crate) fn motion(&self) -> Option<crate::game_motion::Motion> {
@@ -655,6 +824,11 @@ impl PreparedGameState {
                 m.command_time = 1000;
                 m
             })
+    }
+    pub(crate) fn combat(&self) -> Option<crate::game_combat::CombatWorld> {
+        self.training_target
+            .clone()
+            .map(crate::game_combat::CombatWorld::new)
     }
     pub(crate) fn input_base(&self) -> codol_protocol::game_usercmd::UserCommand {
         let mut base = codol_protocol::game_usercmd::UserCommand::default();
@@ -689,6 +863,7 @@ pub(crate) fn synthetic() -> PreparedGameState {
         bootstrap_weapon: None,
         player_loadout: None,
         secondary_weapon: None,
+        training_target: None,
         arsenal_file: None,
         collision_file: None,
         arsenal: None,

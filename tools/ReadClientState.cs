@@ -48,7 +48,9 @@ class ReadClientState {
             bool arsenal=args.Length==1 && args[0]=="--arsenal";
             bool collision=args.Length==1 && args[0]=="--collision";
             bool weaponRegistry=args.Length==1 && args[0]=="--weapon-registry";
-            if(args.Length!=0 && !assets && !profiles && !netConstants && !mapEntities && !bootstrapWeapon && !weaponModels && !arsenal && !collision && !weaponRegistry) throw new Exception("only fixed extraction modes are supported");
+            bool trainingTarget=args.Length==1 && args[0]=="--training-target";
+            bool bulletImpacts=args.Length==1 && args[0]=="--bullet-impacts";
+            if(args.Length!=0 && !assets && !profiles && !netConstants && !mapEntities && !bootstrapWeapon && !weaponModels && !arsenal && !collision && !weaponRegistry && !trainingTarget && !bulletImpacts) throw new Exception("only fixed extraction modes are supported");
             IntPtr snapshot=CreateToolhelp32Snapshot(2,0); uint found=0;
             if(snapshot==new IntPtr(-1)) throw new Exception("process snapshot failed");
             try {
@@ -84,6 +86,8 @@ class ReadClientState {
                 if(arsenal) { ClientAssets.ExportArsenal(process);return 0; }
                 if(collision) { ClientAssets.ExportCollision(process);return 0; }
                 if(weaponRegistry) { ClientAssets.ExportWeaponRegistry(process);return 0; }
+                if(trainingTarget) { ClientAssets.ExportTrainingTarget(process);return 0; }
+                if(bulletImpacts) { ClientAssets.ExportBulletImpacts(process);return 0; }
                 Console.WriteLine("{");
                 Field(process,"connection_state",0x01a2e7ec,4);
                 Field(process,"sound_fade_current_bits",0x0780e4b0,4);

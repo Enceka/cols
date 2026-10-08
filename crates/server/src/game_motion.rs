@@ -17,6 +17,9 @@ type V3 = [f32; 3];
 pub const SPEED: u16 = 190;
 pub const GRAVITY: u16 = 800;
 pub const PLAYER_MASK: u32 = 0x0281_4011;
+/// Target 3.3.3.3 bullet trace mask (pushes at 0x55a4a0 / 0x55a4c3).
+/// It includes clipshot geometry and excludes player-only clip volumes.
+pub const SHOT_MASK: u32 = 0x0280_e831;
 pub const WORLD: u16 = 2046;
 pub const NONE: u16 = 2047;
 const SKIN: f32 = 0.03125;
@@ -85,8 +88,13 @@ struct Export {
     client_sha256: String,
     map: String,
     ncs_crc: u32,
+    #[serde(default = "legacy_contents_mask")]
+    captured_contents_mask: u32,
     brushes: Vec<BrushExport>,
     triangles: Vec<TriangleExport>,
+}
+fn legacy_contents_mask() -> u32 {
+    PLAYER_MASK
 }
 #[derive(Deserialize)]
 struct BrushExport {
@@ -94,6 +102,9 @@ struct BrushExport {
     half: V3,
     contents: u32,
     planes: Vec<[f32; 4]>,
+    /// Side planes followed by +X,-X,+Y,-Y,+Z,-Z bound faces.
+    #[serde(default)]
+    plane_surface_flags: Vec<u32>,
 }
 #[derive(Deserialize)]
 struct TriangleExport {
@@ -104,8 +115,13 @@ struct TriangleExport {
 
 #[derive(Debug)]
 enum Shape {
-    Brush(Vec<[f32; 4]>),
-    Triangle { vertices: [V3; 3] },
+    Brush {
+        planes: Vec<[f32; 4]>,
+        surfaces: Vec<u32>,
+    },
+    Triangle {
+        vertices: [V3; 3],
+    },
 }
 #[derive(Debug)]
 struct Primitive {
@@ -139,6 +155,7 @@ impl Node {
 pub struct Collision {
     pub map: String,
     pub ncs_crc: u32,
+    pub captured_contents_mask: u32,
     primitives: Vec<Primitive>,
     indices: Vec<usize>,
     nodes: Vec<Node>,
@@ -151,6 +168,7 @@ pub struct Trace {
     pub start_solid: bool,
     pub all_solid: bool,
     pub surface_flags: u32,
+    pub contents: u32,
 }
 impl Default for Trace {
     fn default() -> Self {
@@ -160,6 +178,7 @@ impl Default for Trace {
             start_solid: false,
             all_solid: false,
             surface_flags: 0,
+            contents: 0,
         }
     }
 }
@@ -205,6 +224,16 @@ impl Collision {
                     && b.planes.len() <= 4096,
                 "invalid collision brush"
             );
+            ensure!(
+                b.plane_surface_flags.is_empty()
+                    || b.plane_surface_flags.len() == b.planes.len() + 6,
+                "brush surface count does not match its planes"
+            );
+            let surfaces = if b.plane_surface_flags.is_empty() {
+                vec![0; b.planes.len() + 6]
+            } else {
+                b.plane_surface_flags
+            };
             let bounds = Bounds::center_half(b.center, b.half);
             ensure!(
                 valid(bounds.min) && valid(bounds.max),
@@ -231,12 +260,12 @@ impl Collision {
                 n[3] = -bounds.min[i];
                 planes.push(n);
             }
-            if b.contents & PLAYER_MASK != 0 {
+            if b.contents & (PLAYER_MASK | SHOT_MASK) != 0 {
                 primitives.push(Primitive {
                     bounds,
                     contents: b.contents,
                     surface_flags: 0,
-                    shape: Shape::Brush(planes),
+                    shape: Shape::Brush { planes, surfaces },
                 });
             }
         }
@@ -252,7 +281,7 @@ impl Collision {
             ];
             let face = normalized(cross(edges[0], edges[1]));
             // Degenerate serialized triangles have no area and cannot collide.
-            if length(face) < 0.5 || t.contents & PLAYER_MASK == 0 {
+            if length(face) < 0.5 || t.contents & (PLAYER_MASK | SHOT_MASK) == 0 {
                 continue;
             }
             let bounds = Bounds {
@@ -280,11 +309,12 @@ impl Collision {
         }
         ensure!(
             !primitives.is_empty(),
-            "collision export contains no player-solid geometry"
+            "collision export contains no player- or shot-solid geometry"
         );
         let mut collision = Self {
             map: export.map,
             ncs_crc: export.ncs_crc,
+            captured_contents_mask: export.captured_contents_mask,
             indices: (0..primitives.len()).collect(),
             primitives,
             nodes: Vec::new(),
@@ -341,6 +371,60 @@ impl Collision {
         self.trace_node(0, bounds, start, end, capsule, &mut result);
         result
     }
+    /// Cast a zero-width segment through exported world geometry. Unlike the
+    /// player sweep, this applies neither the capsule radius nor movement skin.
+    /// A point beginning inside a solid brush reports fraction zero even when
+    /// its endpoint escapes, so a shot cannot originate through that brush.
+    pub fn raycast(&self, start: V3, end: V3) -> Trace {
+        let bounds = Bounds {
+            min: std::array::from_fn(|i| start[i].min(end[i])),
+            max: std::array::from_fn(|i| start[i].max(end[i])),
+        };
+        let mut result = Trace::default();
+        self.raycast_node(0, bounds, start, end, &mut result);
+        result
+    }
+    fn raycast_node(&self, index: usize, bounds: Bounds, start: V3, end: V3, result: &mut Trace) {
+        if !self.nodes[index].bounds().intersects(bounds) {
+            return;
+        }
+        match self.nodes[index] {
+            Node::Branch { left, right, .. } => {
+                self.raycast_node(left, bounds, start, end, result);
+                self.raycast_node(right, bounds, start, end, result);
+            }
+            Node::Leaf { first, count, .. } => {
+                for &i in &self.indices[first..first + count] {
+                    let primitive = &self.primitives[i];
+                    if primitive.contents & SHOT_MASK == 0 || !primitive.bounds.intersects(bounds) {
+                        continue;
+                    }
+                    let hit = match &primitive.shape {
+                        Shape::Brush { planes, surfaces } => {
+                            ray_brush(planes, surfaces, start, end)
+                        }
+                        Shape::Triangle { vertices } => ray_triangle(*vertices, start, end),
+                    };
+                    let Some(hit) = hit else { continue };
+                    let already_start_solid = result.start_solid;
+                    result.start_solid |= hit.start_solid;
+                    result.all_solid |= hit.all_solid;
+                    if hit.fraction < result.fraction
+                        || (hit.fraction == result.fraction
+                            && (result.contents == 0 || (hit.start_solid && !already_start_solid)))
+                    {
+                        result.fraction = hit.fraction;
+                        result.normal = hit.normal;
+                        result.surface_flags = match primitive.shape {
+                            Shape::Brush { .. } => hit.surface_flags,
+                            _ => primitive.surface_flags,
+                        };
+                        result.contents = primitive.contents;
+                    }
+                }
+            }
+        }
+    }
     fn trace_node(
         &self,
         index: usize,
@@ -365,7 +449,9 @@ impl Collision {
                         continue;
                     }
                     let hit = match &p.shape {
-                        Shape::Brush(planes) => sweep_brush(planes, start, end, capsule),
+                        Shape::Brush { planes, surfaces } => {
+                            sweep_brush(planes, surfaces, start, end, capsule)
+                        }
                         Shape::Triangle { vertices } => {
                             sweep_triangle(*vertices, start, end, capsule)
                         }
@@ -375,12 +461,160 @@ impl Collision {
                     if hit.fraction < result.fraction {
                         result.fraction = hit.fraction;
                         result.normal = hit.normal;
-                        result.surface_flags = p.surface_flags;
+                        result.surface_flags = match p.shape {
+                            Shape::Brush { .. } => hit.surface_flags,
+                            _ => p.surface_flags,
+                        };
+                        result.contents = p.contents;
                     }
                 }
             }
         }
     }
+}
+
+/// Exact point-versus-convex-brush interval clipping. Movement skin must not
+/// move a bullet's reported intersection away from the actual world surface.
+fn ray_brush(planes: &[[f32; 4]], surfaces: &[u32], start: V3, end: V3) -> Option<Trace> {
+    let mut enter = 0.0f64;
+    let mut leave = 1.0f64;
+    let mut normal = [0.0; 3];
+    let mut surface_flags = 0;
+    let mut start_inside = true;
+    let mut end_inside = true;
+    for (index, plane) in planes.iter().enumerate() {
+        let n = [plane[0], plane[1], plane[2]];
+        let distance = |point: V3| {
+            (0..3)
+                .map(|i| f64::from(n[i]) * f64::from(point[i]))
+                .sum::<f64>()
+                - f64::from(plane[3])
+        };
+        let first = distance(start);
+        let second = distance(end);
+        start_inside &= first < 0.0;
+        end_inside &= second <= 0.0;
+        if first > 0.0 && second > 0.0 {
+            return None;
+        }
+        if first <= 0.0 && second <= 0.0 {
+            if first == 0.0 && length(normal) == 0.0 {
+                normal = normalized(n);
+                surface_flags = surfaces[index];
+            }
+            continue;
+        }
+        let fraction = first / (first - second);
+        if first > second {
+            if fraction >= enter {
+                enter = fraction;
+                normal = normalized(n);
+                surface_flags = surfaces[index];
+            }
+        } else {
+            leave = leave.min(fraction);
+        }
+        if enter > leave {
+            return None;
+        }
+    }
+    Some(Trace {
+        fraction: if start_inside { 0.0 } else { enter as f32 },
+        normal: if start_inside { [0.0; 3] } else { normal },
+        start_solid: start_inside,
+        all_solid: start_inside && end_inside,
+        surface_flags,
+        ..Trace::default()
+    })
+}
+
+/// Double-sided segment/triangle intersection, including boundary vertices,
+/// edges and coplanar segments. Intermediate arithmetic uses f64 so a long
+/// hitscan segment does not lose small barycentric distances near a map edge.
+fn ray_triangle(vertices: [V3; 3], start: V3, end: V3) -> Option<Trace> {
+    let difference =
+        |a: V3, b: V3| -> [f64; 3] { std::array::from_fn(|i| f64::from(a[i]) - f64::from(b[i])) };
+    let dot64 = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    let cross64 = |a: [f64; 3], b: [f64; 3]| {
+        [
+            a[1] * b[2] - a[2] * b[1],
+            a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0],
+        ]
+    };
+    let first_edge = difference(vertices[1], vertices[0]);
+    let second_edge = difference(vertices[2], vertices[0]);
+    let start_relative = difference(start, vertices[0]);
+    let delta = difference(end, start);
+    let face = cross64(first_edge, second_edge);
+    let area_squared = dot64(face, face);
+    if area_squared == 0.0 {
+        return None;
+    }
+    let denominator = dot64(face, delta);
+    let numerator = -dot64(face, start_relative);
+    let edges = [
+        ([0.0; 3], first_edge),
+        (
+            first_edge,
+            std::array::from_fn(|i| second_edge[i] - first_edge[i]),
+        ),
+        (second_edge, second_edge.map(|x| -x)),
+    ];
+    let edge_tolerance = area_squared * 1e-12;
+    let parallel_tolerance = (area_squared * dot64(delta, delta)).sqrt() * 1e-12;
+    let fraction;
+    if denominator.abs() > parallel_tolerance {
+        let intersection = numerator / denominator;
+        if !(-1e-12..=1.0 + 1e-12).contains(&intersection) {
+            return None;
+        }
+        let point: [f64; 3] = std::array::from_fn(|i| start_relative[i] + delta[i] * intersection);
+        for (origin, edge) in edges {
+            let relative = std::array::from_fn(|i| point[i] - origin[i]);
+            if dot64(cross64(edge, relative), face) < -edge_tolerance {
+                return None;
+            }
+        }
+        fraction = intersection.clamp(0.0, 1.0);
+    } else {
+        // Parallel segments can hit only when they lie in the triangle's
+        // plane. Clip their interval against its three oriented edge planes.
+        if numerator.abs() > area_squared.sqrt() * 1e-9 {
+            return None;
+        }
+        let mut enter = 0.0f64;
+        let mut leave = 1.0f64;
+        for (origin, edge) in edges {
+            let relative = std::array::from_fn(|i| start_relative[i] - origin[i]);
+            let distance = dot64(cross64(edge, relative), face);
+            let speed = dot64(cross64(edge, delta), face);
+            if speed.abs() <= edge_tolerance {
+                if distance < -edge_tolerance {
+                    return None;
+                }
+            } else if speed > 0.0 {
+                enter = enter.max(-distance / speed);
+            } else {
+                leave = leave.min(-distance / speed);
+            }
+            if enter > leave + 1e-12 {
+                return None;
+            }
+        }
+        fraction = enter.clamp(0.0, 1.0);
+    }
+    let mut normal = normalized(face.map(|x| x as f32));
+    if denominator > 0.0 {
+        normal = mul(normal, -1.0);
+    }
+    // A terrain triangle has no volume: touching it at the start is a hit,
+    // but is not reported as an interior/all-solid brush penetration.
+    Some(Trace {
+        fraction: fraction as f32,
+        normal,
+        ..Trace::default()
+    })
 }
 
 #[derive(Clone, Copy)]
@@ -405,13 +639,20 @@ impl Capsule {
     }
 }
 
-fn sweep_brush(planes: &[[f32; 4]], start: V3, end: V3, capsule: Capsule) -> Trace {
+fn sweep_brush(
+    planes: &[[f32; 4]],
+    surfaces: &[u32],
+    start: V3,
+    end: V3,
+    capsule: Capsule,
+) -> Trace {
     let mut enter = -f32::INFINITY;
     let mut leave = 1.0f32;
     let mut normal = [0.0; 3];
+    let mut surface_flags = 0;
     let mut outside = false;
     let mut end_out = false;
-    for p in planes {
+    for (index, p) in planes.iter().enumerate() {
         let n = [p[0], p[1], p[2]];
         let radius = capsule.support(n);
         let d1 = dot(n, start) - p[3] - radius;
@@ -429,6 +670,7 @@ fn sweep_brush(planes: &[[f32; 4]], start: V3, end: V3, capsule: Capsule) -> Tra
             if t > enter {
                 enter = t;
                 normal = n;
+                surface_flags = surfaces.get(index).copied().unwrap_or(0);
             }
         } else {
             leave = leave.min((d1 + SKIN) / (d1 - d2));
@@ -449,6 +691,7 @@ fn sweep_brush(planes: &[[f32; 4]], start: V3, end: V3, capsule: Capsule) -> Tra
         Trace {
             fraction: enter,
             normal,
+            surface_flags,
             ..Trace::default()
         }
     } else {
@@ -1126,6 +1369,7 @@ mod tests {
             client_sha256: CLIENT_SHA.into(),
             map: "maps/mp/test.d3dbsp".into(),
             ncs_crc: 0,
+            captured_contents_mask: PLAYER_MASK | SHOT_MASK,
             brushes,
             triangles,
         })
@@ -1137,6 +1381,7 @@ mod tests {
             half,
             contents: 1,
             planes: vec![],
+            plane_surface_flags: vec![],
         }
     }
     fn floor() -> BrushExport {
@@ -1319,7 +1564,7 @@ mod tests {
         let normal = normalized([-0.25, 0.0, 1.0]);
         let planes = [[normal[0], normal[1], normal[2], 0.0]];
         let capsule = Capsule::new(70.0);
-        let trace = sweep_brush(&planes, [0.0, 0.0, 45.0], [0.0, 0.0, 25.0], capsule);
+        let trace = sweep_brush(&planes, &[], [0.0, 0.0, 45.0], [0.0, 0.0, 25.0], capsule);
         let foot = 10.0 - 20.0 * trace.fraction;
         let expected = 15.0 * ((1.0f32 + 0.25 * 0.25).sqrt() - 1.0) + SKIN / normal[2];
         assert!((foot - expected).abs() < 0.0001, "{trace:?}, foot={foot}");
@@ -1428,5 +1673,133 @@ mod tests {
         let resting = m.origin;
         tick(&mut m, &c, 0, 0, 600);
         assert_eq!(m.origin, resting, "{m:?}");
+    }
+    #[test]
+    fn raycast_returns_the_nearest_world_brush_without_player_radius_or_skin() {
+        let mut brushes = (0..12)
+            .map(|i| brush([500.0 + i as f32 * 100.0, 0.0, 50.0], [10.0, 10.0, 50.0]))
+            .collect::<Vec<_>>();
+        brushes.push(brush([100.0, 0.0, 50.0], [10.0, 10.0, 50.0]));
+        let c = world(brushes, vec![]);
+        let hit = c.raycast([0.0, 0.0, 30.0], [2000.0, 0.0, 30.0]);
+        assert!((hit.fraction - 90.0 / 2000.0).abs() < 1e-7, "{hit:?}");
+        assert_eq!(hit.normal, [-1.0, 0.0, 0.0]);
+        assert_eq!(hit.contents, 1);
+        assert!(!hit.start_solid && !hit.all_solid);
+        let clear = c.raycast([0.0, 11.0, 30.0], [200.0, 11.0, 30.0]);
+        assert_eq!(clear.fraction, 1.0, "{clear:?}");
+        assert_eq!(clear.contents, 0);
+        assert!(c.trace([0.0, 11.0, 0.0], [200.0, 11.0, 0.0], 70.0).fraction < 1.0);
+        let short = c.raycast([0.0, 0.0, 30.0], [89.0, 0.0, 30.0]);
+        assert_eq!(short.contents, 0, "{short:?}");
+        let endpoint = c.raycast([0.0, 0.0, 30.0], [90.0, 0.0, 30.0]);
+        assert_eq!(endpoint.fraction, 1.0);
+        assert_eq!(endpoint.contents, 1, "{endpoint:?}");
+    }
+    #[test]
+    fn raycast_brush_start_solid_blocks_a_shot_even_when_its_endpoint_escapes() {
+        let c = world(vec![brush([0.0; 3], [10.0; 3])], vec![]);
+        let escape = c.raycast([0.0; 3], [100.0, 0.0, 0.0]);
+        assert_eq!(escape.fraction, 0.0);
+        assert!(escape.start_solid && !escape.all_solid, "{escape:?}");
+        assert_eq!(escape.contents, 1);
+        let inside = c.raycast([0.0; 3], [5.0, 0.0, 0.0]);
+        assert!(inside.start_solid && inside.all_solid, "{inside:?}");
+        assert_eq!(inside.fraction, 0.0);
+        let stationary = c.raycast([0.0; 3], [0.0; 3]);
+        assert!(stationary.start_solid && stationary.all_solid);
+    }
+    #[test]
+    fn raycast_terrain_is_double_sided_and_preserves_surface_metadata() {
+        let c = world(
+            vec![],
+            vec![TriangleExport {
+                vertices: [[0.0, 0.0, 10.0], [100.0, 0.0, 10.0], [0.0, 100.0, 10.0]],
+                contents: 1,
+                surface_flags: 0x0050_0100,
+            }],
+        );
+        let front = c.raycast([25.0, 25.0, 100.0], [25.0, 25.0, -100.0]);
+        assert!((front.fraction - 0.45).abs() < 1e-7, "{front:?}");
+        assert_eq!(front.normal, [0.0, 0.0, 1.0]);
+        assert_eq!(front.surface_flags, 0x0050_0100);
+        assert_eq!(front.contents, 1);
+        assert!(!front.start_solid && !front.all_solid);
+        let back = c.raycast([25.0, 25.0, -100.0], [25.0, 25.0, 100.0]);
+        assert!((back.fraction - 0.55).abs() < 1e-7, "{back:?}");
+        assert_eq!(back.normal, [0.0, 0.0, -1.0]);
+        let parallel = c.raycast([25.0, 25.0, 11.0], [35.0, 25.0, 11.0]);
+        assert_eq!(parallel.contents, 0, "{parallel:?}");
+        let beyond_face = c.raycast([60.0, 60.0, 20.0], [60.0, 60.0, 0.0]);
+        assert_eq!(beyond_face.contents, 0, "{beyond_face:?}");
+    }
+    #[test]
+    fn raycast_terrain_includes_edges_vertices_and_coplanar_entry() {
+        let c = world(
+            vec![],
+            vec![TriangleExport {
+                vertices: [[0.0, 0.0, 0.0], [100.0, 0.0, 0.0], [0.0, 100.0, 0.0]],
+                contents: 1,
+                surface_flags: 7,
+            }],
+        );
+        for point in [[0.0, 0.0], [50.0, 0.0], [50.0, 50.0], [100.0, 0.0]] {
+            let hit = c.raycast([point[0], point[1], 10.0], [point[0], point[1], -10.0]);
+            assert_eq!(hit.fraction, 0.5, "point={point:?}, {hit:?}");
+            assert_eq!(hit.contents, 1);
+        }
+        let coplanar = c.raycast([-25.0, 25.0, 0.0], [75.0, 25.0, 0.0]);
+        assert_eq!(coplanar.fraction, 0.25, "{coplanar:?}");
+        assert_eq!(coplanar.contents, 1);
+        let stationary = c.raycast([25.0, 25.0, 0.0], [25.0, 25.0, 0.0]);
+        assert_eq!(stationary.fraction, 0.0);
+        assert_eq!(stationary.contents, 1);
+        assert!(!stationary.start_solid && !stationary.all_solid);
+        let outside = c.raycast([60.0, 60.0, 0.0], [70.0, 70.0, 0.0]);
+        assert_eq!(outside.contents, 0, "{outside:?}");
+    }
+    #[test]
+    fn raycast_uses_shot_contents_while_player_sweeps_keep_their_own_mask() {
+        // Exercise each shot-only category separately: otherwise the older
+        // C1 mask's missing 0x8000 bit is hidden by an accompanying clipshot bit.
+        for shot_contents in [0x0000_2000, 0x0000_8000] {
+            let mut player_clip = brush([20.0, 0.0, 35.0], [5.0, 100.0, 35.0]);
+            player_clip.contents = 0x0001_0000;
+            let mut shot_clip = brush([100.0, 0.0, 35.0], [5.0, 100.0, 35.0]);
+            shot_clip.contents = shot_contents;
+            let c = world(vec![player_clip, shot_clip], vec![]);
+            let hit = c.raycast([0.0, 0.0, 30.0], [200.0, 0.0, 30.0]);
+            assert!((hit.fraction - 95.0 / 200.0).abs() < 1e-7, "{hit:?}");
+            assert_eq!(hit.contents, shot_contents);
+            let player = c.trace([50.0, 0.0, 0.0], [200.0, 0.0, 0.0], 70.0);
+            assert_eq!(player.fraction, 1.0, "{player:?}");
+            let player = c.trace([-50.0, 0.0, 0.0], [50.0, 0.0, 0.0], 70.0);
+            assert!(player.fraction < 1.0, "{player:?}");
+            assert_eq!(player.contents, 0x0001_0000);
+        }
+    }
+
+    #[test]
+    fn brush_material_comes_from_the_actual_entry_face() {
+        let mut wall = brush([100.0, 0.0, 30.0], [10.0, 10.0, 10.0]);
+        wall.plane_surface_flags = vec![1 << 20, 3 << 20, 11 << 20, 12 << 20, 18 << 20, 23 << 20];
+        let c = world(vec![wall], vec![]);
+        for (start, end, surface) in [
+            ([0.0, 0.0, 30.0], [200.0, 0.0, 30.0], 3),
+            ([200.0, 0.0, 30.0], [0.0, 0.0, 30.0], 1),
+            ([100.0, 0.0, 100.0], [100.0, 0.0, 0.0], 18),
+        ] {
+            assert_eq!(c.raycast(start, end).surface_flags, surface << 20);
+        }
+        let sweep = c.trace([0.0, 0.0, 30.0], [200.0, 0.0, 30.0], 20.0);
+        assert_eq!(sweep.surface_flags, 3 << 20);
+        let mut slope = brush([0.0; 3], [100.0; 3]);
+        slope.planes = vec![[0.70710677, 0.0, 0.70710677, 0.0]];
+        slope.plane_surface_flags = vec![7 << 20, 0, 0, 0, 0, 0, 0];
+        let c = world(vec![slope], vec![]);
+        assert_eq!(
+            c.raycast([0.0, 0.0, 80.0], [0.0, 0.0, -80.0]).surface_flags,
+            7 << 20
+        );
     }
 }

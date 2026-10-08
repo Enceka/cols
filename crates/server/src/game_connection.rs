@@ -18,6 +18,10 @@ pub(crate) struct Connection {
     game_state: Option<Arc<crate::game_state::PreparedGameState>>,
     player: Option<crate::game_player::Player>,
     motion: Option<crate::game_motion::Motion>,
+    combat: Option<crate::game_combat::CombatWorld>,
+    impacts: crate::game_impact::ImpactEvents,
+    marks_command_sent: bool,
+    feedback: VecDeque<String>,
     pending_loadout: Option<(u32, Arc<crate::game_state::PreparedGameState>)>,
     known_weapons: std::collections::BTreeMap<String, u16>,
     next_weapon: u16,
@@ -43,6 +47,7 @@ impl Connection {
         Self {
             player: state.player(),
             motion: state.motion(),
+            combat: state.combat(),
             known_weapons: state
                 .weapon_configstrings()
                 .into_iter()
@@ -192,6 +197,28 @@ impl Connection {
                 .min(u128::from(i32::MAX as u32 - 1000)) as u32;
         self.last_snapshot_time = server_time;
         self.consume_inputs(server_time);
+        if self.combat.is_some()
+            && !self.marks_command_sent
+            && self
+                .snapshot_first_sequence
+                .is_some_and(|first| self.native_ack >= first)
+        {
+            // Current0x57d560 's' consumes controlled dvar/value pairs via
+            // 0x57b690. Client graphics initialization can override +set;
+            // apply once after map initialization for this opt-in training.
+            self.server_commands.push(b"s fx_marks \"1\"")?;
+            self.marks_command_sent = true;
+        }
+        if let Some(combat) = &mut self.combat
+            && let Some(message) = combat.advance(server_time)
+        {
+            self.feedback.push_back(message);
+        }
+        while let Some(message) = self.feedback.pop_front() {
+            // Target 0x57d560's c command displays one controlled text argument.
+            let command = format!("c \"{message}\"");
+            self.server_commands.push(command.as_bytes())?;
+        }
         let state = self.game_state.as_ref().expect("enabled state");
         let angles = if state.has_spawn() {
             self.view_angles()
@@ -207,6 +234,7 @@ impl Connection {
             .map_or(1000, |cmd| cmd.time)
             .min(server_time);
         let equipment = self.player.as_ref().map(|p| p.equipment());
+        let impacts = self.impacts.snapshot(server_time);
         let snapshot = state.snapshot(
             server_time,
             command_time,
@@ -214,7 +242,11 @@ impl Connection {
                 .is_none_or(|first| self.native_ack < first),
             angles,
             equipment,
-            self.motion.as_ref(),
+            crate::game_state::SnapshotWorld {
+                motion: self.motion.as_ref(),
+                target: self.combat.as_ref().map(|w| w.snapshot()),
+                impacts: &impacts,
+            },
         )?;
         let mut body = Vec::new();
         for sequence in self.server_commands.acknowledged() + 1..=self.server_commands.sequence() {
@@ -495,6 +527,48 @@ impl Connection {
                             _ => codol_protocol::game_events::FOOTSTEP_RUN,
                         };
                         player.movement_event(event, surface);
+                    }
+                }
+            }
+            if let Some(player) = &mut self.player {
+                let shots = player.take_shots();
+                if let (Some(motion), Some(collision)) = (
+                    &self.motion,
+                    self.game_state.as_ref().and_then(|s| s.collision.as_ref()),
+                ) {
+                    let eye = [
+                        motion.origin[0],
+                        motion.origin[1],
+                        motion.origin[2] + motion.view_height,
+                    ];
+                    for shot in shots {
+                        let outcome = self.combat.as_mut().map_or_else(
+                            || crate::game_combat::ShotOutcome {
+                                feedback: None,
+                                impact: crate::game_combat::world_impact(
+                                    eye,
+                                    shot.angles,
+                                    shot.ballistics,
+                                    collision,
+                                ),
+                            },
+                            |combat| {
+                                combat.fire(shot.time, eye, shot.angles, shot.ballistics, collision)
+                            },
+                        );
+                        if let Some(hit) = outcome.impact
+                            && let Some(event) = self.impacts.push(through, shot.weapon, hit)
+                        {
+                            tracing::info!(shot_time = shot.time, entity = event.entity_number, origin = ?event.origin, normal = event.normal_byte, surface = event.surface, weapon = event.weapon, "world bullet impact");
+                        }
+                        if let Some(message) = outcome.feedback {
+                            tracing::info!(
+                                shot_time = shot.time,
+                                health = self.combat.as_ref().map(|combat| combat.health()),
+                                "training target hit"
+                            );
+                            self.feedback.push_back(message);
+                        }
                     }
                 }
             }

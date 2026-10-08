@@ -23,6 +23,19 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Prepare a ground-placed visible training target using actual model bounds.
+    PrepareTrainingTarget {
+        #[arg(long)]
+        game_state: PathBuf,
+        #[arg(long)]
+        model_capture: PathBuf,
+        #[arg(long)]
+        output: PathBuf,
+        #[arg(long, default_value_t = 160.0)]
+        distance: f32,
+        #[arg(long, default_value_t = 2.0)]
+        scale: f32,
+    },
     /// Offline only: back up an existing test account, set level 70 and local funds.
     BoostTestAccount {
         #[arg(long)]
@@ -142,6 +155,25 @@ async fn main() -> Result<()> {
         .with_writer(std::io::stderr)
         .init();
     match Cli::parse().command {
+        Command::PrepareTrainingTarget {
+            game_state,
+            model_capture,
+            output,
+            distance,
+            scale,
+        } => {
+            codol_server::game_state::PreparedGameState::prepare_training_target(
+                &game_state,
+                &model_capture,
+                &output,
+                distance,
+                scale,
+            )?;
+            println!(
+                "{}",
+                serde_json::json!({"prepared":output,"scope":"near_range_training_target"})
+            );
+        }
         Command::BoostTestAccount {
             service_data_dir,
             title_id,

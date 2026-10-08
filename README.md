@@ -1,6 +1,6 @@
 # CODOL 3.3.3.3 / Rust
 
-当前 Rust 后端已通过真实 3.3.3.3 客户端验证：TLS/HTTP AUTH、协议 210、UDP、时间、最小公共配置和公共档案重登。客户端已进入无忙碌弹窗的新玩家引导，空测试商城目录初始化完成；商品、起始装备、完整大厅与对局仍待恢复。
+当前纯 Rust 后端已通过真实 3.3.3.3 客户端验证：认证、大厅、训练场景、玩家背包装配、切枪、换弹、瞄准和胶囊碰撞移动。基础声音已恢复；训练靶支持遮挡检查、扣血、销毁和重生，世界弹着事件已接通。AI、多人世界同步和完整对局规则仍待实现；商城价格与购买按用户要求暂缓。
 
 从 [docs/README.md](docs/README.md) 接续任务；运行细节见 [docs/FOUNDATION.md](docs/FOUNDATION.md)，静态发现见 [docs/BOOTSTRAP_FINDINGS.md](docs/BOOTSTRAP_FINDINGS.md)。
 
@@ -10,7 +10,7 @@
 
 最新业务层进展、文件持久化测试及公共配置阻塞点见 [docs/SERVICE_INITIALIZATION.md](docs/SERVICE_INITIALIZATION.md)。
 
-当前接续入口为 [docs/PLAYER_BOOTSTRAP_PROGRESS.md](docs/PLAYER_BOOTSTRAP_PROGRESS.md)：场景、鼠标转向与M4弹药状态已恢复；模型姿态、瞄准、移动及完整对局仍在实现。
+当前接续入口为 [docs/COMBAT_PROGRESS.md](docs/COMBAT_PROGRESS.md)：记录本版命中、弹着材质、实体坐标修复与实机验收。此前出生和装备证据见 [docs/PLAYER_BOOTSTRAP_PROGRESS.md](docs/PLAYER_BOOTSTRAP_PROGRESS.md)。
 
 在 `server/` 下执行：
 

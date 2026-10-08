@@ -74,6 +74,7 @@ struct Weapon {
     ads: Option<AdsTiming>,
     switch: Option<SwitchTiming>,
     move_scale: f32,
+    ballistics: Option<crate::game_combat::Ballistics>,
 }
 impl Weapon {
     fn empty(&self) -> bool {
@@ -107,6 +108,14 @@ pub(crate) struct Player {
     events: EventQueue,
     switch_target: Option<u16>,
     attack_held: bool,
+    shots: Vec<Shot>,
+}
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Shot {
+    pub time: u32,
+    pub angles: [u16; 3],
+    pub weapon: u16,
+    pub ballistics: crate::game_combat::Ballistics,
 }
 
 impl Player {
@@ -138,12 +147,14 @@ impl Player {
                 ads,
                 switch: None,
                 move_scale: 1.0,
+                ballistics: None,
             },
             secondary: None,
             last_time: 1000,
             events: EventQueue::default(),
             switch_target: None,
             attack_held: false,
+            shots: Vec::new(),
         }
     }
 
@@ -169,6 +180,13 @@ impl Player {
 
     pub fn move_scale(&self) -> f32 {
         self.current.move_scale
+    }
+    pub fn set_ballistics(&mut self, stats: crate::game_combat::Ballistics) {
+        assert!(stats.valid());
+        self.current.ballistics = Some(stats);
+    }
+    pub fn take_shots(&mut self) -> Vec<Shot> {
+        std::mem::take(&mut self.shots)
     }
 
     pub fn with_secondary(mut self, secondary: Player) -> Self {
@@ -424,6 +442,14 @@ impl Player {
         let trigger = cmd.buttons & 1 != 0 && (self.current.fire_type == 0 || !self.attack_held);
         if allowed && trigger && ammo.clip > 0 {
             let remaining_clip = ammo.clip - 1;
+            if let Some(ballistics) = self.current.ballistics {
+                self.shots.push(Shot {
+                    time: cmd.time,
+                    angles: cmd.angles,
+                    weapon: self.current.equipment.weapon,
+                    ballistics,
+                });
+            }
             self.current.equipment.ammo.as_mut().unwrap().clip = remaining_clip;
             self.current
                 .animate(6, if remaining_clip == 0 { 3 } else { 2 }, interval, 0);
@@ -449,6 +475,32 @@ impl Player {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn only_authorized_shots_are_forwarded_once_to_the_combat_world() {
+        let mut p = player();
+        p.set_ballistics(crate::game_combat::Ballistics {
+            damage: 33,
+            range: 8192.0,
+            near_range: 500.0,
+        });
+        for c in [
+            cmd(1100, 1),
+            cmd(1100, 1),
+            cmd(1150, 1),
+            cmd(1179, 1),
+            cmd(1200, 0x10000001),
+        ] {
+            p.apply(&c);
+        }
+        let shots = p.take_shots();
+        assert_eq!(
+            shots.iter().map(|s| s.time).collect::<Vec<_>>(),
+            [1100, 1179]
+        );
+        assert_eq!(shots[0].ballistics.damage, 33);
+        assert!(p.take_shots().is_empty());
+        assert_eq!(p.equipment().ammo.unwrap().clip, 28);
+    }
     use codol_protocol::game_snapshot::Ammo;
     fn player() -> Player {
         Player::new(
