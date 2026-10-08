@@ -56,6 +56,24 @@ pub struct Firing {
     pub state: u8,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct PlayerVitals {
+    pub health: u16,
+    pub damage_event: u8,
+    pub damage_count: u8,
+    pub spawn_count: u8,
+}
+impl Default for PlayerVitals {
+    fn default() -> Self {
+        Self {
+            health: 100,
+            damage_event: 0,
+            damage_count: 0,
+            spawn_count: 1,
+        }
+    }
+}
+
 /// A full baseline with command time and health, no entities/clients/weapons.
 /// All 14 target array sections are present; this is not a playable spawn.
 pub fn bootstrap(server_time: u32) -> Result<Vec<u8>, LobbyError> {
@@ -147,6 +165,14 @@ pub fn player_frame_with_motion(
             motion,
             target: None,
             impacts: &[],
+            enemy: None,
+            enemy_baseline: None,
+            hit_feedback: None,
+            vitals: None,
+            local_player: None,
+            local_player_baseline: None,
+            corpses: &[],
+            obituaries: &[],
         },
     )
 }
@@ -156,6 +182,14 @@ pub struct WorldSnapshot<'a> {
     pub motion: Option<MotionSnapshot>,
     pub target: Option<crate::game_target::TargetSnapshot>,
     pub impacts: &'a [crate::game_impact::ImpactSnapshot],
+    pub enemy: Option<crate::game_enemy::EnemySnapshot>,
+    pub enemy_baseline: Option<crate::game_enemy::EnemySnapshot>,
+    pub hit_feedback: Option<crate::game_hit_feedback::HitFeedbackSnapshot>,
+    pub vitals: Option<PlayerVitals>,
+    pub local_player: Option<crate::game_enemy::EnemySnapshot>,
+    pub local_player_baseline: Option<crate::game_enemy::EnemySnapshot>,
+    pub corpses: &'a [crate::game_corpse::CorpseSnapshot],
+    pub obituaries: &'a [crate::game_obituary::ObituarySnapshot],
 }
 
 pub fn player_frame_with_world(
@@ -168,6 +202,10 @@ pub fn player_frame_with_world(
     world: WorldSnapshot<'_>,
 ) -> Result<Vec<u8>, LobbyError> {
     let motion = world.motion;
+    let vitals = world.vitals;
+    if vitals.is_some_and(|v| v.health > 100 || v.damage_count > 127 || motion.is_none()) {
+        return Err(LobbyError("invalid authoritative player vitals"));
+    }
     let weapon = equipment.map(|e| e.weapon);
     let ammo = equipment.and_then(|e| e.ammo);
     let secondary = equipment.and_then(|e| e.secondary);
@@ -318,6 +356,19 @@ pub fn player_frame_with_world(
                 fields.push((21 + slot, slot, 94));
             }
         }
+        if let Some(vitals) = vitals {
+            // Current PS table: received damage event/count and the verified
+            // directionless255/255 branch; PM_DEAD is8 in this build.
+            fields.extend([
+                (55, 255, 8),
+                (66, u32::from(vitals.damage_event), 8),
+                (73, 255, 8),
+                (74, u32::from(vitals.damage_count), 7),
+            ]);
+            if vitals.health == 0 {
+                fields.extend([(83, 8, 8), (84, 1, 3)]); // PM_DEAD8, local corpse slot20-19
+            }
+        }
         if let Some(weapon) = weapon {
             // 0x422e5c/0x42956f select idle0 with the0x400 restart bit.
             fields.extend([
@@ -403,10 +454,17 @@ pub fn player_frame_with_world(
     }
     // 0x5a463d: stats presence, 4-bit mask, first stat is a short.
     out.bits(1, 1);
-    out.bits(if weapon.is_some() { 5 } else { 1 }, 4);
-    out.bytes.extend_from_slice(&100u16.to_le_bytes());
+    out.bits(
+        (if weapon.is_some() { 5 } else { 1 }) | if vitals.is_some() { 8 } else { 0 },
+        4,
+    );
+    out.bytes
+        .extend_from_slice(&vitals.map_or(100, |v| v.health).to_le_bytes());
     if let Some(weapon) = weapon {
         out.bytes.extend_from_slice(&100u16.to_le_bytes()); // stats[2], max health
+        if let Some(vitals) = vitals {
+            out.bytes.push(vitals.spawn_count);
+        } // current stats[3], directbyte
         for (slot, ammo) in clips.iter().enumerate() {
             out.bits(1, 1);
             out.bits(slot as u32, 4);
@@ -438,15 +496,35 @@ pub fn player_frame_with_world(
             out.bits(u32::from(ammo.reserve), 11);
         }
         out.bits(0, 1); // reserve terminator
-        out.bits(0, 10); // four extension groups + objectives/HUD + four lists
+        out.bits(0, 5); // four extension groups + objectives
     } else {
+        if let Some(vitals) = vitals {
+            out.bytes.push(vitals.spawn_count);
+        }
         // Clip, equipped weapons, reserve; four extended bundles; objectives,
         // HUD; four final indexed lists. 3.3.3.3 has fourteen gates in total.
-        out.bits(0, 13);
+        out.bits(0, 8);
     }
+    if let Some(feedback) = world.hit_feedback {
+        crate::game_hit_feedback::write_hit_feedback(&mut out, feedback)?;
+    } else {
+        out.bits(0, 1); // HUD
+    }
+    out.bits(0, 4); // four final indexed lists
     out.bits(0, 1); // animation command section (0x5a3b50)
     out.bits(0, 1); // actors (0x46cc60)
-    if establish_baseline && weapon.is_some() {
+    if let Some(player) = world.local_player {
+        crate::game_enemy::write_enemy_entity(
+            &mut out,
+            player,
+            if establish_baseline {
+                None
+            } else {
+                world.local_player_baseline
+            },
+            establish_baseline,
+        )?;
+    } else if establish_baseline && weapon.is_some() {
         // Target type1 table 0xc52b68. Entity0 has the local player type and
         // map-derived origin. Ordinary frames inherit it from the cached base.
         out.bits(1, 1); // entity index -1 -> 0
@@ -466,15 +544,43 @@ pub fn player_frame_with_world(
             out.bits(u32::from(coordinate.round_ties_even() as i16 as u16), 16);
         }
     }
+    if let Some(enemy) = world.enemy {
+        crate::game_enemy::write_enemy_entity(
+            &mut out,
+            enemy,
+            if establish_baseline {
+                None
+            } else {
+                world.enemy_baseline
+            },
+            establish_baseline,
+        )?;
+    }
     if let Some(target) = world.target {
         crate::game_target::write_target(&mut out, target, establish_baseline)?;
     }
+    if !establish_baseline {
+        for corpse in world.corpses {
+            crate::game_corpse::write_corpse(&mut out, *corpse, None, false)?;
+        }
+    }
     crate::game_impact::write_impacts(&mut out, world.impacts, establish_baseline)?;
+    crate::game_obituary::write_obituaries(&mut out, world.obituaries, establish_baseline)?;
     // Entities (0x46c2f0): explicit 11-bit sentinel, not a presence gate.
     out.bits(0, 1);
     out.bits(1, 1);
     out.bits(2047, 11);
-    out.bits(0, 1); // clients (0x46c840)
+    if let Some(local) = world.local_player {
+        let mut players = vec![local];
+        if let Some(enemy) = world.enemy {
+            players.push(enemy);
+        }
+        crate::game_enemy::write_player_clients(&mut out, &players, establish_baseline)?;
+    } else if let Some(enemy) = world.enemy {
+        crate::game_enemy::write_enemy_client(&mut out, enemy, establish_baseline)?;
+    } else {
+        out.bits(0, 1); // clients (0x46c840)
+    }
     out.bits(0, 1); // glass (0x43e070)
     out.bytes.push(SERVER_EOF);
     Ok(out.bytes)

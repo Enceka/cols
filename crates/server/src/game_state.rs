@@ -12,6 +12,14 @@ pub(crate) struct SnapshotWorld<'a> {
     pub motion: Option<&'a crate::game_motion::Motion>,
     pub target: Option<codol_protocol::game_target::TargetSnapshot>,
     pub impacts: &'a [codol_protocol::game_impact::ImpactSnapshot],
+    pub enemy: Option<codol_protocol::game_enemy::EnemySnapshot>,
+    pub enemy_baseline: Option<codol_protocol::game_enemy::EnemySnapshot>,
+    pub hit_feedback: Option<codol_protocol::game_hit_feedback::HitFeedbackSnapshot>,
+    pub vitals: Option<codol_protocol::game_snapshot::PlayerVitals>,
+    pub local_player: Option<codol_protocol::game_enemy::EnemySnapshot>,
+    pub local_player_baseline: Option<codol_protocol::game_enemy::EnemySnapshot>,
+    pub corpses: &'a [codol_protocol::game_corpse::CorpseSnapshot],
+    pub obituaries: &'a [codol_protocol::game_obituary::ObituarySnapshot],
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -88,6 +96,8 @@ pub struct PreparedGameState {
     #[serde(default)]
     training_target: Option<crate::game_combat::TargetConfig>,
     #[serde(default)]
+    training_enemy: Option<crate::game_enemy::EnemyConfig>,
+    #[serde(default)]
     arsenal_file: Option<std::path::PathBuf>,
     #[serde(default)]
     collision_file: Option<std::path::PathBuf>,
@@ -105,6 +115,167 @@ pub struct PreparedGameState {
     snapshot_frames: u32,
 }
 impl PreparedGameState {
+    pub fn prepare_training_enemy(
+        state_path: &Path,
+        capture_path: &Path,
+        output: &Path,
+        distance: f32,
+        model_name: &str,
+    ) -> Result<()> {
+        #[derive(Deserialize)]
+        struct Model {
+            model: u16,
+            name: String,
+            bounds_min: [f32; 3],
+            bounds_max: [f32; 3],
+            bone_names: Vec<String>,
+        }
+        #[derive(Deserialize)]
+        struct Animation {
+            index: u16,
+            name: String,
+            move_speed_bits: u32,
+        }
+        #[derive(Deserialize)]
+        struct Capture {
+            schema_version: u32,
+            read_only: bool,
+            client_sha256: String,
+            ncs_crc: u32,
+            models: Vec<Model>,
+            animations: Vec<Animation>,
+        }
+        ensure!(
+            distance.is_finite() && (64.0..=400.0).contains(&distance),
+            "enemy distance must be64..400"
+        );
+        ensure!(
+            std::fs::metadata(capture_path)?.len() <= 4 * 1024 * 1024,
+            "character capture too large"
+        );
+        let raw = std::fs::read(capture_path)?;
+        let capture: Capture = serde_json::from_slice(&raw)?;
+        let mut state = Self::load(state_path)?;
+        ensure!(
+            capture.schema_version == 1
+                && capture.read_only
+                && capture.client_sha256 == codol_protocol::CLIENT_SHA256
+                && capture.ncs_crc == state.ncs_crc,
+            "character capture identity mismatch"
+        );
+        let models: Vec<_> = capture
+            .models
+            .iter()
+            .filter(|m| m.name == model_name)
+            .collect();
+        ensure!(
+            models.len() == 1,
+            "enemy body must have one registered model identity"
+        );
+        let model = models[0];
+        for bone in [
+            "j_mainroot",
+            "j_head",
+            "j_spinelower",
+            "j_wrist_le",
+            "j_wrist_ri",
+            "tag_weapon_right",
+        ] {
+            ensure!(
+                model.bone_names.iter().any(|b| b == bone),
+                "selected enemy model is not a complete human skeleton: missing {bone}"
+            );
+        }
+        let animation = |name: &str| -> Result<&Animation> {
+            let found: Vec<_> = capture
+                .animations
+                .iter()
+                .filter(|a| a.name == name)
+                .collect();
+            ensure!(
+                found.len() == 1 && (1..1024).contains(&found[0].index),
+                "human animation {name} missing or ambiguous"
+            );
+            Ok(found[0])
+        };
+        let collision = state
+            .collision
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("enemy requires map collision"))?;
+        ensure!(
+            collision.captured_contents_mask & crate::game_motion::SHOT_MASK
+                == crate::game_motion::SHOT_MASK,
+            "enemy requires full shot collision capture"
+        );
+        let spawn = state
+            .spawn_origin
+            .ok_or_else(|| anyhow::anyhow!("enemy requires player spawn"))?;
+        let mut origin = [spawn[0] + distance, spawn[1], 0.0];
+        let start = [origin[0], origin[1], spawn[2] + 512.0];
+        let end = [origin[0], origin[1], spawn[2] - 2048.0];
+        let floor = collision.raycast(start, end);
+        ensure!(
+            floor.contents != 0 && !floor.start_solid && floor.normal[2] >= 0.7,
+            "no walkable ground under enemy candidate"
+        );
+        origin[2] = (start[2] + (end[2] - start[2]) * floor.fraction - model.bounds_min[2]).ceil();
+        origin = crate::game_bot::grounded_spawn(origin, collision)?;
+        let eye = [spawn[0], spawn[1], spawn[2] + 60.0];
+        let center =
+            std::array::from_fn(|i| origin[i] + (model.bounds_min[i] + model.bounds_max[i]) * 0.5);
+        let sight = collision.raycast(eye, center);
+        ensure!(
+            !sight.start_solid && (sight.contents == 0 || sight.fraction >= 1.0),
+            "enemy candidate is behind world geometry"
+        );
+        let walk = animation("pb_stand_shoot_walk_forward")?;
+        let weapon = state
+            .bootstrap_weapon
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("enemy requires registered weapon resources"))?;
+        let config = crate::game_enemy::EnemyConfig {
+            model: model.model,
+            origin,
+            bounds_min: model.bounds_min,
+            bounds_max: model.bounds_max,
+            idle_animation: animation("pb_stand_alert")?.index,
+            walk_animation: walk.index,
+            fire_animation: animation("pt_stand_shoot_auto")?.index,
+            death_animation: animation("pb_stand_death_chest_blowback")?.index,
+            move_speed: f32::from_bits(walk.move_speed_bits),
+            angles: [0, 32768, 0],
+            weapon: weapon.base_index.unwrap_or(weapon.index),
+            source_sha256: format!("{:x}", Sha256::digest(&raw)),
+            bot: false,
+        };
+        config.validate()?;
+        state.training_target = None;
+        state.training_enemy = Some(config.clone());
+        state.validate()?;
+        let mut json: serde_json::Value = serde_json::from_slice(&std::fs::read(state_path)?)?;
+        json.as_object_mut().unwrap().remove("training_target");
+        json["training_enemy"] = serde_json::json!({"model":config.model,"origin":config.origin,"bounds_min":config.bounds_min,"bounds_max":config.bounds_max,"idle_animation":config.idle_animation,"walk_animation":config.walk_animation,"fire_animation":config.fire_animation,"death_animation":config.death_animation,"move_speed":config.move_speed,"angles":config.angles,"weapon":config.weapon,"source_sha256":config.source_sha256});
+        for name in ["arsenal_file", "collision_file"] {
+            if let Some(path) = json[name].as_str() {
+                json[name] = state_path
+                    .parent()
+                    .unwrap_or(Path::new("."))
+                    .join(path)
+                    .canonicalize()?
+                    .to_string_lossy()
+                    .into_owned()
+                    .into();
+            }
+        }
+        use std::io::Write;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(output)?;
+        file.write_all(&serde_json::to_vec_pretty(&json)?)?;
+        file.write_all(b"\n")?;
+        Ok(())
+    }
     pub fn prepare_training_target(
         state_path: &Path,
         model_path: &Path,
@@ -262,6 +433,20 @@ impl PreparedGameState {
     }
     fn validate(&self) -> Result<()> {
         let state = self;
+        ensure!(
+            state.training_target.is_none() || state.training_enemy.is_none(),
+            "choose one training target kind"
+        );
+        if let Some(enemy) = &state.training_enemy {
+            enemy.validate()?;
+            ensure!(
+                state.collision.is_some() && state.arsenal.is_some(),
+                "training enemy requires real collision and weapons"
+            );
+            if enemy.bot {
+                crate::game_bot::grounded_spawn(enemy.origin, state.collision.as_ref().unwrap())?;
+            }
+        }
         for weapon in state.bootstrap_weapon.iter().chain(&state.secondary_weapon) {
             ensure!(
                 weapon.ballistics.is_none_or(|b| b.valid()),
@@ -406,6 +591,118 @@ impl PreparedGameState {
     }
     pub(crate) fn dynamic_loadout(&self) -> bool {
         self.arsenal.is_some()
+    }
+    pub(crate) fn enemy_snapshot(
+        &self,
+        alive: bool,
+    ) -> Option<codol_protocol::game_enemy::EnemySnapshot> {
+        self.training_enemy.as_ref().map(|enemy| {
+            let mut snapshot = enemy.snapshot(alive);
+            if let Some(weapon) = &self.bootstrap_weapon {
+                snapshot.weapon = weapon.index;
+            }
+            snapshot
+        })
+    }
+    pub(crate) fn local_player_snapshot(
+        &self,
+        alive: bool,
+    ) -> Option<codol_protocol::game_enemy::EnemySnapshot> {
+        let mut player = self.enemy_snapshot(alive)?;
+        player.entity_number = 0;
+        player.client_index = 0;
+        player.team = 2;
+        // Captured complete standard male skeleton. This training appearance
+        // is independent of the already live first-person backpack equipment.
+        player.model = 4;
+        player.attachment_models = [3, 2, 5, 6, 0, 0, 0, 0, 0, 0];
+        player.attachment_tags = [0; 10];
+        player.origin = self.spawn_origin?;
+        player.angles = [0; 3];
+        Some(player)
+    }
+    pub(crate) fn corpse(
+        &self,
+        player: codol_protocol::game_enemy::EnemySnapshot,
+        sequence: u32,
+    ) -> codol_protocol::game_corpse::CorpseSnapshot {
+        let animation = self.training_enemy.as_ref().unwrap().death_animation;
+        codol_protocol::game_corpse::CorpseSnapshot {
+            entity_number: if player.client_index == 0 { 20 } else { 19 },
+            donor_client: player.client_index,
+            origin: player.origin,
+            angles: player.angles,
+            legs_animation: animation,
+            torso_animation: animation,
+            weapon: player.weapon,
+            present: true,
+            phase: codol_protocol::game_corpse::CorpsePhase::Playing,
+            death_sequence: sequence,
+        }
+    }
+    pub(crate) fn bot(&self) -> Option<crate::game_bot::BotController> {
+        self.training_enemy
+            .as_ref()
+            .filter(|enemy| enemy.bot)
+            .map(|enemy| {
+                crate::game_bot::BotController::new(
+                    crate::game_bot::grounded_spawn(enemy.origin, self.collision.as_ref().unwrap())
+                        .expect("validated bot spawn"),
+                    enemy.angles,
+                    enemy.move_speed,
+                )
+                .expect("validated bot configuration")
+            })
+    }
+    pub(crate) fn bot_weapon(&self) -> Option<crate::game_bot::BotWeapon> {
+        let weapon = self.bootstrap_weapon.as_ref()?;
+        Some(crate::game_bot::BotWeapon {
+            weapon: weapon.index,
+            ballistics: weapon.ballistics?,
+            fire_interval_msec: u32::from(weapon.ammo.as_ref()?.fire_interval_msec?),
+        })
+    }
+    pub(crate) fn animate_enemy(
+        &self,
+        mut enemy: codol_protocol::game_enemy::EnemySnapshot,
+        frame: &crate::game_bot::BotFrame,
+        firing: bool,
+        toggle: bool,
+    ) -> codol_protocol::game_enemy::EnemySnapshot {
+        let config = self
+            .training_enemy
+            .as_ref()
+            .expect("enemy frame requires configuration");
+        enemy.origin = frame.motion.origin;
+        enemy.angles = frame.angles;
+        enemy.legs_animation = if frame.moving() {
+            config.walk_animation
+        } else {
+            config.idle_animation
+        };
+        enemy.torso_animation = if firing {
+            config.fire_animation | if toggle { 0x400 } else { 0 }
+        } else {
+            config.idle_animation
+        };
+        enemy
+    }
+    pub(crate) fn hit_feedback_material(&self) -> Option<u16> {
+        // This fixture binds the measured inherited material namespace to its
+        // NCS CRC. A different map must supply independently captured evidence.
+        static MATERIAL: std::sync::OnceLock<(u32, u16)> = std::sync::OnceLock::new();
+        let &(crc, material) = MATERIAL.get_or_init(|| {
+            let fixture: serde_json::Value = serde_json::from_str(include_str!(
+                "../../../fixtures/protocol/hit-feedback-hud-3.3.3.3.json"
+            ))
+            .expect("verified HUD fixture");
+            let known = &fixture["known_material"];
+            (
+                known["ncs_crc"].as_u64().unwrap() as u32,
+                known["index"].as_u64().unwrap() as u16,
+            )
+        });
+        (self.ncs_crc == crc).then_some(material)
     }
     pub(crate) fn next_weapon_index(&self) -> u16 {
         if let Some((index, _)) = self.registry_strings.last() {
@@ -687,6 +984,10 @@ impl PreparedGameState {
     }
 
     pub(crate) fn body(&self, command_sequence: u32) -> Result<Vec<u8>> {
+        self.body_named(command_sequence, None)
+    }
+
+    pub(crate) fn body_named(&self, command_sequence: u32, name: Option<&str>) -> Result<Vec<u8>> {
         // CS0 keys mapname/g_gametype confirmed at 0x465aa2/0x465abf.
         // 0x46d830 parses CS3 into C2S serverId. CS16 is map-center text.
         let mut values = vec![
@@ -703,6 +1004,14 @@ impl PreparedGameState {
             // uninitialized slow-motion values and nearly stops client time.
             (6415, "0 0 1 1".to_owned()),
         ];
+        if self.training_enemy.is_some() {
+            // Current build reads these raw nickname strings, not info pairs.
+            values.extend([
+                (1975, name.unwrap_or("Player").to_owned()),
+                (1976, "Training Bot".to_owned()),
+            ]);
+            values.sort_by_key(|value| value.0);
+        }
         for (index, name) in self.weapon_configstrings() {
             // NCS inherited weapon bank starts at5443; unused indices are
             // untyped and accept a regular configstring. Parser0x42e3b0.
@@ -747,6 +1056,14 @@ impl PreparedGameState {
             codol_protocol::game_snapshot::WorldSnapshot {
                 target: world.target,
                 impacts: world.impacts,
+                enemy: world.enemy,
+                enemy_baseline: world.enemy_baseline,
+                hit_feedback: world.hit_feedback,
+                vitals: world.vitals,
+                local_player: world.local_player,
+                local_player_baseline: world.local_player_baseline,
+                corpses: world.corpses,
+                obituaries: world.obituaries,
                 motion: motion.map(|m| codol_protocol::game_snapshot::MotionSnapshot {
                     velocity: m.velocity,
                     flags: m.flags,
@@ -828,6 +1145,7 @@ impl PreparedGameState {
     pub(crate) fn combat(&self) -> Option<crate::game_combat::CombatWorld> {
         self.training_target
             .clone()
+            .or_else(|| self.training_enemy.as_ref().map(|enemy| enemy.target()))
             .map(crate::game_combat::CombatWorld::new)
     }
     pub(crate) fn input_base(&self) -> codol_protocol::game_usercmd::UserCommand {
@@ -864,6 +1182,7 @@ pub(crate) fn synthetic() -> PreparedGameState {
         player_loadout: None,
         secondary_weapon: None,
         training_target: None,
+        training_enemy: None,
         arsenal_file: None,
         collision_file: None,
         arsenal: None,

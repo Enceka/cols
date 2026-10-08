@@ -466,6 +466,76 @@ class ClientAssets {
             "client_sha256","e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b",
             "map",map,"ncs_crc",r.Word(0x02df7d90),"captured_contents_mask",0x02814011|0x0280e831,"brushes",brushes,"triangles",triangles)));
     }
+    public static void ExportCharacters(IntPtr process) {
+        var r=new ClientAssets(process);
+        if(r.Word(0x01a2e7ec)!=10)throw new Exception("load the map before character capture");
+        uint slot=r.Word(0x07817bac);if(slot>=256)throw new Exception("cgs model slot invalid");
+        uint cgs=r.Word(0x01a19510+slot*4)^0xce9af8cf;
+        byte[] indices=r.Read(cgs+0xf0,1024*4);var models=new List<object>();
+        for(int id=1;id<1024;id++) {
+            uint model=U(indices,id*4);if(model==0)continue;
+            byte[] header=r.Read(model,0x168);int count=Count(header[4],253);
+            byte[] ids=count==0?new byte[0]:r.Read(U(header,0x2c),count*2);var bones=new List<string>();
+            uint strings=r.Word(0x02f37164);
+            for(int bone=0;bone<count;bone++) {
+                uint key=BitConverter.ToUInt16(ids,bone*2);
+                bones.Add(r.Name(strings+key*20+4));
+            }
+            float[] center=Floats(header,0x140,3),half=Floats(header,0x14c,3);
+            float[] min=new float[3],max=new float[3];for(int i=0;i<3;i++){min[i]=center[i]-half[i];max[i]=center[i]+half[i];}
+            models.Add(Obj("model",id,"name",r.Name(U(header,0)),"bounds_min",min,"bounds_max",max,"bone_names",bones));
+        }
+        var tables=new Dictionary<string,object>();
+        foreach(string name in new string[]{"mp/coCharacterDefTable.csv","mp/coCharItemStatsTable.csv","mp/coCharItems/cha.csv","mp/coMapList.csv"}) {
+            try { tables[name]=r.Table(name); } catch(Exception error) { tables[name]=Obj("error",error.Message); }
+        }
+        uint bg=r.Word(0x07817b80);var clients=new List<object>();
+        var animations=new List<object>();var animationContexts=new List<object>();var seenContexts=new HashSet<uint>();
+        foreach(uint address in new uint[]{0x07817b80,0x07817b84}) {
+            uint context=r.Word(address);if(context<0x10000||!seenContexts.Add(context))continue;
+            int count=Count(r.Word(context+0x1a000),1024);animationContexts.Add(Obj("source",address,"count",count));
+            byte[] records=r.Read(context,count*0x68);
+            for(int animation=1;animation<count;animation++) {
+                int begin=animation*0x68,len=0;while(len<64&&records[begin+len]!=0)len++;
+                string name=Encoding.ASCII.GetString(records,begin,len);if(name.Length==0)continue;
+                animations.Add(Obj("source",address,"index",animation,"name",name,"duration",U(records,begin+0x40),
+                    "move_speed_bits",U(records,begin+0x44),"flags",U(records,begin+0x50)));
+            }
+        }
+        if(bg>=0x10000)for(uint id=0;id<2;id++) {
+            uint ci=bg+0x96e20+id*0x3b8;var parts=new List<object>();
+            for(uint part=0;part<10;part++) {
+                uint modelName=r.Word(ci+0x20+part*4),tagName=r.Word(ci+0x48+part*4);
+                parts.Add(Obj("part",part,"model",modelName>=0x10000?r.Name(modelName):null,"tag",tagName>=0x10000?r.Name(tagName):null));
+            }
+            uint root=r.Word(ci+0x18),tree=r.Word(ci+0x320);
+            uint dobjSlot=BitConverter.ToUInt16(r.Read(0x02ef4858+id*2,2),0);var objModels=new List<string>();
+            if(dobjSlot!=0) {
+                uint dobj=0x02e8e850+dobjSlot*0xcc;int count=Count(r.Read(dobj+9,1)[0],32);
+                uint array=r.Word(dobj+0xc0);for(uint part=0;part<count;part++)objModels.Add(r.Name(r.Word(r.Word(array+part*4))));
+            }
+            uint entitySlot=r.Word(0x07817bb0);if(entitySlot>=256)throw new Exception("entity slot invalid");
+            uint entities=r.Word(0x01a19510+entitySlot*4)^0x2168f672;
+            clients.Add(Obj("client",id,"valid",r.Word(ci),"current_valid",r.Word(ci+4),
+                "body",root>=0x10000?r.Name(root):null,"parts",parts,"animation_tree_ready",tree>=0x10000,
+                "dobj_slot",dobjSlot,"dobj_models",objModels,"entity_origin",r.EntityOrigin(entities+id*0x238+0xf0)));
+        }
+        var corpses=new List<object>();uint corpseEntitySlot=r.Word(0x07817bb0);
+        if(corpseEntitySlot>=256)throw new Exception("corpse entity slot invalid");
+        uint corpseEntities=r.Word(0x01a19510+corpseEntitySlot*4)^0x2168f672;
+        for(uint id=19;id<=20;id++) {
+            uint entity=corpseEntities+id*0x238;
+            uint slotId=BitConverter.ToUInt16(r.Read(0x02ef4858+id*2,2),0);
+            corpses.Add(Obj("entity",id,"type",r.Word(entity+0xf4),"flags",r.Word(entity+0xf8),
+                "donor",r.Word(entity+0xf0+0x9c),"legs",r.Word(entity+0xf0+0xd4),"torso",r.Word(entity+0xf0+0xd8),
+                "dobj_slot",slotId,"origin",r.EntityOrigin(entity+0xf0)));
+        }
+        var serializer=new JavaScriptSerializer();serializer.MaxJsonLength=16*1024*1024;
+        Console.WriteLine(serializer.Serialize(Obj("schema_version",1,"read_only",true,
+            "client_sha256","e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b",
+            "ncs_crc",r.Word(0x02df7d90),"models",models,"tables",tables,"clients",clients,
+            "animation_contexts",animationContexts,"animations",animations,"corpses",corpses)));
+    }
     public static void ExportTrainingTarget(IntPtr process) {
         var r=new ClientAssets(process);
         if(r.Word(0x01a2e7ec)!=10)throw new Exception("load the map before training model capture");

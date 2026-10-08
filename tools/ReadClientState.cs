@@ -50,7 +50,8 @@ class ReadClientState {
             bool weaponRegistry=args.Length==1 && args[0]=="--weapon-registry";
             bool trainingTarget=args.Length==1 && args[0]=="--training-target";
             bool bulletImpacts=args.Length==1 && args[0]=="--bullet-impacts";
-            if(args.Length!=0 && !assets && !profiles && !netConstants && !mapEntities && !bootstrapWeapon && !weaponModels && !arsenal && !collision && !weaponRegistry && !trainingTarget && !bulletImpacts) throw new Exception("only fixed extraction modes are supported");
+            bool characters=args.Length==1 && args[0]=="--characters";
+            if(args.Length!=0 && !assets && !profiles && !netConstants && !mapEntities && !bootstrapWeapon && !weaponModels && !arsenal && !collision && !weaponRegistry && !trainingTarget && !bulletImpacts && !characters) throw new Exception("only fixed extraction modes are supported");
             IntPtr snapshot=CreateToolhelp32Snapshot(2,0); uint found=0;
             if(snapshot==new IntPtr(-1)) throw new Exception("process snapshot failed");
             try {
@@ -88,6 +89,7 @@ class ReadClientState {
                 if(weaponRegistry) { ClientAssets.ExportWeaponRegistry(process);return 0; }
                 if(trainingTarget) { ClientAssets.ExportTrainingTarget(process);return 0; }
                 if(bulletImpacts) { ClientAssets.ExportBulletImpacts(process);return 0; }
+                if(characters) { ClientAssets.ExportCharacters(process);return 0; }
                 Console.WriteLine("{");
                 Field(process,"connection_state",0x01a2e7ec,4);
                 Field(process,"sound_fade_current_bits",0x0780e4b0,4);
@@ -151,6 +153,11 @@ class ReadClientState {
                     if(cg>=0x10000 && cg<0xff000000) {
                         Field(process,"predicted_command_time",cg,4);
                         Field(process,"predicted_pm_type",checked(cg+4),4);
+                        Field(process,"predicted_health",checked(cg+0x190),4);
+                        Field(process,"predicted_spawn_count",checked(cg+0x19c),4);
+                        Field(process,"predicted_corpse_slot",checked(cg+0xe8),4);
+                        Field(process,"predicted_hit_hud_type",checked(cg+0xa78),4);
+                        Field(process,"predicted_hit_hud_material",checked(cg+0xa78+0x4c),4);
                         Field(process,"predicted_pm_flags",checked(cg+0xc),4);
                         Field(process,"predicted_other_flags",checked(cg+0x10),4);
                         Field(process,"predicted_camera_reference_entity",checked(cg+0x200),4);

@@ -9,7 +9,17 @@ pub const ACK_BIT: u32 = 0x2000_0000;
 pub const FRAGMENT_SIZE: usize = 0x482;
 pub const RELIABLE_WINDOW: u32 = 256;
 pub const RELIABLE_COMMAND_BYTES: usize = 1024;
+/// Binary reader 0x46e470 reserves four bytes for its native ring header.
+pub const BINARY_RELIABLE_BYTES: usize = RELIABLE_COMMAND_BYTES - 4;
 pub const SERVER_EOF: u8 = 6;
+
+#[derive(Debug, Clone)]
+struct ReliableCommand {
+    /// Text omits its trailing NUL. Binary retains the native !/NUL/length
+    /// header and payload, so all existing XOR consumers see the native key.
+    ring: Vec<u8>,
+    binary: bool,
+}
 
 /// Keep exact sequence identities, including acknowledged slots: incoming
 /// packets mix those command bytes into XOR until the ring overwrites them.
@@ -18,7 +28,7 @@ pub struct ReliableCommands {
     sequence: u32,
     sent: u32,
     acknowledged: u32,
-    entries: BTreeMap<u32, Vec<u8>>,
+    entries: BTreeMap<u32, ReliableCommand>,
 }
 impl ReliableCommands {
     pub fn sequence(&self) -> u32 {
@@ -31,6 +41,24 @@ impl ReliableCommands {
         if command.len() >= RELIABLE_COMMAND_BYTES || command.contains(&0) {
             return Err(LobbyError("invalid reliable command size/NUL"));
         }
+        self.push_entry(ReliableCommand {
+            ring: command.to_vec(),
+            binary: false,
+        })
+    }
+    /// Store a binary reliable payload exactly as reader 0x46e470 does:
+    /// [!, NUL, payload length LE16, payload]. This shares the text sequence
+    /// and ACK window; embedded NUL is valid and never terminates the payload.
+    pub fn push_binary(&mut self, payload: &[u8]) -> Result<u32, LobbyError> {
+        if payload.len() > BINARY_RELIABLE_BYTES {
+            return Err(LobbyError("binary reliable command exceeds native limit"));
+        }
+        let mut ring = vec![b'!', 0];
+        ring.extend_from_slice(&(payload.len() as u16).to_le_bytes());
+        ring.extend_from_slice(payload);
+        self.push_entry(ReliableCommand { ring, binary: true })
+    }
+    fn push_entry(&mut self, entry: ReliableCommand) -> Result<u32, LobbyError> {
         if self.sequence - self.acknowledged >= RELIABLE_WINDOW - 1 {
             return Err(LobbyError("reliable command window full"));
         }
@@ -39,7 +67,7 @@ impl ReliableCommands {
             .checked_add(1)
             .filter(|n| *n <= i32::MAX as u32)
             .ok_or(LobbyError("reliable sequence exhausted"))?;
-        self.entries.insert(next, command.to_vec());
+        self.entries.insert(next, entry);
         self.sequence = next;
         self.entries.retain(|seq, _| next - *seq < RELIABLE_WINDOW);
         Ok(next)
@@ -65,8 +93,41 @@ impl ReliableCommands {
         }
         self.entries
             .get(&sequence)
-            .map(Vec::as_slice)
+            .map(|entry| entry.ring.as_slice())
             .ok_or(LobbyError("reliable command slot unavailable"))
+    }
+    /// Encode one retained command as a server-message record, without EOF.
+    /// Text uses opcode 1 and a NUL terminator; binary uses opcode 2, a LE16
+    /// payload length and the complete bytes, without the native ring header.
+    pub fn encode_command(&self, sequence: u32) -> Result<Vec<u8>, LobbyError> {
+        let entry = self
+            .entries
+            .get(&sequence)
+            .ok_or(LobbyError("reliable command slot unavailable"))?;
+        let mut frame = vec![if entry.binary { 2 } else { 1 }];
+        frame.extend_from_slice(&sequence.to_le_bytes());
+        if entry.binary {
+            frame.extend_from_slice(&entry.ring[2..]);
+        } else {
+            frame.extend_from_slice(&entry.ring);
+            frame.push(0);
+        }
+        Ok(frame)
+    }
+    /// Encode all unacknowledged commands in sequence order. The caller adds
+    /// the snapshot/EOF and marks the last transmitted sequence after sending.
+    pub fn encode_frames(&self) -> Result<Vec<u8>, LobbyError> {
+        let mut frames = Vec::new();
+        for sequence in self.acknowledged + 1..=self.sequence {
+            frames.extend_from_slice(&self.encode_command(sequence)?);
+        }
+        Ok(frames)
+    }
+    /// Append atomically, leaving an existing message unchanged on failure.
+    pub fn append_frames(&self, out: &mut Vec<u8>) -> Result<(), LobbyError> {
+        let frames = self.encode_frames()?;
+        out.extend_from_slice(&frames);
+        Ok(())
     }
 }
 
@@ -385,5 +446,99 @@ mod tests {
         assert!(ring.command_for(128).is_err());
         assert!(ring.command_for(0).is_err());
         assert!(ring.push(b"x\0y").is_err());
+    }
+
+    #[test]
+    fn text_and_binary_share_sequence_ack_and_retransmit_complete_native_records() {
+        let mut ring = ReliableCommands::default();
+        assert_eq!(ring.push(b"E 0 100").unwrap(), 1);
+        let payload = [b'J', 63, 0, 0, 0, 4, 100, 0, 0, 0];
+        assert_eq!(ring.push_binary(&payload).unwrap(), 2);
+        assert_eq!(ring.push(b"s fx_marks 1").unwrap(), 3);
+        assert_eq!(ring.command_for(1).unwrap(), b"E 0 100");
+        assert_eq!(
+            ring.command_for(2).unwrap(),
+            [b'!', 0, 10, 0, b'J', 63, 0, 0, 0, 4, 100, 0, 0, 0]
+        );
+        let mut expected = vec![1, 1, 0, 0, 0];
+        expected.extend_from_slice(b"E 0 100\0");
+        expected.extend_from_slice(&[2, 2, 0, 0, 0, 10, 0]);
+        expected.extend_from_slice(&payload);
+        expected.extend_from_slice(&[1, 3, 0, 0, 0]);
+        expected.extend_from_slice(b"s fx_marks 1\0");
+        assert_eq!(ring.encode_frames().unwrap(), expected);
+        assert_eq!(ring.encode_frames().unwrap(), expected);
+        assert!(ring.acknowledge(2).is_err());
+        ring.mark_sent(3).unwrap();
+        ring.acknowledge(1).unwrap();
+        let expected_pending = [
+            ring.encode_command(2).unwrap(),
+            ring.encode_command(3).unwrap(),
+        ]
+        .concat();
+        assert_eq!(ring.encode_frames().unwrap(), expected_pending);
+        ring.acknowledge(2).unwrap();
+        assert_eq!(
+            ring.encode_frames().unwrap(),
+            ring.encode_command(3).unwrap()
+        );
+        assert_eq!(ring.command_for(2).unwrap()[4..], payload);
+        ring.acknowledge(3).unwrap();
+        assert!(ring.encode_frames().unwrap().is_empty());
+        assert_eq!(ring.encode_command(2).unwrap()[7..], payload);
+    }
+
+    #[test]
+    fn binary_native_ring_nul_limits_both_packet_xor_and_usercmd_hash_to_the_marker() {
+        let mut ring = ReliableCommands::default();
+        ring.push_binary(&[b'J', 0x92, 0x25, 0, 0xff]).unwrap();
+        let native = ring.command_for(1).unwrap();
+        let mut bytes = [0u8; 6];
+        // Independently calculated with initial key 0x33 and single byte !:
+        // alternate XOR 0x21/0x42; no length or payload byte participates.
+        xor_stream(&mut bytes, 0x33, native);
+        assert_eq!(bytes, [0x12, 0x50, 0x71, 0x33, 0x12, 0x50]);
+        assert_eq!(
+            crate::game_usercmd::key(17, 0x1234, native),
+            crate::game_usercmd::key(17, 0x1234, b"!")
+        );
+        assert_ne!(
+            crate::game_usercmd::key(17, 0x1234, native),
+            crate::game_usercmd::key(17, 0x1234, &native[4..])
+        );
+        let packet = [1, 0, 0, 0, 9, 2, 0, 0, 0, 1, 0, 0, 0, 0x1d];
+        // Native C2S start key=0x34^9^2=0x3f, first mask=0x3f^!=0x1e.
+        assert_eq!(open_client(&packet, 0x34, native).unwrap().1, [3]);
+    }
+
+    #[test]
+    fn binary_bounds_and_window_fail_without_partial_state_or_frame_writes() {
+        let mut ring = ReliableCommands::default();
+        ring.push_binary(&vec![0; 1020]).unwrap();
+        assert_eq!(ring.command_for(1).unwrap().len(), 1024);
+        assert_eq!(&ring.command_for(1).unwrap()[..4], [b'!', 0, 0xfc, 3]);
+        assert_eq!(ring.encode_command(1).unwrap().len(), 1027);
+        let before = ring.encode_frames().unwrap();
+        assert!(ring.push_binary(&vec![0; 1021]).is_err());
+        assert_eq!(ring.sequence(), 1);
+        assert_eq!(ring.encode_frames().unwrap(), before);
+        assert!(ring.encode_command(0).is_err());
+        for _ in 1..255 {
+            ring.push_binary(&[]).unwrap();
+        }
+        assert!(ring.push_binary(b"J").is_err());
+        assert_eq!(ring.sequence(), 255);
+        let mut missing = ring.clone();
+        missing.entries.remove(&128);
+        let mut body = vec![0xa6];
+        assert!(missing.append_frames(&mut body).is_err());
+        assert_eq!(body, [0xa6]);
+        ring.mark_sent(255).unwrap();
+        ring.acknowledge(255).unwrap();
+        assert_eq!(ring.push_binary(&[b'J', 0]).unwrap(), 256);
+        assert!(ring.command_for(0).is_err());
+        assert_eq!(ring.command_for(1).unwrap().len(), 1024);
+        ring.push(b"new").unwrap();
+        assert!(ring.command_for(1).is_err());
     }
 }

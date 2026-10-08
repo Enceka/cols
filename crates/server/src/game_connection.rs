@@ -9,6 +9,9 @@ use std::time::{Duration, Instant};
 #[derive(Default)]
 pub(crate) struct Connection {
     challenge: Option<u32>,
+    display_name: Option<String>,
+    owner_id: u64,
+    scoreboard_sent: bool,
     connected: bool,
     stats: codol_protocol::game_stats::Upload,
     native_sent: u32,
@@ -21,6 +24,22 @@ pub(crate) struct Connection {
     combat: Option<crate::game_combat::CombatWorld>,
     impacts: crate::game_impact::ImpactEvents,
     marks_command_sent: bool,
+    last_hit_time: Option<u32>,
+    enemy_baseline: Option<codol_protocol::game_enemy::EnemySnapshot>,
+    local_baseline: Option<codol_protocol::game_enemy::EnemySnapshot>,
+    corpses: std::collections::BTreeMap<u16, (u32, codol_protocol::game_corpse::CorpseSnapshot)>,
+    death_sequence: [u32; 2],
+    obituaries: VecDeque<(u32, codol_protocol::game_obituary::ObituarySnapshot)>,
+    next_obituary: u16,
+    enemy_events: codol_protocol::game_events::EventQueue,
+    bot: Option<crate::game_bot::BotController>,
+    bot_frame: Option<crate::game_bot::BotFrame>,
+    bot_fire_time: Option<u32>,
+    bot_fire_toggle: bool,
+    vitals: codol_protocol::game_snapshot::PlayerVitals,
+    player_birth: u32,
+    player_death: Option<u32>,
+    health_recovery: crate::game_health::HealthRecovery,
     feedback: VecDeque<String>,
     pending_loadout: Option<(u32, Arc<crate::game_state::PreparedGameState>)>,
     known_weapons: std::collections::BTreeMap<String, u16>,
@@ -48,6 +67,9 @@ impl Connection {
             player: state.player(),
             motion: state.motion(),
             combat: state.combat(),
+            bot: state.bot(),
+            vitals: Default::default(),
+            player_birth: 1000,
             known_weapons: state
                 .weapon_configstrings()
                 .into_iter()
@@ -213,6 +235,69 @@ impl Connection {
             && let Some(message) = combat.advance(server_time)
         {
             self.feedback.push_back(message);
+            if let Some(bot) = &mut self.bot {
+                let spawn = self
+                    .game_state
+                    .as_ref()
+                    .unwrap()
+                    .enemy_snapshot(true)
+                    .unwrap();
+                let origin = crate::game_bot::grounded_spawn(
+                    spawn.origin,
+                    self.game_state
+                        .as_ref()
+                        .unwrap()
+                        .collision
+                        .as_ref()
+                        .unwrap(),
+                )?;
+                bot.respawn(server_time, origin, spawn.angles)?;
+                self.enemy_events = Default::default();
+                self.bot_fire_time = None;
+            }
+        }
+        self.advance_bot(server_time)?;
+        if !self.scoreboard_sent
+            && self
+                .game_state
+                .as_ref()
+                .is_some_and(|state| state.enemy_snapshot(true).is_some())
+            && self
+                .snapshot_first_sequence
+                .is_some_and(|first| self.native_ack >= first)
+        {
+            let rows = vec![
+                codol_protocol::game_scoreboard::ScoreboardRow {
+                    client_number: 0,
+                    user_id: self.owner_id,
+                    kills: self.death_sequence[1],
+                    deaths: self.death_sequence[0],
+                    score: (self.death_sequence[1] * 100) as i32,
+                    ..Default::default()
+                },
+                codol_protocol::game_scoreboard::ScoreboardRow {
+                    client_number: 1,
+                    user_id: 1,
+                    kills: self.death_sequence[0],
+                    deaths: self.death_sequence[1],
+                    score: (self.death_sequence[0] * 100) as i32,
+                    ..Default::default()
+                },
+            ];
+            let board = codol_protocol::game_scoreboard::ScoreboardSnapshot {
+                rows,
+                team_scores: [
+                    0,
+                    (self.death_sequence[0] * 100) as i32,
+                    (self.death_sequence[1] * 100) as i32,
+                    0,
+                ],
+                score_limit: 0,
+            };
+            for payload in codol_protocol::game_scoreboard::binary_commands(&board)? {
+                self.server_commands.push_binary(&payload)?;
+            }
+            self.scoreboard_sent = true;
         }
         while let Some(message) = self.feedback.pop_front() {
             // Target 0x57d560's c command displays one controlled text argument.
@@ -235,6 +320,55 @@ impl Connection {
             .min(server_time);
         let equipment = self.player.as_ref().map(|p| p.equipment());
         let impacts = self.impacts.snapshot(server_time);
+        self.obituaries
+            .retain(|(time, _)| server_time.wrapping_sub(*time) < 200);
+        let mut obituaries: Vec<_> = self.obituaries.iter().map(|(_, event)| *event).collect();
+        obituaries.sort_unstable_by_key(|event| event.entity_number);
+        let corpses: Vec<_> = self
+            .corpses
+            .values()
+            .map(|(time, corpse)| {
+                let mut current = *corpse;
+                let age = server_time.wrapping_sub(*time);
+                current.phase = if age < 1200 {
+                    codol_protocol::game_corpse::CorpsePhase::Playing
+                } else {
+                    codol_protocol::game_corpse::CorpsePhase::Frozen
+                };
+                current.present = age < 6000;
+                current
+            })
+            .collect();
+        if self.local_baseline.is_none() {
+            self.local_baseline = state.local_player_snapshot(true);
+        }
+        let mut local_player = state.local_player_snapshot(self.vitals.health > 0);
+        if let (Some(local), Some(motion)) = (&mut local_player, self.motion.as_ref()) {
+            local.origin = motion.origin;
+            local.angles = angles;
+            if let Some(player) = self.player.as_ref() {
+                local.weapon = player.equipment().weapon;
+            }
+        }
+        if self.enemy_baseline.is_none() {
+            self.enemy_baseline = state.enemy_snapshot(true);
+        }
+        let mut enemy =
+            state.enemy_snapshot(self.combat.as_ref().is_some_and(|world| world.health() > 0));
+        if let (Some(current), Some(frame)) = (enemy, self.bot_frame.as_ref()) {
+            enemy = Some(
+                state.animate_enemy(
+                    current,
+                    frame,
+                    self.bot_fire_time
+                        .is_some_and(|time| server_time.wrapping_sub(time) < 150),
+                    self.bot_fire_toggle,
+                ),
+            );
+        }
+        if let Some(current) = &mut enemy {
+            current.events = self.enemy_events;
+        }
         let snapshot = state.snapshot(
             server_time,
             command_time,
@@ -244,17 +378,32 @@ impl Connection {
             equipment,
             crate::game_state::SnapshotWorld {
                 motion: self.motion.as_ref(),
-                target: self.combat.as_ref().map(|w| w.snapshot()),
+                target: if state.enemy_snapshot(true).is_none() {
+                    self.combat.as_ref().map(|w| w.snapshot())
+                } else {
+                    None
+                },
                 impacts: &impacts,
+                enemy,
+                enemy_baseline: self.enemy_baseline,
+                vitals: self.bot.as_ref().map(|_| self.vitals),
+                local_player,
+                local_player_baseline: self.local_baseline,
+                corpses: &corpses,
+                obituaries: &obituaries,
+                hit_feedback: self.last_hit_time.and_then(|event_time| {
+                    state.hit_feedback_material().map(|material| {
+                        codol_protocol::game_hit_feedback::HitFeedbackSnapshot {
+                            material,
+                            event_time,
+                            visible: server_time.wrapping_sub(event_time)
+                                < codol_protocol::game_hit_feedback::DURATION_MSEC,
+                        }
+                    })
+                }),
             },
         )?;
-        let mut body = Vec::new();
-        for sequence in self.server_commands.acknowledged() + 1..=self.server_commands.sequence() {
-            body.push(1);
-            body.extend_from_slice(&sequence.to_le_bytes());
-            body.extend_from_slice(self.server_commands.command_for(sequence)?);
-            body.push(0);
-        }
+        let mut body = self.server_commands.encode_frames()?;
         body.extend_from_slice(&snapshot);
         let ack = self.client_commands.sequence();
         let packet = game_wire::server_packet(
@@ -391,7 +540,15 @@ impl Connection {
                     sequence == client_commands.sequence() + 1,
                     "client command sequence gap"
                 );
-                // Receipt only: no console/gameplay execution is implied by ACK.
+                if let Ok(text) = std::str::from_utf8(&command) {
+                    if text == "s" {
+                        self.scoreboard_sent = false;
+                    }
+                    if text.starts_with("mr ") || text == "s" || text.starts_with("class ") {
+                        tracing::info!(command=%text,"game menu request");
+                    }
+                }
+                // Only explicitly implemented semantic requests are applied.
                 client_commands.push(&command)?;
                 client_commands.mark_sent(sequence)?;
                 client_commands.acknowledge(sequence)?;
@@ -426,7 +583,7 @@ impl Connection {
             && header.reliable_ack == 1
             && let Some(state) = &self.game_state
         {
-            let body = state.body(commands.sequence())?;
+            let body = state.body_named(commands.sequence(), self.display_name.as_deref())?;
             let reply = game_wire::server_packet(3, client_ack, challenge, client_command, &body)?;
             sending_gamestate = true;
             Some(reply)
@@ -477,19 +634,187 @@ impl Connection {
         }
         self.pending_inputs.entry(input.time).or_insert(input);
     }
+    fn queue_obituary(&mut self, now: u32, weapon: u16, victim: u8, attacker: u8) {
+        let entity_number = if self.next_obituary < 1800 {
+            1800
+        } else {
+            self.next_obituary
+        };
+        self.next_obituary = if entity_number == 2045 {
+            1800
+        } else {
+            entity_number + 1
+        };
+        self.obituaries.push_back((
+            now,
+            codol_protocol::game_obituary::ObituarySnapshot {
+                entity_number,
+                weapon,
+                victim,
+                attacker,
+            },
+        ));
+        self.scoreboard_sent = false;
+        tracing::info!(victim, attacker, weapon, "training kill obituary queued");
+    }
+
+    fn advance_bot(&mut self, now: u32) -> Result<()> {
+        if self.bot.is_none()
+            || self
+                .snapshot_first_sequence
+                .is_none_or(|first| self.native_ack < first)
+        {
+            return Ok(());
+        }
+        let state = self.game_state.as_ref().unwrap();
+        if self
+            .player_death
+            .is_some_and(|death| now.wrapping_sub(death) >= 3000)
+        {
+            self.player_death = None;
+            self.player_birth = now;
+            self.health_recovery = Default::default();
+            let spawn_count = self.vitals.spawn_count.wrapping_add(1);
+            self.vitals = codol_protocol::game_snapshot::PlayerVitals {
+                spawn_count,
+                ..Default::default()
+            };
+            self.motion = state.motion();
+            if let Some(motion) = &mut self.motion {
+                motion.command_time = now;
+            }
+            if let (Some(player), Some(primary)) = (&mut self.player, state.primary_player()) {
+                player.replace_loadout(primary, state.secondary_player());
+            }
+            self.feedback.push_back("Training player respawned".into());
+            tracing::info!(spawn_count,origin=?self.motion.as_ref().map(|m| m.origin),"training player respawned");
+        }
+        let recovered = self.health_recovery.recover(now, self.vitals.health);
+        if recovered != self.vitals.health {
+            self.vitals.health = recovered;
+            if recovered == 100 {
+                self.vitals.damage_count = 0;
+            }
+            tracing::info!(health = recovered, "training player recovered health");
+        }
+        let (Some(weapon), Some(motion), Some(collision)) = (
+            state.bot_weapon(),
+            self.motion.as_ref(),
+            state.collision.as_ref(),
+        ) else {
+            return Ok(());
+        };
+        let bot = self.bot.as_mut().unwrap();
+        if self
+            .combat
+            .as_ref()
+            .is_some_and(|world| world.health() == 0)
+        {
+            bot.kill(now);
+        }
+        let frame = bot.step(
+            now,
+            Some(crate::game_bot::BotTarget {
+                origin: motion.origin,
+                eye: [
+                    motion.origin[0],
+                    motion.origin[1],
+                    motion.origin[2] + motion.view_height,
+                ],
+                // A short training spawn grace gives the player time to reorient.
+                alive: self.vitals.health > 0 && now.wrapping_sub(self.player_birth) >= 2500,
+            }),
+            weapon,
+            collision,
+        );
+        if self
+            .bot_frame
+            .as_ref()
+            .is_none_or(|previous| previous.phase != frame.phase)
+        {
+            tracing::info!(phase=?frame.phase,origin=?frame.motion.origin,"training bot behavior changed");
+        }
+        if let Some(combat) = &mut self.combat {
+            combat.move_target(frame.motion.origin);
+        }
+        if let Some(shot) = frame.shot
+            && bot.shot_is_current(&shot)
+        {
+            tracing::info!(
+                shot_time = shot.time,
+                weapon = shot.weapon,
+                "training bot fired"
+            );
+            // Native eventSeq0 is a reset; pad a crossing burst so meaningful
+            // fire/brass is published with a nonzero final sequence.
+            if self.enemy_events.sequence == 254 {
+                self.enemy_events.push(0, 0)?;
+            }
+            self.enemy_events
+                .push(codol_protocol::game_events::FIRE_WEAPON, 0)?;
+            self.enemy_events
+                .push(codol_protocol::game_events::EJECT_BRASS, 0)?;
+            self.bot_fire_time = Some(now);
+            self.bot_fire_toggle = !self.bot_fire_toggle;
+            if self.vitals.health > 0
+                && crate::game_combat::hits_player(
+                    shot.eye,
+                    shot.angles,
+                    shot.ballistics,
+                    motion.origin,
+                    motion.stance.height(),
+                    collision,
+                )
+            {
+                self.vitals.health = self.vitals.health.saturating_sub(shot.ballistics.damage);
+                self.health_recovery.damaged(now, self.vitals.health);
+                self.vitals.damage_event = self.vitals.damage_event.wrapping_add(1);
+                self.vitals.damage_count = shot.ballistics.damage.min(127) as u8;
+                tracing::info!(
+                    shot_time = now,
+                    health = self.vitals.health,
+                    "training bot hit player"
+                );
+                if self.vitals.health == 0 {
+                    self.player_death = Some(now);
+                    if let Some(mut local) = state.local_player_snapshot(true) {
+                        local.origin = motion.origin;
+                        local.angles = self
+                            .last_input
+                            .as_ref()
+                            .map_or([0; 3], |input| input.angles);
+                        if let Some(player) = self.player.as_ref() {
+                            local.weapon = player.equipment().weapon;
+                        }
+                        self.death_sequence[0] = self.death_sequence[0].wrapping_add(1).max(1);
+                        self.corpses
+                            .insert(20, (now, state.corpse(local, self.death_sequence[0])));
+                        self.queue_obituary(now, shot.weapon, 0, 1);
+                    }
+                }
+            }
+        }
+        self.bot_frame = Some(frame);
+        Ok(())
+    }
+
     fn consume_inputs(&mut self, through: u32) {
         while self
             .pending_inputs
             .first_key_value()
             .is_some_and(|(&time, _)| time <= through)
         {
-            let (_, input) = self.pending_inputs.pop_first().unwrap();
+            let (_, mut input) = self.pending_inputs.pop_first().unwrap();
             if self
                 .last_input
                 .as_ref()
                 .is_some_and(|last| input.time <= last.time)
             {
                 continue;
+            }
+            if self.bot.is_some() && (self.vitals.health == 0 || input.time < self.player_birth) {
+                input.buttons = 0;
+                input.direction = 0;
             }
             if let Some(player) = &mut self.player {
                 player.apply(&input);
@@ -534,7 +859,10 @@ impl Connection {
                 let shots = player.take_shots();
                 if let (Some(motion), Some(collision)) = (
                     &self.motion,
-                    self.game_state.as_ref().and_then(|s| s.collision.as_ref()),
+                    self.game_state
+                        .as_ref()
+                        .and_then(|s| s.collision.as_ref())
+                        .cloned(),
                 ) {
                     let eye = [
                         motion.origin[0],
@@ -549,11 +877,17 @@ impl Connection {
                                     eye,
                                     shot.angles,
                                     shot.ballistics,
-                                    collision,
+                                    &collision,
                                 ),
                             },
                             |combat| {
-                                combat.fire(shot.time, eye, shot.angles, shot.ballistics, collision)
+                                combat.fire(
+                                    shot.time,
+                                    eye,
+                                    shot.angles,
+                                    shot.ballistics,
+                                    &collision,
+                                )
                             },
                         );
                         if let Some(hit) = outcome.impact
@@ -562,6 +896,30 @@ impl Connection {
                             tracing::info!(shot_time = shot.time, entity = event.entity_number, origin = ?event.origin, normal = event.normal_byte, surface = event.surface, weapon = event.weapon, "world bullet impact");
                         }
                         if let Some(message) = outcome.feedback {
+                            self.last_hit_time = Some(through);
+                            if self
+                                .combat
+                                .as_ref()
+                                .is_some_and(|world| world.health() == 0)
+                                && let Some(bot) = &mut self.bot
+                            {
+                                bot.kill(through);
+                                if let Some(state) = self.game_state.as_ref()
+                                    && let Some(mut enemy) = state.enemy_snapshot(true)
+                                {
+                                    if let Some(frame) = self.bot_frame.as_ref() {
+                                        enemy.origin = frame.motion.origin;
+                                        enemy.angles = frame.angles;
+                                    }
+                                    self.death_sequence[1] =
+                                        self.death_sequence[1].wrapping_add(1).max(1);
+                                    self.corpses.insert(
+                                        19,
+                                        (through, state.corpse(enemy, self.death_sequence[1])),
+                                    );
+                                    self.queue_obituary(through, shot.weapon, 1, 0);
+                                }
+                            }
                             tracing::info!(
                                 shot_time = shot.time,
                                 health = self.combat.as_ref().map(|combat| combat.health()),
@@ -610,7 +968,8 @@ impl Connection {
             let challenge = self
                 .challenge
                 .ok_or_else(|| anyhow::anyhow!("connect before challenge"))?;
-            validate_connect(connect, owner, build, challenge)?;
+            self.display_name = Some(validate_connect(connect, owner, build, challenge)?);
+            self.owner_id = owner;
             self.connected = true;
             // 0x466b24..0x466c22 initializes netchan, enters state 5 and starts
             // uploading stats. This target does not consume an info-string here.
@@ -664,7 +1023,7 @@ fn identity(bytes: &[u8]) -> Result<u64> {
     Ok(u64::from_str_radix(std::str::from_utf8(bytes)?, 16)?)
 }
 
-fn validate_connect(body: &[u8], owner: u64, build: i32, challenge: u32) -> Result<()> {
+fn validate_connect(body: &[u8], owner: u64, build: i32, challenge: u32) -> Result<String> {
     ensure!(body.len() <= 1024, "connect request too long");
     let body = body.strip_suffix(&[0]).unwrap_or(body);
     ensure!(
@@ -723,7 +1082,12 @@ fn validate_connect(body: &[u8], owner: u64, build: i32, challenge: u32) -> Resu
         std::str::from_utf8(get(b"2490")?)?.parse::<i32>()? == build,
         "connect build mismatch"
     );
-    Ok(())
+    Ok(fields
+        .get(b"name".as_slice())
+        .and_then(|value| std::str::from_utf8(value).ok())
+        .filter(|name| !name.is_empty() && name.len() < 64)
+        .unwrap_or("Player")
+        .to_owned())
 }
 
 #[cfg(test)]

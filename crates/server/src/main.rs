@@ -23,6 +23,19 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Prepare a real human training opponent from loaded models and animation evidence.
+    PrepareTrainingEnemy {
+        #[arg(long)]
+        game_state: PathBuf,
+        #[arg(long)]
+        character_capture: PathBuf,
+        #[arg(long)]
+        output: PathBuf,
+        #[arg(long, default_value_t = 144.0)]
+        distance: f32,
+        #[arg(long, default_value = "mp_fullbody_juggernaut_explosive_so")]
+        body_model: String,
+    },
     /// Prepare a ground-placed visible training target using actual model bounds.
     PrepareTrainingTarget {
         #[arg(long)]
@@ -155,6 +168,25 @@ async fn main() -> Result<()> {
         .with_writer(std::io::stderr)
         .init();
     match Cli::parse().command {
+        Command::PrepareTrainingEnemy {
+            game_state,
+            character_capture,
+            output,
+            distance,
+            body_model,
+        } => {
+            codol_server::game_state::PreparedGameState::prepare_training_enemy(
+                &game_state,
+                &character_capture,
+                &output,
+                distance,
+                &body_model,
+            )?;
+            println!(
+                "{}",
+                serde_json::json!({"prepared":output,"scope":"human_training_enemy"})
+            );
+        }
         Command::PrepareTrainingTarget {
             game_state,
             model_capture,

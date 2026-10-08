@@ -10,7 +10,7 @@
 
 最新业务层进展、文件持久化测试及公共配置阻塞点见 [docs/SERVICE_INITIALIZATION.md](docs/SERVICE_INITIALIZATION.md)。
 
-当前接续入口为 [docs/COMBAT_PROGRESS.md](docs/COMBAT_PROGRESS.md)：记录本版命中、弹着材质、实体坐标修复与实机验收。此前出生和装备证据见 [docs/PLAYER_BOOTSTRAP_PROGRESS.md](docs/PLAYER_BOOTSTRAP_PROGRESS.md)。
+当前接续入口为 [docs/BOT_PROGRESS.md](docs/BOT_PROGRESS.md)：记录角色、训练Bot、死亡/重生、回血、击杀栏与原生记分板。弹着实机证据见 [docs/COMBAT_PROGRESS.md](docs/COMBAT_PROGRESS.md)。
 
 在 `server/` 下执行：
 

@@ -74,6 +74,30 @@ pub fn world_impact(
     trace_shot(eye, angles, ballistics.range, collision, None).1
 }
 
+/// Coarse player bounds use the recovered collision radius and stance height.
+/// Damage remains in the measured first band and the closest world face wins.
+pub(crate) fn hits_player(
+    eye: [f32; 3],
+    angles: [u16; 3],
+    ballistics: Ballistics,
+    origin: [f32; 3],
+    height: f32,
+    collision: &Collision,
+) -> bool {
+    let direction = forward(angles);
+    let end = std::array::from_fn(|i| eye[i] + direction[i] * ballistics.range);
+    let min = [origin[0] - 15.0, origin[1] - 15.0, origin[2]];
+    let max = [origin[0] + 15.0, origin[1] + 15.0, origin[2] + height];
+    let Some(fraction) = ray_aabb(eye, end, min, max) else {
+        return false;
+    };
+    if fraction * ballistics.range > ballistics.near_range {
+        return false;
+    }
+    let world = collision.raycast(eye, end);
+    !world.start_solid && !world.all_solid && (world.contents == 0 || world.fraction > fraction)
+}
+
 #[derive(Clone, Copy, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Ballistics {
@@ -119,8 +143,8 @@ fn unit_scale() -> f32 {
 impl TargetConfig {
     pub fn validate(&self) -> Result<()> {
         ensure!(
-            self.entity_number == 19,
-            "training target must use entity 19"
+            matches!(self.entity_number, 1 | 19),
+            "training target must use reserved enemy1 or prop19"
         );
         ensure!(
             (1..1024).contains(&self.model),
@@ -185,6 +209,11 @@ impl CombatWorld {
 
     pub fn health(&self) -> u16 {
         self.health
+    }
+    pub(crate) fn move_target(&mut self, origin: [f32; 3]) {
+        if self.health > 0 {
+            self.config.origin = origin;
+        }
     }
 
     pub fn snapshot(&self) -> TargetSnapshot {
@@ -284,11 +313,16 @@ impl CombatWorld {
         }
 
         self.health = self.health.saturating_sub(ballistics.damage);
+        let name = if self.config.entity_number == 1 {
+            "Training enemy"
+        } else {
+            "Training target"
+        };
         outcome.feedback = Some(if self.health == 0 {
             self.death_time = Some(effective_time);
-            "Training target destroyed".into()
+            format!("{name} destroyed")
         } else {
-            format!("Training target: {} HP", self.health)
+            format!("{name}: {} HP", self.health)
         });
         outcome
     }

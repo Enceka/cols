@@ -3,8 +3,13 @@
 pub mod auth;
 pub mod bootstrap;
 pub mod game;
+pub mod game_corpse;
+pub mod game_enemy;
 pub mod game_events;
+pub mod game_hit_feedback;
 pub mod game_impact;
+pub mod game_obituary;
+pub mod game_scoreboard;
 pub mod game_snapshot;
 pub mod game_state;
 pub mod game_stats;
