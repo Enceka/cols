@@ -1,5 +1,4 @@
-//! Experimental game UDP transport, admitted by the local matchmaking service.
-//! It is not a world simulator. Wire discoveries and limitations live in docs.
+//! Game UDP transport with matchmaking-bound captured map preparations.
 use crate::game_handshake::Peer;
 use crate::{
     auth_server::write_private, capture::unix_time_ms, services::TaskResult, session::Session,
@@ -201,7 +200,61 @@ pub struct GameServer {
     admissions: Arc<GameAdmissions>,
     directory: PathBuf,
     game_state: Option<Arc<crate::game_state::PreparedGameState>>,
+    game_map_catalog: Option<crate::game_map_catalog::GameMapCatalog>,
+    hit_regions: HitRegionSource,
     services: Option<Arc<crate::services::LocalServices>>,
+}
+/// Optional enemy pose capture. It may appear while the server runs, because
+/// the capture is read from a client that has already entered training.
+#[derive(Default)]
+struct HitRegionSource {
+    path: Option<PathBuf>,
+    loaded: Option<Arc<crate::game_hit_location::HitRegions>>,
+    rejected: Option<std::time::SystemTime>,
+}
+impl HitRegionSource {
+    fn poll(&mut self, ncs_crc: u32) -> Option<&Arc<crate::game_hit_location::HitRegions>> {
+        if self.loaded.is_none()
+            && let Some(path) = &self.path
+            && let Ok(modified) = std::fs::metadata(path).and_then(|m| m.modified())
+            && self.rejected != Some(modified)
+        {
+            match crate::game_hit_location::HitRegions::load(path, ncs_crc) {
+                Ok(regions) => {
+                    tracing::info!(path=%path.display(),source=regions.source_sha256(),"loaded enemy hit regions");
+                    self.loaded = Some(Arc::new(regions));
+                }
+                Err(error) => {
+                    tracing::warn!(path=%path.display(),error=format!("{error:#}"),"enemy hit regions rejected");
+                    self.rejected = Some(modified);
+                }
+            }
+        }
+        self.loaded.as_ref()
+    }
+}
+struct BoundPeer {
+    transport: Peer,
+    template: Option<Arc<crate::game_state::PreparedGameState>>,
+    start_command: String,
+}
+type RegistryKey = (u32, u64, u32, String, String);
+fn registry_key(
+    admission: &Admission,
+    state: &crate::game_state::PreparedGameState,
+) -> RegistryKey {
+    (
+        admission.title,
+        admission.owner,
+        admission.seed,
+        state.map().to_owned(),
+        state.mode().to_owned(),
+    )
+}
+impl BoundPeer {
+    fn admitted(&self, admission: Option<&Admission>) -> bool {
+        admission.is_some_and(|a| a.start_command.as_deref() == Some(&self.start_command))
+    }
 }
 impl GameServer {
     pub async fn bind(address: SocketAddrV4, directory: PathBuf) -> Result<Self> {
@@ -222,6 +275,8 @@ impl GameServer {
             socket,
             directory,
             game_state: None,
+            game_map_catalog: None,
+            hit_regions: HitRegionSource::default(),
             services: None,
             admissions: Arc::new(GameAdmissions {
                 address,
@@ -240,19 +295,77 @@ impl GameServer {
         self.services = services;
         self
     }
-    pub async fn run<F: Future<Output = std::io::Result<()>>>(self, shutdown: F) -> Result<()> {
+    /// Captured enemy body pose (tools/client_state.py --hit-regions).
+    pub fn with_hit_regions(mut self, path: PathBuf) -> Self {
+        self.hit_regions.path = Some(path);
+        self
+    }
+    pub fn with_game_map_catalog(
+        mut self,
+        catalog: crate::game_map_catalog::GameMapCatalog,
+    ) -> Self {
+        self.game_map_catalog = Some(catalog);
+        self
+    }
+    fn template_for(
+        &self,
+        admission: &Admission,
+    ) -> Result<Option<Arc<crate::game_state::PreparedGameState>>> {
+        let start = admission
+            .start_command
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("game start missing"))?;
+        let parsed = crate::game_map_selection::from_mmstart(start);
+        // Transport-only recovery has no world to fall back to. Explicit
+        // room maps always require a captured preparation, even in this mode.
+        if self.game_state.is_none() && self.game_map_catalog.is_none() && parsed.is_err() {
+            return Ok(None);
+        }
+        ensure!(
+            admission.build == -688906341,
+            "prepared game state client build mismatch"
+        );
+        match parsed? {
+            Some(selection) => {
+                let catalog = self.game_map_catalog.as_ref().ok_or_else(|| {
+                    anyhow::anyhow!("requested room map has no preparation catalog")
+                })?;
+                Ok(Some(catalog.select(&selection.map, &selection.mode)?))
+            }
+            None => {
+                if let Some(state) = &self.game_state {
+                    ensure!(
+                        state.matches(admission.build, start),
+                        "default preparation requires the captured training request"
+                    );
+                }
+                ensure!(
+                    self.game_state.is_some() || self.game_map_catalog.is_none(),
+                    "training start has no default preparation"
+                );
+                Ok(self.game_state.clone())
+            }
+        }
+    }
+    pub async fn run<F: Future<Output = std::io::Result<()>>>(mut self, shutdown: F) -> Result<()> {
         tokio::pin!(shutdown);
         let mut buffer = [0; 4096];
         let mut count = 0;
         let mut total = 0;
-        let mut peers = HashMap::<SocketAddrV4, Peer>::new();
+        let mut peers = HashMap::<SocketAddrV4, BoundPeer>::new();
         let mut weapon_registries =
-            HashMap::<(u32, u64), Arc<Mutex<crate::game_weapon_registry::WeaponRegistry>>>::new();
+            HashMap::<RegistryKey, Arc<Mutex<crate::game_weapon_registry::WeaponRegistry>>>::new();
         let datagram_limit = 2048
             + self
                 .game_state
                 .as_ref()
-                .map_or(0, |s| s.snapshot_limit() * 4);
+                .map_or(0, |s| s.snapshot_limit())
+                .max(
+                    self.game_map_catalog
+                        .as_ref()
+                        .map_or(0, |c| c.snapshot_limit()),
+                )
+                * 4;
         let mut tick = tokio::time::interval(std::time::Duration::from_millis(50));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut snapshots = 0u32;
@@ -261,12 +374,19 @@ impl GameServer {
             let (n, peer) = tokio::select! {result=&mut shutdown=>{result?;return Ok(())},
             scheduled=tick.tick()=>{
                 let now=(unix_time_ms()/1000) as u32;
-                peers.retain(|_,p|self.admissions.get(&p.id,now).is_some());
+                peers.retain(|_,p|p.admitted(self.admissions.get(&p.transport.id,now).as_ref()));
                 if profile_check.elapsed()>=std::time::Duration::from_millis(500) {
                     profile_check=std::time::Instant::now();
-                    if let (Some(template),Some(services))=(&self.game_state,&self.services)
-                        && template.dynamic_loadout() {
-                        for p in peers.values_mut() {
+                    for bound in peers.values_mut() {
+                        if let Some(crc)=bound.template.as_ref().map(|t|t.ncs_crc())
+                            && let Some(regions)=self.hit_regions.poll(crc) {
+                            bound.transport.connection.set_hit_regions(regions);
+                        }
+                    }
+                    if let Some(services)=&self.services {
+                        for bound in peers.values_mut() {
+                            let Some(template)=bound.template.as_ref().filter(|s|s.dynamic_loadout()) else {continue};
+                            let p=&mut bound.transport;
                             if let Some(admission)=self.admissions.get(&p.id,now) {
                                 match services.game_profile(admission.title,admission.owner).await {
                                     Ok((public,owned))=>if let Err(error)=p.connection.refresh_profile(template,&public,&owned){tracing::warn!(%error,"player backpack update rejected");},
@@ -276,7 +396,8 @@ impl GameServer {
                         }
                     }
                 }
-                for (address,p) in &mut peers {
+                for (address,bound) in &mut peers {
+                    let p=&mut bound.transport;
                     let Some(records)=p.records.as_mut() else { continue };
                     if let Some(plain)=p.connection.poll_snapshot(scheduled.into_std())? {
                         let wire=records.seal(&plain,p.remote_tag)?;
@@ -313,7 +434,7 @@ impl GameServer {
                 .map_err(|_| anyhow::anyhow!("game admissions poisoned"))?
                 .iter()
                 .any(|(_, a)| a.expires > now);
-            peers.retain(|_, p| self.admissions.get(&p.id, now).is_some());
+            peers.retain(|_, p| p.admitted(self.admissions.get(&p.transport.id, now).as_ref()));
             let mut decoded = None;
             let inner_kind: Option<&str> = None;
             let mut inner_dropped = None;
@@ -333,20 +454,14 @@ impl GameServer {
                         .admissions
                         .get(&id, now)
                         .ok_or_else(|| anyhow::anyhow!("game INIT is not admitted/started"))?;
-                    if !peers.get(&peer).is_some_and(|p| p.is_retry(wire)) {
+                    if !peers.get(&peer).is_some_and(|p| p.transport.is_retry(wire)) {
                         ensure!(
                             peers.len() < 32 || peers.contains_key(&peer),
                             "game peer capacity"
                         );
+                        let template = self.template_for(&admission)?;
                         let mut connection = Peer::init(wire, peer)?;
-                        if let Some(state) = &self.game_state {
-                            ensure!(
-                                state.matches(
-                                    admission.build,
-                                    admission.start_command.as_deref().unwrap_or("")
-                                ),
-                                "prepared game state does not match admitted training request"
-                            );
+                        if let Some(state) = &template {
                             let mut weapon_registry = None;
                             let state = if state.uses_player_loadout() {
                                 let services = self.services.as_ref().ok_or_else(|| {
@@ -357,7 +472,7 @@ impl GameServer {
                                     .await?;
                                 if state.dynamic_loadout() {
                                     let registry = weapon_registries
-                                        .entry((admission.title, admission.owner))
+                                        .entry(registry_key(&admission, state))
                                         .or_insert_with(|| {
                                             Arc::new(Mutex::new(
                                                 crate::game_weapon_registry::WeaponRegistry::new(
@@ -401,22 +516,34 @@ impl GameServer {
                                     connection.connection.with_weapon_registry(registry);
                             }
                         }
-                        peers.insert(peer, connection);
+                        peers.insert(
+                            peer,
+                            BoundPeer {
+                                transport: connection,
+                                template,
+                                start_command: admission
+                                    .start_command
+                                    .clone()
+                                    .expect("admitted start"),
+                            },
+                        );
                     }
-                    return Ok(Some(peers[&peer].init_reply()));
+                    return Ok(Some(peers[&peer].transport.init_reply()));
                 } else if n == 189 && wire[..2] == [3, 2] {
-                    let p = peers
+                    let p = &mut peers
                         .get_mut(&peer)
-                        .ok_or_else(|| anyhow::anyhow!("cookie without INIT"))?;
+                        .ok_or_else(|| anyhow::anyhow!("cookie without INIT"))?
+                        .transport;
                     let admission = self
                         .admissions
                         .get(&p.id, now)
                         .ok_or_else(|| anyhow::anyhow!("expired cookie admission"))?;
                     return Ok(Some(p.cookie(wire, &admission.key)?));
                 } else if n >= 16 && wire[..2] == [6, 2] {
-                    let p = peers
+                    let p = &mut peers
                         .get_mut(&peer)
-                        .ok_or_else(|| anyhow::anyhow!("DATA without peer"))?;
+                        .ok_or_else(|| anyhow::anyhow!("DATA without peer"))?
+                        .transport;
                     let records = p
                         .records
                         .as_mut()
@@ -452,12 +579,16 @@ impl GameServer {
                 Ok(None)
             }
             .await;
-            let connection_stage = peers.get(&peer).map(|p| p.connection.stage());
+            let connection_stage = peers.get(&peer).map(|p| p.transport.connection.stage());
             let gamestate_progress = peers
                 .get(&peer)
-                .and_then(|p| p.connection.gamestate_progress());
-            let input_progress = peers.get(&peer).map(|p| p.connection.input_progress());
-            let input_angles = peers.get(&peer).map(|p| p.connection.view_angles());
+                .and_then(|p| p.transport.connection.gamestate_progress());
+            let input_progress = peers
+                .get(&peer)
+                .map(|p| p.transport.connection.input_progress());
+            let input_angles = peers
+                .get(&peer)
+                .map(|p| p.transport.connection.view_angles());
             let error = handled.as_ref().err().map(ToString::to_string);
             let response = handled.unwrap_or(None);
             if let Some(plain) = &decoded {
@@ -515,6 +646,123 @@ mod tests {
             address: "127.0.0.1:39004".parse().unwrap(),
             entries: Mutex::new(HashMap::new()),
         }
+    }
+
+    #[tokio::test]
+    async fn explicit_room_maps_bind_preparations_without_default_fallback() {
+        let temp = tempfile::tempdir().unwrap();
+        crate::game_map_catalog::write_synthetic(&temp.path().join("afghan.json"), "mp_afghan");
+        crate::game_map_catalog::write_synthetic(
+            &temp.path().join("killhouse.json"),
+            "mp_killhouse_sh",
+        );
+        let manifest = temp.path().join("maps.json");
+        std::fs::write(
+            &manifest,
+            serde_json::to_vec(&serde_json::json!({
+                "schema_version":1,"entries":[
+                    {"map":"mp_afghan","mode":"war","file":"afghan.json"},
+                    {"map":"mp_killhouse_sh","mode":"war","file":"killhouse.json"}
+                ]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let server = GameServer::bind("127.0.0.1:0".parse().unwrap(), temp.path().join("game"))
+            .await
+            .unwrap()
+            .with_game_state(crate::game_state::synthetic())
+            .with_game_map_catalog(
+                crate::game_map_catalog::GameMapCatalog::load(&manifest).unwrap(),
+            );
+        let mut admission = Admission {
+            title: 1002,
+            owner: 9,
+            seed: 41,
+            build: -688906341,
+            expires: 100,
+            key: [7; 16],
+            booked: true,
+            start_command: Some(
+                "mmstart sv_resetServer; map mp_killhouse_sh; g_gametype war".into(),
+            ),
+        };
+        let selected = server.template_for(&admission).unwrap().unwrap();
+        assert_eq!(selected.map(), "mp_killhouse_sh");
+        let mut wire = vec![1, 2, 0, 0, 0, 0, 42, 0];
+        wire.extend_from_slice(&[3; 8]);
+        let bound = BoundPeer {
+            transport: Peer::init(&wire, "127.0.0.1:39001".parse().unwrap()).unwrap(),
+            template: Some(selected.clone()),
+            start_command: admission.start_command.clone().unwrap(),
+        };
+        assert!(bound.admitted(Some(&admission)));
+        assert!(!bound.admitted(None));
+        admission.start_command =
+            Some("mmstart sv_resetServer; map mp_afghan; g_gametype war".into());
+        assert!(!bound.admitted(Some(&admission))); // Old DATA cannot hot-switch maps.
+        let fresh = server.template_for(&admission).unwrap().unwrap();
+        assert_eq!(fresh.map(), "mp_afghan");
+        assert_ne!(
+            registry_key(&admission, &selected),
+            registry_key(&admission, &fresh)
+        );
+        let mut other_session = admission.clone();
+        other_session.seed += 1;
+        assert_ne!(
+            registry_key(&admission, &selected),
+            registry_key(&other_session, &selected)
+        );
+        assert_eq!(bound.template.as_ref().unwrap().map(), "mp_killhouse_sh");
+        assert!(!Arc::ptr_eq(&selected, &fresh));
+        for request in [
+            "mmstart sv_resetServer; map mp_unknown; g_gametype war",
+            "mmstart sv_resetServer; map mp_killhouse; g_gametype war",
+            "mmstart sv_resetServer; map mp_killhouse_sh; g_gametype sd",
+            "mmstart sv_resetServer; map mp_afghan; g_gametype war; quit",
+        ] {
+            admission.start_command = Some(request.into());
+            assert!(server.template_for(&admission).is_err(), "{request}");
+        }
+        admission.start_command = Some(
+            "mmstart sv_resetServer; 2486 1; 3265 12; 2489 1; playlist 0; start_map_rotate_once 0"
+                .into(),
+        );
+        assert_eq!(
+            server.template_for(&admission).unwrap().unwrap().map(),
+            "mp_afghan"
+        );
+        admission.build = 0;
+        assert!(server.template_for(&admission).is_err());
+    }
+
+    #[tokio::test]
+    async fn an_unprepared_room_map_is_rejected_even_when_a_default_is_available() {
+        let temp = tempfile::tempdir().unwrap();
+        let server = GameServer::bind("127.0.0.1:0".parse().unwrap(), temp.path().join("game"))
+            .await
+            .unwrap()
+            .with_game_state(crate::game_state::synthetic());
+        let admission = Admission {
+            title: 1002,
+            owner: 9,
+            seed: 41,
+            build: -688906341,
+            expires: 100,
+            key: [7; 16],
+            booked: true,
+            start_command: Some(
+                "mmstart sv_resetServer; map mp_killhouse_sh; g_gametype war".into(),
+            ),
+        };
+        assert!(server.template_for(&admission).is_err());
+        let transport_only = GameServer::bind(
+            "127.0.0.1:0".parse().unwrap(),
+            temp.path().join("transport"),
+        )
+        .await
+        .unwrap();
+        assert!(transport_only.template_for(&admission).is_err());
     }
 
     #[test]

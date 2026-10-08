@@ -482,6 +482,7 @@ mod tests {
             damage: 33,
             range: 8192.0,
             near_range: 500.0,
+            location_multipliers: None,
         });
         for c in [
             cmd(1100, 1),

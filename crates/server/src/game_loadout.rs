@@ -47,6 +47,26 @@ fn hash_valid(s: &str) -> bool {
     s.len() == 64 && s.bytes().all(|c| c.is_ascii_hexdigit())
 }
 impl Loadout {
+    pub(super) fn selected_for(&self, public: &[u8], slot: u8) -> Result<Self> {
+        let snapshot = codol_protocol::profile::public_snapshot(public, &self.projection_offsets)?;
+        let layout: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../fixtures/protocol/backpack-class-offsets-3.3.3.3.json"
+        ))?;
+        let character = snapshot[layout["current_character_offset"].as_u64().unwrap() as usize];
+        let index = crate::game_class_selection::global_class_index(character, slot)?;
+        let offsets: Vec<usize> =
+            serde_json::from_value(layout["class_offsets"][usize::from(index)].clone())?;
+        let mut selected = self.clone();
+        selected.class_index = index;
+        selected.primary_offset = offsets[0];
+        selected.attachment_offsets = offsets[1..7].try_into().unwrap();
+        selected.secondary_offset = Some(offsets[7]);
+        selected.secondary_attachment_offsets = Some(offsets[8..14].try_into().unwrap());
+        Ok(selected)
+    }
+    pub(super) fn class_index(&self) -> u8 {
+        self.class_index
+    }
     pub(super) fn validate(&self, state: &PreparedGameState) -> Result<()> {
         let weapon = state
             .bootstrap_weapon

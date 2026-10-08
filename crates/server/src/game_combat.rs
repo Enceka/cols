@@ -1,13 +1,16 @@
 //! One server-owned training prop with coarse model bounds and real world occlusion.
 //!
 //! WeaponDef +0xbb4 supplies damage only inside its first distance band (+0xbcc).
-//! Later damage bands and skeletal hit locations are not recovered by this path.
+//! Later damage bands are not recovered. With a captured static NPC pose,
+//! the coarse bounds only gate a body-region ray (see game_hit_location).
 //! Authorised, de-duplicated weapon shots are supplied by the player simulation.
 use anyhow::{Result, ensure};
 use codol_protocol::game_target::TargetSnapshot;
 use serde::Deserialize;
 
+use crate::game_hit_location::{HitLocation, HitRegions};
 use crate::game_motion::Collision;
+use std::sync::Arc;
 
 #[derive(Clone, Copy, Debug)]
 pub struct WorldImpact {
@@ -20,6 +23,20 @@ pub struct WorldImpact {
 pub struct ShotOutcome {
     pub feedback: Option<String>,
     pub impact: Option<WorldImpact>,
+    /// Body region of a damaging hit, when a pose capture is loaded.
+    pub location: Option<HitLocation>,
+}
+
+impl ShotOutcome {
+    pub fn headshot(&self) -> bool {
+        self.location.is_some_and(HitLocation::is_head_region)
+    }
+}
+
+/// A captured body pose placed at the target's current origin and yaw.
+struct BodyPose<'a> {
+    regions: &'a HitRegions,
+    yaw_degrees: f32,
 }
 
 /// Trace ordinary bullets even without a damageable training prop. A live
@@ -29,23 +46,32 @@ fn trace_shot(
     angles: [u16; 3],
     range: f32,
     collision: &Collision,
-    target: Option<&TargetConfig>,
-) -> (Option<f32>, Option<WorldImpact>) {
+    target: Option<(&TargetConfig, Option<BodyPose<'_>>)>,
+) -> (Option<(f32, Option<HitLocation>)>, Option<WorldImpact>) {
     let direction = forward(angles);
     let end = std::array::from_fn(|i| eye[i] + direction[i] * range);
     let world = collision.raycast(eye, end);
     if world.start_solid || world.all_solid {
         return (None, None);
     }
-    let target_fraction = target.and_then(|config| {
+    let target_hit = target.and_then(|(config, pose)| {
         let min = std::array::from_fn(|i| config.origin[i] + config.bounds_min[i] * config.scale);
         let max = std::array::from_fn(|i| config.origin[i] + config.bounds_max[i] * config.scale);
-        ray_aabb(eye, end, min, max)
+        let fraction = ray_aabb(eye, end, min, max)?;
+        match pose {
+            // Inside the coarse bounds but between body regions, the bullet
+            // continues to the world instead of damaging the target.
+            Some(pose) => pose
+                .regions
+                .classify(eye, end, config.origin, pose.yaw_degrees)
+                .map(|hit| (hit.fraction, Some(hit.location))),
+            None => Some((fraction, None)),
+        }
     });
-    if let Some(fraction) = target_fraction
-        && (world.contents == 0 || fraction < world.fraction)
+    if let Some(hit) = target_hit
+        && (world.contents == 0 || hit.0 < world.fraction)
     {
-        return (Some(fraction), None);
+        return (Some(hit), None);
     }
     // Current surfaceparm table: sky4, noimpact16, nomarks32, nodraw128. The
     // effect's material columns0..30 exclude flesh-only columns31..34.
@@ -106,6 +132,10 @@ pub struct Ballistics {
     pub range: f32,
     /// First damage band, in world units. No later falloff is invented.
     pub near_range: f32,
+    /// WeaponDef+0xbf0, 20 floats in the current hit-location enum order.
+    /// Inferred from consistent resource values, not a named field table.
+    #[serde(default)]
+    pub location_multipliers: Option<[f32; 20]>,
 }
 
 impl Ballistics {
@@ -117,6 +147,19 @@ impl Ballistics {
             && self.near_range.is_finite()
             && self.near_range > 0.0
             && self.near_range <= self.range
+            && self
+                .location_multipliers
+                .is_none_or(|m| m.iter().all(|v| v.is_finite() && (0.0..=10.0).contains(v)))
+    }
+
+    /// Integer damage after the location multiplier; the fraction truncates.
+    pub fn damage_at(self, location: Option<HitLocation>) -> u16 {
+        match (location, self.location_multipliers) {
+            (Some(location), Some(multipliers)) => {
+                (f32::from(self.damage) * multipliers[location as usize]) as u16
+            }
+            _ => self.damage,
+        }
     }
 }
 
@@ -187,6 +230,8 @@ impl TargetConfig {
 #[derive(Debug)]
 pub struct CombatWorld {
     config: TargetConfig,
+    regions: Option<Arc<HitRegions>>,
+    yaw_degrees: f32,
     health: u16,
     death_time: Option<u32>,
     current_time: Option<u32>,
@@ -200,6 +245,8 @@ impl CombatWorld {
         Self {
             health: config.health,
             config,
+            regions: None,
+            yaw_degrees: 0.0,
             death_time: None,
             current_time: None,
             last_shot_time: None,
@@ -214,6 +261,20 @@ impl CombatWorld {
         if self.health > 0 {
             self.config.origin = origin;
         }
+    }
+    pub(crate) fn turn_target(&mut self, yaw_degrees: f32) {
+        if self.health > 0 && yaw_degrees.is_finite() {
+            self.yaw_degrees = yaw_degrees;
+        }
+    }
+    /// Only the reserved humanoid enemy uses the captured body pose.
+    pub(crate) fn set_hit_regions(&mut self, regions: Arc<HitRegions>) {
+        if self.config.entity_number == 1 {
+            self.regions = Some(regions);
+        }
+    }
+    pub(crate) fn has_hit_regions(&self) -> bool {
+        self.regions.is_some()
     }
 
     pub fn snapshot(&self) -> TargetSnapshot {
@@ -294,35 +355,45 @@ impl CombatWorld {
         self.life_start_time.get_or_insert(time);
         // Misses and shots at a dead target also consume their shot identity.
         self.last_shot_time = Some(time);
-        let (fraction, impact) = trace_shot(
+        let pose = self.regions.as_deref().map(|regions| BodyPose {
+            regions,
+            yaw_degrees: self.yaw_degrees,
+        });
+        let (hit, impact) = trace_shot(
             eye,
             angles,
             ballistics.range,
             collision,
-            (self.health > 0).then_some(&self.config),
+            (self.health > 0).then_some((&self.config, pose)),
         );
         let mut outcome = ShotOutcome {
             feedback: None,
             impact,
+            location: None,
         };
-        let Some(fraction) = fraction else {
+        let Some((fraction, location)) = hit else {
             return outcome;
         };
         if fraction * ballistics.range > ballistics.near_range {
             return outcome;
         }
-
-        self.health = self.health.saturating_sub(ballistics.damage);
+        let damage = ballistics.damage_at(location);
+        if damage == 0 {
+            return outcome;
+        }
+        outcome.location = location;
+        self.health = self.health.saturating_sub(damage);
         let name = if self.config.entity_number == 1 {
             "Training enemy"
         } else {
             "Training target"
         };
+        let part = location.map_or(String::new(), |l| format!(" ({})", l.name()));
         outcome.feedback = Some(if self.health == 0 {
             self.death_time = Some(effective_time);
-            format!("{name} destroyed")
+            format!("{name} destroyed{part}")
         } else {
-            format!("{name}: {} HP", self.health)
+            format!("{name}: {} HP{part}", self.health)
         });
         outcome
     }
@@ -387,6 +458,7 @@ mod tests {
             damage: 33,
             range: 8192.0,
             near_range: 500.0,
+            location_multipliers: None,
         }
     }
 
@@ -428,6 +500,73 @@ mod tests {
                 collision,
             )
             .feedback
+    }
+
+    fn humanoid() -> CombatWorld {
+        let mut world = CombatWorld::new(TargetConfig {
+            entity_number: 1,
+            origin: [100.0, 0.0, 0.0],
+            bounds_min: [-20.0, -20.0, 0.0],
+            bounds_max: [20.0, 20.0, 80.0],
+            ..target()
+        });
+        world.set_hit_regions(Arc::new(crate::game_hit_location::synthetic()));
+        world
+    }
+
+    fn located() -> Ballistics {
+        let mut multipliers = [1.0; 20];
+        multipliers[HitLocation::Head as usize] = 1.2;
+        multipliers[HitLocation::Gun as usize] = 0.0;
+        Ballistics {
+            location_multipliers: Some(multipliers),
+            ..ballistics()
+        }
+    }
+
+    /// Level shot from x=0 at height z toward the humanoid at x=100.
+    fn shot_at(world: &mut CombatWorld, time: u32, z: f32, y: f32) -> ShotOutcome {
+        let yaw = (y / 100.0).atan().to_degrees();
+        let angles = [0, (yaw.rem_euclid(360.0) * 65536.0 / 360.0) as u16, 0];
+        world.fire(time, [0.0, 0.0, z], angles, located(), &collision(None))
+    }
+
+    #[test]
+    fn captured_body_regions_select_location_damage_and_headshots() {
+        let mut world = humanoid();
+        let head = shot_at(&mut world, 1, 70.0, 0.0);
+        assert_eq!(head.location, Some(HitLocation::Head));
+        assert!(head.headshot());
+        assert_eq!(world.health(), 61); // 33 * 1.2 truncates to 39.
+        let torso = shot_at(&mut world, 2, 40.0, 0.0);
+        assert_eq!(torso.location, Some(HitLocation::TorsoUpper));
+        assert!(!torso.headshot());
+        assert_eq!(world.health(), 28);
+        assert_eq!(located().damage_at(Some(HitLocation::Gun)), 0);
+        assert_eq!(ballistics().damage_at(Some(HitLocation::Head)), 33);
+    }
+
+    #[test]
+    fn a_ray_through_the_coarse_bounds_but_between_regions_reaches_the_world() {
+        let mut world = humanoid();
+        // Inside the 40-wide box, beside the 20-wide torso: no damage.
+        let miss = shot_at(&mut world, 1, 25.0, 17.0);
+        assert!(miss.feedback.is_none() && miss.location.is_none());
+        assert_eq!(world.health(), 100);
+        // Without a capture the same ray damages the coarse bounds.
+        let mut coarse = CombatWorld::new(TargetConfig {
+            entity_number: 1,
+            origin: [100.0, 0.0, 0.0],
+            bounds_min: [-20.0, -20.0, 0.0],
+            bounds_max: [20.0, 20.0, 80.0],
+            ..target()
+        });
+        let hit = shot_at(&mut coarse, 1, 25.0, 17.0);
+        assert!(hit.feedback.is_some() && hit.location.is_none());
+        // The static prop never takes the humanoid pose.
+        let mut prop = CombatWorld::new(target());
+        prop.set_hit_regions(Arc::new(crate::game_hit_location::synthetic()));
+        assert!(!prop.has_hit_regions());
     }
 
     #[test]

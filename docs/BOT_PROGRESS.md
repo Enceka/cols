@@ -16,6 +16,10 @@
 - 右上角KDA和Tab通过本版二进制可靠J命令更新aarScoreboard缓存；新增opcode2、二进制长度与ACK重发，保持native XOR仅使用C-string前缀。只修改已核实的比赛计数字段，不修改背包与生涯计数。
 - 回血逻辑参考提供的MP healthoverlay：受伤后延迟5秒；轻伤补满，重伤每50ms恢复10%最大HP；新受伤重新计时，死亡不回血，重生重置恢复计时。满血时清除受伤count。
 
+- 局内背包菜单`mr <serverId> 1 customN`选择当前角色的第N个背包。资源configstring仍立即下发并等待ACK，但训练中活着时不立即换枪：ACK后保存为下次出生背包，提示`Backpack will change on next spawn`，死亡3秒重生时才替换。重选当前背包会取消待换。5个实际背包（AK104/Vector/L86/M4/M4，副武器M9）服务端均可组装。
+- 爆头：`--hit-regions <path>`指定Bot静态姿态采集（`tools/client_state.py --hit-regions`，Bot静止时读取），文件可在服务端运行后出现，500ms轮询热加载。加载后Bot粗盒只作门槛，射线按骨骼OBB分类；落在盒内但不碰任何区域的子弹继续打世界。伤害=基础伤害×WeaponDef+0xbf0的20项部位倍率（推断字段，截断取整；M4头部1.2→39）。头/头盔击杀发EV_OBITUARY eventParm 909（原生killiconheadshot，替换武器图标），记分板headshots计数，屏幕提示带部位名。
+- 尚未实现：Bot打玩家仍是粗盒、无部位；爆头语音/奖章播报来源未逆向；静态姿态不随动画/蹲趴变化。
+
 ## 实际问题及修复
 
 旧Bot原点`[-172,-800,-76]`点射线可通过，但70高胶囊startSolid/allSolid。它在实图150个tick中一直不动，因此仅看到Chase状态不代表移动已生效。完整胶囊grounded_spawn得到`[-172,-800,-75.87254]`；实图回放修复后持续追击，到tick90进入Attack，所有记录胶囊均未陷入碰撞。准备、初始出生及重生使用同一修正，禁止再将Z四舍五入埋回斜面。

@@ -1,6 +1,8 @@
 //! Native 3.3.3.3 kill feed: ET_EVENTS22 + EV_OBITUARY132 = eType154.
 //! Descriptor22 (0xc52888) supplies the event fields; 0x50d270 consumes
 //! eventParm as a registered weapon and ES+0x80/+0x84 as victim/attacker.
+//! eventParm>=900 selects a means-of-death icon instead; MOD9 (909) is the
+//! native `killiconheadshot` string, replacing the weapon icon in the feed.
 use crate::{game_state::Writer, lobby::LobbyError};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -9,12 +11,24 @@ pub struct ObituarySnapshot {
     /// allocates IDs separately from impacts and sorts the complete stream.
     pub entity_number: u16,
     pub weapon: u16,
+    /// Show the native headshot icon instead of the registered weapon.
+    pub headshot: bool,
     /// Current training world has local client0 and enemy client1.
     pub victim: u8,
     pub attacker: u8,
 }
 
+const MEANS_OF_DEATH_BASE: u32 = 900;
+const MOD_HEAD_SHOT: u32 = 9;
+
 impl ObituarySnapshot {
+    fn event_parameter(self) -> u32 {
+        if self.headshot {
+            MEANS_OF_DEATH_BASE + MOD_HEAD_SHOT
+        } else {
+            u32::from(self.weapon)
+        }
+    }
     fn validate(self) -> Result<(), LobbyError> {
         if !(21..2046).contains(&self.entity_number)
             || !(1..900).contains(&self.weapon)
@@ -67,7 +81,7 @@ pub(crate) fn write_obituaries(
         gap(out, 5);
         // field5 ES+a8, codec-93: EV132 table width10, directly in bit pool.
         // No generic nonzero gate, and no raw byte split for this codec.
-        out.bits(u32::from(obituary.weapon), 10);
+        out.bits(obituary.event_parameter(), 10);
         let mut previous = 5;
         if obituary.victim != 0 {
             gap(out, 9 - previous);
@@ -180,6 +194,7 @@ mod tests {
         ObituarySnapshot {
             entity_number: 1800,
             weapon: 352,
+            headshot: false,
             victim: 1,
             attacker: 0,
         }
@@ -202,7 +217,7 @@ mod tests {
     #[test]
     fn kills_and_suicides_decode_with_current_fields_at_every_pool_alignment() {
         for prefix in 0..8 {
-            for weapon in [1, 352, 899] {
+            for (weapon, headshot) in [(1, false), (352, false), (899, false), (352, true)] {
                 let mut out = Writer::default();
                 out.bits(0x56, prefix);
                 out.bytes.push(0xa6);
@@ -210,24 +225,28 @@ mod tests {
                     ObituarySnapshot {
                         entity_number: 21,
                         weapon,
+                        headshot,
                         victim: 0,
                         attacker: 0,
                     },
                     ObituarySnapshot {
                         entity_number: 1800,
                         weapon,
+                        headshot,
                         victim: 1,
                         attacker: 0,
                     },
                     ObituarySnapshot {
                         entity_number: 1801,
                         weapon,
+                        headshot,
                         victim: 0,
                         attacker: 1,
                     },
                     ObituarySnapshot {
                         entity_number: 2045,
                         weapon,
+                        headshot,
                         victim: 1,
                         attacker: 1,
                     },
@@ -241,7 +260,14 @@ mod tests {
                     let (number, fields) = decode(&mut reader);
                     assert_eq!(number, expected.entity_number);
                     assert_eq!(fields[&4], 154);
-                    assert_eq!(fields[&0xa8], u32::from(expected.weapon));
+                    assert_eq!(
+                        fields[&0xa8],
+                        if expected.headshot {
+                            909
+                        } else {
+                            u32::from(expected.weapon)
+                        }
+                    );
                     assert_eq!(
                         fields.get(&0x80).copied().unwrap_or(0),
                         u32::from(expected.victim)

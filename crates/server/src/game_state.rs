@@ -115,6 +115,15 @@ pub struct PreparedGameState {
     snapshot_frames: u32,
 }
 impl PreparedGameState {
+    pub fn map(&self) -> &str {
+        &self.map
+    }
+    pub fn mode(&self) -> &str {
+        &self.mode
+    }
+    pub fn ncs_crc(&self) -> u32 {
+        self.ncs_crc
+    }
     pub fn prepare_training_enemy(
         state_path: &Path,
         capture_path: &Path,
@@ -564,7 +573,7 @@ impl PreparedGameState {
             "prepared game state source hash"
         );
         ensure!(
-            state.map == "mp_afghan"
+            matches!(state.map.as_str(), "mp_afghan" | "mp_killhouse_sh")
                 && state.mode == "war"
                 && state.zone == "mp"
                 && state.playlist == 0,
@@ -728,6 +737,25 @@ impl PreparedGameState {
         state.register_weapons(&mut std::collections::BTreeMap::new(), &mut next)?;
         Ok(state)
     }
+    pub(crate) fn for_backpack(&self, public: &[u8], slot: u8) -> Result<Self> {
+        let mut state = self.clone();
+        state.player_loadout = Some(
+            self.player_loadout
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("missing backpack schema"))?
+                .selected_for(public, slot)?,
+        );
+        Ok(state)
+    }
+    pub(crate) fn selected_backpack_class(&self) -> Option<u8> {
+        self.player_loadout
+            .as_ref()
+            .map(|loadout| loadout.class_index())
+    }
+    pub(crate) fn update_profile_selection(&mut self, selected: &Self) {
+        self.player_loadout = selected.player_loadout.clone();
+        self.profile_hash = selected.profile_hash;
+    }
     pub(crate) fn first_weapon_index(&self) -> u16 {
         self.bootstrap_weapon.as_ref().map_or(1, |w| w.index)
     }
@@ -855,10 +883,14 @@ impl PreparedGameState {
                 damage <= u32::from(u16::MAX),
                 "weapon damage outside supported limits"
             );
+            let multipliers: [f32; 20] =
+                std::array::from_fn(|i| f32::from_bits(word(0xbf0 + i * 4)));
             let value = crate::game_combat::Ballistics {
                 damage: damage as u16,
                 range: 8192.0,
                 near_range,
+                // The block is all zero for knives/launchers; keep base damage.
+                location_multipliers: multipliers.iter().any(|m| *m > 0.0).then_some(multipliers),
             };
             if value.valid() { Some(value) } else { None }
         };

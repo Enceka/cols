@@ -70,6 +70,7 @@ def main():
     parser.add_argument("--rust-game", action="store_true", help="enable experimental game allocation/UDP transport; no simulation yet")
     parser.add_argument("--game-state", type=Path, help="opt-in prepared training gamestate from prepare_game_state.py")
     parser.add_argument("--snapshot-probe", nargs="?", type=int, const=60, help="bootstrap frame budget at 20 Hz (1..18000; default 60); requires game-state")
+    parser.add_argument("--hit-regions", type=Path, help="enemy pose capture path; may be written later by client_state.py --hit-regions")
     parser.add_argument("--local-services", action="store_true", help="enable time/storage services with persistent data in client-work/server-data")
     parser.add_argument("--service-data-dir", type=Path, help="explicit isolated service-data directory for diagnostics; requires --local-services")
     parser.add_argument("--quiet-network", action="store_true", help="omit verbose Wine winsock tracing during longer UI tests; Rust captures remain enabled")
@@ -106,6 +107,8 @@ def main():
         parser.error("game-state requires rust-game and an existing prepared file")
     if args.snapshot_probe is not None and (not args.game_state or not 1 <= args.snapshot_probe <= 18000):
         parser.error("snapshot-probe requires game-state and 1..18000 frames")
+    if args.hit_regions and not args.game_state:
+        parser.error("hit-regions requires game-state")
     if args.trust_lab_cert and not (args.tls_probe or args.rust_auth):
         parser.error("trust-lab-cert requires tls-probe or rust-auth")
     info = available[args.engine_id]
@@ -212,6 +215,8 @@ def main():
                         if args.game_state:
                             tls_argv += ["--game-state", str(args.game_state.resolve())]
                             state["game_state_sha256"] = sha256(args.game_state)
+                        if args.hit_regions:
+                            tls_argv += ["--hit-regions", str(args.hit_regions.resolve())]
                         if args.snapshot_probe:
                             tls_argv += ["--snapshot-probe", str(args.snapshot_probe)]
                     else:

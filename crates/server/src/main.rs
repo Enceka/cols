@@ -122,6 +122,9 @@ enum Command {
         /// Bootstrap frames at 20 Hz (default 60, maximum 18000); no simulation.
         #[arg(long, requires = "game_state", num_args = 0..=1, default_missing_value = "60", value_parser = clap::value_parser!(u32).range(1..=18000))]
         snapshot_probe: Option<u32>,
+        /// Enemy body-pose capture; may be written after the server starts.
+        #[arg(long, requires = "game_state")]
+        hit_regions: Option<PathBuf>,
     },
     /// Parse an observed task-10 JSON body; identifiers are omitted from output.
     InspectAuth {
@@ -359,6 +362,7 @@ async fn main() -> Result<()> {
             game_bind,
             game_state,
             snapshot_probe,
+            hit_regions,
         } => {
             let server = AuthServer::bind(AuthOptions {
                 bind,
@@ -393,6 +397,9 @@ async fn main() -> Result<()> {
                             state = state.with_snapshot_frames(frames)?;
                         }
                         game = game.with_game_state(state);
+                    }
+                    if let Some(path) = hit_regions {
+                        game = game.with_hit_regions(path);
                     }
                     let endpoint = game.admissions();
                     tracing::info!(address=%endpoint.address(),"experimental Rust game UDP endpoint ready");

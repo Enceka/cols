@@ -29,6 +29,8 @@ pub(crate) struct Connection {
     local_baseline: Option<codol_protocol::game_enemy::EnemySnapshot>,
     corpses: std::collections::BTreeMap<u16, (u32, codol_protocol::game_corpse::CorpseSnapshot)>,
     death_sequence: [u32; 2],
+    /// Headshot kills credited to client0 (player) and client1 (bot).
+    headshots: [u32; 2],
     obituaries: VecDeque<(u32, codol_protocol::game_obituary::ObituarySnapshot)>,
     next_obituary: u16,
     enemy_events: codol_protocol::game_events::EventQueue,
@@ -42,6 +44,10 @@ pub(crate) struct Connection {
     health_recovery: crate::game_health::HealthRecovery,
     feedback: VecDeque<String>,
     pending_loadout: Option<(u32, Arc<crate::game_state::PreparedGameState>)>,
+    /// Acknowledged backpack change, equipped when the player next spawns.
+    next_spawn_loadout: Option<Arc<crate::game_state::PreparedGameState>>,
+    requested_backpack: Option<u8>,
+    active_backpack: Option<u8>,
     known_weapons: std::collections::BTreeMap<String, u16>,
     next_weapon: u16,
     shared_registry: Option<Arc<std::sync::Mutex<crate::game_weapon_registry::WeaponRegistry>>>,
@@ -96,14 +102,36 @@ impl Connection {
             return Ok(());
         };
         let hash: [u8; 32] = Sha256::digest(public).into();
-        if current.profile_hash == Some(hash) {
+        if current.profile_hash == Some(hash) && self.requested_backpack.is_none() {
             return Ok(());
         }
         // Attribute resolution uses a temporary valid slot; the persistent
         // registry then assigns the client's canonical name/index identity.
-        let mut state = template.for_profile_at(public, owned, template.first_weapon_index())?;
+        let slot = self.requested_backpack.or(self.active_backpack);
+        let selected = slot
+            .map(|slot| template.for_backpack(public, slot))
+            .transpose()?;
+        let source = selected.as_ref().unwrap_or(template);
+        let mut state = match source.for_profile_at(public, owned, template.first_weapon_index()) {
+            Ok(state) => state,
+            Err(error) if self.requested_backpack.is_some() => {
+                self.requested_backpack = None;
+                tracing::warn!(%error,"selected backpack is unavailable");
+                self.feedback
+                    .push_back("Selected backpack has no usable weapon".into());
+                return Ok(());
+            }
+            Err(error) => return Err(error),
+        };
+        self.active_backpack = slot;
+        self.requested_backpack = None;
+        tracing::info!(slot,global_class=?state.selected_backpack_class(),"selected in-game backpack");
         if current.selected_weapon_names() == state.selected_weapon_names() {
-            Arc::make_mut(self.game_state.as_mut().unwrap()).profile_hash = Some(hash);
+            Arc::make_mut(self.game_state.as_mut().unwrap()).update_profile_selection(&state);
+            if self.next_spawn_loadout.take().is_some() {
+                self.feedback
+                    .push_back("Current backpack kept for next spawn".into());
+            }
             return Ok(());
         }
         let mut commands = self.server_commands.clone();
@@ -149,6 +177,53 @@ impl Connection {
         tracing::info!("queued saved backpack update for client resource acknowledgement");
         Ok(())
     }
+    /// Client resources for a backpack are acknowledged; equip it now, or at
+    /// the next training spawn while the current life is still in progress.
+    fn apply_acknowledged_loadout(&mut self) {
+        if self
+            .pending_loadout
+            .as_ref()
+            .is_none_or(|(seq, _)| self.server_commands.acknowledged() < *seq)
+        {
+            return;
+        }
+        let (_, state) = self.pending_loadout.take().unwrap();
+        if self.bot.is_some() && self.player.is_some() {
+            // A training life keeps its weapons; respawn equips the choice.
+            self.next_spawn_loadout = Some(state);
+            self.feedback
+                .push_back("Backpack will change on next spawn".into());
+            tracing::info!("deferred acknowledged player backpack update to respawn");
+        } else {
+            if let Some(primary) = state.primary_player() {
+                if let Some(player) = &mut self.player {
+                    player.replace_loadout(primary, state.secondary_player());
+                } else {
+                    self.player = state.player();
+                }
+            }
+            self.game_state = Some(state);
+            tracing::info!("applied acknowledged player backpack update");
+        }
+    }
+    fn equip_spawn_loadout(&mut self) {
+        if let Some(next) = self.next_spawn_loadout.take() {
+            self.game_state = Some(next);
+            tracing::info!("applied deferred player backpack at respawn");
+        }
+    }
+    /// Attach the captured enemy body pose to this connection's target.
+    pub(crate) fn set_hit_regions(&mut self, regions: &Arc<crate::game_hit_location::HitRegions>) {
+        if let Some(combat) = &mut self.combat
+            && !combat.has_hit_regions()
+        {
+            combat.set_hit_regions(regions.clone());
+            tracing::info!(
+                source = regions.source_sha256(),
+                "enemy hit regions enabled"
+            );
+        }
+    }
     pub(crate) fn with_weapon_registry(
         mut self,
         registry: Arc<std::sync::Mutex<crate::game_weapon_registry::WeaponRegistry>>,
@@ -193,22 +268,7 @@ impl Connection {
         {
             return Ok(None);
         }
-        if self
-            .pending_loadout
-            .as_ref()
-            .is_some_and(|(seq, _)| self.server_commands.acknowledged() >= *seq)
-        {
-            let (_, state) = self.pending_loadout.take().unwrap();
-            if let Some(primary) = state.primary_player() {
-                if let Some(player) = &mut self.player {
-                    player.replace_loadout(primary, state.secondary_player());
-                } else {
-                    self.player = state.player();
-                }
-            }
-            self.game_state = Some(state);
-            tracing::info!("applied acknowledged player backpack update");
-        }
+        self.apply_acknowledged_loadout();
         // Wall-clock time must keep advancing even if capture I/O misses a
         // tick. Counting frames made the server clock fall behind the client.
         let epoch = *self.snapshot_epoch.get_or_insert(now);
@@ -272,6 +332,7 @@ impl Connection {
                     user_id: self.owner_id,
                     kills: self.death_sequence[1],
                     deaths: self.death_sequence[0],
+                    headshots: self.headshots[0],
                     score: (self.death_sequence[1] * 100) as i32,
                     ..Default::default()
                 },
@@ -280,6 +341,7 @@ impl Connection {
                     user_id: 1,
                     kills: self.death_sequence[0],
                     deaths: self.death_sequence[1],
+                    headshots: self.headshots[1],
                     score: (self.death_sequence[0] * 100) as i32,
                     ..Default::default()
                 },
@@ -548,6 +610,15 @@ impl Connection {
                         tracing::info!(command=%text,"game menu request");
                     }
                 }
+                match crate::game_class_selection::from_client_command(&command, 1) {
+                    Ok(Some(slot)) => {
+                        self.requested_backpack = Some(slot);
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        tracing::warn!(%error,"declined unsupported backpack menu request");
+                    }
+                }
                 // Only explicitly implemented semantic requests are applied.
                 client_commands.push(&command)?;
                 client_commands.mark_sent(sequence)?;
@@ -634,7 +705,7 @@ impl Connection {
         }
         self.pending_inputs.entry(input.time).or_insert(input);
     }
-    fn queue_obituary(&mut self, now: u32, weapon: u16, victim: u8, attacker: u8) {
+    fn queue_obituary(&mut self, now: u32, weapon: u16, victim: u8, attacker: u8, headshot: bool) {
         let entity_number = if self.next_obituary < 1800 {
             1800
         } else {
@@ -650,12 +721,22 @@ impl Connection {
             codol_protocol::game_obituary::ObituarySnapshot {
                 entity_number,
                 weapon,
+                headshot,
                 victim,
                 attacker,
             },
         ));
+        if headshot {
+            self.headshots[usize::from(attacker)] += 1;
+        }
         self.scoreboard_sent = false;
-        tracing::info!(victim, attacker, weapon, "training kill obituary queued");
+        tracing::info!(
+            victim,
+            attacker,
+            weapon,
+            headshot,
+            "training kill obituary queued"
+        );
     }
 
     fn advance_bot(&mut self, now: u32) -> Result<()> {
@@ -666,11 +747,14 @@ impl Connection {
         {
             return Ok(());
         }
-        let state = self.game_state.as_ref().unwrap();
-        if self
+        let respawning = self
             .player_death
-            .is_some_and(|death| now.wrapping_sub(death) >= 3000)
-        {
+            .is_some_and(|death| now.wrapping_sub(death) >= 3000);
+        if respawning {
+            self.equip_spawn_loadout();
+        }
+        let state = self.game_state.as_ref().unwrap();
+        if respawning {
             self.player_death = None;
             self.player_birth = now;
             self.health_recovery = Default::default();
@@ -736,6 +820,7 @@ impl Connection {
         }
         if let Some(combat) = &mut self.combat {
             combat.move_target(frame.motion.origin);
+            combat.turn_target(f32::from(frame.angles[1]) * 360.0 / 65536.0);
         }
         if let Some(shot) = frame.shot
             && bot.shot_is_current(&shot)
@@ -789,7 +874,7 @@ impl Connection {
                         self.death_sequence[0] = self.death_sequence[0].wrapping_add(1).max(1);
                         self.corpses
                             .insert(20, (now, state.corpse(local, self.death_sequence[0])));
-                        self.queue_obituary(now, shot.weapon, 0, 1);
+                        self.queue_obituary(now, shot.weapon, 0, 1, false);
                     }
                 }
             }
@@ -879,6 +964,7 @@ impl Connection {
                                     shot.ballistics,
                                     &collision,
                                 ),
+                                location: None,
                             },
                             |combat| {
                                 combat.fire(
@@ -895,6 +981,8 @@ impl Connection {
                         {
                             tracing::info!(shot_time = shot.time, entity = event.entity_number, origin = ?event.origin, normal = event.normal_byte, surface = event.surface, weapon = event.weapon, "world bullet impact");
                         }
+                        let headshot = outcome.headshot();
+                        let location = outcome.location.map(|l| l.name());
                         if let Some(message) = outcome.feedback {
                             self.last_hit_time = Some(through);
                             if self
@@ -917,12 +1005,13 @@ impl Connection {
                                         19,
                                         (through, state.corpse(enemy, self.death_sequence[1])),
                                     );
-                                    self.queue_obituary(through, shot.weapon, 1, 0);
+                                    self.queue_obituary(through, shot.weapon, 1, 0, headshot);
                                 }
                             }
                             tracing::info!(
                                 shot_time = shot.time,
                                 health = self.combat.as_ref().map(|combat| combat.health()),
+                                location,
                                 "training target hit"
                             );
                             self.feedback.push_back(message);
@@ -1082,17 +1171,88 @@ fn validate_connect(body: &[u8], owner: u64, build: i32, challenge: u32) -> Resu
         std::str::from_utf8(get(b"2490")?)?.parse::<i32>()? == build,
         "connect build mismatch"
     );
-    Ok(fields
+    let name = fields
         .get(b"name".as_slice())
         .and_then(|value| std::str::from_utf8(value).ok())
         .filter(|name| !name.is_empty() && name.len() < 64)
-        .unwrap_or("Player")
-        .to_owned())
+        .unwrap_or("Player");
+    Ok(decode_connect_name(name))
+}
+
+fn decode_connect_name(name: &str) -> String {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    STANDARD
+        .decode(name)
+        .ok()
+        .and_then(|bytes| String::from_utf8(bytes).ok())
+        .filter(|decoded| {
+            !decoded.is_empty() && decoded.len() < 64 && !decoded.chars().any(char::is_control)
+        })
+        .unwrap_or_else(|| name.to_owned())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn training_backpack_changes_wait_for_the_next_spawn() {
+        let current = Arc::new(crate::game_state::synthetic());
+        let next = Arc::new(crate::game_state::synthetic());
+        let mut c = Connection::with_game_state(current.clone());
+        c.bot = Some(crate::game_bot::BotController::new([0.0; 3], [0; 3], 190.0).unwrap());
+        c.player = Some(crate::game_player::Player::new(
+            codol_protocol::game_snapshot::Equipment {
+                weapon: 352,
+                secondary: None,
+                events: None,
+                aim: None,
+                viewmodel: None,
+                firing: None,
+                ammo: None,
+            },
+            None,
+            None,
+            None,
+        ));
+        c.pending_loadout = Some((1, next.clone()));
+        c.apply_acknowledged_loadout(); // Resources not yet acknowledged.
+        assert!(c.pending_loadout.is_some() && c.next_spawn_loadout.is_none());
+        c.pending_loadout = Some((0, next.clone()));
+        c.apply_acknowledged_loadout();
+        assert!(c.pending_loadout.is_none());
+        assert!(Arc::ptr_eq(c.game_state.as_ref().unwrap(), &current));
+        assert_eq!(c.player.as_ref().unwrap().equipment().weapon, 352);
+        assert_eq!(
+            c.feedback.back().map(String::as_str),
+            Some("Backpack will change on next spawn")
+        );
+        c.equip_spawn_loadout();
+        assert!(Arc::ptr_eq(c.game_state.as_ref().unwrap(), &next));
+        assert!(c.next_spawn_loadout.is_none());
+        // Without a training life there is no spawn to wait for.
+        let mut plain = Connection::with_game_state(current);
+        plain.pending_loadout = Some((0, next.clone()));
+        plain.apply_acknowledged_loadout();
+        assert!(Arc::ptr_eq(plain.game_state.as_ref().unwrap(), &next));
+    }
+    #[test]
+    fn headshot_kills_are_counted_for_their_attacker() {
+        let mut c = Connection::default();
+        c.queue_obituary(1000, 352, 1, 0, true);
+        c.queue_obituary(1100, 352, 1, 0, false);
+        c.queue_obituary(1200, 352, 0, 1, true);
+        assert_eq!(c.headshots, [1, 1]);
+        assert!(c.obituaries[0].1.headshot && !c.obituaries[1].1.headshot);
+    }
+    #[test]
+    fn native_encoded_nickname_is_decoded_without_accepting_controls() {
+        assert_eq!(
+            decode_connect_name("c3RlYW11c2VyQ2xpZW50"),
+            "steamuserClient"
+        );
+        assert_eq!(decode_connect_name("Player"), "Player");
+        assert_eq!(decode_connect_name("cXVpdAo="), "cXVpdAo=");
+    }
     #[test]
     fn predicted_inputs_are_queued_until_the_clock_reaches_them_without_losing_transitions() {
         let mut c = Connection {

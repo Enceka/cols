@@ -437,6 +437,7 @@ mod tests {
                 damage: 33,
                 range: 8192.0,
                 near_range: 500.0,
+                location_multipliers: None,
             },
             fire_interval_msec: 80,
         }
