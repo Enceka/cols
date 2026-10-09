@@ -123,6 +123,21 @@ impl ReliableCommands {
         }
         Ok(frames)
     }
+    /// Fit complete reliable records within one native message. A large
+    /// scoreboard can need several messages; never split a binary J record.
+    pub fn encode_frames_bounded(&self, budget: usize) -> Result<(Vec<u8>, u32), LobbyError> {
+        let mut frames = Vec::new();
+        let mut last = self.sent;
+        for sequence in self.acknowledged + 1..=self.sequence {
+            let frame = self.encode_command(sequence)?;
+            if frames.len() + frame.len() > budget {
+                break;
+            }
+            frames.extend_from_slice(&frame);
+            last = last.max(sequence);
+        }
+        Ok((frames, last))
+    }
     /// Append atomically, leaving an existing message unchanged on failure.
     pub fn append_frames(&self, out: &mut Vec<u8>) -> Result<(), LobbyError> {
         let frames = self.encode_frames()?;
@@ -360,6 +375,39 @@ pub fn client_message_with_base(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn large_reliable_updates_fit_complete_native_messages_and_ack_only_sent_records() {
+        let mut commands = ReliableCommands::default();
+        commands
+            .push_binary(&[b'J'; BINARY_RELIABLE_BYTES])
+            .unwrap();
+        commands
+            .push_binary(&[b'J'; BINARY_RELIABLE_BYTES])
+            .unwrap();
+        let (none, sent) = commands.encode_frames_bounded(100).unwrap();
+        assert!(none.is_empty());
+        assert_eq!(sent, 0);
+        let (mut first, sent) = commands.encode_frames_bounded(FRAGMENT_SIZE - 6).unwrap();
+        assert_eq!(sent, 1);
+        first.push(SERVER_EOF);
+        server_packet(1, 0, 0, b"", &first).unwrap();
+        commands.mark_sent(sent).unwrap();
+        assert!(commands.acknowledge(2).is_err());
+        commands.acknowledge(1).unwrap();
+        let (mut second, sent) = commands.encode_frames_bounded(FRAGMENT_SIZE - 6).unwrap();
+        assert_eq!(sent, 2);
+        second.push(SERVER_EOF);
+        server_packet(2, 0, 0, b"", &second).unwrap();
+        commands.mark_sent(sent).unwrap();
+        commands.acknowledge(2).unwrap();
+        assert!(
+            commands
+                .encode_frames_bounded(FRAGMENT_SIZE)
+                .unwrap()
+                .0
+                .is_empty()
+        );
+    }
     #[test]
     fn independent_headers_and_xor_vectors() {
         // Hand-calculated: C2S key=0x34^0x09^0x02=0x3f; EOF=3.

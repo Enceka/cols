@@ -28,6 +28,103 @@ pub struct ShotOutcome {
     pub location: Option<HitLocation>,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Actor {
+    pub client: u8,
+    pub team: u8,
+    pub origin: [f32; 3],
+    pub height: f32,
+    pub yaw: f32,
+}
+
+#[derive(Default)]
+pub(crate) struct ActorShot {
+    pub damage: Vec<(u8, u16, bool)>,
+    pub impacts: Vec<WorldImpact>,
+}
+pub(crate) struct ActorScene<'a> {
+    pub actors: &'a [Actor],
+    pub regions: Option<&'a HitRegions>,
+    pub collision: &'a Collision,
+}
+
+/// Each pellet stops at the closest body or world face. A teammate blocks
+/// the bullet without receiving friendly-fire damage.
+pub(crate) fn fire_at_actors(
+    eye: [f32; 3],
+    angles: [u16; 3],
+    time: u32,
+    ballistics: Ballistics,
+    shooter: (u8, u8),
+    scene: ActorScene<'_>,
+) -> ActorShot {
+    let ActorScene {
+        actors,
+        regions,
+        collision,
+    } = scene;
+    let mut outcome = ActorShot::default();
+    for angles in ballistics.rays(angles, time) {
+        let direction = forward(angles);
+        let end = std::array::from_fn(|i| eye[i] + direction[i] * ballistics.range);
+        let world = collision.raycast(eye, end);
+        if world.start_solid || world.all_solid {
+            continue;
+        }
+        let mut nearest: Option<(Actor, f32, Option<HitLocation>)> = None;
+        for actor in actors.iter().filter(|a| a.client != shooter.0) {
+            let min = [
+                actor.origin[0] - 15.0,
+                actor.origin[1] - 15.0,
+                actor.origin[2],
+            ];
+            let max = [
+                actor.origin[0] + 15.0,
+                actor.origin[1] + 15.0,
+                actor.origin[2] + actor.height,
+            ];
+            let Some(coarse) = ray_aabb(eye, end, min, max) else {
+                continue;
+            };
+            let (fraction, location) = if let Some(regions) = regions.filter(|_| actor.client != 0)
+            {
+                let Some(hit) = regions.classify(eye, end, actor.origin, actor.yaw) else {
+                    continue;
+                };
+                (hit.fraction, Some(hit.location))
+            } else {
+                (coarse, None)
+            };
+            if (world.contents == 0 || fraction < world.fraction)
+                && nearest.is_none_or(|(_, previous, _)| fraction < previous)
+            {
+                nearest = Some((*actor, fraction, location));
+            }
+        }
+        if let Some((actor, fraction, location)) = nearest {
+            if actor.team != shooter.1 {
+                let base = ballistics
+                    .damage_at_distance(fraction * ballistics.range)
+                    .unwrap_or(0);
+                let damage = ballistics.damage_at(base, location);
+                if damage != 0 {
+                    let headshot = location.is_some_and(HitLocation::is_head_region);
+                    if let Some(previous) = outcome.damage.iter_mut().find(|p| p.0 == actor.client)
+                    {
+                        previous.1 = previous.1.saturating_add(damage);
+                        previous.2 |= headshot;
+                    } else {
+                        outcome.damage.push((actor.client, damage, headshot));
+                    }
+                }
+            }
+        } else if let Some(impact) = world_impact(eye, angles, ballistics, collision) {
+            outcome.impacts.push(impact);
+        }
+    }
+    outcome
+}
+
 impl ShotOutcome {
     pub fn headshot(&self) -> bool {
         self.location.is_some_and(HitLocation::is_head_region)
@@ -625,6 +722,46 @@ mod tests {
         let file = tempfile::NamedTempFile::new().unwrap();
         std::fs::write(file.path(), serde_json::to_vec(&export).unwrap()).unwrap();
         Collision::load(file.path()).unwrap()
+    }
+    #[test]
+    fn multiplayer_pellets_stop_at_teammates_and_the_nearest_enemy() {
+        let collision = collision(None);
+        let actor = |client, team, x| Actor {
+            client,
+            team,
+            origin: [x, 0.0, 0.0],
+            height: 70.0,
+            yaw: 0.0,
+        };
+        let mut b = ballistics();
+        b.pellets = 8;
+        let eye = [0.0, 0.0, 60.0];
+        let blocked = fire_at_actors(
+            eye,
+            [0; 3],
+            1000,
+            b,
+            (0, 2),
+            ActorScene {
+                actors: &[actor(1, 2, 100.0), actor(6, 1, 200.0)],
+                regions: None,
+                collision: &collision,
+            },
+        );
+        assert!(blocked.damage.is_empty());
+        let hit = fire_at_actors(
+            eye,
+            [0; 3],
+            1000,
+            b,
+            (0, 2),
+            ActorScene {
+                actors: &[actor(6, 1, 100.0), actor(7, 1, 200.0)],
+                regions: None,
+                collision: &collision,
+            },
+        );
+        assert_eq!(hit.damage, vec![(6, 264, false)]);
     }
 
     fn shoot(

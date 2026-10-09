@@ -19,6 +19,8 @@ pub struct Equipment {
     /// PS+0x284: native shots in the current trigger press, clamped at4.
     pub fire_count: u8,
     pub spread_scale: f32,
+    /// Inventory slot flag3, PS+0x2e3: bolt still needs rechambering.
+    pub needs_rechamber: bool,
     pub ammo: Option<Ammo>,
     pub viewmodel: Option<u16>,
     pub firing: Option<Firing>,
@@ -36,6 +38,7 @@ impl Equipment {
 pub struct EquippedWeapon {
     pub weapon: u16,
     pub ammo: Option<Ammo>,
+    pub needs_rechamber: bool,
 }
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Aim {
@@ -515,12 +518,12 @@ pub fn player_frame_with_world(
         out.bits(1, 1); // slot0 changed
         out.bits(1, 1); // weapon ID present
         out.bits(u32::from(inventory_weapon.unwrap()), 10);
-        out.bits(0, 5); // five per-slot flags
+        out.bits(u32::from(equipment.unwrap().needs_rechamber) << 3, 5);
         if let Some(other) = secondary {
             out.bits(1, 1); // slot1 changed
             out.bits(1, 1); // weapon ID present
             out.bits(u32::from(other.weapon), 10);
-            out.bits(0, 5);
+            out.bits(u32::from(other.needs_rechamber) << 3, 5);
             out.bits(0, 13); // slots2..14 unchanged
         } else {
             out.bits(0, 14); // slots1..14 unchanged
@@ -781,6 +784,7 @@ mod tests {
             alternate_weapon: Some(180),
             fire_count: 1,
             spread_scale: 0.0,
+            needs_rechamber: false,
             weapon: 352,
             ammo: Some(Ammo {
                 clip_key: 352,
@@ -789,6 +793,7 @@ mod tests {
                 reserve: 90,
             }),
             secondary: Some(EquippedWeapon {
+                needs_rechamber: false,
                 weapon: 180,
                 ammo: Some(Ammo {
                     clip_key: 180,
@@ -919,6 +924,7 @@ mod tests {
             alternate_weapon: Some(180),
             fire_count: 1,
             spread_scale: 0.0,
+            needs_rechamber: true,
             secondary: None,
             events: None,
             weapon: 163,
@@ -1023,7 +1029,8 @@ mod tests {
             assert_eq!(r.bits(1).unwrap(), 0);
             assert_eq!(r.bits(3).unwrap(), 7);
             assert_eq!(r.bits(10).unwrap(), 163);
-            assert_eq!(r.bits(19).unwrap(), 0); // slot flags and fourteen absent slots
+            assert_eq!(r.bits(5).unwrap(), 8); // inventory flag3 survives authoritative correction
+            assert_eq!(r.bits(14).unwrap(), 0);
             assert_eq!(r.bits(1).unwrap(), 1);
             assert_eq!(r.bits(4).unwrap(), 0);
             assert_eq!(r.bits(10).unwrap(), 163);
@@ -1055,6 +1062,7 @@ mod tests {
             alternate_weapon: None,
             fire_count: 0,
             spread_scale: 0.0,
+            needs_rechamber: false,
             secondary: None,
             events: None,
             weapon: 163,

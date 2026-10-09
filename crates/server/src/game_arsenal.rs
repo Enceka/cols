@@ -364,6 +364,14 @@ impl Arsenal {
     pub(crate) fn next_index(&self) -> u16 {
         self.registered_count + 1
     }
+    pub(crate) fn bot_rifle(&self, index: u16) -> Result<ResolvedWeapon> {
+        let (&item, _) = self
+            .item_to_base
+            .iter()
+            .find(|(_, base)| self.weapons[base].name == "m4_mp")
+            .ok_or_else(|| anyhow::anyhow!("M4 bot weapon absent from arsenal"))?;
+        self.resolve(item, &[], &[item], index)
+    }
 
     /// Alternate ownership derives from the already validated parent. Apply
     /// the same model parts using the alternate's own attribute table.

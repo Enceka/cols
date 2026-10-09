@@ -149,6 +149,7 @@ struct Weapon {
     ballistics: Option<crate::game_combat::Ballistics>,
     rechamber: Option<RechamberTiming>,
     rechamber_pending: bool,
+    needs_rechamber: bool,
     spread: Option<SpreadTiming>,
 }
 impl Weapon {
@@ -234,6 +235,7 @@ impl Player {
                 ballistics: None,
                 rechamber: None,
                 rechamber_pending: false,
+                needs_rechamber: false,
                 spread: None,
             },
             secondary: None,
@@ -376,6 +378,7 @@ impl Player {
 
     pub fn equipment(&self) -> Equipment {
         let mut equipment = self.current.equipment;
+        equipment.needs_rechamber = self.current.needs_rechamber;
         equipment.spread_scale = self.spread_scale;
         equipment.secondary = self.secondary.as_ref().map(|other| EquippedWeapon {
             weapon: other
@@ -383,6 +386,7 @@ impl Player {
                 .inventory_weapon
                 .unwrap_or(other.equipment.weapon),
             ammo: other.equipment.ammo,
+            needs_rechamber: other.needs_rechamber,
         });
         equipment.events = Some(self.events);
         equipment
@@ -740,6 +744,7 @@ impl Player {
                 self.emit(events::EJECT_BRASS, 0);
             }
             if remaining == 0 {
+                self.current.needs_rechamber = false;
                 self.current.ready();
             }
             return;
@@ -844,7 +849,8 @@ impl Player {
             self.current.reload_transfer_pending = true;
             return;
         }
-        let trigger = cmd.buttons & 1 != 0 && (self.current.fire_type == 0 || !self.attack_held);
+        let trigger = cmd.buttons & 1 != 0
+            && (self.current.fire_type == 0 || self.current.equipment.fire_count == 0);
         if allowed && trigger && ammo.clip > 0 {
             let remaining_clip = ammo.clip - 1;
             if let Some(mut ballistics) = self.current.ballistics {
@@ -870,6 +876,7 @@ impl Player {
                 self.current.equipment.fire_count = (self.current.equipment.fire_count + 1).min(4);
             }
             self.current.rechamber_pending = self.current.rechamber.is_some();
+            self.current.needs_rechamber = self.current.rechamber_pending;
             let ads = self
                 .current
                 .equipment
@@ -968,6 +975,7 @@ mod tests {
         });
         p.apply(&select(1100, 352, 1));
         assert_eq!(p.equipment().ammo.unwrap().clip, 29);
+        assert!(p.equipment().needs_rechamber);
         p.apply(&select(1291, 352, 1));
         assert_eq!(p.equipment().firing.unwrap().state, 6);
         p.apply(&select(1292, 352, 1));
@@ -981,11 +989,13 @@ mod tests {
         );
         p.apply(&select(1500, 352, 1));
         assert_eq!(p.equipment().ammo.unwrap().clip, 29);
+        assert!(p.equipment().needs_rechamber);
         assert_eq!(
             p.equipment().events.unwrap().sequence,
             sequence.wrapping_add(1)
         );
         p.apply(&select(1842, 352, 0));
+        assert!(!p.equipment().needs_rechamber);
         p.apply(&select(1843, 352, 1));
         assert_eq!(p.equipment().ammo.unwrap().clip, 28);
     }
@@ -1065,6 +1075,7 @@ mod tests {
                 alternate_weapon: None,
                 fire_count: 0,
                 spread_scale: 0.0,
+                needs_rechamber: false,
                 weapon: 352,
                 secondary: None,
                 events: None,
@@ -1179,15 +1190,18 @@ mod tests {
             assert_eq!(p.equipment().fire_count, 0);
             p.apply(&cmd(1302, 1));
             assert_eq!(p.equipment().ammo.unwrap().clip, 28);
-            // An early press must not bypass the firing interval or become
-            // repeated fire after it expires while the button stays held.
+            // Native shot-count gating lets a new press wait for cooldown,
+            // then fires once; keeping it held does not fire another shot.
             p.apply(&cmd(1303, 0));
             p.apply(&cmd(1304, 1));
             p.apply(&cmd(1400, 1));
-            assert_eq!(p.equipment().ammo.unwrap().clip, 28);
-            p.apply(&cmd(1401, 0));
-            p.apply(&cmd(1402, 1));
             assert_eq!(p.equipment().ammo.unwrap().clip, 27);
+            p.apply(&cmd(1401, 1));
+            assert_eq!(p.equipment().ammo.unwrap().clip, 27);
+            p.apply(&cmd(1402, 0));
+            p.apply(&cmd(1403, 1));
+            p.apply(&cmd(1480, 1));
+            assert_eq!(p.equipment().ammo.unwrap().clip, 26);
         }
     }
 

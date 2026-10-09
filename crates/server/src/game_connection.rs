@@ -12,6 +12,7 @@ pub(crate) struct Connection {
     display_name: Option<String>,
     owner_id: u64,
     scoreboard_sent: bool,
+    hud_rules_sent: bool,
     connected: bool,
     stats: codol_protocol::game_stats::Upload,
     native_sent: u32,
@@ -35,6 +36,8 @@ pub(crate) struct Connection {
     next_obituary: u16,
     enemy_events: codol_protocol::game_events::EventQueue,
     bot: Option<crate::game_bot::BotController>,
+    tdm: Option<crate::game_match::TdmMatch>,
+    next_corpse: u16,
     bot_frame: Option<crate::game_bot::BotFrame>,
     bot_fire_time: Option<u32>,
     bot_fire_toggle: bool,
@@ -74,6 +77,8 @@ impl Connection {
             motion: state.motion(),
             combat: state.combat(),
             bot: state.bot(),
+            tdm: state.tdm_match().expect("validated TDM state"),
+            next_corpse: 19,
             vitals: Default::default(),
             player_birth: 1000,
             known_weapons: state
@@ -188,7 +193,7 @@ impl Connection {
             return;
         }
         let (_, state) = self.pending_loadout.take().unwrap();
-        if self.bot.is_some() && self.player.is_some() {
+        if (self.bot.is_some() || self.tdm.is_some()) && self.player.is_some() {
             // A training life keeps its weapons; respawn equips the choice.
             self.next_spawn_loadout = Some(state);
             self.feedback
@@ -279,6 +284,20 @@ impl Connection {
                 .min(u128::from(i32::MAX as u32 - 1000)) as u32;
         self.last_snapshot_time = server_time;
         self.consume_inputs(server_time);
+        if !self.hud_rules_sent
+            && self.player.is_some()
+            && self
+                .snapshot_first_sequence
+                .is_some_and(|first| self.native_ack >= first)
+        {
+            let limit = self
+                .tdm
+                .as_ref()
+                .map_or(7500, |m| m.scoreboard(self.owner_id).score_limit);
+            self.server_commands
+                .push(format!("s ui_scorelimit \"{limit}\"").as_bytes())?;
+            self.hud_rules_sent = true;
+        }
         if self.combat.is_some()
             && !self.marks_command_sent
             && self
@@ -316,7 +335,26 @@ impl Connection {
                 self.bot_fire_time = None;
             }
         }
-        self.advance_bot(server_time)?;
+        if self.tdm.is_some() {
+            self.advance_match(server_time)?;
+        } else {
+            self.advance_bot(server_time)?;
+        }
+        if let Some(tdm) = &mut self.tdm
+            && (tdm.dirty || !self.scoreboard_sent)
+        {
+            for payload in
+                codol_protocol::game_scoreboard::binary_commands(&tdm.scoreboard(self.owner_id))?
+            {
+                self.server_commands.push_binary(&payload)?;
+            }
+            tdm.dirty = false;
+            self.scoreboard_sent = true;
+            if tdm.finished && !tdm.result_sent {
+                self.feedback.push_back(tdm.result().to_owned());
+                tdm.result_sent = true;
+            }
+        }
         if !self.scoreboard_sent
             && self
                 .game_state
@@ -431,6 +469,8 @@ impl Connection {
         if let Some(current) = &mut enemy {
             current.events = self.enemy_events;
         }
+        let match_players = self.tdm.as_ref().map_or(Vec::new(), |m| m.snapshots());
+        let match_baselines = self.tdm.as_ref().map_or(&[][..], |m| m.baselines());
         let snapshot = state.snapshot(
             server_time,
             command_time,
@@ -446,11 +486,11 @@ impl Connection {
                     None
                 },
                 impacts: &impacts,
-                enemy,
+                enemy: if self.tdm.is_some() { None } else { enemy },
                 enemy_baseline: self.enemy_baseline,
-                players: &[],
-                player_baselines: &[],
-                vitals: self.bot.as_ref().map(|_| self.vitals),
+                players: &match_players,
+                player_baselines: match_baselines,
+                vitals: (self.bot.is_some() || self.tdm.is_some()).then_some(self.vitals),
                 local_player,
                 local_player_baseline: self.local_baseline,
                 corpses: &corpses,
@@ -467,8 +507,27 @@ impl Connection {
                 }),
             },
         )?;
-        let mut body = self.server_commands.encode_frames()?;
-        body.extend_from_slice(&snapshot);
+        let budget = game_wire::FRAGMENT_SIZE - 5;
+        ensure!(
+            snapshot.len() <= budget,
+            "player snapshot exceeds native message budget"
+        );
+        let (mut body, mut sent) = self
+            .server_commands
+            .encode_frames_bounded(budget - snapshot.len())?;
+        let snapshot_included = !(body.is_empty()
+            && self.server_commands.sequence() > self.server_commands.acknowledged()
+            && self.snapshot_first_sequence.is_some());
+        if snapshot_included {
+            body.extend_from_slice(&snapshot);
+        } else {
+            (body, sent) = self.server_commands.encode_frames_bounded(budget - 1)?;
+            ensure!(
+                !body.is_empty(),
+                "reliable record exceeds native message budget"
+            );
+            body.push(SERVER_EOF);
+        }
         let ack = self.client_commands.sequence();
         let packet = game_wire::server_packet(
             self.native_sent + 1,
@@ -479,8 +538,11 @@ impl Connection {
             &body,
         )?;
         self.native_sent += 1;
-        self.server_commands
-            .mark_sent(self.server_commands.sequence())?;
+        self.server_commands.mark_sent(sent)?;
+        if !snapshot_included {
+            self.snapshot_next = Some(now + Duration::from_millis(50));
+            return Ok(Some(packet));
+        }
         let mut base = state.input_base();
         if let Some(equipment) = equipment {
             base.weapons = equipment.input_weapons();
@@ -728,7 +790,7 @@ impl Connection {
                 attacker,
             },
         ));
-        if headshot {
+        if headshot && attacker < 2 {
             self.headshots[usize::from(attacker)] += 1;
         }
         self.scoreboard_sent = false;
@@ -885,6 +947,125 @@ impl Connection {
         Ok(())
     }
 
+    fn drain_match_kills(&mut self, now: u32) {
+        let kills = self.tdm.as_mut().unwrap().take_kills();
+        for kill in kills {
+            let mut corpse = self
+                .game_state
+                .as_ref()
+                .unwrap()
+                .corpse(kill.victim, kill.sequence);
+            corpse.entity_number = if kill.victim.client_index == 0 {
+                20
+            } else {
+                let slot = self.next_corpse;
+                self.next_corpse = if slot == 26 {
+                    19
+                } else if slot == 19 {
+                    21
+                } else {
+                    slot + 1
+                };
+                slot
+            };
+            self.corpses.insert(corpse.entity_number, (now, corpse));
+            self.queue_obituary(
+                now,
+                kill.weapon,
+                kill.victim.client_index,
+                kill.attacker,
+                kill.headshot,
+            );
+        }
+    }
+
+    fn advance_match(&mut self, now: u32) -> Result<()> {
+        if self
+            .snapshot_first_sequence
+            .is_none_or(|first| self.native_ack < first)
+        {
+            return Ok(());
+        }
+        if self
+            .player_death
+            .is_some_and(|death| now.wrapping_sub(death) >= 3000)
+            && !self.tdm.as_ref().unwrap().finished
+        {
+            self.equip_spawn_loadout();
+            let state = self.game_state.as_ref().unwrap();
+            let origin = self
+                .tdm
+                .as_ref()
+                .unwrap()
+                .player_spawn(state.collision.as_ref().unwrap())?;
+            self.motion = state.motion();
+            if let Some(motion) = &mut self.motion {
+                motion.origin = origin;
+                motion.command_time = now;
+            }
+            self.vitals = codol_protocol::game_snapshot::PlayerVitals {
+                spawn_count: self.vitals.spawn_count.wrapping_add(1),
+                ..Default::default()
+            };
+            self.player_death = None;
+            self.player_birth = now;
+            self.health_recovery = Default::default();
+            if let Some(primary) = state.primary_player() {
+                self.player
+                    .as_mut()
+                    .unwrap()
+                    .replace_loadout(primary, state.secondary_player());
+            }
+        }
+        let state = self.game_state.as_ref().unwrap().clone();
+        let Some(motion) = &self.motion else {
+            return Ok(());
+        };
+        let mut local = state.local_player_snapshot(self.vitals.health > 0).unwrap();
+        local.origin = motion.origin;
+        local.weapon = self.player.as_ref().unwrap().equipment().weapon;
+        local.angles = self.view_angles();
+        let active = self.vitals.health > 0 && now.wrapping_sub(self.player_birth) >= 1000;
+        local.alive = active;
+        let collision = state.collision.as_ref().unwrap();
+        let tick = self.tdm.as_mut().unwrap().step(
+            now,
+            (
+                local,
+                motion.view_height + 10.0,
+                if active { self.vitals.health } else { 0 },
+            ),
+            state.match_bot_weapon().unwrap(),
+            collision,
+            |snapshot, frame, firing, toggle| state.animate_enemy(snapshot, frame, firing, toggle),
+        )?;
+        for hit in tick.hits {
+            if self.vitals.health == 0 {
+                break;
+            }
+            self.vitals.health = self.vitals.health.saturating_sub(hit.damage);
+            self.vitals.damage_event = self.vitals.damage_event.wrapping_add(1);
+            self.vitals.damage_count = hit.damage.min(127) as u8;
+            self.health_recovery.damaged(now, self.vitals.health);
+            if self.vitals.health == 0 {
+                self.player_death = Some(now);
+                self.tdm.as_mut().unwrap().player_killed(now, local, hit);
+                if let Some(motion) = &mut self.motion {
+                    motion.velocity = [0.0; 3];
+                }
+            }
+        }
+        self.vitals.health = self.health_recovery.recover(now, self.vitals.health);
+        if self.vitals.health == 100 {
+            self.vitals.damage_count = 0;
+        }
+        for (weapon, impact) in tick.impacts {
+            self.impacts.push(now, weapon, impact);
+        }
+        self.drain_match_kills(now);
+        Ok(())
+    }
+
     fn consume_inputs(&mut self, through: u32) {
         while self
             .pending_inputs
@@ -899,7 +1080,11 @@ impl Connection {
             {
                 continue;
             }
-            if self.bot.is_some() && (self.vitals.health == 0 || input.time < self.player_birth) {
+            if (self.bot.is_some() || self.tdm.is_some())
+                && (self.vitals.health == 0
+                    || input.time < self.player_birth
+                    || self.tdm.as_ref().is_some_and(|m| m.finished))
+            {
                 input.buttons = 0;
                 input.direction = 0;
             }
@@ -974,7 +1159,24 @@ impl Connection {
                         motion.origin[1],
                         motion.origin[2] + motion.view_height,
                     ];
+                    let origin = motion.origin;
                     for shot in shots {
+                        if let Some(tdm) = &mut self.tdm {
+                            let state = self.game_state.as_ref().unwrap();
+                            let mut local =
+                                state.local_player_snapshot(self.vitals.health > 0).unwrap();
+                            local.origin = origin;
+                            local.weapon = shot.weapon;
+                            local.angles = shot.angles;
+                            let outcome = tdm.player_fire(shot, eye, local, &collision, None);
+                            if !outcome.damage.is_empty() {
+                                self.last_hit_time = Some(through);
+                            }
+                            for impact in outcome.impacts {
+                                self.impacts.push(through, shot.weapon, impact);
+                            }
+                            continue;
+                        }
                         let outcome = self.combat.as_mut().map_or_else(
                             || crate::game_combat::ShotOutcome {
                                 impacts: crate::game_combat::world_impacts(
@@ -1226,6 +1428,7 @@ mod tests {
                 alternate_weapon: None,
                 fire_count: 0,
                 spread_scale: 0.0,
+                needs_rechamber: false,
                 weapon: 352,
                 secondary: None,
                 events: None,

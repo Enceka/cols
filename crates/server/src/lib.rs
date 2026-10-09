@@ -14,6 +14,7 @@ pub mod game_hit_location;
 mod game_impact;
 pub mod game_map_catalog;
 mod game_map_selection;
+mod game_match;
 pub mod game_motion;
 mod game_player;
 pub mod game_server;

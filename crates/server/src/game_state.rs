@@ -108,6 +108,10 @@ pub struct PreparedGameState {
     #[serde(default)]
     training_enemy: Option<crate::game_enemy::EnemyConfig>,
     #[serde(default)]
+    match_config: Option<crate::game_match::MatchConfig>,
+    #[serde(skip)]
+    match_weapon: Option<BootstrapWeapon>,
+    #[serde(default)]
     arsenal_file: Option<std::path::PathBuf>,
     #[serde(default)]
     collision_file: Option<std::path::PathBuf>,
@@ -466,6 +470,18 @@ impl PreparedGameState {
                 crate::game_bot::grounded_spawn(enemy.origin, state.collision.as_ref().unwrap())?;
             }
         }
+        if let Some(config) = &state.match_config {
+            ensure!(
+                state.training_enemy.is_some() && state.arsenal.is_some(),
+                "TDM requires human and weapon assets"
+            );
+            config.validate(
+                state
+                    .collision
+                    .as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("TDM requires map collision"))?,
+            )?;
+        }
         for weapon in state.bootstrap_weapon.iter().chain(&state.secondary_weapon) {
             ensure!(
                 weapon.ballistics.is_none_or(|b| b.valid()),
@@ -661,6 +677,9 @@ impl PreparedGameState {
         }
     }
     pub(crate) fn bot(&self) -> Option<crate::game_bot::BotController> {
+        if self.is_match() {
+            return None;
+        }
         self.training_enemy
             .as_ref()
             .filter(|enemy| enemy.bot)
@@ -731,6 +750,7 @@ impl PreparedGameState {
         self.bootstrap_weapon
             .iter()
             .chain(&self.secondary_weapon)
+            .chain(&self.match_weapon)
             .map(|w| w.index + 1)
             .max()
             .unwrap_or(1)
@@ -802,6 +822,13 @@ impl PreparedGameState {
                 )?)
             };
             tracing::info!(primary=?state.bootstrap_weapon.as_ref().and_then(|w|w.composed_name.as_deref()),secondary=?state.secondary_weapon.as_ref().and_then(|w|w.composed_name.as_deref()),"composed current player backpack from resource attributes");
+            if self.match_config.is_some() {
+                state.match_weapon = Some(Self::resolved_weapon(
+                    arsenal.bot_rifle(next_index + 4)?,
+                    &arsenal.source_sha256,
+                    hands,
+                )?);
+            }
         } else {
             state.bootstrap_weapon = Some(loadout.resolve(self, public, owned)?);
             state.player_loadout = None;
@@ -1019,6 +1046,7 @@ impl PreparedGameState {
         self.bootstrap_weapon
             .iter()
             .chain(&self.secondary_weapon)
+            .chain(&self.match_weapon)
             .filter_map(|w| {
                 w.composed_name
                     .as_ref()
@@ -1037,6 +1065,7 @@ impl PreparedGameState {
             .bootstrap_weapon
             .iter_mut()
             .chain(&mut self.secondary_weapon)
+            .chain(&mut self.match_weapon)
         {
             let name = weapon
                 .composed_name
@@ -1151,6 +1180,24 @@ impl PreparedGameState {
             ]);
             values.sort_by_key(|value| value.0);
         }
+        if self.match_config.is_some() {
+            values.retain(|(index, _)| *index != 1976);
+            for client in 1..=11u16 {
+                values.push((
+                    1975 + client,
+                    format!(
+                        "{} {}",
+                        if client <= 5 {
+                            "Allies Bot"
+                        } else {
+                            "Axis Bot"
+                        },
+                        if client <= 5 { client } else { client - 5 }
+                    ),
+                ));
+            }
+            values.sort_by_key(|v| v.0);
+        }
         for (index, name) in self.weapon_configstrings() {
             // NCS inherited weapon bank starts at5443; unused indices are
             // untyped and accept a regular configstring. Parser0x42e3b0.
@@ -1243,6 +1290,7 @@ impl PreparedGameState {
                 alternate_weapon: None,
                 fire_count: 0,
                 spread_scale: 0.0,
+                needs_rechamber: false,
                 secondary: None,
                 events: None,
                 weapon: w.index,
@@ -1298,6 +1346,9 @@ impl PreparedGameState {
             })
     }
     pub(crate) fn combat(&self) -> Option<crate::game_combat::CombatWorld> {
+        if self.match_config.is_some() {
+            return None;
+        }
         self.training_target
             .clone()
             .or_else(|| self.training_enemy.as_ref().map(|enemy| enemy.target()))
@@ -1313,6 +1364,36 @@ impl PreparedGameState {
     }
     pub(crate) fn has_spawn(&self) -> bool {
         self.spawn_origin.is_some()
+    }
+    pub(crate) fn tdm_match(&self) -> Result<Option<crate::game_match::TdmMatch>> {
+        let Some(config) = &self.match_config else {
+            return Ok(None);
+        };
+        let mut template = self
+            .local_player_snapshot(true)
+            .ok_or_else(|| anyhow::anyhow!("TDM missing player appearance"))?;
+        template.weapon = self
+            .match_weapon
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("TDM bot rifle missing"))?
+            .index;
+        Ok(Some(crate::game_match::TdmMatch::new(
+            config.clone(),
+            template,
+            self.training_enemy.as_ref().unwrap().move_speed,
+            self.collision.as_ref().unwrap(),
+        )?))
+    }
+    pub(crate) fn match_bot_weapon(&self) -> Option<crate::game_bot::BotWeapon> {
+        let weapon = self.match_weapon.as_ref()?;
+        Some(crate::game_bot::BotWeapon {
+            weapon: weapon.index,
+            ballistics: weapon.ballistics?,
+            fire_interval_msec: u32::from(weapon.ammo.as_ref()?.fire_interval_msec?),
+        })
+    }
+    pub(crate) fn is_match(&self) -> bool {
+        self.match_config.is_some()
     }
 }
 
@@ -1338,6 +1419,8 @@ pub(crate) fn synthetic() -> PreparedGameState {
         secondary_weapon: None,
         training_target: None,
         training_enemy: None,
+        match_config: None,
+        match_weapon: None,
         arsenal_file: None,
         collision_file: None,
         arsenal: None,

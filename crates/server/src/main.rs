@@ -119,6 +119,9 @@ enum Command {
         /// Resource-derived gamestate for the controlled training playlist.
         #[arg(long, requires = "game_bind")]
         game_state: Option<PathBuf>,
+        /// Prepared maps selected by the native room's map and mode fields.
+        #[arg(long, requires = "game_bind")]
+        game_map_catalog: Option<PathBuf>,
         /// Bootstrap frames at 20 Hz (default 60, maximum 18000); no simulation.
         #[arg(long, requires = "game_state", num_args = 0..=1, default_missing_value = "60", value_parser = clap::value_parser!(u32).range(1..=18000))]
         snapshot_probe: Option<u32>,
@@ -362,6 +365,7 @@ async fn main() -> Result<()> {
             game_bind,
             game_state,
             snapshot_probe,
+            game_map_catalog,
             hit_regions,
         } => {
             let server = AuthServer::bind(AuthOptions {
@@ -400,6 +404,14 @@ async fn main() -> Result<()> {
                     }
                     if let Some(path) = hit_regions {
                         game = game.with_hit_regions(path);
+                    }
+                    if let Some(path) = game_map_catalog {
+                        let mut catalog =
+                            codol_server::game_map_catalog::GameMapCatalog::load(&path)?;
+                        if let Some(frames) = snapshot_probe {
+                            catalog = catalog.with_snapshot_frames(frames)?;
+                        }
+                        game = game.with_game_map_catalog(catalog);
                     }
                     let endpoint = game.admissions();
                     tracing::info!(address=%endpoint.address(),"experimental Rust game UDP endpoint ready");
