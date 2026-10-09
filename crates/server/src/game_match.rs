@@ -45,6 +45,7 @@ impl MatchConfig {
 }
 
 struct Bot {
+    snapshot_time: u32,
     controller: BotController,
     snapshot: EnemySnapshot,
     health: u16,
@@ -138,6 +139,7 @@ impl TdmMatch {
             let mut controller = BotController::new(origin, snapshot.angles, speed)?;
             controller.set_match_engagement();
             bots.push(Bot {
+                snapshot_time: 1000,
                 controller,
                 snapshot,
                 health: 100,
@@ -176,6 +178,11 @@ impl TdmMatch {
     }
     pub fn snapshots(&self) -> Vec<EnemySnapshot> {
         self.bots.iter().map(|bot| bot.snapshot).collect()
+    }
+    pub fn set_weapon_move_scale(&mut self, scale: f32) {
+        for bot in &mut self.bots {
+            bot.controller.set_match_move_scale(scale);
+        }
     }
     pub fn baselines(&self) -> &[EnemySnapshot] {
         &self.baselines
@@ -346,6 +353,7 @@ impl TdmMatch {
                 bot.route.clear();
                 bot.route_target = None;
                 bot.steering = None;
+                bot.snapshot_time = now;
             }
         }
         let mut shots = Vec::new();
@@ -405,9 +413,16 @@ impl TdmMatch {
             let waypoint = bot
                 .steering
                 .filter(|_| target.is_some_and(|t| distance(origin, t.origin) > 160.0 * 160.0));
-            let frame = bot
+            let mut frame = bot
                 .controller
                 .step_navigated(now, target, waypoint, weapon, collision);
+            // Include crowd separation in the body's animated velocity.
+            let delta = now.saturating_sub(bot.snapshot_time).clamp(1, 200) as f32 * 0.001;
+            for axis in 0..2 {
+                frame.motion.velocity[axis] =
+                    (frame.motion.origin[axis] - bot.snapshot.origin[axis]) / delta;
+            }
+            bot.snapshot_time = now;
             movement += move_started.elapsed();
             if report {
                 tracing::info!(client=bot.snapshot.client_index,team,health=bot.health,phase=?frame.phase,origin=?frame.motion.origin,target=?bot.route_target,route_nodes=bot.route.len(),"TDM bot state");

@@ -108,12 +108,21 @@ pub struct BotFrame {
     pub angles: [u16; 3],
     pub phase: BotPhase,
     pub shot: Option<BotShot>,
+    pub locomotion: Locomotion,
 }
 
 impl BotFrame {
     pub fn moving(&self) -> bool {
-        self.motion.velocity[0].hypot(self.motion.velocity[1]) > 1.0
+        self.motion.velocity[0].hypot(self.motion.velocity[1]) > 8.0
     }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Locomotion {
+    #[default]
+    Walk,
+    Run,
+    Sprint,
 }
 
 #[derive(Debug)]
@@ -132,6 +141,8 @@ pub struct BotController {
     generation: u64,
     engagement: Option<(f32, f32)>,
     physics_chop_msec: u32,
+    match_move_scale: f32,
+    locomotion: Locomotion,
 }
 
 impl BotController {
@@ -158,6 +169,8 @@ impl BotController {
             generation: 1,
             engagement: None,
             physics_chop_msec: PHYSICS_CHOP_MSEC,
+            match_move_scale: 1.0,
+            locomotion: Locomotion::Walk,
         })
     }
 
@@ -172,6 +185,7 @@ impl BotController {
             angles: self.angles,
             phase: self.phase,
             shot,
+            locomotion: self.locomotion,
         }
     }
     pub fn set_match_engagement(&mut self) {
@@ -179,6 +193,10 @@ impl BotController {
         // Motion itself supports the native66ms maximum; a50ms match tick
         // needs only one capsule movement step instead of four16ms steps.
         self.physics_chop_msec = 50;
+        self.motion.speed = crate::game_motion::SPEED;
+    }
+    pub fn set_match_move_scale(&mut self, scale: f32) {
+        self.match_move_scale = scale;
     }
 
     fn reset_engagement(&mut self) {
@@ -239,14 +257,27 @@ impl BotController {
             STANDOFF_UNITS
         };
 
-        let hold = self.engagement.is_some()
+        let visible_before = self.engagement.is_some()
             && target.is_some_and(|t| {
-                if horizontal_distance(self.motion.origin, t.origin) > spacing {
-                    return false;
-                }
                 let trace = collision.raycast(self.eye(), t.eye);
                 !trace.start_solid && !trace.all_solid && trace.contents == 0
             });
+        let hold = visible_before
+            && target.is_some_and(|t| horizontal_distance(self.motion.origin, t.origin) <= spacing);
+        let mode = if self.engagement.is_none()
+            || (visible_before
+                && target
+                    .is_some_and(|t| distance(self.eye(), t.eye) <= self.engagement.unwrap().0))
+        {
+            Locomotion::Walk
+        } else if target.is_some_and(|t| {
+            horizontal_distance(self.motion.origin, t.origin) > self.engagement.unwrap().0
+        }) {
+            Locomotion::Sprint
+        } else {
+            Locomotion::Run
+        };
+        self.locomotion = mode;
         let travel = if hold {
             None
         } else {
@@ -263,6 +294,7 @@ impl BotController {
             travel,
             if waypoint.is_some() { 24.0 } else { spacing },
             collision,
+            mode,
         );
         let Some(target) = target else {
             self.phase = BotPhase::Idle;
@@ -270,7 +302,11 @@ impl BotController {
             return self.frame(now, None);
         };
         let eye = self.eye();
-        self.angles = aim_angles(eye, target.eye);
+        self.angles = if self.engagement.is_some() && mode != Locomotion::Walk {
+            travel.map_or(self.angles, |t| aim_angles(eye, t.eye))
+        } else {
+            aim_angles(eye, target.eye)
+        };
         let distance = distance(eye, target.eye);
         let trace = collision.raycast(eye, target.eye);
         let visible = !trace.start_solid && !trace.all_solid && trace.contents == 0;
@@ -296,6 +332,9 @@ impl BotController {
         self.phase = BotPhase::Attack;
         let since = self.seen_since.unwrap_or(now);
         if now.wrapping_sub(since) < REACTION_MSEC {
+            return self.frame(now, None);
+        }
+        if self.engagement.is_some() && mode != Locomotion::Walk {
             return self.frame(now, None);
         }
         if self
@@ -346,6 +385,7 @@ impl BotController {
         target: Option<BotTarget>,
         spacing: f32,
         collision: &Collision,
+        mode: Locomotion,
     ) {
         while remaining > 0 {
             let dt = remaining.min(self.physics_chop_msec);
@@ -370,10 +410,20 @@ impl BotController {
                 time: self.motion.command_time + dt,
                 direction: u8::from(moving), // Recovered forward direction=1.
                 angles,
+                buttons: if mode == Locomotion::Sprint { 2 } else { 0 },
                 ..UserCommand::default()
             };
-            let speed_scale = self.move_speed / f32::from(self.motion.speed);
-            self.motion.apply(&command, speed_scale, false, collision);
+            let speed_scale = if self.engagement.is_some() {
+                self.match_move_scale
+            } else {
+                self.move_speed / f32::from(self.motion.speed)
+            };
+            self.motion.apply(
+                &command,
+                speed_scale,
+                self.engagement.is_some() && mode == Locomotion::Walk,
+                collision,
+            );
         }
     }
 
@@ -409,7 +459,11 @@ impl BotController {
             "bot respawn time goes backwards"
         );
         self.motion = Motion::new(origin);
-        self.motion.speed = self.move_speed.round() as u16;
+        self.motion.speed = if self.engagement.is_some() {
+            crate::game_motion::SPEED
+        } else {
+            self.move_speed.round() as u16
+        };
         self.angles = angles;
         self.phase = BotPhase::Idle;
         self.last_tick = Some(now);
@@ -562,6 +616,53 @@ mod tests {
                     .is_none()
             );
         }
+    }
+    #[test]
+    fn native_movement_runs_and_sprints_with_weapon_scale_then_walks_when_engaging() {
+        let world = collision(true);
+        let mut bot = BotController::new([0.0; 3], [0; 3], 94.0).unwrap();
+        bot.set_match_engagement();
+        bot.set_match_move_scale(0.9);
+        let enemy = target(2500.0);
+        let mut last = None;
+        for time in (1000..2000).step_by(50) {
+            let frame = bot.step_navigated(
+                time,
+                Some(enemy),
+                Some([0.0, 1500.0, 0.0]),
+                weapon(),
+                &world,
+            );
+            assert!(frame.shot.is_none());
+            last = Some(frame);
+        }
+        let frame = last.unwrap();
+        assert_eq!(frame.motion.speed, crate::game_motion::SPEED);
+        assert_ne!(frame.motion.flags & 0x4000, 0);
+        assert!((frame.motion.velocity[0].hypot(frame.motion.velocity[1]) - 256.5).abs() < 1.0);
+        assert_eq!(frame.angles[1], 16384); // Faces the route rather than an unseen enemy.
+
+        let mut run = BotController::new([0.0; 3], [0; 3], 94.0).unwrap();
+        run.set_match_engagement();
+        let frame = run.step_navigated(
+            1000,
+            Some(target(1200.0)),
+            Some([0.0, 1500.0, 0.0]),
+            weapon(),
+            &world,
+        );
+        assert_eq!(frame.motion.flags & 0x4000, 0);
+        let open_world = collision(false);
+        let mut walk = BotController::new([0.0; 3], [0; 3], 94.0).unwrap();
+        walk.set_match_engagement();
+        let mut last = None;
+        for time in (1000..2000).step_by(50) {
+            last = Some(walk.step(time, Some(target(1000.0)), weapon(), &open_world));
+        }
+        let frame = last.unwrap();
+        assert_eq!(frame.locomotion, Locomotion::Walk);
+        assert_eq!(frame.motion.flags & 0x4000, 0);
+        assert!(frame.motion.velocity[0].hypot(frame.motion.velocity[1]) <= 76.01);
     }
 
     fn target(x: f32) -> BotTarget {

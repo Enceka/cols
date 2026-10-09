@@ -272,6 +272,7 @@ impl PreparedGameState {
             walk_left_animation: Some(animation("pb_stand_shoot_walk_left")?.index),
             walk_right_animation: Some(animation("pb_stand_shoot_walk_right")?.index),
             walk_back_animation: Some(animation("pb_stand_shoot_walk_back")?.index),
+            locomotion: None,
             fire_animation: animation("pt_stand_shoot_auto")?.index,
             death_animation: animation("pb_stand_death_chest_blowback")?.index,
             move_speed: f32::from_bits(walk.move_speed_bits),
@@ -729,28 +730,57 @@ impl PreparedGameState {
             .expect("enemy frame requires configuration");
         enemy.origin = frame.motion.origin;
         enemy.angles = frame.angles;
-        enemy.legs_animation = if frame.moving() {
+        let moving = frame.moving();
+        let direction = if moving {
             let yaw = f32::from(frame.angles[1]) * std::f32::consts::TAU / 65536.0;
             let (sin, cos) = yaw.sin_cos();
             let forward = frame.motion.velocity[0] * cos + frame.motion.velocity[1] * sin;
             let right = -frame.motion.velocity[0] * sin + frame.motion.velocity[1] * cos;
             if right.abs() > forward.abs() {
-                if right > 0.0 {
-                    config.walk_left_animation
-                } else {
-                    config.walk_right_animation
-                }
-                .unwrap_or(config.walk_animation)
+                if right > 0.0 { 2 } else { 3 }
             } else if forward < 0.0 {
-                config.walk_back_animation.unwrap_or(config.walk_animation)
+                1
             } else {
-                config.walk_animation
+                0
+            }
+        } else {
+            0
+        };
+        enemy.legs_animation = if moving {
+            if let Some(a) = &config.locomotion {
+                if frame.locomotion == crate::game_bot::Locomotion::Sprint {
+                    a.sprint
+                } else if frame.locomotion == crate::game_bot::Locomotion::Run {
+                    [a.run_forward, a.run_back, a.run_left, a.run_right][direction]
+                } else {
+                    [
+                        Some(config.walk_animation),
+                        config.walk_back_animation,
+                        config.walk_left_animation,
+                        config.walk_right_animation,
+                    ][direction]
+                        .unwrap_or(config.walk_animation)
+                }
+            } else {
+                [
+                    Some(config.walk_animation),
+                    config.walk_back_animation,
+                    config.walk_left_animation,
+                    config.walk_right_animation,
+                ][direction]
+                    .unwrap_or(config.walk_animation)
             }
         } else {
             config.idle_animation
         };
-        enemy.torso_animation = if firing {
-            config.fire_animation | if toggle { 0x400 } else { 0 }
+        // Current playeranim.script's fireweapon/movetype moving branch is
+        // empty: the full-body locomotion already holds the gun correctly.
+        enemy.torso_animation = if firing && !(moving && config.locomotion.is_some()) {
+            config
+                .locomotion
+                .as_ref()
+                .map_or(config.fire_animation, |a| a.fire_standing)
+                | if toggle { 0x400 } else { 0 }
         } else {
             0 // The legs node carries the full-body pose; torso0 keeps
             // an additional idle node from overriding its moving legs.
@@ -1412,7 +1442,7 @@ impl PreparedGameState {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("TDM bot rifle missing"))?
             .index;
-        Ok(Some(crate::game_match::TdmMatch::with_navigation(
+        let mut tdm = crate::game_match::TdmMatch::with_navigation(
             config.clone(),
             template,
             self.training_enemy.as_ref().unwrap().move_speed,
@@ -1421,7 +1451,14 @@ impl PreparedGameState {
                 .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("TDM navigation not prepared"))?
                 .clone(),
-        )?))
+        )?;
+        tdm.set_weapon_move_scale(
+            self.match_weapon
+                .as_ref()
+                .and_then(|w| w.move_scale)
+                .unwrap_or(1.0),
+        );
+        Ok(Some(tdm))
     }
     pub(crate) fn match_bot_weapon(&self) -> Option<crate::game_bot::BotWeapon> {
         let weapon = self.match_weapon.as_ref()?;
@@ -1491,6 +1528,7 @@ mod tests {
             angles: [0; 3],
             phase: crate::game_bot::BotPhase::Chase,
             shot: None,
+            locomotion: crate::game_bot::Locomotion::Walk,
         };
         let current = state.animate_enemy(config.snapshot(true), &frame, false, false);
         assert_eq!((current.legs_animation, current.torso_animation), (243, 0));
@@ -1520,6 +1558,43 @@ mod tests {
                 .animate_enemy(current, &frame, true, true)
                 .torso_animation,
             616 | 0x400
+        );
+        state.training_enemy.as_mut().unwrap().locomotion =
+            Some(crate::game_enemy::NativeLocomotion {
+                run_forward: 328,
+                run_back: 325,
+                run_left: 328,
+                run_right: 328,
+                sprint: 309,
+                fire_standing: 617,
+                script_sha256: "a".repeat(64),
+            });
+        frame.motion.velocity = [190.0, 0.0, 0.0];
+        frame.motion.flags = 0;
+        frame.locomotion = crate::game_bot::Locomotion::Run;
+        let running = state.animate_enemy(current, &frame, true, false);
+        assert_eq!((running.legs_animation, running.torso_animation), (328, 0));
+        frame.motion.flags = 0x4000;
+        frame.locomotion = crate::game_bot::Locomotion::Sprint;
+        assert_eq!(
+            state
+                .animate_enemy(current, &frame, false, false)
+                .legs_animation,
+            309
+        );
+        frame.motion.flags = 0x10;
+        frame.locomotion = crate::game_bot::Locomotion::Walk;
+        assert_eq!(
+            state
+                .animate_enemy(current, &frame, false, false)
+                .legs_animation,
+            243
+        );
+        frame.motion.velocity = [0.0; 3];
+        let standing = state.animate_enemy(current, &frame, true, false);
+        assert_eq!(
+            (standing.legs_animation, standing.torso_animation),
+            (395, 617)
         );
     }
     #[test]

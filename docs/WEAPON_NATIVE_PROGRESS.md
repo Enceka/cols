@@ -77,3 +77,16 @@ GameHub `--quiet-network`现在同时启用`--game-capture-every 30`。握手和
 `client-1791524010990`已运行此版：只读探针再次读到12个有效CI，移动Bot legsLerp rate约0.84..1.29、torso0。31次真实击杀期间无>25ms模拟警告、无输入拒绝；截图显示正常Axis/Allies昵称和M4原生击杀图标。视觉脚步仍待用户确认，不将元数据/速率读取等同于动画最终验收。
 
 最新完整检查`research-output/bot-walk-final-check.log`：269项Rust通过、30项Python通过，3项真实资源/回放诊断在默认检查中ignored；fmt/Clippy通过。真实Afghan路径+运动回放另已手动通过。探针新增ES和CI腿/上身动画与lerp速率，只读不注入代码。当前客户端最多运行900秒。
+
+
+## 从原生动作配置恢复走、跑、冲刺
+
+用户仍见轻微滑行，要求核对原版动作。新增只读探针导出当前3.3.3.3的type36 rawfile `mp/playeranim.script`和`mp/playeranimtypes.txt`，实际压缩8340/198字节、解压76967/309字节。样本身份及NCS CRC保留在characters capture。原件留忽略目录`research-output/native-playeranim.script`，来源是客户端当前已加载资源，不是Alpha参考。原生规则按首次匹配选择：M4的+0x478=4对应autorifle，+0x480=0为rifle。
+
+新增`tools/prepare_bot_locomotion.py`把现有TDM准备、characters和既有arsenal绑定，验证客户端/地图/压缩长度/所选动画唯一性，创建新输出，保留账号/原准备。它解释固定M4所需的原生条件子集，不宣称实现所有玩家动画/特殊武器条件。实际绑定持枪走前243/后242/左241/右240，普通跑前328/后325（autorifle的run规则优先于后面的strafe规则，因此run-left/right仍328），冲刺309。M4站立hip开火原生默认617，moving fireweapon分支为空，所以移动开火保留整身姿势，仅发正常枪械事件。原生还包含蹲、趴、跳、落地、转身等，本轮没有让AI随意触发这些动作。
+
+正式Bot的物理不再沿用之前94.48单位的步行动画根速度：恢复本版Pmove.speed190，乘已合成的M4移速；跑使用普通速度，冲刺走原生BUTTON_SPRINT与1.5倍率，接敌持枪走应用既有Pmove ADS0.4倍率，动画由对应locomotion状态选择。赶路时朝路线转向，接敌再面向目标。动画根速度只用于客户端步频缩放，不冒充原生人物移动速度。走/跑/冲刺的AI决策仍是本项目对局策略，不宣称原版Bot战术。
+
+TDM动画选用实际位移/时间得到的横向速度，包括此前未计入的Bot避让修正；不再只看会遗漏推挤位移的私有physics.velocity。新增运动回归验证持枪走、带武器倍率的冲刺、赶路朝向、墙后不开火；动画回归验证走/跑/冲刺节点和移动射击不覆盖。Python回归验证规则优先级、空moving覆盖分支、placeholder重复不影响所选节点、所选动画歧义及资源/压缩身份拒绝。
+
+最新`research-output/bot-native-locomotion-check.log`：270项Rust、32项Python、fmt/Clippy通过（默认另3项资源/回放诊断ignored）；真实Afghan路线+Motion回放再跑通过。`research-output/tdm-native-actions-state.json`已生成并供新live使用，`client-1791526871112`运行优化服务端、新native动作绑定。此前用户确认M200回弹解决、黑屏暂不再现、Bot互相开火；新动作与轻微脚底滑动仍需该轮实机观测。

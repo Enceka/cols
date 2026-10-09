@@ -18,6 +18,8 @@ pub(crate) struct EnemyConfig {
     pub walk_right_animation: Option<u16>,
     #[serde(default)]
     pub walk_back_animation: Option<u16>,
+    #[serde(default)]
+    pub locomotion: Option<NativeLocomotion>,
     pub fire_animation: u16,
     pub death_animation: u16,
     pub move_speed: f32,
@@ -28,9 +30,40 @@ pub(crate) struct EnemyConfig {
     pub bot: bool,
 }
 
+/// Bound to the captured3.3 script's autorifle rules and human registry.
+/// Physical speed still comes from Pmove/WeaponDef rather than root motion.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct NativeLocomotion {
+    pub run_forward: u16,
+    pub run_back: u16,
+    pub run_left: u16,
+    pub run_right: u16,
+    pub sprint: u16,
+    pub fire_standing: u16,
+    pub script_sha256: String,
+}
+
 impl EnemyConfig {
     pub fn validate(&self) -> Result<()> {
         self.target().validate()?;
+        if let Some(a) = &self.locomotion {
+            ensure!(
+                [
+                    a.run_forward,
+                    a.run_back,
+                    a.run_left,
+                    a.run_right,
+                    a.sprint,
+                    a.fire_standing
+                ]
+                .into_iter()
+                .all(|i| (1..1024).contains(&i))
+                    && a.script_sha256.len() == 64
+                    && a.script_sha256.bytes().all(|c| c.is_ascii_hexdigit()),
+                "invalid native locomotion capture"
+            );
+        }
         ensure!(
             [
                 self.walk_left_animation,

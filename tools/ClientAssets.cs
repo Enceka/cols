@@ -99,6 +99,15 @@ class ClientAssets {
         for(int i=0;i<cols*rows;i++)cells.Add(Convert.ToBase64String(StringBytes(U(values,i*8))));
         return Obj("found",true,"entry",entry,"address",at,"name",Name(U(t,0)),"columns",cols,"rows",rows,"cells_base64",cells);
     }
+    object AnimationRules(string name) {
+        uint entry;uint at=Find(36,name,out entry);if(at==0)return Obj("found",false);
+        // Current rawfile type36: name, compressedLen, len, buffer. Export
+        // bounded bytes read-only; decode compressed text outside the game.
+        byte[] header=Read(at,16);int compressed=Count(U(header,4),2*1024*1024);
+        int length=Count(U(header,8),2*1024*1024);int bytes=compressed!=0?compressed:length;
+        return Obj("found",true,"name",name,"compressed_length",compressed,"length",length,
+            "buffer_base64",Convert.ToBase64String(Read(U(header,12),bytes)));
+    }
     object MarketplaceHeader() {
         // Target type-name table at 0xce0ea0 assigns marketplacedata type 45.
         // VA 0x70517e loads it under the same name as the separate StringTable.
@@ -506,6 +515,10 @@ class ClientAssets {
         foreach(string name in new string[]{"mp/coCharacterDefTable.csv","mp/coCharItemStatsTable.csv","mp/coCharItems/cha.csv","mp/coMapList.csv"}) {
             try { tables[name]=r.Table(name); } catch(Exception error) { tables[name]=Obj("error",error.Message); }
         }
+        var animationRules=new Dictionary<string,object>();
+        foreach(string name in new string[]{"mp/playeranim.script","mp/playeranimtypes.txt"}) {
+            try {animationRules[name]=r.AnimationRules(name);}catch(Exception error){animationRules[name]=Obj("error",error.Message);}
+        }
         uint bg=r.Word(0x07817b80);var clients=new List<object>();
         var animations=new List<object>();var animationContexts=new List<object>();var seenContexts=new HashSet<uint>();
         foreach(uint address in new uint[]{0x07817b80,0x07817b84}) {
@@ -558,7 +571,7 @@ class ClientAssets {
         Console.WriteLine(serializer.Serialize(Obj("schema_version",1,"read_only",true,
             "client_sha256","e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b",
             "ncs_crc",r.Word(0x02df7d90),"models",models,"tables",tables,"clients",clients,
-            "animation_contexts",animationContexts,"animations",animations,"corpses",corpses)));
+            "animation_contexts",animationContexts,"animations",animations,"animation_rules",animationRules,"corpses",corpses)));
     }
     public static void ExportTrainingTarget(IntPtr process) {
         var r=new ClientAssets(process);
