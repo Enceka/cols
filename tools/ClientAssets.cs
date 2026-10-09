@@ -536,6 +536,9 @@ class ClientAssets {
             uint entity=entities+id*0x238;
             clients.Add(Obj("client",id,"valid",r.Word(ci),"current_valid",r.Word(ci+4),
                 "team",r.Word(ci+0x80),"cached_weapon",r.Word(ci+0x324),"entity_weapon",r.Word(entity+0xf0+0xd0),
+                "legs_animation",r.Word(entity+0xf0+0xd4),"torso_animation",r.Word(entity+0xf0+0xd8),
+                "legs_lerp_animation",r.Word(ci+0x170),"legs_lerp_rate",BitConverter.ToSingle(r.Read(ci+0x194,4),0),
+                "torso_lerp_animation",r.Word(ci+0x1b0),"torso_lerp_rate",BitConverter.ToSingle(r.Read(ci+0x1d4,4),0),
                 "entity_client",r.Word(entity+0xf0+0x9c),"entity_type",r.Word(entity+0xf4),
                 "entity_events_sequence",r.Word(entity+0xf0+0xac),"entity_event0",r.Word(entity+0xf0+0xb0),
                 "body",root>=0x10000?r.Name(root):null,"parts",parts,"animation_tree_ready",tree>=0x10000,

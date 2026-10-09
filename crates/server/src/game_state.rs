@@ -269,6 +269,9 @@ impl PreparedGameState {
             bounds_max: model.bounds_max,
             idle_animation: animation("pb_stand_alert")?.index,
             walk_animation: walk.index,
+            walk_left_animation: Some(animation("pb_stand_shoot_walk_left")?.index),
+            walk_right_animation: Some(animation("pb_stand_shoot_walk_right")?.index),
+            walk_back_animation: Some(animation("pb_stand_shoot_walk_back")?.index),
             fire_animation: animation("pt_stand_shoot_auto")?.index,
             death_animation: animation("pb_stand_death_chest_blowback")?.index,
             move_speed: f32::from_bits(walk.move_speed_bits),
@@ -283,7 +286,7 @@ impl PreparedGameState {
         state.validate()?;
         let mut json: serde_json::Value = serde_json::from_slice(&std::fs::read(state_path)?)?;
         json.as_object_mut().unwrap().remove("training_target");
-        json["training_enemy"] = serde_json::json!({"model":config.model,"origin":config.origin,"bounds_min":config.bounds_min,"bounds_max":config.bounds_max,"idle_animation":config.idle_animation,"walk_animation":config.walk_animation,"fire_animation":config.fire_animation,"death_animation":config.death_animation,"move_speed":config.move_speed,"angles":config.angles,"weapon":config.weapon,"source_sha256":config.source_sha256});
+        json["training_enemy"] = serde_json::json!({"model":config.model,"origin":config.origin,"bounds_min":config.bounds_min,"bounds_max":config.bounds_max,"idle_animation":config.idle_animation,"walk_animation":config.walk_animation,"walk_left_animation":config.walk_left_animation,"walk_right_animation":config.walk_right_animation,"walk_back_animation":config.walk_back_animation,"fire_animation":config.fire_animation,"death_animation":config.death_animation,"move_speed":config.move_speed,"angles":config.angles,"weapon":config.weapon,"source_sha256":config.source_sha256});
         for name in ["arsenal_file", "collision_file"] {
             if let Some(path) = json[name].as_str() {
                 json[name] = state_path
@@ -727,14 +730,30 @@ impl PreparedGameState {
         enemy.origin = frame.motion.origin;
         enemy.angles = frame.angles;
         enemy.legs_animation = if frame.moving() {
-            config.walk_animation
+            let yaw = f32::from(frame.angles[1]) * std::f32::consts::TAU / 65536.0;
+            let (sin, cos) = yaw.sin_cos();
+            let forward = frame.motion.velocity[0] * cos + frame.motion.velocity[1] * sin;
+            let right = -frame.motion.velocity[0] * sin + frame.motion.velocity[1] * cos;
+            if right.abs() > forward.abs() {
+                if right > 0.0 {
+                    config.walk_left_animation
+                } else {
+                    config.walk_right_animation
+                }
+                .unwrap_or(config.walk_animation)
+            } else if forward < 0.0 {
+                config.walk_back_animation.unwrap_or(config.walk_animation)
+            } else {
+                config.walk_animation
+            }
         } else {
             config.idle_animation
         };
         enemy.torso_animation = if firing {
             config.fire_animation | if toggle { 0x400 } else { 0 }
         } else {
-            config.idle_animation
+            0 // The legs node carries the full-body pose; torso0 keeps
+            // an additional idle node from overriding its moving legs.
         };
         enemy
     }
@@ -1456,6 +1475,53 @@ pub(crate) fn synthetic() -> PreparedGameState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn walking_full_body_animation_is_not_overridden_by_a_standing_torso_pose() {
+        let mut state = synthetic();
+        let config:crate::game_enemy::EnemyConfig=serde_json::from_value(serde_json::json!({
+            "model":4,"origin":[0,0,0],"bounds_min":[-15,-15,0],"bounds_max":[15,15,70],
+            "idle_animation":395,"walk_animation":243,"walk_left_animation":241,"walk_right_animation":240,"walk_back_animation":242,
+            "fire_animation":616,"death_animation":47,"move_speed":94.0,"angles":[0,0,0],"weapon":352,"source_sha256":"a".repeat(64)
+        })).unwrap();
+        state.training_enemy = Some(config.clone());
+        let mut motion = crate::game_motion::Motion::new([0.0; 3]);
+        motion.velocity = [94.0, 0.0, 0.0];
+        let mut frame = crate::game_bot::BotFrame {
+            motion,
+            angles: [0; 3],
+            phase: crate::game_bot::BotPhase::Chase,
+            shot: None,
+        };
+        let current = state.animate_enemy(config.snapshot(true), &frame, false, false);
+        assert_eq!((current.legs_animation, current.torso_animation), (243, 0));
+        frame.motion.velocity = [-94.0, 0.0, 0.0];
+        assert_eq!(
+            state
+                .animate_enemy(current, &frame, false, false)
+                .legs_animation,
+            242
+        );
+        frame.motion.velocity = [0.0, 94.0, 0.0];
+        assert_eq!(
+            state
+                .animate_enemy(current, &frame, false, false)
+                .legs_animation,
+            241
+        );
+        frame.motion.velocity = [0.0, -94.0, 0.0];
+        assert_eq!(
+            state
+                .animate_enemy(current, &frame, false, false)
+                .legs_animation,
+            240
+        );
+        assert_eq!(
+            state
+                .animate_enemy(current, &frame, true, true)
+                .torso_animation,
+            616 | 0x400
+        );
+    }
     #[test]
     fn prepared_training_state_cannot_match_another_playlist_or_console_suffix() {
         let state = synthetic();

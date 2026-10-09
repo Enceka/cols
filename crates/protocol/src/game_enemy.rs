@@ -39,7 +39,7 @@ impl EnemySnapshot {
                 .iter()
                 .any(|n| !n.is_finite() || !(-32768.0..=32767.0).contains(n))
             || !animation(self.legs_animation)
-            || !animation(self.torso_animation)
+            || (self.torso_animation != 0 && !animation(self.torso_animation))
             || !(1..900).contains(&self.weapon)
         {
             return Err(LobbyError("invalid training enemy state"));
@@ -69,7 +69,7 @@ pub(crate) fn write_enemy_entity(
     if establish_baseline {
         if baseline.is_some() {
             return Err(LobbyError(
-                "enemy full baseline requires a live enemy and an empty event ring",
+                "full player baseline cannot reference a prior entity",
             ));
         }
     } else if let Some(base) = baseline {

@@ -12,6 +12,12 @@ pub(crate) struct EnemyConfig {
     pub bounds_max: [f32; 3],
     pub idle_animation: u16,
     pub walk_animation: u16,
+    #[serde(default)]
+    pub walk_left_animation: Option<u16>,
+    #[serde(default)]
+    pub walk_right_animation: Option<u16>,
+    #[serde(default)]
+    pub walk_back_animation: Option<u16>,
     pub fire_animation: u16,
     pub death_animation: u16,
     pub move_speed: f32,
@@ -25,6 +31,17 @@ pub(crate) struct EnemyConfig {
 impl EnemyConfig {
     pub fn validate(&self) -> Result<()> {
         self.target().validate()?;
+        ensure!(
+            [
+                self.walk_left_animation,
+                self.walk_right_animation,
+                self.walk_back_animation
+            ]
+            .into_iter()
+            .flatten()
+            .all(|a| (1..1024).contains(&a)),
+            "invalid directional walk animation"
+        );
         ensure!(
             (1..900).contains(&self.weapon),
             "enemy weapon outside registry"
