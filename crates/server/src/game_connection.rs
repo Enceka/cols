@@ -614,11 +614,7 @@ impl Connection {
         {
             base.buttons |= 0x800;
         }
-        self.snapshot_input_bases
-            .push_back((self.native_sent, base));
-        while self.snapshot_input_bases.len() > 256 {
-            self.snapshot_input_bases.pop_front();
-        }
+        self.remember_input_base(self.native_sent, base);
         self.snapshot_first_sequence.get_or_insert(self.native_sent);
         self.snapshot_count += 1;
         let next = self.snapshot_next.map_or(now, |n| n) + Duration::from_millis(50);
@@ -631,6 +627,30 @@ impl Connection {
     }
     pub fn input_progress(&self) -> (u32, Option<u32>) {
         (self.input_count, self.last_input.as_ref().map(|c| c.time))
+    }
+    fn remember_input_base(
+        &mut self,
+        sequence: u32,
+        base: codol_protocol::game_usercmd::UserCommand,
+    ) {
+        self.snapshot_input_bases.push_back((sequence, base));
+        while self.snapshot_input_bases.len() > 256 {
+            let retain_acked = self
+                .snapshot_input_bases
+                .front()
+                .is_some_and(|(s, _)| *s <= self.native_ack)
+                && self
+                    .snapshot_input_bases
+                    .get(1)
+                    .is_some_and(|(s, _)| *s > self.native_ack);
+            // A delayed client still encodes commands against its last ACK.
+            // Retain that exact base while bounding the newer history.
+            if retain_acked {
+                self.snapshot_input_bases.remove(1);
+            } else {
+                self.snapshot_input_bases.pop_front();
+            }
+        }
     }
     pub fn prediction_progress(&self) -> Option<(u32, [f32; 3], u32)> {
         self.predicted_position.map(|(time, origin)| {
@@ -1481,6 +1501,30 @@ fn decode_connect_name(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_stalled_ack_keeps_its_input_base_while_new_snapshot_history_stays_bounded() {
+        let mut c = Connection {
+            native_ack: 4,
+            ..Default::default()
+        };
+        let base = codol_protocol::game_usercmd::UserCommand {
+            weapons: [352, 0, 0],
+            ..Default::default()
+        };
+        c.remember_input_base(4, base.clone());
+        for sequence in 5..1000 {
+            c.remember_input_base(sequence, Default::default());
+        }
+        assert_eq!(c.snapshot_input_bases.len(), 256);
+        assert_eq!(c.input_base_for(4).unwrap(), base);
+        c.native_ack = 999;
+        for sequence in 1000..2000 {
+            c.remember_input_base(sequence, Default::default());
+        }
+        assert_eq!(c.snapshot_input_bases.len(), 256);
+        assert!(c.input_base_for(999).is_ok());
+        assert!(c.input_base_for(4).is_err());
+    }
     #[test]
     fn training_backpack_changes_wait_for_the_next_spawn() {
         let current = Arc::new(crate::game_state::synthetic());

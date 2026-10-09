@@ -63,6 +63,7 @@ def main():
     parser.add_argument("--crossproxy", action="store_true", help="also reproduce the launcher's CrossProxy step")
     parser.add_argument("--tls-probe", action="store_true", help="use a loopback-only OpenSSL TLS 1.0 research listener for endpoint B")
     parser.add_argument("--rust-auth", action="store_true", help="use the in-process Rust AUTH TLS/HTTP endpoint")
+    parser.add_argument("--release-server", action="store_true", help="run the optimized Rust server built with cargo build --release")
     parser.add_argument("--auth-reply-file", type=Path, help="experimental JSON reply for --rust-auth")
     parser.add_argument("--local-auth-tickets", action="store_true", help="ask the Rust endpoint to issue local test-account tickets")
     parser.add_argument("--rust-lobby", action="store_true", help="enable the Rust protocol-210 lobby handshake observer")
@@ -110,6 +111,8 @@ def main():
         parser.error("snapshot-probe requires game-state and 1..18000 frames")
     if args.game_map_catalog and (not args.rust_game or not args.game_map_catalog.is_file()):
         parser.error("game-map-catalog requires rust-game and an existing catalog")
+    if args.release_server and not args.rust_auth:
+        parser.error("release-server requires rust-auth")
     if args.hit_regions and not args.game_state:
         parser.error("hit-regions requires game-state")
     if args.trust_lab_cert and not (args.tls_probe or args.rust_auth):
@@ -201,7 +204,8 @@ def main():
                     if not certificate.is_file() or not key.is_file():
                         raise RuntimeError("create the local TLS lab certificate first; see GAMEHUB_DEBUG.md")
                     if args.rust_auth:
-                        tls_argv = [str(REPO / "target/debug/codol-server"), "serve-auth", "--cert", str(certificate), "--key", str(key), "--capture-dir", str(output / "auth-captures")]
+                        executable = REPO / "target" / ("release" if args.release_server else "debug") / "codol-server"
+                        tls_argv = [str(executable), "serve-auth", "--cert", str(certificate), "--key", str(key), "--capture-dir", str(output / "auth-captures")]
                         if args.auth_reply_file:
                             tls_argv += ["--reply-file", str(args.auth_reply_file.resolve())]
                             state["auth_reply_sha256"] = sha256(args.auth_reply_file)

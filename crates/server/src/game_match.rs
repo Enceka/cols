@@ -312,6 +312,8 @@ impl TdmMatch {
         collision: &Collision,
         animate: impl Fn(EnemySnapshot, &crate::game_bot::BotFrame, bool, bool) -> EnemySnapshot,
     ) -> Result<Tick> {
+        let started = std::time::Instant::now();
+        let mut movement = std::time::Duration::ZERO;
         let (mut local, local_height, local_health) = player;
         let mut tick = Tick::default();
         if self.finished {
@@ -390,6 +392,7 @@ impl TdmMatch {
                 bot.route.clear();
                 bot.route_target = None;
             }
+            let move_started = std::time::Instant::now();
             if bot.steering.is_none()
                 || now.wrapping_sub(bot.steering_time) >= 250
                 || bot
@@ -405,6 +408,7 @@ impl TdmMatch {
             let frame = bot
                 .controller
                 .step_navigated(now, target, waypoint, weapon, collision);
+            movement += move_started.elapsed();
             if report {
                 tracing::info!(client=bot.snapshot.client_index,team,health=bot.health,phase=?frame.phase,origin=?frame.motion.origin,target=?bot.route_target,route_nodes=bot.route.len(),"TDM bot state");
             }
@@ -430,6 +434,8 @@ impl TdmMatch {
             bot.snapshot.weapon = weapon.weapon;
         }
         self.next_route_client = (self.next_route_client + 1) % self.bots.len();
+        let routing = started.elapsed().saturating_sub(movement);
+        let damage_started = std::time::Instant::now();
         let mut player_health = local_health;
         for (attacker, team, shot) in shots {
             if self.finished {
@@ -468,6 +474,14 @@ impl TdmMatch {
                     .impacts
                     .into_iter()
                     .map(|impact| (shot.weapon, impact)),
+            );
+        }
+        if started.elapsed().as_millis() > 25 {
+            tracing::warn!(
+                route_msec = routing.as_millis(),
+                movement_msec = movement.as_millis(),
+                damage_msec = damage_started.elapsed().as_millis(),
+                "Bot frame work profile"
             );
         }
         Ok(tick)

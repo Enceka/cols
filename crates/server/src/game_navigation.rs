@@ -144,7 +144,9 @@ impl Navigation {
             .map(|(i, _)| i)
     }
     pub fn route(&self, start: V3, goal: V3, collision: &Collision) -> Vec<V3> {
-        if Self::clear(start, goal, collision) {
+        // A long capsule sweep's broadphase covers much of the map. Use the
+        // precomputed graph for distant goals instead of tracing through it.
+        if distance(start, goal) <= CELL * 4.0 && Self::clear(start, goal, collision) {
             return vec![goal];
         }
         let (Some(start_index), Some(goal_index)) = (
@@ -155,10 +157,15 @@ impl Navigation {
         };
         let mut best = vec![f32::INFINITY; self.positions.len()];
         let mut parent = vec![usize::MAX; best.len()];
+        let mut visited = vec![false; best.len()];
         let mut open = BinaryHeap::new();
         best[start_index] = 0.0;
         open.push((std::cmp::Reverse(0u32), start_index));
         while let Some((_, index)) = open.pop() {
+            if visited[index] {
+                continue;
+            }
+            visited[index] = true;
             if index == goal_index {
                 let mut path = vec![goal];
                 let mut node = index;
@@ -192,7 +199,7 @@ impl Navigation {
         while path.front().is_some_and(|p| distance(start, *p) < 36.0) {
             path.pop_front();
         }
-        for index in (1..path.len().min(8)).rev() {
+        for index in (1..path.len().min(4)).rev() {
             if Self::clear(start, path[index], collision) {
                 path.drain(..index);
                 break;

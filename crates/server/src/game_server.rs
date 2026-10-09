@@ -378,7 +378,7 @@ impl GameServer {
         let mut profile_check = std::time::Instant::now();
         loop {
             let (n, peer) = tokio::select! {result=&mut shutdown=>{result?;return Ok(())},
-            scheduled=tick.tick()=>{
+            _=tick.tick()=>{
                 let now=(unix_time_ms()/1000) as u32;
                 peers.retain(|_,p|p.admitted(self.admissions.get(&p.transport.id,now).as_ref()));
                 if profile_check.elapsed()>=std::time::Duration::from_millis(500) {
@@ -405,7 +405,7 @@ impl GameServer {
                 for (address,bound) in &mut peers {
                     let p=&mut bound.transport;
                     let Some(records)=p.records.as_mut() else { continue };
-                    if let Some(plain)=p.connection.poll_snapshot(scheduled.into_std())? {
+                    if let Some(plain)=p.connection.poll_snapshot(std::time::Instant::now())? {
                         let wire=records.seal(&plain,p.remote_tag)?;
                         self.socket.send_to(&wire,*address).await?;
                         snapshots+=1;
