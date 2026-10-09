@@ -86,10 +86,7 @@ pub(crate) fn write_corpse(
     }
     if let Some(base) = baseline {
         base.validate()?;
-        if !base.present
-            || base.entity_number != corpse.entity_number
-            || base.donor_client != corpse.donor_client
-        {
+        if !base.present || base.entity_number != corpse.entity_number {
             return Err(LobbyError("corpse pinned base identity mismatch"));
         }
     }

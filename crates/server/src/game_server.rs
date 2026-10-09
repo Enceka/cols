@@ -196,6 +196,7 @@ impl GameAdmissions {
 }
 
 pub struct GameServer {
+    capture_every: u32,
     socket: UdpSocket,
     admissions: Arc<GameAdmissions>,
     directory: PathBuf,
@@ -272,6 +273,7 @@ impl GameServer {
             "client_sha256":codol_protocol::CLIENT_SHA256
         }))?).await?;
         Ok(Self {
+            capture_every: 1,
             socket,
             directory,
             game_state: None,
@@ -289,6 +291,10 @@ impl GameServer {
     }
     pub fn with_game_state(mut self, state: crate::game_state::PreparedGameState) -> Self {
         self.game_state = Some(Arc::new(state));
+        self
+    }
+    pub fn with_capture_every(mut self, every: u32) -> Self {
+        self.capture_every = every.max(1);
         self
     }
     pub fn with_services(mut self, services: Option<Arc<crate::services::LocalServices>>) -> Self {
@@ -403,12 +409,14 @@ impl GameServer {
                         let wire=records.seal(&plain,p.remote_tag)?;
                         self.socket.send_to(&wire,*address).await?;
                         snapshots+=1;
+                        if snapshots.is_multiple_of(self.capture_every) || snapshots<10 {
                         write_private(&self.directory.join(format!("snapshot-{snapshots:04}-plaintext.bin")),&plain).await?;
                         write_private(&self.directory.join(format!("snapshot-{snapshots:04}-reply.bin")),&wire).await?;
                         write_private(&self.directory.join(format!("snapshot-{snapshots:04}.json")),&serde_json::to_vec(&serde_json::json!({
                             "peer":address,"native_sequence":u32::from_le_bytes(plain[..4].try_into()?),
                             "bytes":wire.len(),"unix_time_ms":unix_time_ms(),"mode":"bounded_bootstrap_probe","motion":p.connection.motion_progress(),"prediction":p.connection.prediction_progress()
                         }))?).await?;
+                        }
                     }
                 }
                 continue;
@@ -421,11 +429,7 @@ impl GameServer {
             count += 1;
             total += n;
             let wire = &buffer[..n];
-            write_private(
-                &self.directory.join(format!("{count:04}-request.bin")),
-                wire,
-            )
-            .await?;
+            let sampled = count.is_multiple_of(self.capture_every) || wire.first() != Some(&6);
             let now = (unix_time_ms() / 1000) as u32;
             let live = self
                 .admissions
@@ -591,7 +595,18 @@ impl GameServer {
                 .map(|p| p.transport.connection.view_angles());
             let error = handled.as_ref().err().map(ToString::to_string);
             let response = handled.unwrap_or(None);
-            if let Some(plain) = &decoded {
+            if let Some(error) = &error {
+                tracing::warn!(%peer,%error,"game input rejected");
+            }
+            let capture = sampled || error.is_some() || response.is_some();
+            if capture {
+                write_private(
+                    &self.directory.join(format!("{count:04}-request.bin")),
+                    wire,
+                )
+                .await?;
+            }
+            if capture && let Some(plain) = &decoded {
                 write_private(
                     &self.directory.join(format!("{count:04}-plaintext.bin")),
                     &[plain.encrypted.as_slice(), plain.cleartext.as_slice()].concat(),
@@ -609,12 +624,14 @@ impl GameServer {
             } else {
                 false
             };
-            write_private(&self.directory.join(format!("{count:04}-event.json")),&serde_json::to_vec(&serde_json::json!({
+            if capture {
+                write_private(&self.directory.join(format!("{count:04}-event.json")),&serde_json::to_vec(&serde_json::json!({
                 "peer":peer,"bytes":n,"type":wire.first(),"version_byte":wire.get(1),"admitted_init":admitted,
                 "reply_bytes":response.as_ref().map_or(0,Vec::len),"unix_time_ms":unix_time_ms(),"gamestate_progress":gamestate_progress,"input_progress":input_progress,"input_angles":input_angles
                 ,"connection_stage":connection_stage,"inner_kind":inner_kind,"inner_dropped":inner_dropped,"client_server_id":client_server_id,"client_message_ack":client_message_ack,"client_reliable_ack":client_reliable_ack,"client_body_first":client_body_first,"client_opcode":client_opcode,"mac_verified":decoded.is_some(),"plaintext_bytes":decoded.as_ref().map(|p| p.encrypted.len() + p.cleartext.len()),"encrypted_payload_bytes":decoded.as_ref().map(|p| p.encrypted.len()),"error":error
             }))?).await?;
-            tracing::info!(%peer,bytes=n,kind=?wire.first(),admitted_init=admitted,mac_verified=decoded.is_some(),"game UDP datagram captured");
+                tracing::info!(%peer,bytes=n,kind=?wire.first(),admitted_init=admitted,mac_verified=decoded.is_some(),"game UDP datagram captured");
+            }
         }
     }
 }

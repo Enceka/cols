@@ -178,6 +178,10 @@ pub fn player_frame_with_motion(
         equipment,
         angles,
         WorldSnapshot {
+            delta_distance: 0,
+            corpse_baselines: &[],
+            impact_baselines: &[],
+            obituary_baselines: &[],
             motion,
             target: None,
             impacts: &[],
@@ -197,6 +201,7 @@ pub fn player_frame_with_motion(
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct WorldSnapshot<'a> {
+    pub delta_distance: u8,
     pub motion: Option<MotionSnapshot>,
     pub target: Option<crate::game_target::TargetSnapshot>,
     pub impacts: &'a [crate::game_impact::ImpactSnapshot],
@@ -209,7 +214,10 @@ pub struct WorldSnapshot<'a> {
     pub local_player: Option<crate::game_enemy::EnemySnapshot>,
     pub local_player_baseline: Option<crate::game_enemy::EnemySnapshot>,
     pub corpses: &'a [crate::game_corpse::CorpseSnapshot],
+    pub corpse_baselines: &'a [crate::game_corpse::CorpseSnapshot],
+    pub impact_baselines: &'a [crate::game_impact::ImpactSnapshot],
     pub obituaries: &'a [crate::game_obituary::ObituarySnapshot],
+    pub obituary_baselines: &'a [crate::game_obituary::ObituarySnapshot],
 }
 
 pub fn player_frame_with_world(
@@ -329,8 +337,14 @@ pub fn player_frame_with_world(
     let mut out = Writer::default();
     out.bytes.push(0); // svc_snapshot, byte pool starts at zero
     out.bytes.extend_from_slice(&server_time.to_le_bytes());
-    out.bytes
-        .extend_from_slice(&[0, if establish_baseline { 8 } else { 0 }]);
+    out.bytes.extend_from_slice(&[
+        if establish_baseline {
+            0
+        } else {
+            world.delta_distance
+        },
+        if establish_baseline { 8 } else { 0 },
+    ]);
     out.bits(0, 1); // no prior playerState
     out.bits(1, 1); // transmit origin/velocity rather than local prediction
     out.bits(
@@ -602,6 +616,9 @@ pub fn player_frame_with_world(
         {
             return Err(LobbyError("invalid player snapshot order"));
         }
+        if world.delta_distance != 0 && world.player_baselines.iter().any(|b| b == player) {
+            continue;
+        }
         crate::game_enemy::write_enemy_entity(
             &mut out,
             *player,
@@ -611,7 +628,7 @@ pub fn player_frame_with_world(
                 world
                     .player_baselines
                     .iter()
-                    .find(|b| b.client_index == player.client_index)
+                    .find(|b| b.alive && b.client_index == player.client_index)
                     .copied()
             },
             establish_baseline,
@@ -622,11 +639,45 @@ pub fn player_frame_with_world(
     }
     if !establish_baseline {
         for corpse in world.corpses {
-            crate::game_corpse::write_corpse(&mut out, *corpse, None, false)?;
+            if world.delta_distance != 0
+                && (world.corpse_baselines.iter().any(|b| b == corpse)
+                    || (!corpse.present
+                        && !world
+                            .corpse_baselines
+                            .iter()
+                            .any(|b| b.present && b.entity_number == corpse.entity_number)))
+            {
+                continue;
+            }
+            crate::game_corpse::write_corpse(
+                &mut out,
+                *corpse,
+                world
+                    .corpse_baselines
+                    .iter()
+                    .find(|b| b.present && b.entity_number == corpse.entity_number)
+                    .copied(),
+                false,
+            )?;
         }
     }
-    crate::game_impact::write_impacts(&mut out, world.impacts, establish_baseline)?;
-    crate::game_obituary::write_obituaries(&mut out, world.obituaries, establish_baseline)?;
+    if world.delta_distance == 0 {
+        crate::game_impact::write_impacts(&mut out, world.impacts, establish_baseline)?;
+        crate::game_obituary::write_obituaries(&mut out, world.obituaries, establish_baseline)?;
+    } else {
+        crate::game_impact::write_impacts_with_baselines(
+            &mut out,
+            world.impacts,
+            world.impact_baselines,
+            establish_baseline,
+        )?;
+        crate::game_obituary::write_obituaries_with_baselines(
+            &mut out,
+            world.obituaries,
+            world.obituary_baselines,
+            establish_baseline,
+        )?;
+    }
     // Entities (0x46c2f0): explicit 11-bit sentinel, not a presence gate.
     out.bits(0, 1);
     out.bits(1, 1);

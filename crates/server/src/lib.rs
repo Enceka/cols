@@ -16,6 +16,7 @@ pub mod game_map_catalog;
 mod game_map_selection;
 mod game_match;
 pub mod game_motion;
+mod game_navigation;
 mod game_player;
 pub mod game_server;
 pub mod game_state;

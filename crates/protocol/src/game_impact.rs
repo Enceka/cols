@@ -61,6 +61,14 @@ pub(crate) fn write_impacts(
     impacts: &[ImpactSnapshot],
     establish_baseline: bool,
 ) -> Result<(), LobbyError> {
+    write_impacts_with_baselines(out, impacts, &[], establish_baseline)
+}
+pub(crate) fn write_impacts_with_baselines(
+    out: &mut Writer,
+    impacts: &[ImpactSnapshot],
+    baselines: &[ImpactSnapshot],
+    establish_baseline: bool,
+) -> Result<(), LobbyError> {
     let mut previous_number = 19;
     for impact in impacts {
         impact.validate()?;
@@ -72,7 +80,23 @@ pub(crate) fn write_impacts(
     if establish_baseline {
         return Ok(());
     }
-    for impact in impacts {
+    let numbers: std::collections::BTreeSet<_> = impacts
+        .iter()
+        .chain(baselines)
+        .map(|s| s.entity_number)
+        .collect();
+    for number in numbers {
+        let Some(impact) = impacts.iter().find(|s| s.entity_number == number) else {
+            out.bits(0, 1);
+            out.bits(1, 1);
+            out.bits(u32::from(number), 11);
+            out.bits(1, 1);
+            continue;
+        };
+        let base = baselines.iter().find(|b| b.entity_number == number);
+        if base == Some(impact) {
+            continue;
+        }
         out.bits(0, 1);
         out.bits(1, 1);
         out.bits(u32::from(impact.entity_number), 11);
@@ -96,17 +120,21 @@ pub(crate) fn write_impacts(
         gap(out, 5 - previous);
         out.bits(u32::from(impact.normal_byte), 8); // -93: no generic gate
         previous = 5;
-        if impact.surface != 0 {
+        if impact.surface != 0 || base.is_some_and(|b| b.surface != 0) {
             gap(out, 6 - previous);
-            out.bits(1, 1);
-            out.bytes.push(impact.surface);
+            out.bits(u32::from(impact.surface != 0), 1);
+            if impact.surface != 0 {
+                out.bytes
+                    .push(impact.surface ^ base.map_or(0, |b| b.surface));
+            }
             previous = 6;
         }
         // shooter(field9)=local0, impact flags(field10)=0 inherit zero.
         gap(out, 16 - previous);
         out.bits(1, 1);
-        out.bytes
-            .extend_from_slice(&u32::from(impact.weapon).to_le_bytes());
+        out.bytes.extend_from_slice(
+            &(u32::from(impact.weapon) ^ base.map_or(0, |b| u32::from(b.weapon))).to_le_bytes(),
+        );
         gap(out, 22 - 16);
         out.bits(1, 1); // -96 compact world2046; 2047 would suppress FX
     }

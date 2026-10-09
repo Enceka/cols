@@ -67,17 +67,14 @@ pub(crate) fn write_enemy_entity(
 ) -> Result<(), LobbyError> {
     enemy.validate()?;
     if establish_baseline {
-        if !enemy.alive || baseline.is_some() || enemy.events != game_events::EventQueue::default()
-        {
+        if baseline.is_some() {
             return Err(LobbyError(
                 "enemy full baseline requires a live enemy and an empty event ring",
             ));
         }
-    } else {
-        let base = baseline.ok_or(LobbyError("enemy pinned baseline is required"))?;
+    } else if let Some(base) = baseline {
         base.validate()?;
         if !base.alive
-            || base.events != game_events::EventQueue::default()
             || enemy.model != base.model
             || enemy.attachment_models != base.attachment_models
             || enemy.attachment_tags != base.attachment_tags
@@ -212,9 +209,7 @@ pub(crate) fn write_player_clients(
         if i > 0 && players[i - 1].client_index >= player.client_index {
             return Err(LobbyError("player clients must be sorted and unique"));
         }
-        if establish_baseline
-            && (!player.alive || player.events != game_events::EventQueue::default())
-        {
+        if establish_baseline && player.client_index > 18 {
             return Err(LobbyError(
                 "player client baseline requires alive state and empty events",
             ));
@@ -665,7 +660,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_invalid_event_parameters_and_nonzero_baseline_rings_without_writes() {
+    fn rejects_invalid_event_parameters_and_supports_live_snapshot_bases() {
         let initial = enemy();
         let mut fired = game_events::EventQueue::default();
         fired.push(36, 0).unwrap();
@@ -707,12 +702,10 @@ mod tests {
             out.bits(5, 3);
             out.bytes.push(0xe6);
             let before = out.bytes.clone();
-            assert!(write_enemy_entity(&mut out, nonzero, None, true).is_err());
-            assert_eq!(out.bytes, before);
-            assert!(write_enemy_client(&mut out, nonzero, true).is_err());
-            assert_eq!(out.bytes, before);
-            assert!(write_enemy_entity(&mut out, active, Some(nonzero), false).is_err());
-            assert_eq!(out.bytes, before);
+            write_enemy_entity(&mut out, nonzero, None, true).unwrap();
+            assert_ne!(out.bytes, before);
+            write_enemy_client(&mut out, nonzero, true).unwrap();
+            write_enemy_entity(&mut out, active, Some(nonzero), false).unwrap();
         }
     }
 
@@ -791,14 +784,16 @@ mod tests {
             assert_eq!(out.bytes, before);
         }
         let mut out = Writer::default();
-        assert!(write_enemy_entity(&mut out, initial, None, false).is_err());
+        assert!(write_enemy_entity(&mut out, initial, None, false).is_ok());
+        out = Writer::default();
         assert!(write_enemy_entity(&mut out, initial, Some(initial), true).is_err());
         let dead = EnemySnapshot {
             alive: false,
             ..initial
         };
-        assert!(write_enemy_entity(&mut out, dead, None, true).is_err());
-        assert!(write_enemy_client(&mut out, dead, true).is_err());
+        assert!(write_enemy_entity(&mut out, dead, None, true).is_ok());
+        assert!(write_enemy_client(&mut out, dead, true).is_ok());
+        out = Writer::default();
         assert!(write_enemy_entity(&mut out, initial, Some(dead), false).is_err());
         let changed = EnemySnapshot {
             model: 109,

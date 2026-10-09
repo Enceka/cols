@@ -215,6 +215,8 @@ def main():
                             tls_argv += ["--stun-bind", "127.0.0.1:3074", "--stun-alt", "127.0.0.1:3078"]
                         if args.rust_game:
                             tls_argv += ["--game-bind", "127.0.0.1:39004"]
+                            if args.quiet_network:
+                                tls_argv += ["--game-capture-every", "30"]
                         if args.game_state:
                             tls_argv += ["--game-state", str(args.game_state.resolve())]
                             state["game_state_sha256"] = sha256(args.game_state)

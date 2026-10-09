@@ -68,6 +68,17 @@ pub(crate) struct Connection {
     input_count: u32,
     last_input: Option<codol_protocol::game_usercmd::UserCommand>,
     snapshot_input_bases: VecDeque<(u32, codol_protocol::game_usercmd::UserCommand)>,
+    world_history: VecDeque<WorldHistory>,
+}
+
+#[derive(Clone)]
+struct WorldHistory {
+    sequence: u32,
+    local: Option<codol_protocol::game_enemy::EnemySnapshot>,
+    players: Vec<codol_protocol::game_enemy::EnemySnapshot>,
+    impacts: Vec<codol_protocol::game_impact::ImpactSnapshot>,
+    corpses: Vec<codol_protocol::game_corpse::CorpseSnapshot>,
+    obituaries: Vec<codol_protocol::game_obituary::ObituarySnapshot>,
 }
 
 impl Connection {
@@ -419,7 +430,10 @@ impl Connection {
             .map_or(1000, |cmd| cmd.time)
             .min(server_time);
         let equipment = self.player.as_ref().map(|p| p.equipment());
-        let impacts = self.impacts.snapshot(server_time);
+        let mut impacts = self.impacts.snapshot(server_time);
+        if self.tdm.is_some() {
+            impacts.truncate(8);
+        }
         self.obituaries
             .retain(|(time, _)| server_time.wrapping_sub(*time) < 200);
         let mut obituaries: Vec<_> = self.obituaries.iter().map(|(_, event)| *event).collect();
@@ -471,14 +485,40 @@ impl Connection {
         }
         let match_players = self.tdm.as_ref().map_or(Vec::new(), |m| m.snapshots());
         let match_baselines = self.tdm.as_ref().map_or(&[][..], |m| m.baselines());
+        // parseClients is circular; a multiplayer delta cannot retain the
+        // original full frame's appearance-record indices indefinitely.
+        let previous = if self.tdm.is_some() {
+            self.world_history
+                .iter()
+                .rev()
+                .find(|h| h.sequence <= self.native_ack && self.native_sent + 1 - h.sequence < 24)
+                .cloned()
+        } else {
+            None
+        };
+        let full = if self.tdm.is_some() {
+            previous.is_none()
+        } else {
+            self.snapshot_first_sequence
+                .is_none_or(|first| self.native_ack < first)
+        };
+        let delta_distance = previous
+            .as_ref()
+            .map_or(0, |h| (self.native_sent + 1 - h.sequence) as u8);
+        let previous_players = previous
+            .as_ref()
+            .map_or(match_baselines, |h| h.players.as_slice());
         let snapshot = state.snapshot(
             server_time,
             command_time,
-            self.snapshot_first_sequence
-                .is_none_or(|first| self.native_ack < first),
+            full,
             angles,
             equipment,
             crate::game_state::SnapshotWorld {
+                delta_distance,
+                corpse_baselines: previous.as_ref().map_or(&[], |h| h.corpses.as_slice()),
+                impact_baselines: previous.as_ref().map_or(&[], |h| h.impacts.as_slice()),
+                obituary_baselines: previous.as_ref().map_or(&[], |h| h.obituaries.as_slice()),
                 motion: self.motion.as_ref(),
                 target: if state.enemy_snapshot(true).is_none() {
                     self.combat.as_ref().map(|w| w.snapshot())
@@ -489,10 +529,14 @@ impl Connection {
                 enemy: if self.tdm.is_some() { None } else { enemy },
                 enemy_baseline: self.enemy_baseline,
                 players: &match_players,
-                player_baselines: match_baselines,
+                player_baselines: previous_players,
                 vitals: (self.bot.is_some() || self.tdm.is_some()).then_some(self.vitals),
                 local_player,
-                local_player_baseline: self.local_baseline,
+                local_player_baseline: if self.tdm.is_some() {
+                    previous.as_ref().and_then(|h| h.local).filter(|b| b.alive)
+                } else {
+                    self.local_baseline
+                },
                 corpses: &corpses,
                 obituaries: &obituaries,
                 hit_feedback: self.last_hit_time.and_then(|event_time| {
@@ -542,6 +586,19 @@ impl Connection {
         if !snapshot_included {
             self.snapshot_next = Some(now + Duration::from_millis(50));
             return Ok(Some(packet));
+        }
+        if self.tdm.is_some() {
+            self.world_history.push_back(WorldHistory {
+                sequence: self.native_sent,
+                local: local_player,
+                players: match_players,
+                impacts: if full { Vec::new() } else { impacts },
+                corpses: if full { Vec::new() } else { corpses },
+                obituaries: if full { Vec::new() } else { obituaries },
+            });
+            while self.world_history.len() > 32 {
+                self.world_history.pop_front();
+            }
         }
         let mut base = state.input_base();
         if let Some(equipment) = equipment {
@@ -980,6 +1037,7 @@ impl Connection {
     }
 
     fn advance_match(&mut self, now: u32) -> Result<()> {
+        let tick_started = Instant::now();
         if self
             .snapshot_first_sequence
             .is_none_or(|first| self.native_ack < first)
@@ -1063,6 +1121,13 @@ impl Connection {
             self.impacts.push(now, weapon, impact);
         }
         self.drain_match_kills(now);
+        let elapsed = tick_started.elapsed();
+        if elapsed > Duration::from_millis(25) {
+            tracing::warn!(
+                msec = elapsed.as_millis(),
+                "TDM simulation exceeded frame budget"
+            );
+        }
         Ok(())
     }
 

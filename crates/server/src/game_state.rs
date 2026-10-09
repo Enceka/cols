@@ -9,6 +9,10 @@ use std::sync::Arc;
 mod loadout;
 
 pub(crate) struct SnapshotWorld<'a> {
+    pub delta_distance: u8,
+    pub corpse_baselines: &'a [codol_protocol::game_corpse::CorpseSnapshot],
+    pub impact_baselines: &'a [codol_protocol::game_impact::ImpactSnapshot],
+    pub obituary_baselines: &'a [codol_protocol::game_obituary::ObituarySnapshot],
     pub motion: Option<&'a crate::game_motion::Motion>,
     pub target: Option<codol_protocol::game_target::TargetSnapshot>,
     pub impacts: &'a [codol_protocol::game_impact::ImpactSnapshot],
@@ -111,6 +115,8 @@ pub struct PreparedGameState {
     match_config: Option<crate::game_match::MatchConfig>,
     #[serde(skip)]
     match_weapon: Option<BootstrapWeapon>,
+    #[serde(skip)]
+    navigation: Option<Arc<crate::game_navigation::Navigation>>,
     #[serde(default)]
     arsenal_file: Option<std::path::PathBuf>,
     #[serde(default)]
@@ -452,6 +458,12 @@ impl PreparedGameState {
             state.collision = Some(Arc::new(collision));
         }
         state.validate()?;
+        if let Some(config) = &state.match_config {
+            state.navigation = Some(Arc::new(crate::game_navigation::Navigation::build(
+                config.spawns.iter().flatten().copied(),
+                state.collision.as_ref().unwrap(),
+            )));
+        }
         Ok(state)
     }
     fn validate(&self) -> Result<()> {
@@ -1240,6 +1252,10 @@ impl PreparedGameState {
             equipment,
             angles,
             codol_protocol::game_snapshot::WorldSnapshot {
+                delta_distance: world.delta_distance,
+                corpse_baselines: world.corpse_baselines,
+                impact_baselines: world.impact_baselines,
+                obituary_baselines: world.obituary_baselines,
                 target: world.target,
                 impacts: world.impacts,
                 enemy: world.enemy,
@@ -1377,11 +1393,15 @@ impl PreparedGameState {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("TDM bot rifle missing"))?
             .index;
-        Ok(Some(crate::game_match::TdmMatch::new(
+        Ok(Some(crate::game_match::TdmMatch::with_navigation(
             config.clone(),
             template,
             self.training_enemy.as_ref().unwrap().move_speed,
             self.collision.as_ref().unwrap(),
+            self.navigation
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("TDM navigation not prepared"))?
+                .clone(),
         )?))
     }
     pub(crate) fn match_bot_weapon(&self) -> Option<crate::game_bot::BotWeapon> {
@@ -1421,6 +1441,7 @@ pub(crate) fn synthetic() -> PreparedGameState {
         training_enemy: None,
         match_config: None,
         match_weapon: None,
+        navigation: None,
         arsenal_file: None,
         collision_file: None,
         arsenal: None,

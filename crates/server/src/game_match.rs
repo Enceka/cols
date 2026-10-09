@@ -52,6 +52,11 @@ struct Bot {
     death: Option<u32>,
     fire_time: Option<u32>,
     fire_toggle: bool,
+    route: std::collections::VecDeque<[f32; 3]>,
+    route_target: Option<[f32; 3]>,
+    route_time: u32,
+    steering: Option<[f32; 3]>,
+    steering_time: u32,
 }
 
 #[derive(Clone, Copy)]
@@ -86,13 +91,30 @@ pub(crate) struct TdmMatch {
     pub finished: bool,
     pub result_sent: bool,
     start: Option<u32>,
+    navigation: std::sync::Arc<crate::game_navigation::Navigation>,
+    next_diagnostics: u32,
+    next_route_client: usize,
 }
 impl TdmMatch {
+    #[cfg(test)]
     pub fn new(
         config: MatchConfig,
         template: EnemySnapshot,
         speed: f32,
         collision: &Collision,
+    ) -> Result<Self> {
+        let navigation = std::sync::Arc::new(crate::game_navigation::Navigation::build(
+            config.spawns.iter().flatten().copied(),
+            collision,
+        ));
+        Self::with_navigation(config, template, speed, collision, navigation)
+    }
+    pub fn with_navigation(
+        config: MatchConfig,
+        template: EnemySnapshot,
+        speed: f32,
+        collision: &Collision,
+        navigation: std::sync::Arc<crate::game_navigation::Navigation>,
     ) -> Result<Self> {
         config.validate(collision)?;
         let mut bots = Vec::new();
@@ -113,14 +135,21 @@ impl TdmMatch {
             snapshot.team = team;
             snapshot.origin = origin;
             snapshot.events = EventQueue::default();
+            let mut controller = BotController::new(origin, snapshot.angles, speed)?;
+            controller.set_match_engagement();
             bots.push(Bot {
-                controller: BotController::new(origin, snapshot.angles, speed)?,
+                controller,
                 snapshot,
                 health: 100,
                 birth: 1000,
                 death: None,
                 fire_time: None,
                 fire_toggle: false,
+                route: Default::default(),
+                route_target: None,
+                route_time: 0,
+                steering: None,
+                steering_time: 0,
             });
         }
         let baselines = bots.iter().map(|bot| bot.snapshot).collect();
@@ -140,6 +169,9 @@ impl TdmMatch {
             finished: false,
             result_sent: false,
             start: None,
+            navigation,
+            next_diagnostics: 0,
+            next_route_client: 0,
         })
     }
     pub fn snapshots(&self) -> Vec<EnemySnapshot> {
@@ -309,18 +341,26 @@ impl TdmMatch {
                 bot.birth = now;
                 bot.death = None;
                 bot.fire_time = None;
+                bot.route.clear();
+                bot.route_target = None;
+                bot.steering = None;
             }
         }
         let mut shots = Vec::new();
+        let actors = self.actors(local, local_height);
+        let peers: Vec<_> = actors.iter().map(|a| (a.client, a.origin)).collect();
+        let report = now >= self.next_diagnostics;
+        if report {
+            self.next_diagnostics = now + 5000;
+        }
         for i in 0..self.bots.len() {
             if self.bots[i].health == 0 {
                 continue;
             }
             let origin = self.bots[i].snapshot.origin;
             let team = self.bots[i].snapshot.team;
-            let target = self
-                .actors(local, local_height)
-                .into_iter()
+            let target = actors
+                .iter()
                 .filter(|a| a.team != team)
                 .min_by(|a, b| distance(origin, a.origin).total_cmp(&distance(origin, b.origin)))
                 .map(|a| BotTarget {
@@ -329,7 +369,45 @@ impl TdmMatch {
                     alive: true,
                 });
             let bot = &mut self.bots[i];
-            let frame = bot.controller.step(now, target, weapon, collision);
+            bot.controller
+                .separate_from(bot.snapshot.client_index, &peers, collision);
+            if let Some(target) = target {
+                if i == self.next_route_client
+                    && (now.wrapping_sub(bot.route_time) >= 2000
+                        || bot
+                            .route_target
+                            .is_none_or(|p| distance(p, target.origin) > 96.0 * 96.0))
+                {
+                    bot.route = self
+                        .navigation
+                        .route(origin, target.origin, collision)
+                        .into();
+                    bot.route_target = Some(target.origin);
+                    bot.route_time = now;
+                    bot.steering = None;
+                }
+            } else {
+                bot.route.clear();
+                bot.route_target = None;
+            }
+            if bot.steering.is_none()
+                || now.wrapping_sub(bot.steering_time) >= 250
+                || bot
+                    .steering
+                    .is_some_and(|p| distance(origin, p) < 36.0 * 36.0)
+            {
+                bot.steering = self.navigation.steering(origin, &mut bot.route, collision);
+                bot.steering_time = now;
+            }
+            let waypoint = bot
+                .steering
+                .filter(|_| target.is_some_and(|t| distance(origin, t.origin) > 160.0 * 160.0));
+            let frame = bot
+                .controller
+                .step_navigated(now, target, waypoint, weapon, collision);
+            if report {
+                tracing::info!(client=bot.snapshot.client_index,team,health=bot.health,phase=?frame.phase,origin=?frame.motion.origin,target=?bot.route_target,route_nodes=bot.route.len(),"TDM bot state");
+            }
             if let Some(shot) = frame.shot {
                 bot.fire_time = Some(now);
                 bot.fire_toggle = !bot.fire_toggle;
@@ -351,6 +429,7 @@ impl TdmMatch {
             bot.snapshot.events = events;
             bot.snapshot.weapon = weapon.weapon;
         }
+        self.next_route_client = (self.next_route_client + 1) % self.bots.len();
         let mut player_health = local_health;
         for (attacker, team, shot) in shots {
             if self.finished {

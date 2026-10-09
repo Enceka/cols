@@ -130,6 +130,8 @@ pub struct BotController {
     burst_left: u8,
     equipped_weapon: Option<u16>,
     generation: u64,
+    engagement: Option<(f32, f32)>,
+    physics_chop_msec: u32,
 }
 
 impl BotController {
@@ -154,6 +156,8 @@ impl BotController {
             burst_left: 0,
             equipped_weapon: None,
             generation: 1,
+            engagement: None,
+            physics_chop_msec: PHYSICS_CHOP_MSEC,
         })
     }
 
@@ -170,6 +174,12 @@ impl BotController {
             shot,
         }
     }
+    pub fn set_match_engagement(&mut self) {
+        self.engagement = Some((1500.0, 800.0));
+        // Motion itself supports the native66ms maximum; a50ms match tick
+        // needs only one capsule movement step instead of four16ms steps.
+        self.physics_chop_msec = 50;
+    }
 
     fn reset_engagement(&mut self) {
         self.seen_since = None;
@@ -183,6 +193,16 @@ impl BotController {
         &mut self,
         now: u32,
         target: Option<BotTarget>,
+        weapon: BotWeapon,
+        collision: &Collision,
+    ) -> BotFrame {
+        self.step_navigated(now, target, None, weapon, collision)
+    }
+    pub fn step_navigated(
+        &mut self,
+        now: u32,
+        target: Option<BotTarget>,
+        waypoint: Option<[f32; 3]>,
         weapon: BotWeapon,
         collision: &Collision,
     ) -> BotFrame {
@@ -209,7 +229,9 @@ impl BotController {
             self.reset_engagement();
         }
         let weapon_valid = weapon.valid();
-        let spacing = if weapon_valid {
+        let spacing = if let Some((_, spacing)) = self.engagement {
+            spacing
+        } else if weapon_valid {
             STANDOFF_UNITS
                 .min(weapon.ballistics.near_range * 0.75)
                 .max(32.0)
@@ -217,7 +239,31 @@ impl BotController {
             STANDOFF_UNITS
         };
 
-        self.move_toward(delta, target, spacing, collision);
+        let hold = self.engagement.is_some()
+            && target.is_some_and(|t| {
+                if horizontal_distance(self.motion.origin, t.origin) > spacing {
+                    return false;
+                }
+                let trace = collision.raycast(self.eye(), t.eye);
+                !trace.start_solid && !trace.all_solid && trace.contents == 0
+            });
+        let travel = if hold {
+            None
+        } else {
+            waypoint
+                .map(|origin| BotTarget {
+                    origin,
+                    eye: [origin[0], origin[1], origin[2] + 60.0],
+                    alive: true,
+                })
+                .or(target)
+        };
+        self.move_toward(
+            delta,
+            travel,
+            if waypoint.is_some() { 24.0 } else { spacing },
+            collision,
+        );
         let Some(target) = target else {
             self.phase = BotPhase::Idle;
             self.reset_engagement();
@@ -234,11 +280,16 @@ impl BotController {
             self.seen_since.get_or_insert(now);
         }
         let separation = horizontal_distance(self.motion.origin, target.origin);
-        if separation > spacing + 1.0 || !visible || !weapon_valid {
+        if (self.engagement.is_none() && separation > spacing + 1.0) || !visible || !weapon_valid {
             self.phase = BotPhase::Chase;
             return self.frame(now, None);
         }
-        if distance > weapon.ballistics.near_range || distance > weapon.ballistics.range {
+        if distance
+            > self
+                .engagement
+                .map_or(weapon.ballistics.near_range, |e| e.0)
+            || distance > weapon.ballistics.range
+        {
             self.phase = BotPhase::Idle;
             return self.frame(now, None);
         }
@@ -297,7 +348,7 @@ impl BotController {
         collision: &Collision,
     ) {
         while remaining > 0 {
-            let dt = remaining.min(PHYSICS_CHOP_MSEC);
+            let dt = remaining.min(self.physics_chop_msec);
             remaining -= dt;
             let moving =
                 target.is_some_and(|t| horizontal_distance(self.motion.origin, t.origin) > spacing);
@@ -377,6 +428,43 @@ impl BotController {
             && self.last_tick == Some(shot.time)
             && self.last_shot == Some(shot.time)
     }
+    pub fn separate_from(&mut self, client: u8, peers: &[(u8, [f32; 3])], collision: &Collision) {
+        let mut shift = [0.0f32; 2];
+        for &(other, position) in peers {
+            if other == client || (position[2] - self.motion.origin[2]).abs() > 40.0 {
+                continue;
+            }
+            let dx = self.motion.origin[0] - position[0];
+            let dy = self.motion.origin[1] - position[1];
+            let distance = dx.hypot(dy);
+            if distance >= 32.0 {
+                continue;
+            }
+            if distance < 0.01 {
+                let angle = f32::from(client) * 2.39996;
+                shift[0] += angle.cos() * 3.0;
+                shift[1] += angle.sin() * 3.0;
+            } else {
+                shift[0] += dx / distance * (32.0 - distance) * 0.15;
+                shift[1] += dy / distance * (32.0 - distance) * 0.15;
+            }
+        }
+        let length = shift[0].hypot(shift[1]);
+        if length > 0.0 {
+            let scale = (4.0 / length).min(1.0);
+            let end = [
+                self.motion.origin[0] + shift[0] * scale,
+                self.motion.origin[1] + shift[1] * scale,
+                self.motion.origin[2],
+            ];
+            let trace = collision.trace(self.motion.origin, end, 70.0);
+            if !trace.start_solid && !trace.all_solid {
+                for (i, value) in end.into_iter().enumerate() {
+                    self.motion.origin[i] += (value - self.motion.origin[i]) * trace.fraction;
+                }
+            }
+        }
+    }
 }
 
 fn reached(now: u32, deadline: u32) -> bool {
@@ -443,6 +531,36 @@ mod tests {
                 spread_degrees: 0.0,
             },
             fire_interval_msec: 80,
+        }
+    }
+    #[test]
+    fn match_bot_engages_a_visible_rifle_target_beyond_the_training_distance() {
+        let open_world = collision(false);
+        let mut bot = BotController::new([0.0; 3], [0; 3], 190.0).unwrap();
+        bot.set_match_engagement();
+        let target = BotTarget {
+            origin: [1000.0, 0.0, 0.0],
+            eye: [1000.0, 0.0, 60.0],
+            alive: true,
+        };
+        let mut shots = 0;
+        for time in (1000..2000).step_by(50) {
+            let frame = bot.step(time, Some(target), weapon(), &open_world);
+            if frame.shot.is_some() {
+                shots += 1;
+            }
+        }
+        assert!(shots > 0);
+        assert_eq!(bot.phase, BotPhase::Attack);
+        let blocked = collision(true);
+        let mut bot = BotController::new([0.0; 3], [0; 3], 190.0).unwrap();
+        bot.set_match_engagement();
+        for time in (1000..2000).step_by(50) {
+            assert!(
+                bot.step(time, Some(target), weapon(), &blocked)
+                    .shot
+                    .is_none()
+            );
         }
     }
 

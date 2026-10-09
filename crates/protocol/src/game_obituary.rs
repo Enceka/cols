@@ -50,6 +50,14 @@ pub(crate) fn write_obituaries(
     obituaries: &[ObituarySnapshot],
     establish_baseline: bool,
 ) -> Result<(), LobbyError> {
+    write_obituaries_with_baselines(out, obituaries, &[], establish_baseline)
+}
+pub(crate) fn write_obituaries_with_baselines(
+    out: &mut Writer,
+    obituaries: &[ObituarySnapshot],
+    baselines: &[ObituarySnapshot],
+    establish_baseline: bool,
+) -> Result<(), LobbyError> {
     let mut previous_number = 26;
     for obituary in obituaries {
         obituary.validate()?;
@@ -61,16 +69,32 @@ pub(crate) fn write_obituaries(
     if establish_baseline {
         return Ok(());
     }
-    for obituary in obituaries {
+    let numbers: std::collections::BTreeSet<_> = obituaries
+        .iter()
+        .chain(baselines)
+        .map(|s| s.entity_number)
+        .collect();
+    for number in numbers {
+        let Some(obituary) = obituaries.iter().find(|s| s.entity_number == number) else {
+            out.bits(0, 1);
+            out.bits(1, 1);
+            out.bits(u32::from(number), 11);
+            out.bits(1, 1);
+            continue;
+        };
+        let base = baselines.iter().find(|b| b.entity_number == number);
+        if base == Some(obituary) {
+            continue;
+        }
         out.bits(0, 1);
         out.bits(1, 1);
         out.bits(u32::from(obituary.entity_number), 11);
         out.bits(0, 1); // retained
         out.bits(1, 1); // changed
         out.bits(1, 1); // zero position/angle bases
-        let last = if obituary.attacker != 0 {
+        let last = if obituary.attacker != 0 || base.is_some_and(|b| b.attacker != 0) {
             13
-        } else if obituary.victim != 0 {
+        } else if obituary.victim != 0 || base.is_some_and(|b| b.victim != 0) {
             9
         } else {
             5
@@ -83,14 +107,14 @@ pub(crate) fn write_obituaries(
         // No generic nonzero gate, and no raw byte split for this codec.
         out.bits(obituary.event_parameter(), 10);
         let mut previous = 5;
-        if obituary.victim != 0 {
+        if obituary.victim != 0 || base.is_some_and(|b| b.victim != 0) {
             gap(out, 9 - previous);
-            client_index(out, obituary.victim); // ES+80, positive-width11
+            client_index_delta(out, obituary.victim, base.map_or(0, |b| b.victim));
             previous = 9;
         }
-        if obituary.attacker != 0 {
+        if obituary.attacker != 0 || base.is_some_and(|b| b.attacker != 0) {
             gap(out, 13 - previous);
-            client_index(out, obituary.attacker); // ES+84, positive-width11
+            client_index_delta(out, obituary.attacker, base.map_or(0, |b| b.attacker));
         }
         // Omitted zero client indices and XYZ inherit the all-zero event
         // baseline. The dispatcher gates on event ID, not event position;
@@ -99,10 +123,13 @@ pub(crate) fn write_obituaries(
     Ok(())
 }
 
-fn client_index(out: &mut Writer, value: u8) {
-    out.bits(1, 1); // generic nonzero gate
-    out.bits(u32::from(value) & 7, 3);
-    out.bytes.push(value >> 3); // remaining8 bits are a raw byte
+fn client_index_delta(out: &mut Writer, value: u8, base: u8) {
+    out.bits(u32::from(value != 0), 1);
+    if value != 0 {
+        let delta = value ^ base;
+        out.bits(u32::from(delta) & 7, 3);
+        out.bytes.push(delta >> 3);
+    }
 }
 
 fn gap(out: &mut Writer, distance: u32) {
@@ -123,6 +150,35 @@ mod tests {
     use super::*;
     use crate::game_wire::{Reader, SERVER_EOF};
     use std::collections::BTreeMap;
+    #[test]
+    fn rolling_obituary_deltas_clear_changed_clients_and_remove_expired_events_once() {
+        let old = ObituarySnapshot {
+            entity_number: 1800,
+            weapon: 352,
+            headshot: false,
+            victim: 11,
+            attacker: 6,
+        };
+        let current = ObituarySnapshot {
+            victim: 0,
+            attacker: 7,
+            ..old
+        };
+        let mut out = Writer::default();
+        write_obituaries_with_baselines(&mut out, &[current], &[old], false).unwrap();
+        let (_, fields) = decode(&mut Reader::new(&out.bytes));
+        assert_eq!(fields[&0x80], 0);
+        assert_eq!(fields[&0x84] ^ u32::from(old.attacker), 7);
+        let mut identical = Writer::default();
+        write_obituaries_with_baselines(&mut identical, &[current], &[current], false).unwrap();
+        assert!(identical.bytes.is_empty());
+        let mut removal = Writer::default();
+        write_obituaries_with_baselines(&mut removal, &[], &[current], false).unwrap();
+        let mut r = Reader::new(&removal.bytes);
+        assert_eq!(r.bits(2).unwrap(), 2);
+        assert_eq!(r.bits(11).unwrap(), 1800);
+        assert_eq!(r.bits(1).unwrap(), 1);
+    }
 
     fn fixture() -> serde_json::Value {
         let fixture: serde_json::Value = serde_json::from_str(include_str!(
@@ -174,7 +230,10 @@ mod tests {
                         .unwrap()
                 }
                 n if n > 0 => {
-                    assert_eq!(reader.bits(1).unwrap(), 1);
+                    if reader.bits(1).unwrap() == 0 {
+                        fields.insert(offset, 0);
+                        continue;
+                    }
                     let width = n as usize;
                     let low = width % 8;
                     let mut value = reader.bits(low).unwrap();

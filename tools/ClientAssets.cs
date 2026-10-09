@@ -519,7 +519,7 @@ class ClientAssets {
                     "move_speed_bits",U(records,begin+0x44),"flags",U(records,begin+0x50)));
             }
         }
-        if(bg>=0x10000)for(uint id=0;id<2;id++) {
+        if(bg>=0x10000)for(uint id=0;id<12;id++) {
             uint ci=bg+0x96e20+id*0x3b8;var parts=new List<object>();
             for(uint part=0;part<10;part++) {
                 uint modelName=r.Word(ci+0x20+part*4),tagName=r.Word(ci+0x48+part*4);
@@ -533,14 +533,18 @@ class ClientAssets {
             }
             uint entitySlot=r.Word(0x07817bb0);if(entitySlot>=256)throw new Exception("entity slot invalid");
             uint entities=r.Word(0x01a19510+entitySlot*4)^0x2168f672;
+            uint entity=entities+id*0x238;
             clients.Add(Obj("client",id,"valid",r.Word(ci),"current_valid",r.Word(ci+4),
+                "team",r.Word(ci+0x80),"cached_weapon",r.Word(ci+0x324),"entity_weapon",r.Word(entity+0xf0+0xd0),
+                "entity_client",r.Word(entity+0xf0+0x9c),"entity_type",r.Word(entity+0xf4),
+                "entity_events_sequence",r.Word(entity+0xf0+0xac),"entity_event0",r.Word(entity+0xf0+0xb0),
                 "body",root>=0x10000?r.Name(root):null,"parts",parts,"animation_tree_ready",tree>=0x10000,
                 "dobj_slot",dobjSlot,"dobj_models",objModels,"entity_origin",r.EntityOrigin(entities+id*0x238+0xf0)));
         }
         var corpses=new List<object>();uint corpseEntitySlot=r.Word(0x07817bb0);
         if(corpseEntitySlot>=256)throw new Exception("corpse entity slot invalid");
         uint corpseEntities=r.Word(0x01a19510+corpseEntitySlot*4)^0x2168f672;
-        for(uint id=19;id<=20;id++) {
+        for(uint id=19;id<=26;id++) {
             uint entity=corpseEntities+id*0x238;
             uint slotId=BitConverter.ToUInt16(r.Read(0x02ef4858+id*2,2),0);
             corpses.Add(Obj("entity",id,"type",r.Word(entity+0xf4),"flags",r.Word(entity+0xf8),

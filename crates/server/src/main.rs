@@ -122,6 +122,9 @@ enum Command {
         /// Prepared maps selected by the native room's map and mode fields.
         #[arg(long, requires = "game_bind")]
         game_map_catalog: Option<PathBuf>,
+        /// Sample ordinary gameplay captures; errors and handshake stay captured.
+        #[arg(long,default_value_t=1,value_parser=clap::value_parser!(u32).range(1..=1000))]
+        game_capture_every: u32,
         /// Bootstrap frames at 20 Hz (default 60, maximum 18000); no simulation.
         #[arg(long, requires = "game_state", num_args = 0..=1, default_missing_value = "60", value_parser = clap::value_parser!(u32).range(1..=18000))]
         snapshot_probe: Option<u32>,
@@ -366,6 +369,7 @@ async fn main() -> Result<()> {
             game_state,
             snapshot_probe,
             game_map_catalog,
+            game_capture_every,
             hit_regions,
         } => {
             let server = AuthServer::bind(AuthOptions {
@@ -395,6 +399,7 @@ async fn main() -> Result<()> {
                         server.directory().join("game"),
                     )
                     .await?;
+                    game = game.with_capture_every(game_capture_every);
                     if let Some(path) = game_state {
                         let mut state = codol_server::game_state::PreparedGameState::load(&path)?;
                         if let Some(frames) = snapshot_probe {
