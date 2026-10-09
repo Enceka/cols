@@ -90,3 +90,23 @@ GameHub `--quiet-network`现在同时启用`--game-capture-every 30`。握手和
 TDM动画选用实际位移/时间得到的横向速度，包括此前未计入的Bot避让修正；不再只看会遗漏推挤位移的私有physics.velocity。新增运动回归验证持枪走、带武器倍率的冲刺、赶路朝向、墙后不开火；动画回归验证走/跑/冲刺节点和移动射击不覆盖。Python回归验证规则优先级、空moving覆盖分支、placeholder重复不影响所选节点、所选动画歧义及资源/压缩身份拒绝。
 
 最新`research-output/bot-native-locomotion-check.log`：270项Rust、32项Python、fmt/Clippy通过（默认另3项资源/回放诊断ignored）；真实Afghan路线+Motion回放再跑通过。`research-output/tdm-native-actions-state.json`已生成并供新live使用，`client-1791526871112`运行优化服务端、新native动作绑定。此前用户确认M200回弹解决、黑屏暂不再现、Bot互相开火；新动作与轻微脚底滑动仍需该轮实机观测。
+
+
+## 当前版本 Bot 配装、巡逻与角色加载（进行中）
+
+实采3.3.3.3 `mp/botClassTable.csv` 为47行11列，实际9套主武器为m4a1techhex、p90scrawl、mg4、ak104common、rpdpaladin、g36crr、m14ebrtile、ump45aqua、striker。它与Alpha旧表不同，不能套用旧9枪或生成的2026 roster JSON冒充本版官方配置。难度表仍未加载、waypoint rawfile不存在；保留本地350ms反应与平滑瞄准策略，不称为官方难度AI。
+
+新增 `prepare_bot_roster.py` 从实采class/字符部件表和arsenal绑定配装与每类武器的原生动作。默认只选已挂载部件，显式记录缺失角色并回退；`--stream-outfits`通过本版原生异步模型加载器尝试解析DB占位资产，名字必须来自实际角色表。备选外观和资源输出留忽略目录，不改账户。
+
+正式Bot增加视野/近距警觉/墙体遮挡、10秒最后已知位置记忆、不同随机巡逻目标、占用目标避让及停滞后重新选路，每tick仍最多一个A*。不再追踪全图所有敌人的最新位置。瞄准逐步转向，走/跑/冲刺原生配置保留。每Bot主武器接入既有Player通用武器状态机，消耗弹药、自动换弹、使用合成伤害/散布/射速/拉栓；投掷物、副武器切换、原生特长和连杀奖励尚未接入。
+
+`client-1791529108980`用户确认武器有变化；实采12个CI有效、9种主武器注册355..363，原生杀敌图标与随机巡逻已有实证。当时所有Bot仍回退为两阵营的僵尸游侠，没有做到角色多样化。
+
+后续完整9角色实验先触发gamestate单包上限，继而尝试仅等角色ACK导致movement前置/错误时间；这些尝试均失败，不能当作已解决。现改为gamestate只含有界原有内容，角色名字用本版原生 `d index value`可靠命令分批下发，先发本地玩家PS提供真实输入基准，角色命令ACK后才发布Bot，并在人数从1变12时建立新完整世界/clients基线。**`cs`并非此版有效配置更新命令**；此前误用它造成Bot CI有效但body空、DObj0，已修正为已实测背包使用的`d`。
+
+最新待验证运行 `client-1791531728855` 使用 `tdm-native-streamed-roster-state.json`；角色实际显示尚未验收。此前等待玩家数据已能进图，但无模型，因此不能说全部修好。完整check目前272 Rust、35 Python、fmt/Clippy通过（另3项资源/回放默认ignored）。地图工具已允许明确Killhouse实体选择与受限碰撞采集；第二地图CRC/碰撞/角色实采及native UI切换仍未完成。
+
+
+`client-1791531728855`角色更新改用native d后，用户实测确认“确实有不同模型了”。这标志着当前3.3的角色差异和9种主武器已实际恢复；不是仅根据准备文件宣称成功。角色缺省DB占位资源经客户端加载后显示。当前阶段正式继续第二地图/原生地图选择。最新检查的observe字节预算集成测试出现两个idle_timeout，正在单独复核，不将这一轮检查标为全通过。
+
+最新角色实采：11个Bot分别装配fpa_zombieranger_tf_m、fpa_acuacuheavy_tf_m_00、fpa_athena_tf_f_00、fpa_ironman_tf_m_woo、fpa_snibasea_tf_m_00、fpa_cowprestigea_sc_m_00、fpa_eve_sc_f_tech、fpa_lycra_ss_f_leatherstocking、fpa_pingoles_sc_f、fpa_zombieranger_sc_m、fpa_acubasea_sc_m_00，DObj各5~6部件。已挂载角色模型从17增长为58。当前安全屋资源采集使用隔离服务目录`research-output/killhouse-capture-services`和实验`client-1791532684884`，不用它覆盖玩家原账户。该采集运行暂不下发完整gamestate/快照，会停在等待玩家数据，这是资源取样阶段，不是可玩对局。

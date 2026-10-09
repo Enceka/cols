@@ -448,9 +448,9 @@ class ClientAssets {
     }
     public static void ExportCollision(IntPtr process) {
         var r=new ClientAssets(process);
-        if(r.Word(0x01a2e7ec)!=10)throw new Exception("load the map before collision capture");
+        uint state=r.Word(0x01a2e7ec);if(state<6||state>10)throw new Exception("load the map before collision capture");
         uint cm=0x02dfb000;byte[] header=r.Read(cm,256);string map=r.Name(U(header,0));
-        if(map!="maps/mp/mp_afghan.d3dbsp")throw new Exception("unexpected collision map: "+map);
+        if(map!="maps/mp/mp_afghan.d3dbsp"&&map!="maps/mp/mp_killhouse_sh.d3dbsp")throw new Exception("unexpected collision map: "+map);
         var brushes=new List<object>();int count=Count(BitConverter.ToUInt16(header,0x38),65535);
         int materialCount=Count(U(header,0x10),65536);byte[] materials=r.Read(U(header,0x14),materialCount*12);
         byte[] raw=r.Read(U(header,0x3c),count*36),bounds=r.Read(U(header,0x40),count*24),contents=r.Read(U(header,0x44),count*4);
@@ -512,11 +512,33 @@ class ClientAssets {
             models.Add(Obj("model",id,"name",r.Name(U(header,0)),"bounds_min",min,"bounds_max",max,"bone_names",bones));
         }
         var tables=new Dictionary<string,object>();
-        foreach(string name in new string[]{"mp/coCharacterDefTable.csv","mp/coCharItemStatsTable.csv","mp/coCharItems/cha.csv","mp/coMapList.csv"}) {
+        foreach(string name in new string[]{"mp/coCharacterDefTable.csv","mp/coCharItemStatsTable.csv","mp/coCharItems/cha.csv","mp/coMapList.csv","mp/botClassTable.csv","mp/botDifficultyTable.csv","mp/botNames.csv"}) {
             try { tables[name]=r.Table(name); } catch(Exception error) { tables[name]=Obj("error",error.Message); }
         }
+        // Enumerate only character model/table identities and bounded headers;
+        // asset names supply evidence without executing game code.
+        var characterAssets=new List<object>();byte[] assetEntries=r.Read(0x01fc4e28,100000*28);
+        byte[] assetHeads=r.Read(0x01bc9f20,80000*4);var assetSeen=new HashSet<uint>();
+        for(int bucket=0;bucket<80000;bucket++) {
+            uint index=U(assetHeads,bucket*4);int chain=0;
+            while(index!=0) {
+                if(index>=100000||!assetSeen.Add(index)||++chain>128)throw new Exception("character asset chain invalid");
+                int at=(int)index*28;uint kind=U(assetEntries,at),header=U(assetEntries,at+8);
+                if(kind==4||kind==37||kind==36||kind==45||kind==14) {
+                    string name=r.Name(r.Word(header));string lower=name.ToLowerInvariant();
+                    if(lower.StartsWith("boo_")||lower.StartsWith("fja_")||lower.StartsWith("fpa_")||lower.StartsWith("han_")||lower.StartsWith("hea_")||lower.StartsWith("heg_")||lower.StartsWith("ves_")||lower.Contains("botdifficulty")||lower.Contains("cochar")||kind==14) {
+                        if(characterAssets.Count>=4096)throw new Exception("character asset budget");
+                        characterAssets.Add(Obj("kind",kind,"name",name,"flags",assetEntries[at+17]));
+                        if(kind==37&&(assetEntries[at+17]&5)!=0&&!tables.ContainsKey(name)) {
+                            try{tables[name]=r.Table(name);}catch(Exception e){tables[name]=Obj("error",e.Message);}
+                        }
+                    }
+                }
+                index=U(assetEntries,at+20);
+            }
+        }
         var animationRules=new Dictionary<string,object>();
-        foreach(string name in new string[]{"mp/playeranim.script","mp/playeranimtypes.txt"}) {
+        foreach(string name in new string[]{"mp/playeranim.script","mp/playeranimtypes.txt","waypoints/mp_afghan_wp.csv","waypoints/mp_killhouse_sh_wp.csv"}) {
             try {animationRules[name]=r.AnimationRules(name);}catch(Exception error){animationRules[name]=Obj("error",error.Message);}
         }
         uint bg=r.Word(0x07817b80);var clients=new List<object>();
@@ -570,7 +592,7 @@ class ClientAssets {
         var serializer=new JavaScriptSerializer();serializer.MaxJsonLength=16*1024*1024;
         Console.WriteLine(serializer.Serialize(Obj("schema_version",1,"read_only",true,
             "client_sha256","e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b",
-            "ncs_crc",r.Word(0x02df7d90),"models",models,"tables",tables,"clients",clients,
+            "ncs_crc",r.Word(0x02df7d90),"models",models,"character_assets",characterAssets,"tables",tables,"clients",clients,
             "animation_contexts",animationContexts,"animations",animations,"animation_rules",animationRules,"corpses",corpses)));
     }
     public static void ExportTrainingTarget(IntPtr process) {

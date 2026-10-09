@@ -13,6 +13,8 @@ pub(crate) struct Connection {
     owner_id: u64,
     scoreboard_sent: bool,
     hud_rules_sent: bool,
+    model_rules_sent: bool,
+    model_rules_sequence: u32,
     connected: bool,
     stats: codol_protocol::game_stats::Upload,
     native_sent: u32,
@@ -321,6 +323,16 @@ impl Connection {
             self.server_commands.push(b"s fx_marks \"1\"")?;
             self.marks_command_sent = true;
         }
+        if !self.model_rules_sent {
+            if let Some(state) = &self.game_state {
+                for (id, name) in state.model_configstrings() {
+                    self.server_commands
+                        .push(format!("d {id} {name}").as_bytes())?;
+                    self.model_rules_sequence = self.server_commands.sequence();
+                }
+            }
+            self.model_rules_sent = true;
+        }
         if let Some(combat) = &mut self.combat
             && let Some(message) = combat.advance(server_time)
         {
@@ -483,7 +495,15 @@ impl Connection {
         if let Some(current) = &mut enemy {
             current.events = self.enemy_events;
         }
-        let match_players = self.tdm.as_ref().map_or(Vec::new(), |m| m.snapshots());
+        let models_ready = self.server_commands.acknowledged() >= self.model_rules_sequence;
+        let match_players = if models_ready {
+            self.tdm.as_ref().map_or(Vec::new(), |m| m.snapshots())
+        } else {
+            Vec::new()
+        };
+        if self.tdm.is_some() {
+            enemy = None;
+        }
         let match_baselines = self.tdm.as_ref().map_or(&[][..], |m| m.baselines());
         // parseClients is circular; a multiplayer delta cannot retain the
         // original full frame's appearance-record indices indefinitely.
@@ -491,7 +511,11 @@ impl Connection {
             self.world_history
                 .iter()
                 .rev()
-                .find(|h| h.sequence <= self.native_ack && self.native_sent + 1 - h.sequence < 24)
+                .find(|h| {
+                    h.sequence <= self.native_ack
+                        && self.native_sent + 1 - h.sequence < 24
+                        && h.players.len() == match_players.len()
+                })
                 .cloned()
         } else {
             None
@@ -559,6 +583,8 @@ impl Connection {
         let (mut body, mut sent) = self
             .server_commands
             .encode_frames_bounded(budget - snapshot.len())?;
+        // First send the local player's PS so the client has a real input
+        // baseline. Bot appearances wait for their model commands' ACK.
         let snapshot_included = !(body.is_empty()
             && self.server_commands.sequence() > self.server_commands.acknowledged()
             && self.snapshot_first_sequence.is_some());
@@ -1058,6 +1084,9 @@ impl Connection {
 
     fn advance_match(&mut self, now: u32) -> Result<()> {
         let tick_started = Instant::now();
+        if self.server_commands.acknowledged() < self.model_rules_sequence {
+            return Ok(());
+        }
         if self
             .snapshot_first_sequence
             .is_none_or(|first| self.native_ack < first)
@@ -1652,6 +1681,31 @@ mod tests {
         assert_eq!(c.input_base_for(4).unwrap(), first);
         assert_eq!(c.input_base_for(5).unwrap(), first); // reliable-only message
         assert_eq!(c.input_base_for(6).unwrap(), second);
+    }
+    #[test]
+    fn model_commands_remain_bounded_while_the_local_player_can_initialize() {
+        let now = Instant::now();
+        let mut c = Connection::with_game_state(Arc::new(
+            crate::game_state::synthetic()
+                .with_snapshot_frames(60)
+                .unwrap(),
+        ));
+        c.challenge = Some(0x75);
+        c.native_sent = 3;
+        c.gamestate_update = Some(6);
+        c.model_rules_sent = true;
+        for id in 200..260 {
+            c.server_commands
+                .push(format!("d {} character_part_{id}_tf_m", 2051 + id).as_bytes())
+                .unwrap();
+        }
+        c.model_rules_sequence = c.server_commands.sequence();
+        let packet = c.poll_snapshot(now).unwrap().unwrap();
+        assert!(packet.len() < game_wire::FRAGMENT_SIZE + 4);
+        assert_eq!(c.snapshot_count, 1);
+        assert_eq!(c.snapshot_first_sequence, Some(4));
+        assert!(c.input_base_for(4).is_ok());
+        assert!(c.server_commands.acknowledged() < c.model_rules_sequence);
     }
     #[test]
     fn snapshot_probe_requires_opt_in_initialization_and_has_rate_and_count_limits() {

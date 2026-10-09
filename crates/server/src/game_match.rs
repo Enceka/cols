@@ -20,6 +20,20 @@ pub(crate) struct MatchConfig {
     pub spawns: [Vec<[f32; 3]>; 2],
     pub score_limit: u32,
     pub time_limit_msec: u32,
+    #[serde(default)]
+    pub roster: Vec<BotLoadout>,
+    #[serde(default)]
+    pub models: Vec<(u16, String)>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct BotLoadout {
+    pub class: String,
+    pub weapon_name: String,
+    pub animation: crate::game_enemy::EnemyConfig,
+    pub attachment_models: [u16; 10],
+    pub personality: String,
 }
 impl MatchConfig {
     pub fn validate(&self, collision: &Collision) -> Result<()> {
@@ -31,6 +45,47 @@ impl MatchConfig {
             (60_000..=3_600_000).contains(&self.time_limit_msec),
             "invalid TDM duration"
         );
+        ensure!(
+            self.roster.is_empty() || self.roster.len() == 11,
+            "TDM roster needs eleven bots"
+        );
+        for entry in &self.roster {
+            entry.animation.validate()?;
+            ensure!(
+                entry.class.starts_with("botclass") && entry.class.len() <= 32,
+                "invalid native Bot class"
+            );
+            ensure!(
+                matches!(
+                    entry.personality.as_str(),
+                    "default" | "camper" | "run_and_gun"
+                ),
+                "invalid bot personality"
+            );
+            ensure!(
+                entry.weapon_name.ends_with("_mp")
+                    && entry
+                        .weapon_name
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b == b'_'),
+                "invalid bot weapon identity"
+            );
+            ensure!(
+                entry.attachment_models.iter().all(|&i| i < 1024),
+                "invalid bot part index"
+            );
+        }
+        let mut ids = std::collections::BTreeSet::new();
+        for (id, name) in &self.models {
+            ensure!(
+                (1..1024).contains(id)
+                    && ids.insert(*id)
+                    && !name.is_empty()
+                    && name.len() < 64
+                    && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_'),
+                "invalid bot model registration"
+            );
+        }
         for team in &self.spawns {
             ensure!(
                 (6..=128).contains(&team.len()),
@@ -46,6 +101,15 @@ impl MatchConfig {
 
 struct Bot {
     snapshot_time: u32,
+    weapon: Option<crate::game_player::Player>,
+    initial_weapon: Option<crate::game_player::Player>,
+    memory: Option<(u8, BotTarget, u32)>,
+    perception_time: u32,
+    visible_target: Option<BotTarget>,
+    random: u64,
+    progress_origin: [f32; 3],
+    progress_time: u32,
+
     controller: BotController,
     snapshot: EnemySnapshot,
     health: u16,
@@ -140,6 +204,17 @@ impl TdmMatch {
             controller.set_match_engagement();
             bots.push(Bot {
                 snapshot_time: 1000,
+                weapon: None,
+                initial_weapon: None,
+                memory: None,
+                perception_time: 0,
+                visible_target: None,
+                random: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)?
+                    .as_nanos() as u64
+                    ^ (u64::from(client) * 0x9e3779b9),
+                progress_origin: origin,
+                progress_time: 1000,
                 controller,
                 snapshot,
                 health: 100,
@@ -176,12 +251,31 @@ impl TdmMatch {
             next_route_client: 0,
         })
     }
+    pub fn configure_roster(&mut self, weapons: Vec<crate::game_player::Player>) -> Result<()> {
+        ensure!(
+            weapons.len() == self.config.roster.len(),
+            "bot weapon/roster mismatch"
+        );
+        for (i, weapon) in weapons.into_iter().enumerate() {
+            let bot = &mut self.bots[i];
+            let config = &self.config.roster[i];
+            bot.snapshot.model = config.animation.model;
+            bot.snapshot.attachment_models = config.attachment_models;
+            bot.snapshot.weapon = weapon.equipment().weapon;
+            bot.controller.set_match_move_scale(weapon.move_scale());
+            bot.initial_weapon = Some(weapon.clone());
+            bot.weapon = Some(weapon);
+        }
+        self.baselines = self.bots.iter().map(|b| b.snapshot).collect();
+        Ok(())
+    }
     pub fn snapshots(&self) -> Vec<EnemySnapshot> {
         self.bots.iter().map(|bot| bot.snapshot).collect()
     }
     pub fn set_weapon_move_scale(&mut self, scale: f32) {
         for bot in &mut self.bots {
-            bot.controller.set_match_move_scale(scale);
+            bot.controller
+                .set_match_move_scale(bot.weapon.as_ref().map_or(scale, |w| w.move_scale()));
         }
     }
     pub fn baselines(&self) -> &[EnemySnapshot] {
@@ -354,6 +448,12 @@ impl TdmMatch {
                 bot.route_target = None;
                 bot.steering = None;
                 bot.snapshot_time = now;
+                bot.weapon = bot.initial_weapon.clone();
+                bot.memory = None;
+                bot.visible_target = None;
+                bot.perception_time = 0;
+                bot.progress_origin = origin;
+                bot.progress_time = now;
             }
         }
         let mut shots = Vec::new();
@@ -369,36 +469,65 @@ impl TdmMatch {
             }
             let origin = self.bots[i].snapshot.origin;
             let team = self.bots[i].snapshot.team;
-            let target = actors
-                .iter()
-                .filter(|a| a.team != team)
-                .min_by(|a, b| distance(origin, a.origin).total_cmp(&distance(origin, b.origin)))
-                .map(|a| BotTarget {
-                    origin: a.origin,
-                    eye: [a.origin[0], a.origin[1], a.origin[2] + a.height * 0.8],
-                    alive: true,
-                });
+            let occupied: Vec<_> = self.bots.iter().filter_map(|b| b.route_target).collect();
             let bot = &mut self.bots[i];
             bot.controller
                 .separate_from(bot.snapshot.client_index, &peers, collision);
-            if let Some(target) = target {
-                if i == self.next_route_client
-                    && (now.wrapping_sub(bot.route_time) >= 2000
-                        || bot
-                            .route_target
-                            .is_none_or(|p| distance(p, target.origin) > 96.0 * 96.0))
-                {
-                    bot.route = self
-                        .navigation
-                        .route(origin, target.origin, collision)
-                        .into();
-                    bot.route_target = Some(target.origin);
-                    bot.route_time = now;
-                    bot.steering = None;
+            // Acquire only living opponents in view, with a close awareness
+            // radius. Occluded actors never update last-known coordinates.
+            if now.wrapping_sub(bot.perception_time) >= 150 {
+                bot.perception_time = now;
+                let found = visible_enemy(origin, bot.snapshot.angles[1], team, &actors, collision);
+                bot.visible_target = found.map(|(_, t)| t);
+                if let Some((client, target)) = found {
+                    bot.memory = Some((client, target, now));
                 }
-            } else {
-                bot.route.clear();
-                bot.route_target = None;
+            }
+            if bot.memory.is_some_and(|(client, _, time)| {
+                now.wrapping_sub(time) > 10_000 || !actors.iter().any(|a| a.client == client)
+            }) {
+                bot.memory = None;
+                bot.visible_target = None;
+            }
+            let target = bot.visible_target;
+            let remembered = bot.memory.map(|(_, t, _)| t.origin);
+            if i == self.next_route_client {
+                let stuck = now.wrapping_sub(bot.progress_time) >= 2500
+                    && distance(origin, bot.progress_origin) < 24.0 * 24.0
+                    && !bot.route.is_empty();
+                if now.wrapping_sub(bot.progress_time) >= 2500 {
+                    bot.progress_origin = origin;
+                    bot.progress_time = now;
+                }
+                if stuck {
+                    bot.route.clear();
+                    bot.route_target = None;
+                }
+                let arrived = bot
+                    .route_target
+                    .is_some_and(|p| distance(origin, p) < 96.0 * 96.0);
+                let chasing = remembered.is_some_and(|p| {
+                    bot.route_target
+                        .is_none_or(|q| distance(p, q) > 192.0 * 192.0)
+                });
+                if bot.route_target.is_none()
+                    || arrived
+                    || bot.route.is_empty()
+                    || (chasing && now.wrapping_sub(bot.route_time) >= 2000)
+                {
+                    let goal = remembered
+                        .filter(|p| distance(origin, *p) > 96.0 * 96.0)
+                        .or_else(|| {
+                            self.navigation
+                                .roam_goal(origin, &occupied, &mut bot.random)
+                        });
+                    if let Some(goal) = goal {
+                        bot.route = self.navigation.route(origin, goal, collision).into();
+                        bot.route_target = (!bot.route.is_empty()).then_some(goal);
+                        bot.route_time = now;
+                        bot.steering = None;
+                    }
+                }
             }
             let move_started = std::time::Instant::now();
             if bot.steering.is_none()
@@ -410,12 +539,66 @@ impl TdmMatch {
                 bot.steering = self.navigation.steering(origin, &mut bot.route, collision);
                 bot.steering_time = now;
             }
-            let waypoint = bot
-                .steering
-                .filter(|_| target.is_some_and(|t| distance(origin, t.origin) > 160.0 * 160.0));
-            let mut frame = bot
-                .controller
-                .step_navigated(now, target, waypoint, weapon, collision);
+            let active_weapon = bot
+                .weapon
+                .as_ref()
+                .and_then(|w| w.bot_weapon())
+                .unwrap_or(weapon);
+            let class = self.config.roster.get(i);
+            let range = active_weapon
+                .ballistics
+                .range
+                .min(if active_weapon.ballistics.pellets > 1 {
+                    active_weapon.ballistics.range.min(750.0)
+                } else {
+                    1500.0
+                })
+                .max(96.0);
+            let spacing = range
+                * match class.map(|c| c.personality.as_str()) {
+                    Some("camper") => 0.7,
+                    Some("run_and_gun") => 0.25,
+                    _ => 0.5,
+                };
+            bot.controller.set_match_range(range, spacing);
+            let mut frame =
+                bot.controller
+                    .step_navigated(now, target, bot.steering, active_weapon, collision);
+            if let Some(held) = &mut bot.weapon {
+                let ammo = held.equipment().ammo;
+                let reload = ammo.is_some_and(|a| a.clip == 0 && a.reserve > 0);
+                held.spread_environment(&frame.motion);
+                let command = codol_protocol::game_usercmd::UserCommand {
+                    time: now,
+                    angles: frame.angles,
+                    buttons: if reload {
+                        16
+                    } else if frame.shot.is_some() {
+                        1 | 0x800
+                    } else {
+                        0
+                    },
+                    weapons: held.equipment().input_weapons(),
+                    ..Default::default()
+                };
+                held.apply(&command);
+                let shots = held.take_shots();
+                frame.shot = shots.first().map(|s| crate::game_bot::BotShot {
+                    time: s.time,
+                    eye: [
+                        frame.motion.origin[0],
+                        frame.motion.origin[1],
+                        frame.motion.origin[2] + frame.motion.view_height,
+                    ],
+                    angles: s.angles,
+                    weapon: s.weapon,
+                    ballistics: s.ballistics,
+                    generation: 0,
+                });
+                if let Some(events) = held.equipment().events {
+                    bot.snapshot.events = events;
+                }
+            }
             // Include crowd separation in the body's animated velocity.
             let delta = now.saturating_sub(bot.snapshot_time).clamp(1, 200) as f32 * 0.001;
             for axis in 0..2 {
@@ -430,23 +613,30 @@ impl TdmMatch {
             if let Some(shot) = frame.shot {
                 bot.fire_time = Some(now);
                 bot.fire_toggle = !bot.fire_toggle;
-                bot.snapshot
-                    .events
-                    .push(codol_protocol::game_events::FIRE_WEAPON, 0)?;
-                bot.snapshot
-                    .events
-                    .push(codol_protocol::game_events::EJECT_BRASS, 0)?;
+                if bot.weapon.is_none() {
+                    bot.snapshot
+                        .events
+                        .push(codol_protocol::game_events::FIRE_WEAPON, 0)?;
+                    bot.snapshot
+                        .events
+                        .push(codol_protocol::game_events::EJECT_BRASS, 0)?;
+                }
                 shots.push((bot.snapshot.client_index, team, shot));
             }
             let events = bot.snapshot.events;
-            bot.snapshot = animate(
-                bot.snapshot,
-                &frame,
-                bot.fire_time.is_some_and(|t| now.wrapping_sub(t) < 150),
-                bot.fire_toggle,
-            );
+            let firing = bot.fire_time.is_some_and(|t| now.wrapping_sub(t) < 150);
+            bot.snapshot = match class {
+                Some(class) => crate::game_state::PreparedGameState::animate_with_config(
+                    &class.animation,
+                    bot.snapshot,
+                    &frame,
+                    firing,
+                    bot.fire_toggle,
+                ),
+                None => animate(bot.snapshot, &frame, firing, bot.fire_toggle),
+            };
             bot.snapshot.events = events;
-            bot.snapshot.weapon = weapon.weapon;
+            bot.snapshot.weapon = active_weapon.weapon;
         }
         self.next_route_client = (self.next_route_client + 1) % self.bots.len();
         let routing = started.elapsed().saturating_sub(movement);
@@ -502,6 +692,44 @@ impl TdmMatch {
         Ok(tick)
     }
 }
+fn visible_enemy(
+    origin: [f32; 3],
+    yaw: u16,
+    team: u8,
+    actors: &[Actor],
+    collision: &Collision,
+) -> Option<(u8, BotTarget)> {
+    let eye = [origin[0], origin[1], origin[2] + 60.0];
+    let angle = f32::from(yaw) * std::f32::consts::TAU / 65536.0;
+    let (sin, cos) = angle.sin_cos();
+    actors
+        .iter()
+        .filter(|a| a.team != team)
+        .filter(|a| {
+            let dx = a.origin[0] - origin[0];
+            let dy = a.origin[1] - origin[1];
+            let length = dx.hypot(dy);
+            if length > 2000.0 || (length > 160.0 && dx * cos + dy * sin < length * 0.5) {
+                return false;
+            }
+            let trace = collision.raycast(
+                eye,
+                [a.origin[0], a.origin[1], a.origin[2] + a.height * 0.8],
+            );
+            !trace.start_solid && !trace.all_solid && trace.contents == 0
+        })
+        .min_by(|a, b| distance(origin, a.origin).total_cmp(&distance(origin, b.origin)))
+        .map(|a| {
+            (
+                a.client,
+                BotTarget {
+                    origin: a.origin,
+                    eye: [a.origin[0], a.origin[1], a.origin[2] + a.height * 0.8],
+                    alive: true,
+                },
+            )
+        })
+}
 fn distance(a: [f32; 3], b: [f32; 3]) -> f32 {
     (0..3).map(|i| (a[i] - b[i]).powi(2)).sum::<f32>()
 }
@@ -541,7 +769,42 @@ mod tests {
             ],
             score_limit: 7500,
             time_limit_msec: 600000,
+            roster: Vec::new(),
+            models: Vec::new(),
         }
+    }
+    #[test]
+    fn perception_obeys_team_field_of_view_close_awareness_and_walls() {
+        let collision = world();
+        let actor = |client, team, x, y| Actor {
+            client,
+            team,
+            origin: [x, y, 0.0],
+            height: 70.0,
+            yaw: 0.0,
+        };
+        let allies = actor(1, 2, 100.0, 0.0);
+        let behind = actor(2, 1, -500.0, 0.0);
+        let front = actor(3, 1, 700.0, 0.0);
+        assert_eq!(
+            visible_enemy([0.0; 3], 0, 2, &[allies, behind, front], &collision)
+                .unwrap()
+                .0,
+            3
+        );
+        assert!(visible_enemy([0.0; 3], 0, 2, &[allies, behind], &collision).is_none());
+        assert_eq!(
+            visible_enemy([0.0; 3], 0, 2, &[actor(4, 1, -100.0, 0.0)], &collision)
+                .unwrap()
+                .0,
+            4
+        );
+        // An enemy under the solid floor cannot be acquired even at close range.
+        let underground = Actor {
+            origin: [0.0, 0.0, -100.0],
+            ..front
+        };
+        assert!(visible_enemy([0.0; 3], 0, 2, &[underground], &collision).is_none());
     }
     #[test]
     fn six_per_team_have_unique_clients_lives_scores_and_respawns() {

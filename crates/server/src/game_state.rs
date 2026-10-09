@@ -116,6 +116,8 @@ pub struct PreparedGameState {
     #[serde(skip)]
     match_weapon: Option<BootstrapWeapon>,
     #[serde(skip)]
+    roster_weapons: Vec<BootstrapWeapon>,
+    #[serde(skip)]
     navigation: Option<Arc<crate::game_navigation::Navigation>>,
     #[serde(default)]
     arsenal_file: Option<std::path::PathBuf>,
@@ -498,7 +500,13 @@ impl PreparedGameState {
                     .ok_or_else(|| anyhow::anyhow!("TDM requires map collision"))?,
             )?;
         }
-        for weapon in state.bootstrap_weapon.iter().chain(&state.secondary_weapon) {
+        for weapon in state
+            .bootstrap_weapon
+            .iter()
+            .chain(&state.secondary_weapon)
+            .chain(&state.match_weapon)
+            .chain(&state.roster_weapons)
+        {
             ensure!(
                 weapon.ballistics.is_none_or(|b| b.valid()),
                 "invalid weapon ballistics"
@@ -719,7 +727,7 @@ impl PreparedGameState {
     }
     pub(crate) fn animate_enemy(
         &self,
-        mut enemy: codol_protocol::game_enemy::EnemySnapshot,
+        enemy: codol_protocol::game_enemy::EnemySnapshot,
         frame: &crate::game_bot::BotFrame,
         firing: bool,
         toggle: bool,
@@ -728,6 +736,15 @@ impl PreparedGameState {
             .training_enemy
             .as_ref()
             .expect("enemy frame requires configuration");
+        Self::animate_with_config(config, enemy, frame, firing, toggle)
+    }
+    pub(crate) fn animate_with_config(
+        config: &crate::game_enemy::EnemyConfig,
+        mut enemy: codol_protocol::game_enemy::EnemySnapshot,
+        frame: &crate::game_bot::BotFrame,
+        firing: bool,
+        toggle: bool,
+    ) -> codol_protocol::game_enemy::EnemySnapshot {
         enemy.origin = frame.motion.origin;
         enemy.angles = frame.angles;
         let moving = frame.moving();
@@ -812,6 +829,7 @@ impl PreparedGameState {
             .iter()
             .chain(&self.secondary_weapon)
             .chain(&self.match_weapon)
+            .chain(&self.roster_weapons)
             .map(|w| w.index + 1)
             .max()
             .unwrap_or(1)
@@ -883,12 +901,24 @@ impl PreparedGameState {
                 )?)
             };
             tracing::info!(primary=?state.bootstrap_weapon.as_ref().and_then(|w|w.composed_name.as_deref()),secondary=?state.secondary_weapon.as_ref().and_then(|w|w.composed_name.as_deref()),"composed current player backpack from resource attributes");
-            if self.match_config.is_some() {
+            if let Some(config) = &self.match_config {
                 state.match_weapon = Some(Self::resolved_weapon(
                     arsenal.bot_rifle(next_index + 4)?,
                     &arsenal.source_sha256,
                     hands,
                 )?);
+                state.roster_weapons = config
+                    .roster
+                    .iter()
+                    .enumerate()
+                    .map(|(i, bot)| {
+                        Self::resolved_weapon(
+                            arsenal.bot_weapon(&bot.weapon_name, next_index + 5 + i as u16)?,
+                            &arsenal.source_sha256,
+                            hands,
+                        )
+                    })
+                    .collect::<Result<_>>()?;
             }
         } else {
             state.bootstrap_weapon = Some(loadout.resolve(self, public, owned)?);
@@ -1100,6 +1130,15 @@ impl PreparedGameState {
             ballistics,
         })
     }
+    pub(crate) fn model_configstrings(&self) -> Vec<(u16, String)> {
+        self.match_config.as_ref().map_or_else(Vec::new, |config| {
+            config
+                .models
+                .iter()
+                .map(|(id, name)| (2051 + id, name.clone()))
+                .collect()
+        })
+    }
     pub(crate) fn weapon_configstrings(&self) -> Vec<(u16, String)> {
         if !self.registry_strings.is_empty() {
             return self.registry_strings.clone();
@@ -1108,6 +1147,7 @@ impl PreparedGameState {
             .iter()
             .chain(&self.secondary_weapon)
             .chain(&self.match_weapon)
+            .chain(&self.roster_weapons)
             .filter_map(|w| {
                 w.composed_name
                     .as_ref()
@@ -1127,6 +1167,7 @@ impl PreparedGameState {
             .iter_mut()
             .chain(&mut self.secondary_weapon)
             .chain(&mut self.match_weapon)
+            .chain(&mut self.roster_weapons)
         {
             let name = weapon
                 .composed_name
@@ -1452,6 +1493,7 @@ impl PreparedGameState {
                 .ok_or_else(|| anyhow::anyhow!("TDM navigation not prepared"))?
                 .clone(),
         )?;
+        tdm.configure_roster(self.roster_weapons.iter().map(Self::make_player).collect())?;
         tdm.set_weapon_move_scale(
             self.match_weapon
                 .as_ref()
@@ -1497,6 +1539,7 @@ pub(crate) fn synthetic() -> PreparedGameState {
         training_enemy: None,
         match_config: None,
         match_weapon: None,
+        roster_weapons: Vec::new(),
         navigation: None,
         arsenal_file: None,
         collision_file: None,

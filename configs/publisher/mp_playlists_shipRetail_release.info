@@ -1,5 +1,5 @@
-// Local playlists for target UI/protocol recovery. Game allocation is pending.
-version 4
+// Local 6v6 TDM with resource-derived Bot loadouts.
+version 5
 
 gametype tdm
 name english "Team Deathmatch"
@@ -8,14 +8,14 @@ script war
 teambased
 
 // Target catinfo: id, page (1=PVP, 0=PVE), presentation (0=normal), names.
-catinfo 1 1 0 "Combat Training" "人机训练"
+catinfo 1 1 0 "Bot Match" "人机对战"
 catinfo 2 1 0 "Team Deathmatch" "团队竞技"
 
 playlist 1
-name english "Combat Training"
-name chinese "人机训练"
-description english "Team Deathmatch training on Afghan."
-description chinese "阿富汗地图的团队竞技训练。"
+name english "Bot Match"
+name chinese "人机对战"
+description english "6v6 Team Deathmatch with bots."
+description chinese "6v6 团队竞技人机对战。"
 category 1
 combattraining
 unlocklevelstart 0

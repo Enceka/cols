@@ -195,6 +195,9 @@ impl BotController {
         self.physics_chop_msec = 50;
         self.motion.speed = crate::game_motion::SPEED;
     }
+    pub fn set_match_range(&mut self, range: f32, spacing: f32) {
+        self.engagement = Some((range, spacing));
+    }
     pub fn set_match_move_scale(&mut self, scale: f32) {
         self.match_move_scale = scale;
     }
@@ -297,15 +300,27 @@ impl BotController {
             mode,
         );
         let Some(target) = target else {
-            self.phase = BotPhase::Idle;
+            if let Some(travel) = travel {
+                self.angles = turn_toward(self.angles, aim_angles(self.eye(), travel.eye), delta);
+            }
+            self.phase = if travel.is_some() {
+                BotPhase::Chase
+            } else {
+                BotPhase::Idle
+            };
             self.reset_engagement();
             return self.frame(now, None);
         };
         let eye = self.eye();
-        self.angles = if self.engagement.is_some() && mode != Locomotion::Walk {
+        let desired_angles = if self.engagement.is_some() && mode != Locomotion::Walk {
             travel.map_or(self.angles, |t| aim_angles(eye, t.eye))
         } else {
             aim_angles(eye, target.eye)
+        };
+        self.angles = if self.engagement.is_some() {
+            turn_toward(self.angles, desired_angles, delta)
+        } else {
+            desired_angles
         };
         let distance = distance(eye, target.eye);
         let trace = collision.raycast(eye, target.eye);
@@ -334,7 +349,10 @@ impl BotController {
         if now.wrapping_sub(since) < REACTION_MSEC {
             return self.frame(now, None);
         }
-        if self.engagement.is_some() && mode != Locomotion::Walk {
+        if self.engagement.is_some()
+            && (mode != Locomotion::Walk
+                || aim_error(self.angles, aim_angles(eye, target.eye)) > 3.0)
+        {
             return self.frame(now, None);
         }
         if self
@@ -549,6 +567,22 @@ fn aim_angles(eye: [f32; 3], target: [f32; 3]) -> [u16; 3] {
     [short(pitch), short(yaw), 0]
 }
 
+fn aim_error(a: [u16; 3], b: [u16; 3]) -> f32 {
+    (0..2)
+        .map(|i| f32::from(b[i].wrapping_sub(a[i]) as i16).abs() * 360.0 / 65536.0)
+        .fold(0.0, f32::max)
+}
+fn turn_toward(from: [u16; 3], to: [u16; 3], delta: u32) -> [u16; 3] {
+    // Reference AI eases angular differences by rate * executed dt. Keep this
+    // bounded local policy separate from unavailable mounted difficulty data.
+    let fraction = (4.0 * delta as f32 * 0.001).min(1.0);
+    std::array::from_fn(|i| {
+        from[i].wrapping_add(
+            (f32::from(to[i].wrapping_sub(from[i]) as i16) * fraction).round() as i16 as u16,
+        )
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -640,7 +674,7 @@ mod tests {
         assert_eq!(frame.motion.speed, crate::game_motion::SPEED);
         assert_ne!(frame.motion.flags & 0x4000, 0);
         assert!((frame.motion.velocity[0].hypot(frame.motion.velocity[1]) - 256.5).abs() < 1.0);
-        assert_eq!(frame.angles[1], 16384); // Faces the route rather than an unseen enemy.
+        assert!(aim_error(frame.angles, [0, 16384, 0]) < 2.0); // Smoothly faces the route.
 
         let mut run = BotController::new([0.0; 3], [0; 3], 94.0).unwrap();
         run.set_match_engagement();

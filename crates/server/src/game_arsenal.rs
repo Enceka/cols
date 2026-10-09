@@ -365,11 +365,16 @@ impl Arsenal {
         self.registered_count + 1
     }
     pub(crate) fn bot_rifle(&self, index: u16) -> Result<ResolvedWeapon> {
+        self.bot_weapon("m4_mp", index)
+    }
+    /// Bot loadouts derive from captured class names, not a player's inventory.
+    /// Defaults and per-weapon attributes still pass through the normal resolver.
+    pub(crate) fn bot_weapon(&self, name: &str, index: u16) -> Result<ResolvedWeapon> {
         let (&item, _) = self
             .item_to_base
             .iter()
-            .find(|(_, base)| self.weapons[base].name == "m4_mp")
-            .ok_or_else(|| anyhow::anyhow!("M4 bot weapon absent from arsenal"))?;
+            .find(|(_, base)| self.weapons[base].name == name)
+            .ok_or_else(|| anyhow::anyhow!("native bot weapon {name} absent from arsenal"))?;
         self.resolve(item, &[], &[item], index)
     }
 

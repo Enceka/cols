@@ -115,6 +115,23 @@ impl Navigation {
             cells,
         }
     }
+    /// Candidate roaming goals use actual walkable nodes. Reachability remains
+    /// checked by route(); callers budget one graph search per authority tick.
+    pub fn roam_goal(&self, origin: V3, occupied: &[V3], random: &mut u64) -> Option<V3> {
+        if self.positions.is_empty() {
+            return None;
+        }
+        for _ in 0..12 {
+            *random ^= *random << 13;
+            *random ^= *random >> 7;
+            *random ^= *random << 17;
+            let p = self.positions[*random as usize % self.positions.len()];
+            if distance(origin, p) > 256.0 && occupied.iter().all(|&q| distance(q, p) > 160.0) {
+                return Some(p);
+            }
+        }
+        None
+    }
     fn clear(a: V3, b: V3, collision: &Collision) -> bool {
         // Lift by the recovered movement step height for stair/slope travel.
         let a = [a[0], a[1], a[2] + 18.0];

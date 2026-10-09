@@ -135,7 +135,7 @@ impl SpreadTiming {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Weapon {
     equipment: Equipment,
     fire_interval: Option<u16>,
@@ -176,7 +176,7 @@ impl Weapon {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct Player {
     current: Weapon,
     secondary: Option<Weapon>,
@@ -299,6 +299,13 @@ impl Player {
     pub fn set_ballistics(&mut self, stats: crate::game_combat::Ballistics) {
         assert!(stats.valid());
         self.current.ballistics = Some(stats);
+    }
+    pub fn bot_weapon(&self) -> Option<crate::game_bot::BotWeapon> {
+        Some(crate::game_bot::BotWeapon {
+            weapon: self.current.equipment.weapon,
+            ballistics: self.current.ballistics?,
+            fire_interval_msec: u32::from(self.current.fire_interval?),
+        })
     }
     pub fn take_shots(&mut self) -> Vec<Shot> {
         std::mem::take(&mut self.shots)
