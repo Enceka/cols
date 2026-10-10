@@ -6,6 +6,7 @@ pub mod game;
 pub mod game_corpse;
 pub mod game_enemy;
 pub mod game_events;
+pub mod game_held_weapon;
 pub mod game_hit_feedback;
 pub mod game_impact;
 pub mod game_obituary;

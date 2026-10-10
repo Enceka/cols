@@ -86,6 +86,7 @@ pub(crate) struct Connection {
 struct WorldHistory {
     replay_epoch: u32,
     top_players_scene: bool,
+    held_weapons: bool,
     sequence: u32,
     local: Option<codol_protocol::game_enemy::EnemySnapshot>,
     players: Vec<codol_protocol::game_enemy::EnemySnapshot>,
@@ -769,6 +770,7 @@ impl Connection {
                 hit_feedback,
                 death_waypoints: death_waypoints.as_deref(),
                 replay: replay_wire,
+                held_weapons_in_baseline: previous.as_ref().is_some_and(|h| h.held_weapons),
             },
         )?;
         let budget = game_wire::FRAGMENT_SIZE - 5;
@@ -813,6 +815,7 @@ impl Connection {
             self.world_history.push_back(WorldHistory {
                 replay_epoch,
                 top_players_scene,
+                held_weapons: !full,
                 sequence: self.native_sent,
                 local: local_player,
                 players: match_players,

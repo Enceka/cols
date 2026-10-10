@@ -205,6 +205,8 @@ pub fn player_frame_with_motion(
             death_waypoints: None,
             replay: None,
             local_card: None,
+            held_weapon_tag: None,
+            held_weapons_in_baseline: false,
             vitals: None,
             local_player: None,
             local_player_baseline: None,
@@ -228,6 +230,8 @@ pub struct WorldSnapshot<'a> {
     pub death_waypoints: Option<&'a [crate::game_hit_feedback::DeathWaypointSnapshot]>,
     pub replay: Option<ReplayView>,
     pub local_card: Option<crate::game_player_card::Card>,
+    pub held_weapon_tag: Option<u8>,
+    pub held_weapons_in_baseline: bool,
     pub vitals: Option<PlayerVitals>,
     pub local_player: Option<crate::game_enemy::EnemySnapshot>,
     pub local_player_baseline: Option<crate::game_enemy::EnemySnapshot>,
@@ -715,6 +719,46 @@ pub fn player_frame_with_world(
             )?;
         }
     }
+    // Keep the full character/client baseline bounded. Linked weapon models
+    // follow in the next delta, like corpses; never assume they were sent just
+    // because their parent was present in the acknowledged frame.
+    if let Some(tag) = world.held_weapon_tag.filter(|_| !establish_baseline) {
+        let reserved = crate::game_held_weapon::FIRST_ENTITY..crate::game_held_weapon::END_ENTITY;
+        if world
+            .impacts
+            .iter()
+            .chain(world.impact_baselines)
+            .any(|i| reserved.contains(&i.entity_number))
+            || world
+                .obituaries
+                .iter()
+                .chain(world.obituary_baselines)
+                .any(|i| reserved.contains(&i.entity_number))
+        {
+            return Err(LobbyError("held weapon entity overlaps an event"));
+        }
+        let current = crate::game_held_weapon::weapons(
+            world
+                .local_player
+                .into_iter()
+                .chain(world.enemy)
+                .chain(world.players.iter().copied()),
+            world.corpses,
+        );
+        let baseline = if !world.held_weapons_in_baseline {
+            Default::default()
+        } else {
+            crate::game_held_weapon::weapons(
+                world
+                    .local_player_baseline
+                    .into_iter()
+                    .chain(world.enemy_baseline.filter(|_| world.enemy.is_some()))
+                    .chain(world.player_baselines.iter().copied()),
+                world.corpse_baselines,
+            )
+        };
+        crate::game_held_weapon::write(&mut out, &current, &baseline, tag)?;
+    }
     if world.delta_distance == 0 {
         crate::game_impact::write_impacts(&mut out, world.impacts, establish_baseline)?;
         crate::game_obituary::write_obituaries(&mut out, world.obituaries, establish_baseline)?;
@@ -747,9 +791,20 @@ pub fn player_frame_with_world(
             &players,
             establish_baseline,
             world.local_card,
+            world.held_weapon_tag.is_some(),
         )?;
     } else if let Some(enemy) = world.enemy {
-        crate::game_enemy::write_enemy_client(&mut out, enemy, establish_baseline)?;
+        if world.held_weapon_tag.is_some() {
+            crate::game_enemy::write_player_clients_with_card(
+                &mut out,
+                &[enemy],
+                establish_baseline,
+                None,
+                true,
+            )?;
+        } else {
+            crate::game_enemy::write_enemy_client(&mut out, enemy, establish_baseline)?;
+        }
     } else {
         out.bits(0, 1); // clients (0x46c840)
     }
@@ -1372,5 +1427,59 @@ mod tests {
             baseline,
             frame(1000, Some([-472.0, -800.0, -113.4]), false).unwrap()
         );
+    }
+    #[test]
+    fn retired_training_baseline_does_not_corrupt_respawned_multiplayer_gun() {
+        let local = crate::game_enemy::EnemySnapshot {
+            entity_number: 0,
+            client_index: 0,
+            team: 2,
+            model: 4,
+            attachment_models: [0; 10],
+            attachment_tags: [0; 10],
+            origin: [0.0; 3],
+            angles: [0; 3],
+            legs_animation: 395,
+            torso_animation: 0,
+            weapon: 352,
+            events: Default::default(),
+            alive: true,
+        };
+        let bot = crate::game_enemy::EnemySnapshot {
+            entity_number: 1,
+            client_index: 1,
+            weapon: 355,
+            ..local
+        };
+        let dead = crate::game_enemy::EnemySnapshot {
+            alive: false,
+            ..bot
+        };
+        let training = crate::game_enemy::EnemySnapshot { weapon: 352, ..bot };
+        let render = |legacy| {
+            player_frame_with_world(
+                5000,
+                5000,
+                Some([0.0; 3]),
+                false,
+                None,
+                [0; 3],
+                WorldSnapshot {
+                    delta_distance: 1,
+                    local_player: Some(local),
+                    local_player_baseline: Some(local),
+                    players: &[bot],
+                    player_baselines: &[dead],
+                    enemy_baseline: legacy,
+                    held_weapon_tag: Some(1),
+                    held_weapons_in_baseline: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+        };
+        // An inactive training fixture previously invented a gun in the dead
+        // bot's baseline: new355 XOR old352 decoded as weapon3 and link0.
+        assert_eq!(render(None), render(Some(training)));
     }
 }

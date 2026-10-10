@@ -582,6 +582,28 @@ class ClientAssets {
         }
         return actors;
     }
+    public static object HeldWeapons(IntPtr process) {
+        var r=new ClientAssets(process);var result=new List<object>();
+        uint slot=r.Word(0x07817bb0),cgSlot=r.Word(0x07817ba8);
+        if(slot>=256||cgSlot>=256)throw new Exception("invalid native pointer slots");
+        uint entities=r.Word(0x01a19510+slot*4)^0x2168f672,cg=r.Word(0x01a19510+cgSlot*4)^0xfbb2c97a;
+        for(uint parent=0;parent<27;parent++) {
+            uint body=entities+parent*0x238,id=27+parent,at=entities+id*0x238;
+            bool parentValid=(r.Word(body+0x204)&1)!=0,valid=(r.Word(at+0x204)&1)!=0;
+            if(!parentValid&&!valid)continue;
+            uint link=r.Word(at+0x1d4),weapon=r.Word(at+0x158),dobjSlot=BitConverter.ToUInt16(r.Read(0x02ef4858+id*2,2),0);
+            var models=new List<string>();
+            if(valid&&dobjSlot!=0) {
+                uint obj=0x02e8e850+dobjSlot*0xcc;int count=Count(r.Read(obj+9,1)[0],32);
+                uint list=r.Word(obj+0xc0);for(uint part=0;part<count;part++)models.Add(r.Name(r.Word(r.Word(list+part*4))));
+            }
+            result.Add(Obj("parent",parent,"parent_valid",parentValid,"entity",id,"valid",valid,
+                "parent_origin",parentValid?r.EntityOrigin(body+0xf0):null,
+                "type",r.Word(at+0xf4),"weapon",weapon,"link_parent",link&0xffff,"link_tag",(link>>16)&255,
+                "dobj_slot",dobjSlot,"models",models,"client_reference",parent<19?r.Word(cg+0x15dea8+parent*0x3b8+0x330):0));
+        }
+        return result;
+    }
     public static void ExportFeedback(IntPtr process) {
         var r=new ClientAssets(process);
         if(r.Word(0x01a2e7ec)!=10)throw new Exception("feedback capture requires active map");

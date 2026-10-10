@@ -108,8 +108,11 @@ class ReadClientState {
                 Console.WriteLine("{");
                 Field(process,"connection_state",0x01a2e7ec,4);
                 Field(process,"player_card_visible",0x0b5f3024,1);
+                uint noBotTop3=Read(process,0x017e5454,4);
+                if(noBotTop3>=0x10000)Field(process,"native_no_bot_top3",checked(noBotTop3+12),4);
                 Console.WriteLine("\"top_player_cards\":"+new System.Web.Script.Serialization.JavaScriptSerializer().Serialize(ClientAssets.TopPlayerCards(process))+",");
                 if(Read(process,0x01a2e7ec,4)==10) Console.WriteLine("\"showcase_actors\":"+new System.Web.Script.Serialization.JavaScriptSerializer().Serialize(ClientAssets.ShowcaseActors(process))+",");
+                if(Read(process,0x01a2e7ec,4)==10) Console.WriteLine("\"held_weapons\":"+new System.Web.Script.Serialization.JavaScriptSerializer().Serialize(ClientAssets.HeldWeapons(process))+",");
                 Field(process,"sound_fade_current_bits",0x0780e4b0,4);
                 Field(process,"sound_fade_target_bits",0x0780e4b4,4);
                 Field(process,"sound_fade_rate_bits",0x0780e4b8,4);

@@ -1052,6 +1052,7 @@ mod tests {
             codol_protocol::game_snapshot::WorldSnapshot {
                 local_player: Some(template()),
                 players: &snapshots,
+                held_weapon_tag: Some(1),
                 death_waypoints: Some(&death_waypoints),
                 hit_feedback: Some(codol_protocol::game_hit_feedback::HitFeedbackSnapshot {
                     material: 144,

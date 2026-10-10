@@ -34,3 +34,7 @@ clientState字段30/37为rank/prestige，39/40/41/42为icon/title/background/nam
 - 同一客户端第二局：最终击杀变为Bot11，前三名变为Bot11、玩家、Bot2，均刷新成功；回放有110个采样帧显示原生名片，排名/结算有261帧隐藏普通观战名片，验证下一局的恢复与再次隐藏。随后按序关闭展示、结算、返回房间；见`top-players-repeat-proof.json`和`top-players-repeat-validation.log`。没有为第二局新增截图。
 
 正常三图仍为7500分/10分钟，新增菜单资源前逐文件备份，来源索引`top-players-resource-preparation.json`；短局配置独立。没有改动原始客户端、账号、库存或其历史证据。
+
+## 2026-10-10 持枪接续
+
+已补原生独立挂枪实体，覆盖正常对局Bot、尸体、回放及前三名。三人的枪械模型与完整排名界面已有同帧视觉证据，连续两局通过；此前“只发编号、没有实际枪械”的限制已消除。详情见`HELD_WEAPONS_PROGRESS.md`。双持第二把枪及完整入场/庆祝动作仍未覆盖。

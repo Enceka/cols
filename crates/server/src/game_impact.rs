@@ -29,13 +29,14 @@ impl ImpactEvents {
         }
         let normal_byte = codol_protocol::game_impact::normal_byte(hit.normal).ok()?;
         self.expire(now);
-        let entity_number = if !(27..1800).contains(&self.next_entity) {
-            27
+        let first = codol_protocol::game_held_weapon::END_ENTITY;
+        let entity_number = if !(first..1800).contains(&self.next_entity) {
+            first
         } else {
             self.next_entity
         };
         self.next_entity = if entity_number == 1799 {
-            27
+            first
         } else {
             entity_number + 1
         };
@@ -82,8 +83,8 @@ mod tests {
     #[test]
     fn repeated_shots_have_distinct_ids_and_survive_multiple_frames_then_expire() {
         let mut events = ImpactEvents::default();
-        assert_eq!(events.push(1000, 352, hit()).unwrap().entity_number, 27);
-        assert_eq!(events.push(1080, 353, hit()).unwrap().entity_number, 28);
+        assert_eq!(events.push(1000, 352, hit()).unwrap().entity_number, 54);
+        assert_eq!(events.push(1080, 353, hit()).unwrap().entity_number, 55);
         for time in [1080, 1100, 1199] {
             assert_eq!(events.snapshot(time).len(), 2);
         }
@@ -105,7 +106,7 @@ mod tests {
         let frame = events.snapshot(now.wrapping_add(199));
         assert_eq!(
             frame.iter().map(|e| e.entity_number).collect::<Vec<_>>(),
-            [27, 1799]
+            [54, 1799]
         );
         assert!(events.snapshot(now.wrapping_add(210)).is_empty());
         for i in 0..100 {

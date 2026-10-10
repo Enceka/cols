@@ -24,6 +24,7 @@ pub(crate) struct SnapshotWorld<'a> {
     pub hit_feedback: Option<codol_protocol::game_hit_feedback::HitFeedbackSnapshot>,
     pub death_waypoints: Option<&'a [codol_protocol::game_hit_feedback::DeathWaypointSnapshot]>,
     pub replay: Option<codol_protocol::game_snapshot::ReplayView>,
+    pub held_weapons_in_baseline: bool,
     pub vitals: Option<codol_protocol::game_snapshot::PlayerVitals>,
     pub local_player: Option<codol_protocol::game_enemy::EnemySnapshot>,
     pub local_player_baseline: Option<codol_protocol::game_enemy::EnemySnapshot>,
@@ -1382,6 +1383,10 @@ impl PreparedGameState {
         if self.training_enemy.is_some() {
             // Current build reads these raw nickname strings, not info pairs.
             values.extend([
+                (
+                    codol_protocol::game_held_weapon::HAND_TAG_CONFIGSTRING,
+                    "tag_weapon_right".to_owned(),
+                ),
                 (1975, name.unwrap_or("Player").to_owned()),
                 (1976, "Training Bot".to_owned()),
             ]);
@@ -1465,6 +1470,11 @@ impl PreparedGameState {
                 death_waypoints: world.death_waypoints,
                 replay: world.replay,
                 local_card: self.player_card,
+                held_weapon_tag: self
+                    .training_enemy
+                    .as_ref()
+                    .map(|_| codol_protocol::game_held_weapon::HAND_TAG_SLOT),
+                held_weapons_in_baseline: world.held_weapons_in_baseline,
                 vitals: world.vitals,
                 local_player: world.local_player,
                 local_player_baseline: world.local_player_baseline,
@@ -1699,7 +1709,7 @@ mod tests {
                     },
                 )
                 .collect();
-            let scene = state.top_players_scene(&rows, actors).unwrap();
+            let scene = state.top_players_scene(&rows, actors.clone()).unwrap();
             state.player_card = Some(codol_protocol::game_player_card::Card {
                 rank: 69,
                 prestige: 2,
@@ -1708,6 +1718,79 @@ mod tests {
                 background: 396,
                 nameplate: 0,
             });
+            let live = state
+                .snapshot(
+                    10000,
+                    10000,
+                    true,
+                    [0; 3],
+                    state.player().map(|p| p.equipment()),
+                    SnapshotWorld {
+                        motion: state.motion().as_ref(),
+                        local_player: Some(actors[0]),
+                        players: &actors[1..],
+                        vitals: Some(Default::default()),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+            eprintln!(
+                "{}: live characters plus held weapons {} bytes",
+                state.map,
+                live.len()
+            );
+            assert!(live.len() <= codol_protocol::game_wire::FRAGMENT_SIZE - 5);
+            let mut firing = actors.clone();
+            for actor in &mut firing {
+                for _ in 0..2 {
+                    actor
+                        .events
+                        .push(codol_protocol::game_events::FIRE_WEAPON, 31)
+                        .unwrap();
+                    actor
+                        .events
+                        .push(codol_protocol::game_events::EJECT_BRASS, 0)
+                        .unwrap();
+                }
+            }
+            let impacts: Vec<_> = (54..62)
+                .map(
+                    |entity_number| codol_protocol::game_impact::ImpactSnapshot {
+                        entity_number,
+                        origin: [123.0, 456.0, 70.0],
+                        normal_byte: 0,
+                        surface: 1,
+                        weapon: 352,
+                    },
+                )
+                .collect();
+            let delta = state
+                .snapshot(
+                    10050,
+                    10050,
+                    false,
+                    [0; 3],
+                    state.player().map(|p| p.equipment()),
+                    SnapshotWorld {
+                        delta_distance: 1,
+                        motion: state.motion().as_ref(),
+                        local_player: Some(firing[0]),
+                        players: &firing[1..],
+                        local_player_baseline: Some(actors[0]),
+                        player_baselines: &actors[1..],
+                        impacts: &impacts,
+                        held_weapons_in_baseline: false,
+                        vitals: Some(Default::default()),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+            eprintln!(
+                "{}: first weapon delta with firing/events {} bytes",
+                state.map,
+                delta.len()
+            );
+            assert!(delta.len() <= codol_protocol::game_wire::FRAGMENT_SIZE - 5);
             let snapshot = state
                 .snapshot(
                     10000,

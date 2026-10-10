@@ -204,7 +204,7 @@ pub(crate) fn write_player_clients(
     players: &[EnemySnapshot],
     establish_baseline: bool,
 ) -> Result<(), LobbyError> {
-    write_player_clients_with_card(out, players, establish_baseline, None)
+    write_player_clients_with_card(out, players, establish_baseline, None, false)
 }
 
 pub(crate) fn write_player_clients_with_card(
@@ -212,6 +212,7 @@ pub(crate) fn write_player_clients_with_card(
     players: &[EnemySnapshot],
     establish_baseline: bool,
     local_card: Option<crate::game_player_card::Card>,
+    held_weapons: bool,
 ) -> Result<(), LobbyError> {
     if let Some(card) = local_card {
         card.validate()?;
@@ -233,6 +234,7 @@ pub(crate) fn write_player_clients_with_card(
                 out,
                 *player,
                 local_card.filter(|_| player.client_index == 0),
+                held_weapons,
             )?;
         }
     }
@@ -244,6 +246,7 @@ fn write_client_record(
     out: &mut Writer,
     enemy: EnemySnapshot,
     card: Option<crate::game_player_card::Card>,
+    held_weapons: bool,
 ) -> Result<(), LobbyError> {
     enemy.validate()?;
 
@@ -257,6 +260,14 @@ fn write_client_record(
         (23, u32::from(enemy.team), 3),
         (27, u32::from(enemy.model), 10),
     ];
+    if held_weapons {
+        // clientState+0x114 -> CI+0x330 (0x52533e): native main gun entity.
+        fields.push((
+            0,
+            u32::from(crate::game_held_weapon::entity_for(enemy.entity_number)),
+            11,
+        ));
+    }
     if let Some(card) = card {
         fields.extend([
             (30, u32::from(card.rank), 8),
@@ -586,7 +597,7 @@ mod tests {
             };
             let mut out = Writer::default();
             out.bits(0, alignment);
-            write_player_clients_with_card(&mut out, &[local], true, Some(card)).unwrap();
+            write_player_clients_with_card(&mut out, &[local], true, Some(card), false).unwrap();
             let mut reader = Reader::new(&out.bytes);
             reader.bits(alignment).unwrap();
             assert_eq!(reader.bits(1).unwrap(), 1);
