@@ -12,6 +12,21 @@ use std::{
 struct Manifest {
     schema_version: u32,
     entries: Vec<Entry>,
+    #[serde(default)]
+    rotations: Vec<Rotation>,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Rotation {
+    version: u32,
+    playlist: u32,
+    maps: Vec<Map>,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Map {
+    map: String,
+    mode: String,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -23,6 +38,7 @@ struct Entry {
 #[derive(Clone, Default)]
 pub struct GameMapCatalog {
     states: BTreeMap<(String, String), Arc<PreparedGameState>>,
+    rotations: BTreeMap<(u32, u32), Vec<(String, String)>>,
 }
 impl GameMapCatalog {
     pub fn load(path: &Path) -> Result<Self> {
@@ -58,13 +74,44 @@ impl GameMapCatalog {
             );
             states.insert(key, Arc::new(state));
         }
-        Ok(Self { states })
+        ensure!(
+            manifest.rotations.len() <= 256,
+            "too many playlist bindings"
+        );
+        let mut rotations = BTreeMap::new();
+        for rotation in manifest.rotations {
+            ensure!(
+                rotation.version > 0
+                    && rotation.playlist < 256
+                    && (1..=40).contains(&rotation.maps.len()),
+                "invalid playlist binding"
+            );
+            let key = (rotation.version, rotation.playlist);
+            ensure!(!rotations.contains_key(&key), "duplicate playlist binding");
+            let mut maps = Vec::new();
+            for map in rotation.maps {
+                let identity = (map.map, map.mode);
+                ensure!(
+                    states.contains_key(&identity),
+                    "playlist map has no captured preparation"
+                );
+                maps.push(identity);
+            }
+            rotations.insert(key, maps);
+        }
+        Ok(Self { states, rotations })
     }
     pub fn with_snapshot_frames(mut self, frames: u32) -> Result<Self> {
         for state in self.states.values_mut() {
             *state = Arc::new((**state).clone().with_snapshot_frames(frames)?);
         }
         Ok(self)
+    }
+    pub fn with_continuous_play(mut self) -> Self {
+        for state in self.states.values_mut() {
+            *state = Arc::new((**state).clone().with_continuous_play());
+        }
+        self
     }
     pub(crate) fn select(&self, map: &str, mode: &str) -> Result<Arc<PreparedGameState>> {
         self.states
@@ -80,6 +127,31 @@ impl GameMapCatalog {
             .map(|s| s.snapshot_limit())
             .max()
             .unwrap_or(0)
+    }
+    pub(crate) fn has_rotations(&self) -> bool {
+        !self.rotations.is_empty()
+    }
+    pub(crate) fn bot_room_maps(&self) -> std::collections::BTreeSet<String> {
+        self.states
+            .iter()
+            .filter(|((_, mode), state)| mode == "war" && state.has_tdm())
+            .map(|((map, _), _)| map.clone())
+            .collect()
+    }
+    pub(crate) fn select_rotation(
+        &self,
+        version: u32,
+        playlist: u32,
+        entry: u32,
+    ) -> Result<Arc<PreparedGameState>> {
+        let maps = self
+            .rotations
+            .get(&(version, playlist))
+            .ok_or_else(|| anyhow::anyhow!("publisher version/playlist has no captured binding"))?;
+        let (map, mode) = maps
+            .get(entry as usize)
+            .ok_or_else(|| anyhow::anyhow!("playlist map entry outside captured binding"))?;
+        self.select(map, mode)
     }
 }
 fn identifier(value: &str) -> bool {

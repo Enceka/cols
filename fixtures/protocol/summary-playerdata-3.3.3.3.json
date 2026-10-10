@@ -1,0 +1,40 @@
+{
+  "client_sha256": "e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b",
+  "source_sha256": "64e4d970de2ad60d63682beff952d3afb90e0900bd20adc3e78e079ba0236796",
+  "version": 233,
+  "fields": {
+    "aarGameDuration": {
+      "record_offset": 47,
+      "width": 4,
+      "type": 0
+    },
+    "aarMapID": {
+      "record_offset": 51,
+      "width": 4,
+      "type": 0
+    },
+    "aarModeID": {
+      "record_offset": 55,
+      "width": 4,
+      "type": 0
+    },
+    "aarRoundNumber": {
+      "record_offset": 59,
+      "width": 4,
+      "type": 0
+    },
+    "aarWinningTeam": {
+      "record_offset": 3833,
+      "width": 1,
+      "type": 1
+    }
+  },
+  "map_ids": {
+    "mp_afghan": 1,
+    "mp_crash_tropical": 4,
+    "mp_killhouse_sh": 8
+  },
+  "mode_ids": {
+    "war": 1
+  }
+}

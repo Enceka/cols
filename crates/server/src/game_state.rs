@@ -102,6 +102,8 @@ pub struct PreparedGameState {
     #[serde(default)]
     map_entities_sha256: Option<String>,
     #[serde(default)]
+    minimap: Option<crate::game_minimap::Minimap>,
+    #[serde(default)]
     bootstrap_weapon: Option<BootstrapWeapon>,
     #[serde(default)]
     player_loadout: Option<loadout::Loadout>,
@@ -137,6 +139,9 @@ pub struct PreparedGameState {
     snapshot_frames: u32,
 }
 impl PreparedGameState {
+    pub(crate) fn has_tdm(&self) -> bool {
+        self.match_config.is_some()
+    }
     pub fn map(&self) -> &str {
         &self.map
     }
@@ -435,6 +440,11 @@ impl PreparedGameState {
         self.snapshot_frames = frames;
         Ok(self)
     }
+    pub fn with_continuous_play(mut self) -> Self {
+        self.snapshot_probe = true;
+        self.snapshot_frames = u32::MAX;
+        self
+    }
     pub(crate) fn snapshot_limit(&self) -> u32 {
         self.snapshot_frames
     }
@@ -464,6 +474,7 @@ impl PreparedGameState {
             state.collision = Some(Arc::new(collision));
         }
         state.validate()?;
+        state.ground_first_spawn()?;
         if let Some(config) = &state.match_config {
             state.navigation = Some(Arc::new(crate::game_navigation::Navigation::build(
                 config.spawns.iter().flatten().copied(),
@@ -471,6 +482,23 @@ impl PreparedGameState {
             )));
         }
         Ok(state)
+    }
+    /// Raw spawn entities can sit a few units inside terrain (Crash Axis
+    /// starts are 4 units low); the first life must use the same grounded
+    /// start as respawns, or every player sweep begins solid.
+    fn ground_first_spawn(&mut self) -> Result<()> {
+        let (Some(origin), Some(collision)) = (self.spawn_origin, &self.collision) else {
+            return Ok(());
+        };
+        let start = match &self.match_config {
+            Some(config) => config.spawns[usize::from(config.teams[0] - 1)][0],
+            None => origin,
+        };
+        let height = crate::game_motion::Stance::Stand.height();
+        if self.match_config.is_some() || collision.trace(start, start, height).start_solid {
+            self.spawn_origin = Some(crate::game_bot::grounded_spawn(start, collision)?);
+        }
+        Ok(())
     }
     fn validate(&self) -> Result<()> {
         let state = self;
@@ -624,8 +652,10 @@ impl PreparedGameState {
             "prepared game state source hash"
         );
         ensure!(
-            matches!(state.map.as_str(), "mp_afghan" | "mp_killhouse_sh")
-                && state.mode == "war"
+            matches!(
+                state.map.as_str(),
+                "mp_afghan" | "mp_killhouse_sh" | "mp_crash_tropical"
+            ) && state.mode == "war"
                 && state.zone == "mp"
                 && state.playlist == 0,
             "only the controlled training playlist is supported"
@@ -636,6 +666,13 @@ impl PreparedGameState {
         );
         if let Some(loadout) = &state.player_loadout {
             loadout.validate(state)?;
+        }
+        if let Some(minimap) = &state.minimap {
+            ensure!(
+                state.map_entities_sha256.is_some(),
+                "minimap requires captured map entities"
+            );
+            minimap.validate(&state.map)?;
         }
         tracing::info!(
             ncs_crc = state.ncs_crc,
@@ -648,6 +685,32 @@ impl PreparedGameState {
 
     pub(crate) fn uses_player_loadout(&self) -> bool {
         self.player_loadout.is_some()
+    }
+    pub(crate) fn summary_map_id(&self) -> Result<u32> {
+        // IDs from this build's captured mp/coMapList.csv column 3.
+        match self.map.as_str() {
+            "mp_afghan" => Ok(1),
+            "mp_crash_tropical" => Ok(4),
+            "mp_killhouse_sh" => Ok(8),
+            _ => anyhow::bail!("map has no verified summary ID"),
+        }
+    }
+    pub(crate) fn with_room_teams(mut self, teams: [u8; 12]) -> Result<Self> {
+        let config = self
+            .match_config
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("native bot room requires TDM preparation"))?;
+        config.teams = teams;
+        let collision = self
+            .collision
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("room team spawns require collision"))?;
+        config.validate(collision)?;
+        self.spawn_origin = Some(crate::game_bot::grounded_spawn(
+            config.spawns[usize::from(teams[0] - 1)][0],
+            collision,
+        )?);
+        Ok(self)
     }
     pub(crate) fn dynamic_loadout(&self) -> bool {
         self.arsenal.is_some()
@@ -671,7 +734,7 @@ impl PreparedGameState {
         let mut player = self.enemy_snapshot(alive)?;
         player.entity_number = 0;
         player.client_index = 0;
-        player.team = 2;
+        player.team = self.match_config.as_ref().map_or(2, |c| c.teams[0]);
         // Captured complete standard male skeleton. This training appearance
         // is independent of the already live first-person backpack equipment.
         player.model = 4;
@@ -1263,7 +1326,10 @@ impl PreparedGameState {
         let mut values = vec![
             (
                 0,
-                format!("\\mapname\\{}\\g_gametype\\{}", self.map, self.mode),
+                format!(
+                    "\\mapname\\{}\\g_gametype\\{}\\scr_gameended\\0",
+                    self.map, self.mode
+                ),
             ),
             (1, String::new()),
             // 0x445b74 compares CS2 with literal "cod" before weapon init.
@@ -1282,20 +1348,16 @@ impl PreparedGameState {
             ]);
             values.sort_by_key(|value| value.0);
         }
+        if let Some(minimap) = &self.minimap {
+            values.extend(minimap.configstrings());
+            values.sort_by_key(|value| value.0);
+        }
         if self.match_config.is_some() {
             values.retain(|(index, _)| *index != 1976);
             for client in 1..=11u16 {
                 values.push((
                     1975 + client,
-                    format!(
-                        "{} {}",
-                        if client <= 5 {
-                            "Allies Bot"
-                        } else {
-                            "Axis Bot"
-                        },
-                        if client <= 5 { client } else { client - 5 }
-                    ),
+                    codol_protocol::room_messages::bot_name(client as u8),
                 ));
             }
             values.sort_by_key(|v| v.0);
@@ -1532,6 +1594,7 @@ pub(crate) fn synthetic() -> PreparedGameState {
         observed_crc_verified: false,
         spawn_origin: None,
         map_entities_sha256: None,
+        minimap: None,
         bootstrap_weapon: None,
         player_loadout: None,
         secondary_weapon: None,
@@ -1555,6 +1618,46 @@ pub(crate) fn synthetic() -> PreparedGameState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn first_spawn_below_terrain_is_grounded_like_a_respawn() {
+        let export = serde_json::json!({"schema_version":1,"read_only":true,"client_sha256":codol_protocol::CLIENT_SHA256,
+            "map":"maps/mp/test.d3dbsp","ncs_crc":0,"brushes":[{"center":[0,0,62],"half":[4000,4000,10],"contents":1,"planes":[]}],"triangles":[]});
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), serde_json::to_vec(&export).unwrap()).unwrap();
+        let collision = crate::game_motion::Collision::load(file.path()).unwrap();
+        let mut state = synthetic();
+        // Floor top is z=72; the raw entity origin is four units inside it.
+        state.spawn_origin = Some([0.0, 0.0, 68.0]);
+        state.collision = Some(Arc::new(collision));
+        state.ground_first_spawn().unwrap();
+        let origin = state.spawn_origin.unwrap();
+        assert!((72.0..72.5).contains(&origin[2]), "{origin:?}");
+        let collision = state.collision.clone().unwrap();
+        let mut motion = state.motion().unwrap();
+        for _ in 0..30 {
+            let cmd = codol_protocol::game_usercmd::UserCommand {
+                time: motion.command_time + 16,
+                direction: 1,
+                ..Default::default()
+            };
+            motion.apply(&cmd, 1.0, false, &collision);
+        }
+        assert!(motion.origin[0] > 50.0, "{:?}", motion.origin);
+    }
+    #[test]
+    fn match_summary_map_ids_follow_the_current_map_table() {
+        let mut state = synthetic();
+        for (map, id) in [
+            ("mp_afghan", 1),
+            ("mp_crash_tropical", 4),
+            ("mp_killhouse_sh", 8),
+        ] {
+            state.map = map.into();
+            assert_eq!(state.summary_map_id().unwrap(), id);
+        }
+        state.map = "mp_unknown".into();
+        assert!(state.summary_map_id().is_err());
+    }
     #[test]
     fn walking_full_body_animation_is_not_overridden_by_a_standing_torso_pose() {
         let mut state = synthetic();

@@ -122,6 +122,12 @@ enum Command {
         /// Prepared maps selected by the native room's map and mode fields.
         #[arg(long, requires = "game_bind")]
         game_map_catalog: Option<PathBuf>,
+        /// Include the eleven server simulated TDM players in native custom rooms.
+        #[arg(long, requires = "game_map_catalog")]
+        native_bot_rooms: bool,
+        /// Keep the authenticated local play session running until shutdown.
+        #[arg(long, requires_all=["game_state","service_data_dir"], conflicts_with="snapshot_probe")]
+        continuous_play: bool,
         /// Sample ordinary gameplay captures; errors and handshake stay captured.
         #[arg(long,default_value_t=1,value_parser=clap::value_parser!(u32).range(1..=1000))]
         game_capture_every: u32,
@@ -369,6 +375,8 @@ async fn main() -> Result<()> {
             game_state,
             snapshot_probe,
             game_map_catalog,
+            native_bot_rooms,
+            continuous_play,
             game_capture_every,
             hit_regions,
         } => {
@@ -389,6 +397,9 @@ async fn main() -> Result<()> {
                     service_data_dir,
                 )
                 .await?;
+                if continuous_play {
+                    lobby = lobby.with_continuous_play()?;
+                }
                 tracing::info!(address=%lobby.address()?,"Rust lobby listener ready");
                 tracing::info!(address=%server.address()?,directory=%server.directory().display(),"Rust AUTH listener ready");
                 let (stop, receiver) = tokio::sync::watch::channel(false);
@@ -400,10 +411,16 @@ async fn main() -> Result<()> {
                     )
                     .await?;
                     game = game.with_capture_every(game_capture_every);
+                    if continuous_play {
+                        game = game.with_continuous_play();
+                    }
                     if let Some(path) = game_state {
                         let mut state = codol_server::game_state::PreparedGameState::load(&path)?;
                         if let Some(frames) = snapshot_probe {
                             state = state.with_snapshot_frames(frames)?;
+                        }
+                        if continuous_play {
+                            state = state.with_continuous_play();
                         }
                         game = game.with_game_state(state);
                     }
@@ -416,7 +433,17 @@ async fn main() -> Result<()> {
                         if let Some(frames) = snapshot_probe {
                             catalog = catalog.with_snapshot_frames(frames)?;
                         }
+                        if continuous_play {
+                            catalog = catalog.with_continuous_play();
+                        }
                         game = game.with_game_map_catalog(catalog);
+                    }
+                    if native_bot_rooms {
+                        let services = lobby
+                            .services()
+                            .ok_or_else(|| anyhow::anyhow!("bot rooms require local services"))?;
+                        game = game
+                            .with_native_bot_rooms(services.publisher_playlist_version().await?)?;
                     }
                     let endpoint = game.admissions();
                     tracing::info!(address=%endpoint.address(),"experimental Rust game UDP endpoint ready");

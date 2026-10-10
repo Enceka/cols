@@ -13,5 +13,6 @@
 - `lobby210-synthetic.json`：独立 Python SHA1/HMAC/AES 与字面位写入器生成的合成握手和业务帧向量，所有会话材料都是测试值。
 - `publisher3333.json`：从目标样本独立恢复资源密钥后，用 PyCryptodome 生成的 AES-192-CTR 向量；明文为合成字节或本地研究配置，未包含内嵌 RSA 私钥。
 - `public-profile-synthetic.bin/json`：Python zlib/CRC32 生成的合成 32 KiB 档案及 125 个 Int32 投影字段；仅验证格式和完整性，不是真实玩家档案，也不能作为游戏档案种子。
+- `room-roster-synthetic.bin`：来自3.3.3.3的type14完整房间成员表及定向manifold结构；人类UID替换为42，其他成员元数据清零，只保留实验Bot合成ID、阵营和准备位。验证普通广播内发给模拟Bot的名单不能被遗漏，不包含真实账号或会话资料。
 
 真实票据接受与大厅握手证据另见 docs/AUTH_LOBBY_PROGRESS.md；不将真实会话密钥、票据或业务明文加入这些 fixtures。

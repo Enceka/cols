@@ -10,6 +10,61 @@ pub(crate) struct MapSelection {
     pub mode: String,
 }
 
+/// Native playlist starts carry an entry index, rather than a map name.
+/// Resolve it only against the catalog's versioned publisher order.
+pub(crate) fn playlist_start(command: &str) -> Result<Option<(u32, u32)>> {
+    ensure!(
+        command.len() <= 4096
+            && command.is_ascii()
+            && command.bytes().all(|b| (32..=126).contains(&b)),
+        "invalid playlist start text"
+    );
+    let mut statements = command.split(';').map(str::trim).collect::<Vec<_>>();
+    if statements.last() == Some(&"") {
+        statements.pop();
+    }
+    if !statements
+        .iter()
+        .any(|s| s.split_whitespace().next() == Some("playlist"))
+    {
+        return Ok(None);
+    }
+    ensure!(statements.len() == 6, "invalid playlist start shape");
+    let words = statements
+        .iter()
+        .map(|s| s.split_whitespace().collect::<Vec<_>>())
+        .collect::<Vec<_>>();
+    ensure!(
+        words[0] == ["mmstart", "sv_resetServer"],
+        "invalid playlist reset"
+    );
+    for (index, key) in [
+        (1, "2486"),
+        (2, "3265"),
+        (3, "2489"),
+        (4, "playlist"),
+        (5, "start_map_rotate_once"),
+    ] {
+        ensure!(
+            words[index].len() == 2 && words[index][0] == key,
+            "invalid playlist start field"
+        );
+    }
+    let humans = unsigned(words[1][1])?;
+    let maximum = unsigned(words[2][1])?;
+    ensure!(
+        (1..=32).contains(&humans) && (humans..=32).contains(&maximum) && words[3][1] == "1",
+        "invalid bot playlist capacity or flag"
+    );
+    let playlist = unsigned(words[4][1])?;
+    let entry = unsigned(words[5][1])?;
+    ensure!(
+        playlist < 256 && entry < 40,
+        "playlist selection outside native limits"
+    );
+    Ok(Some((playlist, entry)))
+}
+
 /// The captured training start has no explicit map and returns None. Custom
 /// room starts must identify exactly one map and mode. The caller separately
 /// binds that choice to a captured map catalog and an authenticated admission.
@@ -155,6 +210,28 @@ mod tests {
     const TRAINING: &str =
         "mmstart sv_resetServer; 2486 1; 3265 12; 2489 1; playlist 0; start_map_rotate_once 0";
     const CUSTOM: &str = "mmstart sv_resetServer; 2486 1; 3265 12; 2489 0; 2500 0; g_gametype war; g_difficulty 2; map mp_killhouse_sh;2654 owner_1;";
+
+    #[test]
+    fn native_playlist_entry_is_explicit_and_mixed_or_malformed_starts_fail() {
+        assert_eq!(playlist_start(TRAINING).unwrap(), Some((0, 0)));
+        assert_eq!(
+            playlist_start(&TRAINING.replace("rotate_once 0", "rotate_once 1")).unwrap(),
+            Some((0, 1))
+        );
+        assert_eq!(playlist_start(CUSTOM).unwrap(), None);
+        for bad in [
+            format!("{TRAINING};map mp_afghan"),
+            TRAINING.replace("playlist 0", "playlist 256"),
+            TRAINING.replace("rotate_once 0", "rotate_once 40"),
+            TRAINING.replace("2486 1", "2486 13"),
+            TRAINING.replace("2489 1", "2489 0"),
+            TRAINING.replace("rotate_once 0", "rotate_once -1"),
+            format!("{TRAINING};;"),
+            TRAINING.replace("playlist 0", "playlist 0\nquit"),
+        ] {
+            assert!(playlist_start(&bad).is_err(), "{bad}");
+        }
+    }
 
     #[test]
     fn captured_training_form_has_no_explicit_map() {

@@ -40,15 +40,20 @@ async fn receive(
 
 #[tokio::test]
 async fn binds_issued_ticket_and_records_authenticated_application_data() {
-    exercise_lobby(false).await;
+    exercise_lobby(false, false).await;
 }
 
 #[tokio::test]
 async fn local_services_preserve_fifo_after_unsupported_task() {
-    exercise_lobby(true).await;
+    exercise_lobby(true, false).await;
 }
 
-async fn exercise_lobby(local_services: bool) {
+#[tokio::test]
+async fn continuous_play_keeps_authenticated_fifo_after_capture_byte_and_frame_budgets() {
+    exercise_lobby(true, true).await;
+}
+
+async fn exercise_lobby(local_services: bool, continuous: bool) {
     let temp = tempfile::tempdir().unwrap();
     let data = vector();
     let key: [u8; 24] = bytes(&data, "key").try_into().unwrap();
@@ -68,7 +73,7 @@ async fn exercise_lobby(local_services: bool) {
         )
         .unwrap();
     let folder = temp.path().join("lobby");
-    let server = LobbyServer::bind_with_services(
+    let mut server = LobbyServer::bind_with_services(
         "127.0.0.1:0".parse().unwrap(),
         registry,
         folder.clone(),
@@ -76,6 +81,9 @@ async fn exercise_lobby(local_services: bool) {
     )
     .await
     .unwrap();
+    if continuous {
+        server = server.with_continuous_play().unwrap();
+    }
     let address = server.address().unwrap();
     let (stop, stopped) = oneshot::channel();
     let task = tokio::spawn(server.run(async {
@@ -304,6 +312,52 @@ async fn exercise_lobby(local_services: bool) {
                 codol_protocol::task::reply(u64::from(sequence), opcode, Ok(&records)).unwrap()
             );
         }
+    }
+    if continuous {
+        let mut unknown = vec![250, 3, 1];
+        unknown.resize(60_000, 0);
+        for sequence in 10..28 {
+            let packet = lobby::encrypt_application(
+                0x86,
+                &unknown,
+                &secrets.data_keys,
+                Direction::ClientToServer,
+                sequence,
+                [0x48; 16],
+            )
+            .unwrap();
+            stream.write_all(&packet).await.unwrap();
+            let response = receive(&mut stream, &secrets.data_keys, sequence + 1).await;
+            assert_eq!(
+                response.body,
+                codol_protocol::task::reply(u64::from(sequence), 1, Err(4)).unwrap()
+            );
+        }
+        // Cross the diagnostic frame cap without consuming crypto/RPC sequence
+        // numbers. Capture stops at its byte budget; authenticated play does not.
+        let keepalives = vec![0; 1050 * 4];
+        stream.write_all(&keepalives).await.unwrap();
+        let mut replies = vec![0xff; keepalives.len()];
+        stream.read_exact(&mut replies).await.unwrap();
+        assert_eq!(replies, keepalives);
+        stream
+            .write_all(
+                &lobby::encrypt_application(
+                    0x86,
+                    &[12, 3, 6, 0],
+                    &secrets.data_keys,
+                    Direction::ClientToServer,
+                    28,
+                    [0x49; 16],
+                )
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let response = receive(&mut stream, &secrets.data_keys, 29).await;
+        assert_eq!(&response.body[..9], &[10, 28, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(&response.body[9..14], &[8, 0, 0, 0, 0]);
+        assert!(!folder.join("000001/packet-1077-message.bin").exists());
     }
     stream.shutdown().await.unwrap();
     let mut rest = Vec::new();

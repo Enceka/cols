@@ -10,6 +10,7 @@ from pathlib import Path
 import re
 import struct
 import zlib
+from prepare_map_hud import map_entities
 
 CLIENT_SHA256 = "e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b"
 
@@ -108,24 +109,12 @@ def compute(capture, weapon_name=None, compose=False, viewhands=False,
     return result
 
 
-def spawn_origin(capture):
-    if (capture.get("schema_version") != 1 or capture.get("read_only") is not True
-            or capture.get("client_sha256") != CLIENT_SHA256):
-        raise ValueError("unsupported map capture identity")
-    maps = [m for m in capture["maps"] if m["name"] == "maps/mp/mp_afghan.d3dbsp"]
-    if len(maps) != 1:
-        raise ValueError("expected one mp_afghan map entity resource")
-    entry = maps[0]
-    text = base64.b64decode(entry["entity_string_base64"], validate=True)
-    if len(text) != entry["byte_count"] or len(text) > 4 * 1024 * 1024:
-        raise ValueError("map entity byte count mismatch")
-    for block in re.findall(rb'\{([^{}]*)\}', text):
-        pairs = re.findall(rb'"([^"\r\n]*)"\s+"([^"\r\n]*)"', block)
-        values = dict(pairs)
+def spawn_origin(capture, map_name="mp_afghan"):
+    if map_name not in {"mp_afghan", "mp_killhouse_sh", "mp_crash_tropical"}:
+        raise ValueError("unsupported captured map identity")
+    for values in map_entities(capture, map_name):
         if values.get(b"classname") != b"mp_tdm_spawn_allies_start":
             continue
-        if len(pairs) != len(values):
-            raise ValueError("duplicate spawn entity key")
         origin = [float(v) for v in values[b"origin"].split()]
         if len(origin) != 3 or any(not math.isfinite(v) or abs(v)>1_000_000 for v in origin):
             raise ValueError("invalid training spawn position")
@@ -218,6 +207,7 @@ def weapon_parts(raw, crc):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("capture", type=Path)
+    parser.add_argument("--map", choices=["mp_afghan", "mp_killhouse_sh", "mp_crash_tropical"], default="mp_afghan", help="explicit identity of the loaded map capture")
     parser.add_argument("--output", type=Path, help="prepare opt-in mp_afghan/war training gamestate")
     parser.add_argument("--map-entities", type=Path, help="include a map-derived training spawn in the snapshot probe")
     parser.add_argument("--weapon", choices=["m4_mp"], help="derive the basic M4 wire index for equipment bootstrap")
@@ -253,14 +243,14 @@ def main():
         map_raw = args.map_entities.read_bytes()
         if len(map_raw) > 16 * 1024 * 1024:
             parser.error("map capture size limit")
-        summary.update(spawn_origin=spawn_origin(json.loads(map_raw)),
+        summary.update(spawn_origin=spawn_origin(json.loads(map_raw), args.map),
                        map_entities_sha256=hashlib.sha256(map_raw).hexdigest())
     if args.output:
         if capture["connection_state"] != 7:
             parser.error("preparation requires the training map's state-7 resource capture")
         prepared = {"schema_version": 1, "client_sha256": CLIENT_SHA256,
                     "capture_sha256": hashlib.sha256(raw).hexdigest(),
-                    "map": "mp_afghan", "mode": "war", "zone": "mp", "playlist": 0,
+                    "map": args.map, "mode": "war", "zone": "mp", "playlist": 0,
                     **summary}
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(prepared, indent=2) + "\n")

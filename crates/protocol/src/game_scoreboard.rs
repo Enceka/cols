@@ -45,6 +45,78 @@ pub struct ScoreboardSnapshot {
     pub score_limit: u32,
 }
 
+/// Final AAR fields measured in mp/playerdata.def version233. These follow the
+/// final rows in the same ordered J stream; opening the native summary follows
+/// acknowledgement so its first draw cannot read a stale winner or score.
+pub fn summary_command(
+    winning_team: u8,
+    duration_seconds: u32,
+    map_id: u32,
+    mode_id: u32,
+) -> Result<Vec<u8>, LobbyError> {
+    if winning_team > 2 || duration_seconds > 3600 || map_id == 0 || mode_id == 0 {
+        return Err(LobbyError("invalid match summary"));
+    }
+    let mut out = vec![b'J'];
+    for (offset, value) in [
+        (47u32, duration_seconds),
+        (51, map_id),
+        (55, mode_id),
+        (59, 1),
+    ] {
+        out.extend_from_slice(&offset.to_le_bytes());
+        out.push(4);
+        out.extend_from_slice(&value.to_le_bytes());
+    }
+    out.extend_from_slice(&3833u32.to_le_bytes());
+    out.extend_from_slice(&[1, winning_team]);
+    Ok(out)
+}
+
+/// Names and team membership must survive removal of cgame's clientInfo at
+/// lobby return. The live scoreboard obtains them from CI; AAR reads these
+/// captured playerdata fields instead. All twelve slots belong to this match.
+pub fn summary_identity_commands(
+    local_name: &str,
+    teams: &[u8; 12],
+) -> Result<Vec<Vec<u8>>, LobbyError> {
+    if local_name.is_empty() || local_name.len() > 64 || local_name.chars().any(char::is_control) {
+        return Err(LobbyError("invalid summary player name"));
+    }
+    if teams.iter().any(|t| !matches!(t, 1 | 2)) {
+        return Err(LobbyError("invalid summary teams"));
+    }
+    let mut commands = vec![vec![b'J']];
+    for client in 0..19u32 {
+        let name = if client == 0 {
+            local_name.to_owned()
+        } else if client >= 12 {
+            String::new()
+        } else {
+            crate::room_messages::bot_name(client as u8)
+        };
+        let mut text = vec![0; 65];
+        text[..name.len()].copy_from_slice(name.as_bytes());
+        for (offset, bytes) in [
+            (166 + client * 198, text),
+            (
+                260 + client * 198,
+                vec![teams.get(client as usize).copied().unwrap_or(0)],
+            ),
+            (157 + client * 198, vec![u8::from(client == 0)]),
+        ] {
+            if commands.last().unwrap().len() + 5 + bytes.len() > BINARY_PAYLOAD_LIMIT {
+                commands.push(vec![b'J']);
+            }
+            let command = commands.last_mut().unwrap();
+            command.extend_from_slice(&offset.to_le_bytes());
+            command.push(bytes.len() as u8);
+            command.extend_from_slice(&bytes);
+        }
+    }
+    Ok(commands)
+}
+
 // Order: assists, deaths, downs, gp, headshots, kills, killstreak,
 // netcafe_privileges, objectives, ping, qq_membership, revives, score,
 // skill, status_icon, xp, dw_userID_lo, dw_userID_hi.
@@ -208,6 +280,89 @@ mod tests {
         assert_eq!(f["cache"]["base_cg_offset"], 0xbc8c0);
         assert_eq!(f["cache"]["row_stride"], 0x5c);
         f
+    }
+
+    #[test]
+    fn final_summary_uses_captured_fields_and_survives_lobby_return_for_all_outcomes() {
+        let layout: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../fixtures/protocol/summary-playerdata-3.3.3.3.json"
+        ))
+        .unwrap();
+        assert_eq!(layout["client_sha256"], crate::CLIENT_SHA256);
+        assert_eq!(layout["version"], PLAYERDATA_VERSION);
+        let fields = fixture();
+        for winner in 0..=2 {
+            let mut profile = vec![0xa5; PLAYERDATA_RECORD_BYTES];
+            apply(&summary_command(winner, 61, 8, 1).unwrap(), &mut profile);
+            for payload in
+                summary_identity_commands("Player", &[2, 2, 2, 2, 2, 2, 1, 1, 1, 1, 1, 1]).unwrap()
+            {
+                apply(&payload, &mut profile);
+            }
+            for (key, value) in [
+                ("aarGameDuration", 61),
+                ("aarMapID", 8),
+                ("aarModeID", 1),
+                ("aarRoundNumber", 1),
+            ] {
+                let offset = layout["fields"][key]["record_offset"].as_u64().unwrap() as usize;
+                assert_eq!(
+                    u32::from_le_bytes(profile[offset..offset + 4].try_into().unwrap()),
+                    value
+                );
+            }
+            let offset = layout["fields"]["aarWinningTeam"]["record_offset"]
+                .as_u64()
+                .unwrap() as usize;
+            assert_eq!(profile[offset], winner);
+            for client in 0..19 {
+                let at = |name: &str| {
+                    fields["fields"][format!("aarScoreboard[{client}].{name}")]["record_offset"]
+                        .as_u64()
+                        .unwrap() as usize
+                };
+                assert_eq!(
+                    profile[at("team")],
+                    if client >= 12 {
+                        0
+                    } else if client <= 5 {
+                        2
+                    } else {
+                        1
+                    }
+                );
+                assert_eq!(profile[at("isMe")], u8::from(client == 0));
+                assert_eq!(
+                    profile[at("name")],
+                    if client == 0 {
+                        b'P'
+                    } else if client >= 12 {
+                        0
+                    } else {
+                        b'B'
+                    }
+                );
+            }
+            // The AAR patch does not overwrite persistent loadout bytes.
+            assert_eq!(profile[5000], 0xa5);
+        }
+        assert!(summary_command(3, 10, 1, 1).is_err());
+        assert!(summary_identity_commands("\n", &[2; 12]).is_err());
+    }
+    #[test]
+    fn summary_keeps_native_room_team_changes_after_client_info_is_gone() {
+        let fields = fixture();
+        let teams = [1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2];
+        let mut profile = vec![0xa5; PLAYERDATA_RECORD_BYTES];
+        for command in summary_identity_commands("Player", &teams).unwrap() {
+            apply(&command, &mut profile);
+        }
+        for client in 0..19 {
+            let offset = fields["fields"][format!("aarScoreboard[{client}].team")]["record_offset"]
+                .as_u64()
+                .unwrap() as usize;
+            assert_eq!(profile[offset], teams.get(client).copied().unwrap_or(0));
+        }
     }
 
     // Match 0x57bf70's byte records independently of encoder helpers. The

@@ -71,6 +71,10 @@ pub(crate) struct Connection {
     last_input: Option<codol_protocol::game_usercmd::UserCommand>,
     snapshot_input_bases: VecDeque<(u32, codol_protocol::game_usercmd::UserCommand)>,
     world_history: VecDeque<WorldHistory>,
+    match_summary_sequence: Option<u32>,
+    match_ui_sequence: Option<u32>,
+    match_summary_opened: Option<u32>,
+    match_leave_sequence: Option<u32>,
 }
 
 #[derive(Clone)]
@@ -280,6 +284,9 @@ impl Connection {
     /// execution and is disabled unless explicitly selected by the operator.
     pub fn poll_snapshot(&mut self, now: Instant) -> Result<Option<Vec<u8>>> {
         if self.gamestate_update != Some(6)
+            || self
+                .match_leave_sequence
+                .is_some_and(|sequence| self.server_commands.acknowledged() >= sequence)
             || self.snapshot_count >= self.game_state.as_ref().map_or(0, |s| s.snapshot_limit())
             || !self.game_state.as_ref().is_some_and(|s| s.snapshot_probe())
             || self.snapshot_next.is_some_and(|next| now < next)
@@ -296,6 +303,14 @@ impl Connection {
                 .as_millis()
                 .min(u128::from(i32::MAX as u32 - 1000)) as u32;
         self.last_snapshot_time = server_time;
+        if self.server_commands.acknowledged() >= self.model_rules_sequence
+            && self
+                .snapshot_first_sequence
+                .is_some_and(|first| self.native_ack >= first)
+            && let Some(tdm) = &mut self.tdm
+        {
+            tdm.advance_clock(server_time);
+        }
         self.consume_inputs(server_time);
         if !self.hud_rules_sent
             && self.player.is_some()
@@ -309,6 +324,10 @@ impl Connection {
                 .map_or(7500, |m| m.scoreboard(self.owner_id).score_limit);
             self.server_commands
                 .push(format!("s ui_scorelimit \"{limit}\"").as_bytes())?;
+            if self.tdm.is_some() {
+                self.server_commands
+                    .push(b"s scr_gameended \"0\" ui_match_complete \"0\" ui_eog_show \"0\"")?;
+            }
             self.hud_rules_sent = true;
         }
         if self.combat.is_some()
@@ -374,10 +393,25 @@ impl Connection {
             tdm.dirty = false;
             self.scoreboard_sent = true;
             if tdm.finished && !tdm.result_sent {
-                self.feedback.push_back(tdm.result().to_owned());
+                for payload in codol_protocol::game_scoreboard::summary_identity_commands(
+                    self.display_name.as_deref().unwrap_or("Player"),
+                    tdm.teams(),
+                )? {
+                    self.server_commands.push_binary(&payload)?;
+                }
+                self.server_commands.push_binary(
+                    &codol_protocol::game_scoreboard::summary_command(
+                        tdm.winning_team(),
+                        tdm.duration_seconds(),
+                        self.game_state.as_ref().unwrap().summary_map_id()?,
+                        1,
+                    )?,
+                )?;
+                self.match_summary_sequence = Some(self.server_commands.sequence());
                 tdm.result_sent = true;
             }
         }
+        self.advance_match_summary(server_time)?;
         if !self.scoreboard_sent
             && self
                 .game_state
@@ -532,6 +566,7 @@ impl Connection {
         let previous_players = previous
             .as_ref()
             .map_or(match_baselines, |h| h.players.as_slice());
+        let snapshot_motion = self.snapshot_motion();
         let snapshot = state.snapshot(
             server_time,
             command_time,
@@ -543,7 +578,7 @@ impl Connection {
                 corpse_baselines: previous.as_ref().map_or(&[], |h| h.corpses.as_slice()),
                 impact_baselines: previous.as_ref().map_or(&[], |h| h.impacts.as_slice()),
                 obituary_baselines: previous.as_ref().map_or(&[], |h| h.obituaries.as_slice()),
-                motion: self.motion.as_ref(),
+                motion: snapshot_motion.as_ref(),
                 target: if state.enemy_snapshot(true).is_none() {
                     self.combat.as_ref().map(|w| w.snapshot())
                 } else {
@@ -691,6 +726,24 @@ impl Connection {
         self.motion
             .as_ref()
             .map(|m| (m.origin, m.velocity, m.command_time))
+    }
+    fn snapshot_motion(&self) -> Option<crate::game_motion::Motion> {
+        self.motion.as_ref().map(|motion| {
+            let mut camera = motion.clone();
+            if self.vitals.intermission {
+                // CG view offset 0x51d3b0 returns immediately for PM_INTERMISSION6.
+                // Its origin must already be the eye, rather than the actor's feet.
+                // Keep the actor and collision origin unchanged.
+                camera.origin[2] += camera.view_height;
+                camera.velocity = [0.0; 3];
+                camera.view_height = 0.0;
+                camera.view_height_target = 0;
+                camera.view_height_lerp_target = 0;
+                camera.view_height_lerp_time = 0;
+                camera.view_height_lerp_down = false;
+            }
+            camera
+        })
     }
     pub fn view_angles(&self) -> [u16; 3] {
         self.last_input.as_ref().map_or([0; 3], |c| c.angles)
@@ -1082,6 +1135,44 @@ impl Connection {
         }
     }
 
+    fn advance_match_summary(&mut self, now: u32) -> Result<()> {
+        if self.match_summary_sequence.is_none() {
+            return Ok(());
+        }
+        self.vitals.intermission = true;
+        if let Some(motion) = &mut self.motion {
+            motion.velocity = [0.0; 3];
+        }
+        if self.match_ui_sequence.is_none()
+            && self.server_commands.acknowledged() >= self.match_summary_sequence.unwrap()
+        {
+            self.server_commands
+                .push(b"s scr_gameended \"1\" ui_match_complete \"1\" ui_eog_show \"1\"")?;
+            self.match_ui_sequence = Some(self.server_commands.sequence());
+            tracing::info!(
+                winner = self.tdm.as_ref().unwrap().winning_team(),
+                result = self.tdm.as_ref().unwrap().result(),
+                "native match summary ready"
+            );
+        }
+        if self.match_summary_opened.is_none()
+            && self
+                .match_ui_sequence
+                .is_some_and(|sequence| self.server_commands.acknowledged() >= sequence)
+        {
+            self.match_summary_opened = Some(now);
+        }
+        if self
+            .match_summary_opened
+            .is_some_and(|start| now.saturating_sub(start) >= 12_000)
+            && self.match_leave_sequence.is_none()
+        {
+            self.match_leave_sequence = Some(self.server_commands.push(b"t EXE_MATCHENDED")?);
+            tracing::info!("returning finished match to lobby");
+        }
+        Ok(())
+    }
+
     fn advance_match(&mut self, now: u32) -> Result<()> {
         let tick_started = Instant::now();
         if self.server_commands.acknowledged() < self.model_rules_sequence {
@@ -1226,6 +1317,12 @@ impl Connection {
             if let Some(motion) = &mut self.motion
                 && let Some(collision) = self.game_state.as_ref().and_then(|s| s.collision.as_ref())
             {
+                if self.tdm.as_ref().is_some_and(|m| m.finished) {
+                    motion.velocity = [0.0; 3];
+                    motion.command_time = input.time;
+                    self.last_input = Some(input);
+                    continue;
+                }
                 let scale = self.player.as_ref().map_or(1.0, |p| p.move_scale());
                 let ads = self
                     .player
@@ -1610,6 +1707,23 @@ mod tests {
         assert!(c.obituaries[0].1.headshot && !c.obituaries[1].1.headshot);
     }
     #[test]
+    fn intermission_camera_uses_eye_height_without_moving_the_actor_or_accumulating_height() {
+        let mut c = Connection {
+            motion: Some(crate::game_motion::Motion::new([3076.0, -838.0, 4.0])),
+            ..Default::default()
+        };
+        assert_eq!(c.snapshot_motion().unwrap().origin, [3076.0, -838.0, 4.0]);
+        c.vitals.intermission = true;
+        for _ in 0..20 {
+            let view = c.snapshot_motion().unwrap();
+            assert_eq!(view.origin, [3076.0, -838.0, 64.0]);
+            assert_eq!(view.view_height, 0.0);
+            assert_eq!(c.motion.as_ref().unwrap().origin, [3076.0, -838.0, 4.0]);
+        }
+        c.motion.as_mut().unwrap().view_height = 20.0;
+        assert_eq!(c.snapshot_motion().unwrap().origin[2], 24.0);
+    }
+    #[test]
     fn native_encoded_nickname_is_decoded_without_accepting_controls() {
         assert_eq!(
             decode_connect_name("c3RlYW11c2VyQ2xpZW50"),
@@ -1751,6 +1865,46 @@ mod tests {
         );
         assert_eq!(c.native_sent, 63);
         assert_eq!(c.native_received, 0); // sending must never invent client ACKs
+    }
+    #[test]
+    fn acknowledged_match_exit_stops_snapshots_but_unacknowledged_exit_is_retried() {
+        let now = Instant::now();
+        let mut c = Connection::with_game_state(Arc::new(
+            crate::game_state::synthetic()
+                .with_snapshot_frames(60)
+                .unwrap(),
+        ));
+        c.challenge = Some(0x75);
+        c.native_sent = 3;
+        c.gamestate_update = Some(6);
+        let leave = c.server_commands.push(b"t EXE_MATCHENDED").unwrap();
+        c.match_leave_sequence = Some(leave);
+        assert!(c.poll_snapshot(now).unwrap().is_some());
+        assert!(
+            c.poll_snapshot(now + Duration::from_millis(50))
+                .unwrap()
+                .is_some()
+        );
+        c.server_commands.acknowledge(leave).unwrap();
+        let count = c.snapshot_count;
+        assert!(
+            c.poll_snapshot(now + Duration::from_millis(100))
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(c.snapshot_count, count);
+    }
+    #[test]
+    fn normal_play_keeps_the_frame_stream_past_the_diagnostic_frame_limit() {
+        let mut c = Connection::with_game_state(Arc::new(
+            crate::game_state::synthetic().with_continuous_play(),
+        ));
+        c.challenge = Some(0x75);
+        c.native_sent = 3;
+        c.gamestate_update = Some(6);
+        c.snapshot_count = 18000;
+        assert!(c.poll_snapshot(Instant::now()).unwrap().is_some());
+        assert_eq!(c.snapshot_count, 18001);
     }
     #[test]
     fn stats_and_heartbeat_require_prior_stages_and_all_fragments() {

@@ -68,6 +68,28 @@ struct LocalInventory {
 const MAX_INVENTORY_FILE_BYTES: usize = 256 * 1024;
 
 impl LocalServices {
+    pub(crate) async fn renew_play_session(&self, session: &Session, now: u32) -> Result<()> {
+        self.rooms.lock().await.renew_session(session, now)
+    }
+    pub async fn publisher_playlist_version(&self) -> Result<u32> {
+        let bytes = tokio::fs::read(
+            self.root
+                .join("publisher/mp_playlists_shipRetail_release.info"),
+        )
+        .await?;
+        ensure!(
+            bytes.len() <= task::MAX_FILE_BYTES,
+            "publisher playlist exceeds budget"
+        );
+        for line in bytes.split(|&b| b == b'\n') {
+            if let Some(version) = line.strip_prefix(b"version ") {
+                let value = std::str::from_utf8(version)?.trim().parse::<u32>()?;
+                ensure!(value > 0, "invalid publisher playlist version");
+                return Ok(value);
+            }
+        }
+        anyhow::bail!("publisher playlist version is missing")
+    }
     pub async fn with_game_endpoint(
         self,
         endpoint: std::sync::Arc<crate::game_server::GameAdmissions>,

@@ -108,6 +108,13 @@ class GameStatePreparation(unittest.TestCase):
         wrong=capture_map(text);wrong["maps"][0]["name"]="another_map"
         with self.assertRaises(ValueError): spawn_origin(wrong)
 
+    def test_explicit_second_map_never_reuses_the_first_maps_spawn(self):
+        text = b'{"classname" "mp_tdm_spawn_allies_start" "origin" "10 20 30"}'
+        maps = dict(schema_version=1,read_only=True,client_sha256=CLIENT_SHA256,maps=[dict(
+            name="maps/mp/mp_killhouse_sh.d3dbsp",byte_count=len(text),entity_string_base64=encoded([text])[0])])
+        self.assertEqual(spawn_origin(maps,"mp_killhouse_sh"),[10,20,30])
+        with self.assertRaises(ValueError):spawn_origin(maps)
+
     def test_seed_resource_order_dedup_and_no_terminators(self):
         data = capture()
         result = compute(data)

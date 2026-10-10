@@ -1,5 +1,4 @@
-//! Local 6v6 TDM authority. The human occupies allies client0; five allies
-//! and six axis bots have independent lives, input controllers and statistics.
+//! Local 6v6 TDM authority. Native room teams are frozen for each match.
 use crate::{
     game_bot::{BotController, BotTarget, BotWeapon},
     game_combat::{self, Actor, ActorShot},
@@ -20,10 +19,15 @@ pub(crate) struct MatchConfig {
     pub spawns: [Vec<[f32; 3]>; 2],
     pub score_limit: u32,
     pub time_limit_msec: u32,
+    #[serde(default = "default_teams")]
+    pub teams: [u8; 12],
     #[serde(default)]
     pub roster: Vec<BotLoadout>,
     #[serde(default)]
     pub models: Vec<(u16, String)>,
+}
+pub(crate) fn default_teams() -> [u8; 12] {
+    [2, 2, 2, 2, 2, 2, 1, 1, 1, 1, 1, 1]
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -37,6 +41,11 @@ pub(crate) struct BotLoadout {
 }
 impl MatchConfig {
     pub fn validate(&self, collision: &Collision) -> Result<()> {
+        ensure!(
+            self.teams.iter().all(|t| matches!(t, 1 | 2))
+                && self.teams.iter().filter(|&&t| t == 1).count() == 6,
+            "TDM requires six players per team"
+        );
         ensure!(
             (100..=100_000).contains(&self.score_limit) && self.score_limit.is_multiple_of(100),
             "invalid TDM score limit"
@@ -155,6 +164,7 @@ pub(crate) struct TdmMatch {
     pub dirty: bool,
     pub finished: bool,
     pub result_sent: bool,
+    pub finished_at: Option<u32>,
     start: Option<u32>,
     navigation: std::sync::Arc<crate::game_navigation::Navigation>,
     next_diagnostics: u32,
@@ -183,13 +193,12 @@ impl TdmMatch {
     ) -> Result<Self> {
         config.validate(collision)?;
         let mut bots = Vec::new();
+        let mut ordinals = [0usize; 2];
+        ordinals[usize::from(config.teams[0] - 1)] = 1;
         for client in 1..=11u8 {
-            let team = if client <= 5 { 2 } else { 1 };
-            let ordinal = if team == 2 {
-                usize::from(client)
-            } else {
-                usize::from(client - 6)
-            };
+            let team = config.teams[usize::from(client)];
+            let ordinal = ordinals[usize::from(team - 1)];
+            ordinals[usize::from(team - 1)] += 1;
             let origin = crate::game_bot::grounded_spawn(
                 config.spawns[usize::from(team - 1)][ordinal],
                 collision,
@@ -232,7 +241,11 @@ impl TdmMatch {
         let baselines = bots.iter().map(|bot| bot.snapshot).collect();
         let rows = std::array::from_fn(|i| ScoreboardRow {
             client_number: i as u8,
-            user_id: i as u64,
+            user_id: if i == 0 {
+                0
+            } else {
+                codol_protocol::room_messages::bot_id(i as u8)
+            },
             ..Default::default()
         });
         Ok(Self {
@@ -245,6 +258,7 @@ impl TdmMatch {
             dirty: true,
             finished: false,
             result_sent: false,
+            finished_at: None,
             start: None,
             navigation,
             next_diagnostics: 0,
@@ -272,6 +286,9 @@ impl TdmMatch {
     pub fn snapshots(&self) -> Vec<EnemySnapshot> {
         self.bots.iter().map(|bot| bot.snapshot).collect()
     }
+    pub fn teams(&self) -> &[u8; 12] {
+        &self.config.teams
+    }
     pub fn set_weapon_move_scale(&mut self, scale: f32) {
         for bot in &mut self.bots {
             bot.controller
@@ -297,8 +314,38 @@ impl TdmMatch {
             std::cmp::Ordering::Equal => "Draw",
         }
     }
+    pub fn winning_team(&self) -> u8 {
+        match self.scores[2].cmp(&self.scores[1]) {
+            std::cmp::Ordering::Greater => 2,
+            std::cmp::Ordering::Less => 1,
+            std::cmp::Ordering::Equal => 0,
+        }
+    }
+    pub fn duration_seconds(&self) -> u32 {
+        self.finished_at
+            .unwrap_or(0)
+            .saturating_sub(self.start.unwrap_or(0))
+            / 1000
+    }
+    pub fn advance_clock(&mut self, now: u32) {
+        if self.finished {
+            return;
+        }
+        let start = *self.start.get_or_insert(now);
+        if now.saturating_sub(start) >= self.config.time_limit_msec {
+            self.finish(now);
+        }
+    }
+    fn finish(&mut self, now: u32) {
+        if !self.finished {
+            self.finished = true;
+            self.finished_at = Some(now);
+            self.dirty = true;
+            tracing::info!(now, winner=self.winning_team(), scores=?self.scores, "TDM match finished");
+        }
+    }
     pub fn player_spawn(&self, collision: &Collision) -> Result<[f32; 3]> {
-        let starts = &self.config.spawns[1];
+        let starts = &self.config.spawns[usize::from(self.config.teams[0] - 1)];
         let index = self.rows[0].deaths as usize % starts.len();
         crate::game_bot::grounded_spawn(starts[index], collision)
     }
@@ -327,15 +374,18 @@ impl TdmMatch {
         weapon: u16,
         headshot: bool,
     ) {
+        if self.finished {
+            return;
+        }
         self.rows[usize::from(victim.client_index)].deaths += 1;
         let row = &mut self.rows[usize::from(attacker)];
         row.kills += 1;
         row.score += 100;
         row.headshots += u32::from(headshot);
-        let team = if attacker <= 5 { 2 } else { 1 };
+        let team = usize::from(self.config.teams[usize::from(attacker)]);
         self.scores[team] += 100;
         if self.scores[team] >= self.config.score_limit as i32 {
-            self.finished = true;
+            self.finish(now);
         }
         self.kills.push(Kill {
             victim,
@@ -417,13 +467,8 @@ impl TdmMatch {
         let mut movement = std::time::Duration::ZERO;
         let (mut local, local_height, local_health) = player;
         let mut tick = Tick::default();
+        self.advance_clock(now);
         if self.finished {
-            return Ok(tick);
-        }
-        let start = *self.start.get_or_insert(now);
-        if now.wrapping_sub(start) >= self.config.time_limit_msec {
-            self.finished = true;
-            self.dirty = true;
             return Ok(tick);
         }
         for i in 0..self.bots.len() {
@@ -769,6 +814,7 @@ mod tests {
             ],
             score_limit: 7500,
             time_limit_msec: 600000,
+            teams: default_teams(),
             roster: Vec::new(),
             models: Vec::new(),
         }
@@ -805,6 +851,33 @@ mod tests {
             ..front
         };
         assert!(visible_enemy([0.0; 3], 0, 2, &[underground], &collision).is_none());
+    }
+    #[test]
+    fn native_room_teams_control_spawns_scoring_and_winner() {
+        let collision = world();
+        let mut config = config();
+        config.teams = [1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2];
+        config.score_limit = 100;
+        let mut m = TdmMatch::new(config, template(), 200.0, &collision).unwrap();
+        assert_eq!(m.player_spawn(&collision).unwrap()[0], 300.0);
+        for bot in &m.bots {
+            assert_eq!(
+                bot.snapshot.team,
+                m.teams()[usize::from(bot.snapshot.client_index)]
+            );
+            assert_eq!(
+                bot.snapshot.origin[0],
+                if bot.snapshot.team == 1 {
+                    300.0
+                } else {
+                    -300.0
+                }
+            );
+        }
+        m.damage_bots(2100, 0, 352, &[(1, 100, false)]);
+        assert_eq!(m.scoreboard(42).team_scores, [0, 100, 0, 0]);
+        assert_eq!(m.winning_team(), 1);
+        assert_eq!(m.scoreboard(42).rows[1].deaths, 1);
     }
     #[test]
     fn six_per_team_have_unique_clients_lives_scores_and_respawns() {
@@ -891,6 +964,48 @@ mod tests {
         assert!(m.finished);
         assert_eq!(m.result(), "Allies win");
         assert_eq!(m.scoreboard(1).score_limit, 100);
+        let final_board = m.scoreboard(1);
+        m.damage_bots(2200, 0, 352, &[(7, 100, false)]);
+        m.player_killed(
+            2300,
+            template(),
+            PlayerHit {
+                damage: 100,
+                attacker: 6,
+                weapon: 352,
+                headshot: false,
+            },
+        );
+        m.advance_clock(700000);
+        assert_eq!(m.scoreboard(1), final_board);
+        assert_eq!(m.finished_at, Some(2100));
+        assert_eq!(m.winning_team(), 2);
+    }
+    #[test]
+    fn deadline_freezes_a_loss_and_a_draw_without_respawning_or_rescoring() {
+        let collision = world();
+        for (attacker, winner) in [(Some(6), 1), (None, 0)] {
+            let mut c = config();
+            c.time_limit_msec = 60_000;
+            let mut m = TdmMatch::new(c, template(), 190.0, &collision).unwrap();
+            m.advance_clock(1000);
+            if let Some(attacker) = attacker {
+                m.damage_bots(2100, attacker, 352, &[(1, 100, false)]);
+            }
+            m.advance_clock(60999);
+            assert!(!m.finished);
+            m.advance_clock(61000);
+            assert!(m.finished);
+            assert_eq!(m.winning_team(), winner);
+            assert_eq!(m.duration_seconds(), 60);
+            let final_board = m.scoreboard(1);
+            let snapshots = m.snapshots();
+            m.damage_bots(62000, 0, 352, &[(6, 100, false)]);
+            m.advance_clock(120000);
+            assert_eq!(m.scoreboard(1), final_board);
+            assert_eq!(m.finished_at, Some(61000));
+            assert_eq!(m.snapshots(), snapshots);
+        }
     }
     #[test]
     #[ignore = "requires local captured Afghan preparation"]

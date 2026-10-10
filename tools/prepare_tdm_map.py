@@ -1,0 +1,95 @@
+#!/usr/bin/env python3
+"""Prepare a TDM map using its own initialized resource captures.
+
+Account data is never opened. Shared game settings come from a template;
+map-specific collision, CRC, arsenal, spawns and animation IDs are rebound.
+"""
+import argparse
+import copy
+import hashlib
+import json
+import math
+from pathlib import Path
+
+from prepare_game_state import CLIENT_SHA256, compute
+from prepare_bot_locomotion import prepare as prepare_locomotion
+from prepare_bot_roster import prepare as prepare_roster
+from prepare_map_hud import map_entities, minimap
+
+
+def team_spawns(capture, map_name):
+    teams = [[], []]
+    classes = [b"mp_tdm_spawn_axis_start", b"mp_tdm_spawn_allies_start"]
+    for fields in map_entities(capture, map_name):
+        if fields.get(b"classname") not in classes:
+            continue
+        position = [float(v) for v in fields[b"origin"].split()]
+        if len(position) != 3 or any(not math.isfinite(v) or not -32768 <= v <= 32767 for v in position):
+            raise ValueError("invalid map spawn coordinates")
+        teams[classes.index(fields[b"classname"])].append(position)
+    if any(not 6 <= len(t) <= 128 for t in teams):
+        raise ValueError("map needs at least six captured starts per team")
+    return teams
+
+
+def prepare(template, map_name, constants, entities, collision, arsenal, characters):
+    if map_name not in {"mp_afghan", "mp_killhouse_sh", "mp_crash_tropical"} or template["client_sha256"] != CLIENT_SHA256:
+        raise ValueError("unsupported map/template identity")
+    summary = compute(constants, "m4_mp", True, True, "viewhands_tf141")
+    if not summary["observed_crc_verified"]:
+        raise ValueError("TDM requires an initialized map CRC capture")
+    crc = summary["ncs_crc"]
+    for capture in (collision, arsenal, characters):
+        if capture.get("read_only") is not True or capture.get("schema_version") != 1 or capture.get("client_sha256") != CLIENT_SHA256 or capture.get("ncs_crc") != crc:
+            raise ValueError("map/collision/arsenal/character identity mismatch")
+    if collision["map"] != "maps/mp/" + map_name + ".d3dbsp" or not collision["brushes"]:
+        raise ValueError("collision belongs to another or empty map")
+    teams = team_spawns(entities, map_name)
+    state = copy.deepcopy(template)
+    state.update(summary)
+    state.update(map=map_name, mode="war", zone="mp", playlist=0, spawn_origin=teams[1][0])
+    state["minimap"] = minimap(entities, map_name)
+    state["match_config"].update(spawns=teams, roster=[], models=[])
+    # Rebind the human skeleton and generic nodes by names in this capture.
+    models = {m["name"]: m for m in characters["models"]}
+    body = models["mp_fullbody_juggernaut_explosive_so"]
+    animation = state["training_enemy"]
+    animation.update(model=body["model"], origin=teams[0][0], bounds_min=body["bounds_min"], bounds_max=body["bounds_max"])
+    indices = {}
+    for a in characters["animations"]:
+        if a.get("source", 0x07817b80) == 0x07817b80:
+            indices.setdefault(a["name"].lower(), set()).add(a["index"])
+    for field, name in (("idle_animation", "pb_stand_alert"), ("fire_animation", "pt_stand_shoot_auto"),
+                        ("death_animation", "pb_stand_death_chest_blowback")):
+        found = indices.get(name, set())
+        if len(found) != 1:
+            raise ValueError("required human animation absent or ambiguous")
+        animation[field] = next(iter(found))
+    prepare_locomotion(state, characters, arsenal, CLIENT_SHA256)
+    result = prepare_roster(state, characters, arsenal, stream_outfits=True)
+    result.update(map=map_name, ncs_crc=crc, spawns=[len(t) for t in teams])
+    return state, result
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--template", type=Path, required=True)
+    parser.add_argument("--map", choices=["mp_afghan", "mp_killhouse_sh", "mp_crash_tropical"], required=True)
+    for name in ("constants", "entities", "collision", "arsenal", "characters", "output"):
+        parser.add_argument("--" + name, type=Path, required=True)
+    args = parser.parse_args()
+    loaded = {n: json.loads(getattr(args, n).read_text()) for n in ("constants", "entities", "collision", "arsenal", "characters")}
+    state, result = prepare(json.loads(args.template.read_text()), args.map, **loaded)
+    state["capture_sha256"] = hashlib.sha256(args.constants.read_bytes()).hexdigest()
+    state["map_entities_sha256"] = hashlib.sha256(args.entities.read_bytes()).hexdigest()
+    state["training_enemy"]["source_sha256"] = hashlib.sha256(args.characters.read_bytes()).hexdigest()
+    state["arsenal_file"] = str(args.arsenal.resolve())
+    state["collision_file"] = str(args.collision.resolve())
+    with args.output.open("x") as out:
+        json.dump(state, out, indent=2)
+        out.write("\n")
+    print(json.dumps(result))
+
+
+if __name__ == "__main__":
+    main()

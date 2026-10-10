@@ -13,6 +13,9 @@ pub struct Description {
     pub channel_id: u64,
     pub maximum: u32,
     pub build: i32,
+    map_crc: u32,
+    mode_crc: u32,
+    playlist: i32,
     pub security_key: [u8; 16],
     /// Contains the client's session security material; never log or publish it.
     pub encoded: Vec<u8>,
@@ -55,8 +58,9 @@ impl Description {
             .blob()?
             .try_into()
             .map_err(|_| LobbyError("unexpected room security key size"))?;
-        for _ in 0..11 {
-            r.i32()?;
+        let mut attributes = [0i32; 11];
+        for attribute in &mut attributes {
+            *attribute = r.i32()?;
         }
         let channel_id = r.u64()?;
         r.i32()?;
@@ -68,9 +72,19 @@ impl Description {
             channel_id,
             maximum,
             build,
+            map_crc: attributes[4] as u32,
+            mode_crc: attributes[10] as u32,
+            playlist: attributes[5],
             security_key,
             encoded: arguments.to_vec(),
         })
+    }
+
+    /// C1 custom-room captures bind tail[4]/[10] to CRC32(map/mode).
+    pub fn matches_custom_map(&self, map: &str, mode: &str) -> bool {
+        self.playlist == -1
+            && self.map_crc == crc32fast::hash(map.as_bytes())
+            && self.mode_crc == crc32fast::hash(mode.as_bytes())
     }
 
     /// Lookup result (0xa55700→0x701db0) adds a session Blob and player count

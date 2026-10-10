@@ -57,7 +57,8 @@ def main():
     parser.add_argument("action", choices=["list", "prepare", "init", "probe", "client"])
     parser.add_argument("--engine-id", default="10000033")
     parser.add_argument("--prefix-name", help="named project-owned prefix for isolated diagnostics; never resets an existing prefix")
-    parser.add_argument("--seconds", type=int, default=90)
+    parser.add_argument("--seconds", type=int, help="diagnostic duration; continuous play defaults to no deadline")
+    parser.add_argument("--continuous-play", action="store_true", help="play until exit, with bounded diagnostic capture")
     parser.add_argument("--title-id-hex", "--context-hex", dest="context_hex", help="explicit u32 title_id; valid game deployment value is still unknown")
     parser.add_argument("--file-trace", action="store_true")
     parser.add_argument("--crossproxy", action="store_true", help="also reproduce the launcher's CrossProxy step")
@@ -71,6 +72,7 @@ def main():
     parser.add_argument("--rust-game", action="store_true", help="enable experimental game allocation/UDP transport; no simulation yet")
     parser.add_argument("--game-state", type=Path, help="opt-in prepared training gamestate from prepare_game_state.py")
     parser.add_argument("--game-map-catalog", type=Path, help="captured preparations for native room map selection")
+    parser.add_argument("--native-bot-rooms", action="store_true", help="native custom rooms with one human and eleven server bots on prepared TDM maps")
     parser.add_argument("--snapshot-probe", nargs="?", type=int, const=60, help="bootstrap frame budget at 20 Hz (1..18000; default 60); requires game-state")
     parser.add_argument("--hit-regions", type=Path, help="enemy pose capture path; may be written later by client_state.py --hit-regions")
     parser.add_argument("--local-services", action="store_true", help="enable time/storage services with persistent data in client-work/server-data")
@@ -83,8 +85,12 @@ def main():
         print(json.dumps([{k: info[k] for k in ["id", "name", "version", "install_path", "install_status"]}
                           for info in available.values()], indent=2))
         return 0
-    if not 1 <= args.seconds <= 900:
-        parser.error("seconds must be 1..900")
+    if args.seconds is None:
+        args.seconds=0 if args.continuous_play else 90
+    if not 0 <= args.seconds <= 3600 or (args.seconds==0 and not args.continuous_play):
+        parser.error("seconds must be 1..3600, or 0 with continuous-play")
+    if args.continuous_play and (args.action!="client" or not args.rust_game or not args.game_state or args.snapshot_probe is not None):
+        parser.error("continuous-play requires client, rust-game and game-state without snapshot-probe")
     if args.prefix_name and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", args.prefix_name):
         parser.error("prefix-name must be a simple directory name, at most 64 characters")
     if (args.tls_probe or args.rust_auth or args.trust_lab_cert) and args.action != "client":
@@ -111,6 +117,8 @@ def main():
         parser.error("snapshot-probe requires game-state and 1..18000 frames")
     if args.game_map_catalog and (not args.rust_game or not args.game_map_catalog.is_file()):
         parser.error("game-map-catalog requires rust-game and an existing catalog")
+    if args.native_bot_rooms and not args.game_map_catalog:
+        parser.error("native-bot-rooms requires game-map-catalog")
     if args.release_server and not args.rust_auth:
         parser.error("release-server requires rust-auth")
     if args.hit_regions and not args.game_state:
@@ -165,6 +173,8 @@ def main():
     channels = "-all,err+all,+timestamp,+pid,+tid,+seh,+loaddll,+winsock,+debugstr"
     if args.quiet_network:
         channels = channels.replace(",+winsock", "")
+    if args.continuous_play:
+        channels="-all,err+all,+timestamp,+pid,+tid"
     if args.file_trace:
         channels += ",+file"
     env.update(WINEPREFIX=str(prefix), WINEDEBUG=channels, WINEDLLOVERRIDES="winemenubuilder.exe=d")
@@ -173,7 +183,7 @@ def main():
     ca_backups = {}
     state = {"engine_id": args.engine_id, "engine": info["name"], "engine_version": info["version"],
              "prefix": str(prefix), "action": args.action, "title_id_experimental": context,
-             "wine_debug": channels, "seconds": args.seconds, "started_unix": time.time()}
+             "wine_debug": channels, "seconds": args.seconds, "continuous_play":args.continuous_play, "started_unix": time.time()}
     with (output / "wine.log").open("wb") as log, (output / "observer.log").open("wb") as server_log, (output / "crossproxy.log").open("wb") as cross_log, (output / "tls-plaintext.bin").open("wb") as tls_plaintext, (output / "tls-status.log").open("wb") as tls_status:
         try:
             # Terminating the harness must still restore temporary certificate
@@ -219,13 +229,17 @@ def main():
                             tls_argv += ["--stun-bind", "127.0.0.1:3074", "--stun-alt", "127.0.0.1:3078"]
                         if args.rust_game:
                             tls_argv += ["--game-bind", "127.0.0.1:39004"]
-                            if args.quiet_network:
+                            if args.continuous_play:
+                                tls_argv += ["--continuous-play","--game-capture-every","1000"]
+                            elif args.quiet_network:
                                 tls_argv += ["--game-capture-every", "30"]
                         if args.game_state:
                             tls_argv += ["--game-state", str(args.game_state.resolve())]
                             state["game_state_sha256"] = sha256(args.game_state)
                         if args.game_map_catalog:
                             tls_argv += ["--game-map-catalog", str(args.game_map_catalog.resolve())]
+                        if args.native_bot_rooms:
+                            tls_argv += ["--native-bot-rooms"]
                         if args.hit_regions:
                             tls_argv += ["--hit-regions", str(args.hit_regions.resolve())]
                         if args.snapshot_probe:
@@ -243,7 +257,8 @@ def main():
                         state["temporary_ca_paths"] = [str(path.relative_to(work)) for path in ca_backups]
                 cfg += '\n[[listeners]]\nname = "resources"\nbind = "127.0.0.1:39003"\n'
                 (output / "observe.toml").write_text(cfg)
-                server = subprocess.Popen([str(REPO / "target/debug/codol-server"), "observe", "--config", str(output / "observe.toml")], stdout=server_log, stderr=subprocess.STDOUT)
+                observer_executable=REPO/"target"/("release" if args.release_server else "debug")/"codol-server"
+                server = subprocess.Popen([str(observer_executable), "observe", "--config", str(output / "observe.toml")], stdout=server_log, stderr=subprocess.STDOUT)
                 deadline = time.monotonic() + 5
                 while not list((output / "captures").glob("run-*/run.json")) or (args.rust_auth and not list((output / "auth-captures").glob("auth-*/run.json"))):
                     if server.poll() is not None:
@@ -254,6 +269,9 @@ def main():
                         raise TimeoutError("observer startup")
                     time.sleep(0.1)
                 argv = [wine, str(work / "codoMP_client_shipRetail.exe"), "-q", "0", "-src=tgp", "-game_id", "29", "-zone_id", "83886082", "+set", "r_fullscreen", "0"]
+                if args.native_bot_rooms:
+                    argv += ["+set", "1011", "1", "+set", "3265", "12", "+set", "dw_autoStartGame", "0"]
+                    state["native_bot_rooms"] = True
             elif args.action == "init":
                 argv = [wine, "wineboot.exe", "-u"]
             else:
@@ -264,13 +282,21 @@ def main():
             state.update(pid=process.pid, argv=argv)
             (output / "experiment.json").write_text(json.dumps(state, indent=2) + "\n")
             print(json.dumps({"output": str(output), "pid": process.pid}), flush=True)
-            deadline = time.monotonic() + args.seconds
+            deadline = time.monotonic() + args.seconds if args.seconds else float("inf")
             while process.poll() is None and time.monotonic() < deadline:
                 if server is not None and server.poll() is not None:
                     raise RuntimeError("observer stopped during the experiment")
                 if tls is not None and tls.poll() is not None:
                     raise RuntimeError("TLS probe stopped; inspect tls-status.log")
-                if (output / "wine.log").stat().st_size + (output / "crossproxy.log").stat().st_size >= 64 * 1024 * 1024:
+                if args.continuous_play:
+                    for handle in (log,cross_log,server_log,tls_plaintext,tls_status):
+                        if os.fstat(handle.fileno()).st_size>=64*1024*1024:
+                            # These descriptors share their file position with
+                            # the child; reset the bounded log, not the game.
+                            handle.seek(0);handle.truncate()
+                            rotations=state.setdefault("log_rotations",{})
+                            name=Path(handle.name).name;rotations[name]=rotations.get(name,0)+1
+                elif (output / "wine.log").stat().st_size + (output / "crossproxy.log").stat().st_size >= 64 * 1024 * 1024:
                     state["log_limit_reached"] = True
                     break
                 time.sleep(0.25)

@@ -24,12 +24,15 @@ pub(crate) struct Admission {
     expires: u32,
     pub(crate) key: [u8; 16],
     booked: bool,
+    playlist_version: Option<u32>,
     start_command: Option<String>,
+    room_teams: Option<[u8; 12]>,
 }
 
 pub struct GameAdmissions {
     address: SocketAddrV4,
     entries: Mutex<HashMap<[u8; 8], Admission>>,
+    pub(crate) bot_rooms: Option<crate::room_bots::Policy>,
 }
 impl GameAdmissions {
     pub fn address(&self) -> SocketAddrV4 {
@@ -77,10 +80,33 @@ impl GameAdmissions {
                 expires: session.expires_at.min(now.saturating_add(930)),
                 key,
                 booked: false,
+                playlist_version: None,
                 start_command: None,
+                room_teams: None,
             },
         );
         Ok((id, key))
+    }
+    pub(crate) fn set_room_teams(&self, session: &Session, teams: [u8; 12]) -> Result<()> {
+        ensure!(
+            teams.iter().all(|t| matches!(t, 1 | 2))
+                && teams.iter().filter(|&&t| t == 1).count() == 6,
+            "invalid native match roster"
+        );
+        let mut entries = self
+            .entries
+            .lock()
+            .map_err(|_| anyhow::anyhow!("game admissions poisoned"))?;
+        let entry = entries
+            .values_mut()
+            .find(|a| {
+                a.title == session.title_id
+                    && a.owner == session.user_id
+                    && a.seed == session.iv_seed
+            })
+            .ok_or_else(|| anyhow::anyhow!("room roster requires allocated game"))?;
+        entry.room_teams = Some(teams);
+        Ok(())
     }
     pub(crate) fn control(
         &self,
@@ -114,7 +140,7 @@ impl GameAdmissions {
         if command.starts_with("mmbook ") {
             let parts = command.split(' ').collect::<Vec<_>>();
             ensure!(parts.len() == 4, "invalid mmbook fields");
-            let _playlist_version = parts[1].parse::<u32>()?;
+            let playlist_version = parts[1].parse::<u32>()?;
             let id: [u8; 8] = STANDARD
                 .decode(parts[2])?
                 .try_into()
@@ -130,6 +156,7 @@ impl GameAdmissions {
                 })
                 .ok_or_else(|| anyhow::anyhow!("booking does not belong to session"))?;
             admission.booked = true;
+            admission.playlist_version = Some(playlist_version);
             let reply = b"mmbook accepted";
             let mut body = (reply.len() as u32).to_le_bytes().to_vec();
             body.extend_from_slice(reply);
@@ -157,7 +184,11 @@ impl GameAdmissions {
             response.label = "local_game_transport_start_requested";
             tracing::info!(
                 bytes = command.len(),
-                "game start configuration received (simulation pending)"
+                map = crate::game_map_selection::from_mmstart(command)
+                    .ok()
+                    .flatten()
+                    .map(|s| s.map),
+                "native game start configuration received"
             );
         } else {
             return Ok(TaskResult::failure(
@@ -175,6 +206,24 @@ impl GameAdmissions {
                     || a.seed == session.iv_seed
             });
         }
+    }
+    /// Only an authenticated lobby frame in continuous play may extend an
+    /// existing live allocation. Never revive an expired or revoked entry.
+    pub(crate) fn renew_session(&self, session: &Session, now: u32) -> Result<()> {
+        ensure!(session.expires_at > now, "expired game lease session");
+        let mut entries = self
+            .entries
+            .lock()
+            .map_err(|_| anyhow::anyhow!("game admissions poisoned"))?;
+        for entry in entries.values_mut().filter(|a| {
+            a.expires > now
+                && a.title == session.title_id
+                && a.owner == session.user_id
+                && a.seed == session.iv_seed
+        }) {
+            entry.expires = session.expires_at.min(now.saturating_add(930));
+        }
+        Ok(())
     }
     pub(crate) fn revoke(&self, session: &Session) {
         if let Ok(mut e) = self.entries.lock() {
@@ -197,6 +246,7 @@ impl GameAdmissions {
 
 pub struct GameServer {
     capture_every: u32,
+    continuous_play: bool,
     socket: UdpSocket,
     admissions: Arc<GameAdmissions>,
     directory: PathBuf,
@@ -274,6 +324,7 @@ impl GameServer {
         }))?).await?;
         Ok(Self {
             capture_every: 1,
+            continuous_play: false,
             socket,
             directory,
             game_state: None,
@@ -283,11 +334,16 @@ impl GameServer {
             admissions: Arc::new(GameAdmissions {
                 address,
                 entries: Mutex::new(HashMap::new()),
+                bot_rooms: None,
             }),
         })
     }
     pub fn admissions(&self) -> Arc<GameAdmissions> {
         self.admissions.clone()
+    }
+    pub fn with_continuous_play(mut self) -> Self {
+        self.continuous_play = true;
+        self
     }
     pub fn with_game_state(mut self, state: crate::game_state::PreparedGameState) -> Self {
         self.game_state = Some(Arc::new(state));
@@ -313,6 +369,22 @@ impl GameServer {
         self.game_map_catalog = Some(catalog);
         self
     }
+    pub fn with_native_bot_rooms(mut self, version: u32) -> Result<Self> {
+        ensure!(version > 0, "native bot rooms require publisher version");
+        let maps = self
+            .game_map_catalog
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("native bot rooms require captured catalog"))?
+            .bot_room_maps();
+        ensure!(
+            !maps.is_empty(),
+            "native bot rooms require TDM preparations"
+        );
+        Arc::get_mut(&mut self.admissions)
+            .ok_or_else(|| anyhow::anyhow!("bot room policy must precede admission sharing"))?
+            .bot_rooms = Some(crate::room_bots::Policy { version, maps });
+        Ok(self)
+    }
     fn template_for(
         &self,
         admission: &Admission,
@@ -322,6 +394,18 @@ impl GameServer {
             .as_deref()
             .ok_or_else(|| anyhow::anyhow!("game start missing"))?;
         let parsed = crate::game_map_selection::from_mmstart(start);
+        if let Some(catalog) = self.game_map_catalog.as_ref().filter(|c| c.has_rotations())
+            && let Some((playlist, entry)) = crate::game_map_selection::playlist_start(start)?
+        {
+            ensure!(
+                admission.build == -688906341,
+                "prepared game state client build mismatch"
+            );
+            let version = admission.playlist_version.ok_or_else(|| {
+                anyhow::anyhow!("playlist start requires booked publisher version")
+            })?;
+            return Ok(Some(catalog.select_rotation(version, playlist, entry)?));
+        }
         // Transport-only recovery has no world to fall back to. Explicit
         // room maps always require a captured preparation, even in this mode.
         if self.game_state.is_none() && self.game_map_catalog.is_none() && parsed.is_err() {
@@ -336,7 +420,12 @@ impl GameServer {
                 let catalog = self.game_map_catalog.as_ref().ok_or_else(|| {
                     anyhow::anyhow!("requested room map has no preparation catalog")
                 })?;
-                Ok(Some(catalog.select(&selection.map, &selection.mode)?))
+                let state = catalog.select(&selection.map, &selection.mode)?;
+                Ok(Some(if let Some(teams) = admission.room_teams {
+                    Arc::new((*state).clone().with_room_teams(teams)?)
+                } else {
+                    state
+                }))
             }
             None => {
                 if let Some(state) = &self.game_state {
@@ -354,10 +443,13 @@ impl GameServer {
         }
     }
     pub async fn run<F: Future<Output = std::io::Result<()>>>(mut self, shutdown: F) -> Result<()> {
+        if self.continuous_play {
+            write_private(&self.directory.join("play-mode.json"),&serde_json::to_vec(&serde_json::json!({"snapshot_frame_limit":null,"capture_receive_byte_limit":32*1024*1024,"capture_every":self.capture_every}))?).await?;
+        }
         tokio::pin!(shutdown);
         let mut buffer = [0; 4096];
-        let mut count = 0;
-        let mut total = 0;
+        let mut count = 0u32;
+        let mut total = 0usize;
         let mut peers = HashMap::<SocketAddrV4, BoundPeer>::new();
         let mut weapon_registries =
             HashMap::<RegistryKey, Arc<Mutex<crate::game_weapon_registry::WeaponRegistry>>>::new();
@@ -371,6 +463,7 @@ impl GameServer {
                         .as_ref()
                         .map_or(0, |c| c.snapshot_limit()),
                 )
+                .min(18000)
                 * 4;
         let mut tick = tokio::time::interval(std::time::Duration::from_millis(50));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -409,12 +502,12 @@ impl GameServer {
                         let wire=records.seal(&plain,p.remote_tag)?;
                         self.socket.send_to(&wire,*address).await?;
                         snapshots+=1;
-                        if snapshots.is_multiple_of(self.capture_every) || snapshots<10 {
+                        if (!self.continuous_play || (count<=datagram_limit && total<=32*1024*1024)) && (snapshots.is_multiple_of(self.capture_every) || snapshots<10) {
                         write_private(&self.directory.join(format!("snapshot-{snapshots:04}-plaintext.bin")),&plain).await?;
                         write_private(&self.directory.join(format!("snapshot-{snapshots:04}-reply.bin")),&wire).await?;
                         write_private(&self.directory.join(format!("snapshot-{snapshots:04}.json")),&serde_json::to_vec(&serde_json::json!({
                             "peer":address,"native_sequence":u32::from_le_bytes(plain[..4].try_into()?),
-                            "bytes":wire.len(),"unix_time_ms":unix_time_ms(),"mode":"bounded_bootstrap_probe","motion":p.connection.motion_progress(),"prediction":p.connection.prediction_progress()
+                            "bytes":wire.len(),"unix_time_ms":unix_time_ms(),"mode":if self.continuous_play {"local_play"}else{"bounded_bootstrap_probe"},"motion":p.connection.motion_progress(),"prediction":p.connection.prediction_progress()
                         }))?).await?;
                         }
                     }
@@ -423,11 +516,14 @@ impl GameServer {
             },
             result=self.socket.recv_from(&mut buffer)=>result?};
             let SocketAddr::V4(peer) = peer else { continue };
-            if !peer.ip().is_loopback() || count >= datagram_limit || total + n > 32 * 1024 * 1024 {
+            if !peer.ip().is_loopback()
+                || (!self.continuous_play
+                    && (count >= datagram_limit || total.saturating_add(n) > 32 * 1024 * 1024))
+            {
                 continue;
             }
-            count += 1;
-            total += n;
+            count = count.saturating_add(1);
+            total = total.saturating_add(n);
             let wire = &buffer[..n];
             let sampled = count.is_multiple_of(self.capture_every) || wire.first() != Some(&6);
             let now = (unix_time_ms() / 1000) as u32;
@@ -598,7 +694,9 @@ impl GameServer {
             if let Some(error) = &error {
                 tracing::warn!(%peer,%error,"game input rejected");
             }
-            let capture = sampled || error.is_some() || response.is_some();
+            let capture = (!self.continuous_play
+                || (count <= datagram_limit && total <= 32 * 1024 * 1024))
+                && (sampled || error.is_some() || response.is_some());
             if capture {
                 write_private(
                     &self.directory.join(format!("{count:04}-request.bin")),
@@ -615,7 +713,10 @@ impl GameServer {
             }
             if let Some(reply) = &response {
                 self.socket.send_to(reply, peer).await?;
-                write_private(&self.directory.join(format!("{count:04}-reply.bin")), reply).await?;
+                if capture {
+                    write_private(&self.directory.join(format!("{count:04}-reply.bin")), reply)
+                        .await?;
+                }
             }
             // INIT metadata only; security material remains in memory/capture.
             let admitted = if n == 16 && wire[0] == 1 {
@@ -662,6 +763,7 @@ mod tests {
         GameAdmissions {
             address: "127.0.0.1:39004".parse().unwrap(),
             entries: Mutex::new(HashMap::new()),
+            bot_rooms: None,
         }
     }
 
@@ -680,7 +782,10 @@ mod tests {
                 "schema_version":1,"entries":[
                     {"map":"mp_afghan","mode":"war","file":"afghan.json"},
                     {"map":"mp_killhouse_sh","mode":"war","file":"killhouse.json"}
-                ]
+                ], "rotations":[{"version":6,"playlist":0,"maps":[
+                    {"map":"mp_afghan","mode":"war"},
+                    {"map":"mp_killhouse_sh","mode":"war"}
+                ]}]
             }))
             .unwrap(),
         )
@@ -700,6 +805,8 @@ mod tests {
             expires: 100,
             key: [7; 16],
             booked: true,
+            playlist_version: None,
+            room_teams: None,
             start_command: Some(
                 "mmstart sv_resetServer; map mp_killhouse_sh; g_gametype war".into(),
             ),
@@ -745,10 +852,31 @@ mod tests {
             "mmstart sv_resetServer; 2486 1; 3265 12; 2489 1; playlist 0; start_map_rotate_once 0"
                 .into(),
         );
+        assert!(server.template_for(&admission).is_err());
+        admission.playlist_version = Some(5);
+        assert!(server.template_for(&admission).is_err());
+        admission.playlist_version = Some(6);
         assert_eq!(
             server.template_for(&admission).unwrap().unwrap().map(),
             "mp_afghan"
         );
+        admission.start_command = Some(
+            admission
+                .start_command
+                .unwrap()
+                .replace("rotate_once 0", "rotate_once 1"),
+        );
+        assert_eq!(
+            server.template_for(&admission).unwrap().unwrap().map(),
+            "mp_killhouse_sh"
+        );
+        admission.start_command = Some(
+            admission
+                .start_command
+                .unwrap()
+                .replace("rotate_once 1", "rotate_once 2"),
+        );
+        assert!(server.template_for(&admission).is_err());
         admission.build = 0;
         assert!(server.template_for(&admission).is_err());
     }
@@ -768,6 +896,8 @@ mod tests {
             expires: 100,
             key: [7; 16],
             booked: true,
+            playlist_version: None,
+            room_teams: None,
             start_command: Some(
                 "mmstart sv_resetServer; map mp_killhouse_sh; g_gametype war".into(),
             ),
@@ -833,6 +963,42 @@ mod tests {
         let (next, _) = a.allocate(&s, [8; 16], -688906341, 1).unwrap();
         assert_ne!(next, new);
         assert!(a.allocate(&s, [8; 16], -688906341, 100).is_err());
+    }
+
+    #[test]
+    fn live_game_lease_crosses_original_deadline_without_reviving_stale_sessions() {
+        let a = admissions();
+        let mut s = session();
+        s.expires_at = 10_000;
+        let (id, _) = a.allocate(&s, [7; 16], -688906341, 1).unwrap();
+        a.control(
+            &command(&format!("mmbook 7 {} 0", STANDARD.encode(id))),
+            &s,
+            2,
+        )
+        .unwrap();
+        a.control(&command("mmstart sv_resetServer; playlist 0"), &s, 2)
+            .unwrap();
+        for field in 0..3 {
+            let mut other = s.clone();
+            match field {
+                0 => other.title_id += 1,
+                1 => other.user_id += 1,
+                _ => other.iv_seed += 1,
+            }
+            a.renew_session(&other, 900).unwrap();
+            assert!(a.get(&id, 931).is_none());
+        }
+        for now in [900, 1800, 2700, 3600] {
+            a.renew_session(&s, now).unwrap();
+            assert!(a.get(&id, now + 929).is_some());
+        }
+        a.renew_session(&s, 4530).unwrap();
+        assert!(a.get(&id, 4530).is_none()); // idle expiry cannot be undone
+        a.revoke(&s);
+        a.renew_session(&s, 4500).unwrap();
+        assert!(a.entries.lock().unwrap().is_empty());
+        assert!(a.renew_session(&s, 10_000).is_err());
     }
 
     #[tokio::test]

@@ -21,6 +21,7 @@ pub mod profile;
 pub mod publisher;
 pub mod purchase;
 pub mod room;
+pub mod room_messages;
 pub mod stun;
 pub mod task;
 pub mod ticket;

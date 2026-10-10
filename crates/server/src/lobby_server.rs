@@ -27,11 +27,18 @@ pub struct LobbyServer {
     registry: Arc<SessionRegistry>,
     directory: PathBuf,
     services: Option<Arc<LocalServices>>,
+    continuous_play: bool,
 }
-// The harness permits 900-second UI experiments. Keep its final observation
+// The harness permits bounded hour-long native room/UI experiments. Keep its final observation
 // inside the transport budget; byte/frame/concurrency limits remain enforced.
-const MAX_SESSION_SECONDS: u64 = 930;
+const MAX_SESSION_SECONDS: u64 = 3630;
 const MAX_SERVICE_FRAMES: usize = 1024;
+async fn record_packet(enabled: bool, path: &Path, bytes: &[u8]) -> Result<()> {
+    if enabled {
+        write_private(path, bytes).await?;
+    }
+    Ok(())
+}
 impl LobbyServer {
     pub async fn bind(
         bind: SocketAddr,
@@ -59,6 +66,7 @@ impl LobbyServer {
             registry,
             directory,
             services,
+            continuous_play: false,
         })
     }
     pub fn address(&self) -> Result<SocketAddr> {
@@ -66,6 +74,14 @@ impl LobbyServer {
     }
     pub fn services(&self) -> Option<Arc<LocalServices>> {
         self.services.clone()
+    }
+    pub fn with_continuous_play(mut self) -> Result<Self> {
+        ensure!(
+            self.services.is_some(),
+            "continuous play requires local services"
+        );
+        self.continuous_play = true;
+        Ok(self)
     }
     pub async fn with_game_endpoint(
         mut self,
@@ -81,6 +97,9 @@ impl LobbyServer {
         Ok(self)
     }
     pub async fn run<F: Future<Output = std::io::Result<()>>>(self, shutdown: F) -> Result<()> {
+        if self.continuous_play {
+            write_private(&self.directory.join("play-mode.json"),&serde_json::to_vec(&json!({"session_timeout_seconds":null,"capture_frame_limit":MAX_SERVICE_FRAMES,"capture_byte_limit":1024*1024}))?).await?;
+        }
         let (stop, _) = watch::channel(false);
         let slots = Arc::new(Semaphore::new(16));
         let mut tasks = JoinSet::new();
@@ -95,13 +114,16 @@ impl LobbyServer {
                     let (stream,peer)=match accepted{Ok(x)=>x,Err(e)=>break Err(e.into())};
                     let Ok(permit)=slots.clone().try_acquire_owned() else{continue;};
                     id+=1;let id=id;
-                    let registry=self.registry.clone();let directory=self.directory.clone();let services=self.services.clone();let mut stop=stop.subscribe();
+                    let registry=self.registry.clone();let directory=self.directory.clone();let services=self.services.clone();let mut stop=stop.subscribe();let continuous_play=self.continuous_play;
                     tasks.spawn(async move {
                         let _permit=permit;
                         let result=if *stop.borrow(){Err(anyhow::anyhow!("shutdown"))}else{
                             tokio::select! {
                                 _=stop.changed()=>Err(anyhow::anyhow!("shutdown")),
-                                result=tokio::time::timeout(Duration::from_secs(MAX_SESSION_SECONDS),handle(stream,id,&registry,&directory,services.as_deref()))=>match result{Ok(r)=>r,Err(_)=>Err(anyhow::anyhow!("lobby session timeout"))},
+                                result=async {
+                                    let work=handle(stream,id,&registry,&directory,services.as_deref(),continuous_play);
+                                    if continuous_play {work.await} else {tokio::time::timeout(Duration::from_secs(MAX_SESSION_SECONDS),work).await.map_err(|_|anyhow::anyhow!("lobby session timeout"))?}
+                                }=>result,
                             }
                         };
                         if let Err(error)=result {
@@ -140,6 +162,7 @@ async fn handle(
     registry: &SessionRegistry,
     root: &Path,
     services: Option<&LocalServices>,
+    continuous_play: bool,
 ) -> Result<()> {
     let directory = root.join(format!("{id:06}"));
     tokio::fs::create_dir(&directory).await?;
@@ -158,7 +181,7 @@ async fn handle(
     let auth = tokio::time::timeout(Duration::from_secs(10), read_frame(&mut stream)).await??;
     write_private(&directory.join("client-auth.bin"), &auth).await?;
     let parsed = lobby::parse_client_auth(&auth)?;
-    let session = registry
+    let mut session = registry
         .lookup(&parsed.server_ticket)?
         .context("unknown or expired issued ticket")?;
     ensure!(
@@ -187,7 +210,9 @@ async fn handle(
     let mut expected_sequence = 1;
     let mut outgoing_sequence = 1u32;
     let mut transaction_id = 1u64;
-    for index in 0..if services.is_some() {
+    for index in 0..if continuous_play {
+        usize::MAX
+    } else if services.is_some() {
         MAX_SERVICE_FRAMES
     } else {
         32
@@ -205,9 +230,14 @@ async fn handle(
                 Ok(Err(error)) => return Err(error),
                 Err(_) => break,
             };
-        total += frame.len();
-        ensure!(total <= 1024 * 1024, "lobby capture budget exhausted");
-        write_private(
+        total = usize::saturating_add(total, frame.len());
+        ensure!(
+            continuous_play || total <= 1024 * 1024,
+            "lobby capture budget exhausted"
+        );
+        let recording = total <= 1024 * 1024 && index < MAX_SERVICE_FRAMES;
+        record_packet(
+            recording,
             &directory.join(format!("packet-{index:03}-c2s.bin")),
             &frame,
         )
@@ -219,8 +249,19 @@ async fn handle(
                 lobby::Direction::ClientToServer,
                 expected_sequence,
             )?;
+            // New handshakes still require a live ticket. Renew room and UDP
+            // leases only after this active connection's MAC/sequence checks;
+            // plaintext keepalives do not extend an allocation.
+            if continuous_play {
+                let now = (unix_time_ms() / 1000).try_into().unwrap_or(u32::MAX);
+                session.expires_at = now.saturating_add(3600);
+                if let Some(services) = services {
+                    services.renew_play_session(&session, now).await?;
+                }
+            }
             expected_sequence = expected_sequence.wrapping_add(1);
-            write_private(
+            record_packet(
+                recording,
                 &directory.join(format!("packet-{index:03}-message.bin")),
                 &message.body,
             )
@@ -235,7 +276,7 @@ async fn handle(
             } else {
                 None
             };
-            write_private(&directory.join(format!("packet-{index:03}-decoded.json")),&serde_json::to_vec_pretty(&json!({"sequence":message.sequence,"kind":message.kind,"service":service,"task":task,"body_bytes":message.body.len(),"mac_verified":true}))?).await?;
+            record_packet(recording,&directory.join(format!("packet-{index:03}-decoded.json")),&serde_json::to_vec_pretty(&json!({"sequence":message.sequence,"kind":message.kind,"service":service,"task":task,"body_bytes":message.body.len(),"mac_verified":true}))?).await?;
             tracing::info!(
                 session_id = id,
                 kind = message.kind,
@@ -281,7 +322,7 @@ async fn handle(
                     Err(code) => Err(*code),
                 };
                 let body = task::reply(transaction_id, task.context("missing task id")?, result)?;
-                write_private(&directory.join(format!("packet-{index:03}-reply.json")),&serde_json::to_vec_pretty(&json!({
+                record_packet(recording,&directory.join(format!("packet-{index:03}-reply.json")),&serde_json::to_vec_pretty(&json!({
                     "transaction_id":transaction_id,"service":service,"task":task,"handler":response.label,
                     "error_code":response.result.as_ref().err().copied().unwrap_or(0),
                     "result_count":response.result.as_ref().map_or(0,Vec::len),
@@ -303,7 +344,8 @@ async fn handle(
                     "reply exceeds client receive limit"
                 );
                 outgoing_sequence = outgoing_sequence.wrapping_add(1);
-                write_private(
+                record_packet(
+                    recording,
                     &directory.join(format!("packet-{index:03}-s2c.bin")),
                     &reply,
                 )
@@ -327,7 +369,8 @@ async fn handle(
                         "push exceeds client receive limit"
                     );
                     outgoing_sequence = outgoing_sequence.wrapping_add(1);
-                    write_private(
+                    record_packet(
+                        recording,
                         &directory.join(format!("packet-{index:03}-push-{push_index:02}.bin")),
                         &wire,
                     )

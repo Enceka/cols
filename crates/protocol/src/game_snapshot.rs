@@ -78,6 +78,7 @@ pub struct PlayerVitals {
     pub damage_event: u8,
     pub damage_count: u8,
     pub spawn_count: u8,
+    pub intermission: bool,
 }
 impl Default for PlayerVitals {
     fn default() -> Self {
@@ -86,6 +87,7 @@ impl Default for PlayerVitals {
             damage_event: 0,
             damage_count: 0,
             spawn_count: 1,
+            intermission: false,
         }
     }
 }
@@ -415,7 +417,9 @@ pub fn player_frame_with_world(
                 (73, 255, 8),
                 (74, u32::from(vitals.damage_count), 7),
             ]);
-            if vitals.health == 0 {
+            if vitals.intermission {
+                fields.push((83, 6, 8)); // 0x41dba0 case6 skips movement and weapons
+            } else if vitals.health == 0 {
                 fields.extend([(83, 8, 8), (84, 1, 3)]); // PM_DEAD8, local corpse slot20-19
             }
         }
