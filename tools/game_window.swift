@@ -126,7 +126,7 @@ case "look":
     event.post(tap: .cghidEventTap)
     result["delta"] = [dx, dy]
 case "hold":
-    let keys: [String: CGKeyCode] = ["w":13,"s":1,"a":0,"d":2,"q":12,"e":14,"r":15,"space":49,"shift":56,"ctrl":59,"c":8,"1":18,"2":19,"escape":53]
+    let keys: [String: CGKeyCode] = ["w":13,"s":1,"a":0,"d":2,"q":12,"e":14,"r":15,"f":3,"space":49,"shift":56,"ctrl":59,"c":8,"1":18,"2":19,"escape":53]
     guard args.count == 5, let seconds = Double(args[4]), seconds.isFinite,
           (0.03...3.0).contains(seconds), keys[args[3]] != nil || ["fire","ads"].contains(args[3])
     else { fail("hold requires an allowlisted gameplay key and 0.03..3 seconds") }

@@ -29,6 +29,9 @@ pub(crate) struct Connection {
     marks_command_sent: bool,
     hit_feedback: crate::game_feedback::Feedback,
     death_waypoints: crate::game_death_waypoints::DeathWaypoints,
+    replay: crate::game_replay::Replay,
+    last_kill: Option<crate::game_match::Kill>,
+    final_replay_considered: bool,
     enemy_baseline: Option<codol_protocol::game_enemy::EnemySnapshot>,
     local_baseline: Option<codol_protocol::game_enemy::EnemySnapshot>,
     corpses: std::collections::BTreeMap<u16, (u32, codol_protocol::game_corpse::CorpseSnapshot)>,
@@ -80,6 +83,7 @@ pub(crate) struct Connection {
 
 #[derive(Clone)]
 struct WorldHistory {
+    replay_epoch: u32,
     sequence: u32,
     local: Option<codol_protocol::game_enemy::EnemySnapshot>,
     players: Vec<codol_protocol::game_enemy::EnemySnapshot>,
@@ -304,6 +308,7 @@ impl Connection {
                 .as_millis()
                 .min(u128::from(i32::MAX as u32 - 1000)) as u32;
         self.last_snapshot_time = server_time;
+        self.replay.advance(server_time);
         if self.server_commands.acknowledged() >= self.model_rules_sequence
             && self
                 .snapshot_first_sequence
@@ -382,6 +387,17 @@ impl Connection {
             self.advance_match(server_time)?;
         } else {
             self.advance_bot(server_time)?;
+        }
+        if self.tdm.as_ref().is_some_and(|m| m.finished) && !self.final_replay_considered {
+            self.final_replay_considered = true;
+            if let Some(kill) = self.last_kill {
+                self.replay.start(
+                    crate::game_replay::Kind::Final,
+                    kill.time,
+                    server_time,
+                    kill.attacker,
+                );
+            }
         }
         if let Some(tdm) = &mut self.tdm
             && (tdm.dirty || !self.scoreboard_sent)
@@ -474,7 +490,7 @@ impl Connection {
             }
         }
         let state = self.game_state.as_ref().expect("enabled state");
-        let angles = if state.has_spawn() {
+        let mut angles = if state.has_spawn() {
             self.view_angles()
         } else {
             [0; 3]
@@ -482,12 +498,12 @@ impl Connection {
 
         // View and the supported M4 actions are applied by this bootstrap. Advancing commandTime
         // with the snapshot clock suppresses local prediction (0x4522b0).
-        let command_time = self
+        let mut command_time = self
             .last_input
             .as_ref()
             .map_or(1000, |cmd| cmd.time)
             .min(server_time);
-        let equipment = self.player.as_ref().map(|p| p.equipment());
+        let mut equipment = self.player.as_ref().map(|p| p.equipment());
         let mut impacts = self.impacts.snapshot(server_time);
         if self.tdm.is_some() {
             impacts.truncate(8);
@@ -496,7 +512,7 @@ impl Connection {
             .retain(|(time, _)| server_time.wrapping_sub(*time) < 200);
         let mut obituaries: Vec<_> = self.obituaries.iter().map(|(_, event)| *event).collect();
         obituaries.sort_unstable_by_key(|event| event.entity_number);
-        let corpses: Vec<_> = self
+        let mut corpses: Vec<_> = self
             .corpses
             .values()
             .map(|(time, corpse)| {
@@ -542,13 +558,108 @@ impl Connection {
             current.events = self.enemy_events;
         }
         let models_ready = self.server_commands.acknowledged() >= self.model_rules_sequence;
-        let match_players = if models_ready {
+        let mut match_players = if models_ready {
             self.tdm.as_ref().map_or(Vec::new(), |m| m.snapshots())
         } else {
             Vec::new()
         };
         if self.tdm.is_some() {
             enemy = None;
+        }
+        let mut snapshot_motion = self.snapshot_motion();
+        let mut snapshot_vitals = (self.bot.is_some() || self.tdm.is_some()).then_some(self.vitals);
+        let mut hit_feedback = state
+            .feedback_resources()
+            .map(|r| self.hit_feedback.snapshot(server_time, r));
+        if let Some(tdm) = self.tdm.as_ref().filter(|_| models_ready) {
+            let mut views = tdm.replay_views();
+            if let (Some(motion), Some(equipment)) = (self.motion.as_ref(), equipment) {
+                views.push(crate::game_replay::View {
+                    client: 0,
+                    motion: motion.clone(),
+                    angles,
+                    equipment,
+                    vitals: self.vitals,
+                    hit: self.hit_feedback.event(),
+                });
+            }
+            views.retain(|v| {
+                v.vitals.health > 0
+                    || corpses
+                        .iter()
+                        .any(|c| c.present && c.donor_client == v.client)
+            });
+            for view in &mut views {
+                if view.vitals.health == 0 {
+                    if let Some(corpse) = corpses
+                        .iter()
+                        .filter(|c| c.donor_client == view.client && c.present)
+                        .max_by_key(|c| c.death_sequence)
+                    {
+                        view.vitals.corpse_slot = (corpse.entity_number - 19) as u8;
+                    }
+                    view.motion.velocity = [0.0; 3];
+                }
+            }
+            self.replay.record(crate::game_replay::Frame {
+                time: server_time,
+                views,
+                local: local_player,
+                players: match_players.clone(),
+                corpses: corpses.clone(),
+                impacts: impacts.clone(),
+                obituaries: obituaries.clone(),
+            });
+        }
+        let live_players = match_players.clone();
+        let playback = self.replay.sample(server_time);
+        let replay_epoch = playback.as_ref().map_or(self.replay.epoch, |p| p.epoch);
+        let replay_wire = playback
+            .as_ref()
+            .map(|p| codol_protocol::game_snapshot::ReplayView {
+                client: p.view.client,
+                delay_msec: p.delay,
+                end_time: p.end_time,
+            });
+        if let Some(playback) = playback {
+            if playback.entering {
+                // 3.3.3.3 dispatcher0x57dc12: L <client> <card slot>.
+                // 0x6889c0 copies clientInfo identity/decorations; the native
+                // killcam HUD0x5d3f70 reads slot7 rather than followed PS.
+                self.server_commands
+                    .push(format!("L {} 7", playback.view.client).as_bytes())?;
+            }
+            angles = playback.view.angles;
+            command_time = playback.view.motion.command_time;
+            equipment = Some(playback.view.equipment);
+            snapshot_motion = Some(playback.view.motion);
+            snapshot_vitals = Some(playback.view.vitals);
+            local_player = playback.frame.local;
+            match_players = playback.frame.players;
+            corpses = playback.frame.corpses;
+            impacts = playback.frame.impacts;
+            obituaries = playback.frame.obituaries;
+            hit_feedback = state.feedback_resources().map(|resources| {
+                let mut feedback = crate::game_feedback::Feedback::default();
+                if let Some((time, kind)) = playback.view.hit {
+                    feedback.record(time, kind);
+                }
+                feedback.snapshot(server_time, resources)
+            });
+            if let Some((time, _)) = playback
+                .view
+                .hit
+                .filter(|(time, _)| server_time.wrapping_sub(*time) < 100)
+            {
+                let source_time = time.wrapping_sub(playback.delay);
+                if self.replay.last_sound != Some(source_time) {
+                    self.replay.last_sound = Some(source_time);
+                    if let Some(resources) = state.feedback_resources() {
+                        self.server_commands
+                            .push(resources.sound_command().as_bytes())?;
+                    }
+                }
+            }
         }
         let match_baselines = self.tdm.as_ref().map_or(&[][..], |m| m.baselines());
         // parseClients is circular; a multiplayer delta cannot retain the
@@ -559,6 +670,7 @@ impl Connection {
                 .rev()
                 .find(|h| {
                     h.sequence <= self.native_ack
+                        && h.replay_epoch == replay_epoch
                         && self.native_sent + 1 - h.sequence < 24
                         && h.players.len() == match_players.len()
                 })
@@ -578,7 +690,6 @@ impl Connection {
         let previous_players = previous
             .as_ref()
             .map_or(match_baselines, |h| h.players.as_slice());
-        let snapshot_motion = self.snapshot_motion();
         let death_waypoints = state
             .feedback_resources()
             .and_then(|r| r.death_material)
@@ -587,9 +698,9 @@ impl Connection {
                 self.death_waypoints.snapshot(
                     server_time,
                     team,
-                    &match_players,
+                    &live_players,
                     material,
-                    self.vitals.health > 0 && !self.vitals.intermission,
+                    self.vitals.health > 0 && !self.vitals.intermission && replay_wire.is_none(),
                     self.tdm.as_ref().is_none_or(|m| m.finished),
                 )
             });
@@ -615,7 +726,7 @@ impl Connection {
                 enemy_baseline: self.enemy_baseline,
                 players: &match_players,
                 player_baselines: previous_players,
-                vitals: (self.bot.is_some() || self.tdm.is_some()).then_some(self.vitals),
+                vitals: snapshot_vitals,
                 local_player,
                 local_player_baseline: if self.tdm.is_some() {
                     previous.as_ref().and_then(|h| h.local).filter(|b| b.alive)
@@ -624,10 +735,9 @@ impl Connection {
                 },
                 corpses: &corpses,
                 obituaries: &obituaries,
-                hit_feedback: state
-                    .feedback_resources()
-                    .map(|resources| self.hit_feedback.snapshot(server_time, resources)),
+                hit_feedback,
                 death_waypoints: death_waypoints.as_deref(),
+                replay: replay_wire,
             },
         )?;
         let budget = game_wire::FRAGMENT_SIZE - 5;
@@ -670,6 +780,7 @@ impl Connection {
         }
         if self.tdm.is_some() {
             self.world_history.push_back(WorldHistory {
+                replay_epoch,
                 sequence: self.native_sent,
                 local: local_player,
                 players: match_players,
@@ -1128,6 +1239,18 @@ impl Connection {
     fn drain_match_kills(&mut self, now: u32) {
         let kills = self.tdm.as_mut().unwrap().take_kills();
         for kill in kills {
+            self.last_kill = Some(kill);
+            if kill.victim.client_index == 0
+                && kill.attacker != 0
+                && !self.tdm.as_ref().unwrap().finished
+            {
+                self.replay.start(
+                    crate::game_replay::Kind::Death,
+                    kill.time,
+                    now,
+                    kill.attacker,
+                );
+            }
             self.death_waypoints
                 .record(now, self.tdm.as_ref().unwrap().teams()[0], kill.victim);
             let mut corpse = self
@@ -1161,6 +1284,9 @@ impl Connection {
 
     fn advance_match_summary(&mut self, now: u32) -> Result<()> {
         if self.match_summary_sequence.is_none() {
+            return Ok(());
+        }
+        if self.replay.pending() {
             return Ok(());
         }
         self.vitals.intermission = true;
@@ -1212,6 +1338,7 @@ impl Connection {
             .player_death
             .is_some_and(|death| now.wrapping_sub(death) >= 3000)
             && !self.tdm.as_ref().unwrap().finished
+            && !self.replay.pending()
         {
             self.equip_spawn_loadout();
             let state = self.game_state.as_ref().unwrap();
@@ -1310,6 +1437,11 @@ impl Connection {
                 .is_some_and(|last| input.time <= last.time)
             {
                 continue;
+            }
+            let was_replaying = self.replay.kind().is_some();
+            self.replay.input(input.time, input.buttons);
+            if was_replaying && let Some(player) = &self.player {
+                input.weapons = player.equipment().input_weapons();
             }
             if (self.bot.is_some() || self.tdm.is_some())
                 && (self.vitals.health == 0

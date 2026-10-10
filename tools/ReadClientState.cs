@@ -49,6 +49,7 @@ class ReadClientState {
     static int Main(string[] args) {
         try {
             bool feedback=args.Length==1 && args[0]=="--feedback";
+            bool replay=args.Length==1 && args[0]=="--replay";
             bool assets=args.Length==1 && args[0]=="--assets";
             bool profiles=args.Length==1 && args[0]=="--profiles";
             bool netConstants=args.Length==1 && args[0]=="--net-constants";
@@ -62,7 +63,7 @@ class ReadClientState {
             bool bulletImpacts=args.Length==1 && args[0]=="--bullet-impacts";
             bool characters=args.Length==1 && args[0]=="--characters";
             bool hitRegions=args.Length==1 && args[0]=="--hit-regions";
-            if(args.Length!=0 && !feedback && !hitRegions && !assets && !profiles && !netConstants && !mapEntities && !bootstrapWeapon && !weaponModels && !arsenal && !collision && !weaponRegistry && !trainingTarget && !bulletImpacts && !characters) throw new Exception("only fixed extraction modes are supported");
+            if(args.Length!=0 && !replay && !feedback && !hitRegions && !assets && !profiles && !netConstants && !mapEntities && !bootstrapWeapon && !weaponModels && !arsenal && !collision && !weaponRegistry && !trainingTarget && !bulletImpacts && !characters) throw new Exception("only fixed extraction modes are supported");
             IntPtr snapshot=CreateToolhelp32Snapshot(2,0); uint found=0;
             if(snapshot==new IntPtr(-1)) throw new Exception("process snapshot failed");
             try {
@@ -91,6 +92,7 @@ class ReadClientState {
                 }
                 if(assets) { ClientAssets.Export(process);return 0; }
                 if(feedback) { ClientAssets.ExportFeedback(process);return 0; }
+                if(replay) { ClientAssets.ExportReplay(process);return 0; }
                 if(profiles) { ClientAssets.ExportProfiles(process);return 0; }
                 if(netConstants) { ClientAssets.ExportNetConstants(process);return 0; }
                 if(mapEntities) { ClientAssets.ExportMapEntities(process);return 0; }
@@ -171,6 +173,12 @@ class ReadClientState {
                         Field(process,"predicted_health",checked(cg+0x190),4);
                         Field(process,"predicted_spawn_count",checked(cg+0x19c),4);
                         Field(process,"predicted_corpse_slot",checked(cg+0xe8),4);
+                        Field(process,"predicted_client_number",checked(cg+0x144),4);
+                        Field(process,"predicted_replay_delay",checked(cg+0xa68),4);
+                        Field(process,"predicted_replay_target",checked(cg+0xa6c),4);
+                        Field(process,"native_killcam_active",checked(cg+0xc6fe8),4);
+                        Field(process,"killcam_timer_type",checked(cg+0xa78),4);
+                        Field(process,"killcam_timer_end",checked(cg+0xa78+0x78),4);
                         Field(process,"predicted_hit_hud_type",checked(cg+0x1ed0),4);
                         Field(process,"predicted_hit_hud_material",checked(cg+0x1ed0+0x4c),4);
                         Field(process,"predicted_death_hud_type",checked(cg+0xa78),4);

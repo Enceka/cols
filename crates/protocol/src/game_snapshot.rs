@@ -79,6 +79,7 @@ pub struct PlayerVitals {
     pub damage_count: u8,
     pub spawn_count: u8,
     pub intermission: bool,
+    pub corpse_slot: u8,
 }
 impl Default for PlayerVitals {
     fn default() -> Self {
@@ -88,8 +89,17 @@ impl Default for PlayerVitals {
             damage_count: 0,
             spawn_count: 1,
             intermission: false,
+            corpse_slot: 1,
         }
     }
+}
+
+/// 3.3.3.3: clientNum +0x144, deltaTime +0xa68; 0x51b3f0 owns killcam entry/exit.
+#[derive(Debug, Clone, Copy)]
+pub struct ReplayView {
+    pub client: u8,
+    pub delay_msec: u32,
+    pub end_time: u32,
 }
 
 /// A full baseline with command time and health, no entities/clients/weapons.
@@ -193,6 +203,7 @@ pub fn player_frame_with_motion(
             player_baselines: &[],
             hit_feedback: None,
             death_waypoints: None,
+            replay: None,
             vitals: None,
             local_player: None,
             local_player_baseline: None,
@@ -214,6 +225,7 @@ pub struct WorldSnapshot<'a> {
     pub player_baselines: &'a [crate::game_enemy::EnemySnapshot],
     pub hit_feedback: Option<crate::game_hit_feedback::HitFeedbackSnapshot>,
     pub death_waypoints: Option<&'a [crate::game_hit_feedback::DeathWaypointSnapshot]>,
+    pub replay: Option<ReplayView>,
     pub vitals: Option<PlayerVitals>,
     pub local_player: Option<crate::game_enemy::EnemySnapshot>,
     pub local_player_baseline: Option<crate::game_enemy::EnemySnapshot>,
@@ -235,8 +247,21 @@ pub fn player_frame_with_world(
 ) -> Result<Vec<u8>, LobbyError> {
     let motion = world.motion;
     let vitals = world.vitals;
-    if vitals.is_some_and(|v| v.health > 100 || v.damage_count > 127 || motion.is_none()) {
+    if vitals.is_some_and(|v| {
+        v.health > 100 || v.damage_count > 127 || v.corpse_slot >= 8 || motion.is_none()
+    }) {
         return Err(LobbyError("invalid authoritative player vitals"));
+    }
+    if world.replay.is_some_and(|r| {
+        r.client >= 12
+            || !(1..=10_000).contains(&r.delay_msec)
+            || r.end_time <= server_time
+            || r.end_time - server_time > 10_000
+            || motion.is_none()
+            || equipment.is_none()
+            || vitals.is_none()
+    }) {
+        return Err(LobbyError("invalid archived replay view"));
     }
     let weapon = equipment.map(|e| e.weapon);
     let inventory_weapon = equipment.and_then(|e| e.inventory_weapon).or(weapon);
@@ -402,6 +427,14 @@ pub fn player_frame_with_world(
                 // Zero selects entity0 and adds our own body yaw a second
                 // time. An unlinked first-person camera uses ENTITYNUM_NONE.
                 (227, 2047, 11),
+                (136, 2047, 11), // No projectile/vehicle killcam target.
+                (137, 2047, 11),
+            ]);
+        }
+        if let Some(replay) = world.replay {
+            fields.extend([
+                (59, u32::from(replay.client), 8),
+                (142, replay.delay_msec, 32),
             ]);
         }
         if let Some(events) = events {
@@ -422,7 +455,7 @@ pub fn player_frame_with_world(
             if vitals.intermission {
                 fields.push((83, 6, 8)); // 0x41dba0 case6 skips movement and weapons
             } else if vitals.health == 0 {
-                fields.extend([(83, 8, 8), (84, 1, 3)]); // PM_DEAD8, local corpse slot20-19
+                fields.extend([(83, 8, 8), (84, u32::from(vitals.corpse_slot), 3)]);
             }
         }
         if let Some(weapon) = weapon {
@@ -433,7 +466,15 @@ pub fn player_frame_with_world(
                 (39, u32::from(weapon), 10),
                 (40, u32::from(alternate_weapon.unwrap_or(0)), 10),
                 (87, u32::from(equipment.unwrap().fire_count), 3),
-                (54, 0x1000, 28),
+                (
+                    54,
+                    if world.replay.is_some() {
+                        0x800
+                    } else {
+                        0x1000
+                    },
+                    28,
+                ),
             ]);
             if let Some(firing) = firing {
                 if firing.remaining_msec != 0 {
@@ -564,11 +605,12 @@ pub fn player_frame_with_world(
         // HUD; four final indexed lists. 3.3.3.3 has fourteen gates in total.
         out.bits(0, 8);
     }
-    if world.hit_feedback.is_some() || world.death_waypoints.is_some() {
+    if world.hit_feedback.is_some() || world.death_waypoints.is_some() || world.replay.is_some() {
         crate::game_hit_feedback::write_hud(
             &mut out,
             world.hit_feedback,
             world.death_waypoints.unwrap_or(&[]),
+            world.replay.map(|r| r.end_time),
         )?;
     } else {
         out.bits(0, 1); // HUD
@@ -829,6 +871,104 @@ mod tests {
             fields.insert(index, value);
         }
         (fields, parameters)
+    }
+
+    #[test]
+    fn killcam_fields_select_the_archived_player_and_clear_on_return() {
+        let equipment = Equipment {
+            weapon: 352,
+            inventory_weapon: None,
+            alternate_weapon: None,
+            fire_count: 0,
+            spread_scale: 0.0,
+            needs_rechamber: false,
+            ammo: None,
+            viewmodel: Some(54),
+            firing: None,
+            aim: None,
+            secondary: None,
+            events: None,
+        };
+        let motion = MotionSnapshot {
+            view_height: 60.0,
+            view_height_target: 60,
+            ground_entity: 2047,
+            speed: 190,
+            gravity: 800,
+            ..Default::default()
+        };
+        for replay in [
+            Some(ReplayView {
+                client: 7,
+                delay_msec: 4000,
+                end_time: 10000,
+            }),
+            None,
+        ] {
+            let body = player_frame_with_world(
+                9000,
+                8950,
+                Some([1.0, 2.0, 3.0]),
+                true,
+                Some(equipment),
+                [0; 3],
+                WorldSnapshot {
+                    motion: Some(motion),
+                    vitals: Some(PlayerVitals::default()),
+                    replay,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let mut reader = Reader::new(&body);
+            assert_eq!(reader.u8().unwrap(), 0);
+            assert_eq!(reader.u32().unwrap(), 9000);
+            reader.u8().unwrap();
+            reader.u8().unwrap();
+            assert_eq!(reader.bits(2).unwrap(), 2);
+            let (fields, _) = read_fields(&mut reader);
+            assert_eq!(fields[&54], if replay.is_some() { 0x800 } else { 0x1000 });
+            assert_eq!(
+                fields.get(&59).copied().unwrap_or(0),
+                if replay.is_some() { 7 } else { 0 }
+            );
+            assert_eq!(
+                fields.get(&142).copied().unwrap_or(0),
+                if replay.is_some() { 4000 } else { 0 }
+            );
+            assert_eq!(fields[&136], 2047);
+            assert_eq!(fields[&137], 2047);
+        }
+        for bad in [
+            ReplayView {
+                client: 12,
+                delay_msec: 4000,
+                end_time: 10000,
+            },
+            ReplayView {
+                client: 7,
+                delay_msec: 0,
+                end_time: 10000,
+            },
+        ] {
+            assert!(
+                player_frame_with_world(
+                    9000,
+                    8950,
+                    Some([0.0; 3]),
+                    true,
+                    Some(equipment),
+                    [0; 3],
+                    WorldSnapshot {
+                        motion: Some(motion),
+                        vitals: Some(PlayerVitals::default()),
+                        replay: Some(bad),
+                        ..Default::default()
+                    }
+                )
+                .is_err()
+            );
+        }
     }
 
     #[test]

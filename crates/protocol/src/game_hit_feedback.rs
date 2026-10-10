@@ -61,6 +61,7 @@ pub(crate) fn write_hud(
     out: &mut Writer,
     feedback: Option<HitFeedbackSnapshot>,
     deaths: &[DeathWaypointSnapshot],
+    replay_end: Option<u32>,
 ) -> Result<(), LobbyError> {
     let feedback = feedback.unwrap_or_default();
     if feedback.visible && !(1..1024).contains(&feedback.material) {
@@ -76,11 +77,44 @@ pub(crate) fn write_hud(
     if feedback.visible {
         write_hit(out, feedback);
     }
-    out.bits(deaths.len() as u32, 5);
+    out.bits(deaths.len() as u32 + u32::from(replay_end.is_some()), 5);
     for death in deaths {
         write_death(out, *death);
     }
+    if let Some(end) = replay_end {
+        write_replay_timer(out, end);
+    }
     Ok(())
+}
+
+fn write_replay_timer(out: &mut Writer, end: u32) {
+    // 0x514420: type8 formats ceil((time-cgTime)/100) as mm:ss.t.
+    // 0x514b70 maps font8 to UI11 (Agency); native scale codec is 6 bits /10.
+    out.bits(35, 6);
+    let mut previous = None;
+    for index in [0u32, 1, 3, 7, 11, 14, 15, 16, 20, 34] {
+        field_gap(out, previous.map_or(index + 1, |p| index - p));
+        previous = Some(index);
+        match index {
+            0 => color(out, [15; 3], 31),
+            1 => {
+                out.bits(0, 1);
+                out.bits(106, 7);
+            } // y=42, top adjustable.
+            3 => unsigned(out, 8, 4),
+            7 => unsigned(out, 2047, 11),
+            11 => unsigned(out, 0x78, 8), // safe-area horizontal centre / top adjustable
+            14 => unsigned(out, 5, 18),   // foreground, hidden in menus
+            15 => unsigned(out, 5, 4),    // centre/middle anchor
+            16 => out.bits(16, 6),        // scale1.6 (closest native value to1.56)
+            20 => unsigned(out, 8, 4),
+            34 => {
+                out.bits(1, 1);
+                out.bytes.extend_from_slice(&end.to_le_bytes());
+            }
+            _ => unreachable!(),
+        }
+    }
 }
 
 fn write_hit(out: &mut Writer, feedback: HitFeedbackSnapshot) {
@@ -259,6 +293,7 @@ mod tests {
                         assert_eq!(r.bits(1).unwrap(), 1); // Absolute time.
                         r.u32().unwrap()
                     }
+                    -86 => (r.bits(6).unwrap() as f32 / 10.0).to_bits(),
                     width if width > 0 => {
                         if r.bits(1).unwrap() == 0 {
                             0
@@ -298,7 +333,7 @@ mod tests {
             let mut out = Writer::default();
             out.bits(0x65, alignment);
             out.bytes.push(0xb6);
-            write_hud(&mut out, Some(feedback), &[]).unwrap();
+            write_hud(&mut out, Some(feedback), &[], None).unwrap();
             out.bits(0x2d, 6);
             out.bytes.push(0xa7);
 
@@ -353,6 +388,7 @@ mod tests {
                     kind: HitKind::Kill,
                 }),
                 &deaths,
+                None,
             )
             .unwrap();
             out.bytes.push(0xa7);
@@ -382,6 +418,37 @@ mod tests {
         }
     }
     #[test]
+    fn replay_countdown_uses_native_tenths_time_and_numeric_font_and_clears_on_exit() {
+        for alignment in 0..8 {
+            let mut out = Writer::default();
+            out.bits(0x65, alignment);
+            write_hud(&mut out, None, &[], Some(12345)).unwrap();
+            out.bytes.push(0xa7);
+            let mut r = Reader::new(&out.bytes);
+            r.bits(alignment).unwrap();
+            assert_eq!(r.bits(1).unwrap(), 1);
+            assert!(read_array(&mut r).is_empty());
+            let current = read_array(&mut r);
+            assert_eq!(current.len(), 1);
+            let timer = &current[0];
+            assert_eq!(timer[&0], 8);
+            assert_eq!(timer[&0x78], 12345);
+            assert_eq!(timer[&0x24], 8);
+            assert_eq!(timer[&0x14], 1.6f32.to_bits());
+            assert_eq!(timer[&8], 42.0f32.to_bits());
+            assert_eq!(timer[&0x2c], 0x78);
+            assert_eq!(timer[&0x28], 5);
+            assert_eq!(timer[&0x30], 0xff0f0f0f);
+            assert_eq!(r.u8().unwrap(), 0xa7);
+            let mut clear = Writer::default();
+            write_hud(&mut clear, None, &[], None).unwrap();
+            let mut r = Reader::new(&clear.bytes);
+            r.bits(1).unwrap();
+            assert!(read_array(&mut r).is_empty());
+            assert!(read_array(&mut r).is_empty());
+        }
+    }
+    #[test]
     fn invalid_death_waypoints_fail_before_touching_the_packet() {
         let good = DeathWaypointSnapshot {
             material: 169,
@@ -408,14 +475,14 @@ mod tests {
         ] {
             let mut out = Writer::default();
             out.bytes.push(0xa7);
-            assert!(write_hud(&mut out, None, &deaths).is_err());
+            assert!(write_hud(&mut out, None, &deaths, None).is_err());
             assert_eq!(out.bytes, [0xa7]);
         }
     }
     #[test]
     fn hidden_feedback_clears_both_native_arrays_without_a_material() {
         let mut out = Writer::default();
-        write_hud(&mut out, Some(HitFeedbackSnapshot::default()), &[]).unwrap();
+        write_hud(&mut out, Some(HitFeedbackSnapshot::default()), &[], None).unwrap();
         out.bytes.push(0xa7);
         let mut r = Reader::new(&out.bytes);
         assert_eq!(r.bits(1).unwrap(), 1);
@@ -440,6 +507,7 @@ mod tests {
                         kind: HitKind::Hit
                     }),
                     &[],
+                    None,
                 )
                 .is_err()
             );
@@ -459,6 +527,7 @@ mod tests {
                 kind: HitKind::Hit,
             }),
             &[],
+            None,
         )
         .unwrap();
         let mut r = Reader::new(&out.bytes);

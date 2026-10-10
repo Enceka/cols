@@ -55,6 +55,9 @@ pub(crate) struct Feedback {
     pending_sounds: u32,
 }
 impl Feedback {
+    pub fn event(&self) -> Option<(u32, HitKind)> {
+        self.last
+    }
     pub fn record(&mut self, time: u32, kind: HitKind) {
         self.last = Some((time, kind));
         self.pending_sounds = self.pending_sounds.saturating_add(1);

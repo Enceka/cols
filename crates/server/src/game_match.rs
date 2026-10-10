@@ -109,6 +109,10 @@ impl MatchConfig {
 }
 
 struct Bot {
+    view_motion: crate::game_motion::Motion,
+    feedback: Option<(u32, codol_protocol::game_hit_feedback::HitKind)>,
+    damage_event: u8,
+    damage_count: u8,
     snapshot_time: u32,
     weapon: Option<crate::game_player::Player>,
     initial_weapon: Option<crate::game_player::Player>,
@@ -135,6 +139,7 @@ struct Bot {
 
 #[derive(Clone, Copy)]
 pub(crate) struct Kill {
+    pub time: u32,
     pub victim: EnemySnapshot,
     pub attacker: u8,
     pub weapon: u16,
@@ -212,6 +217,10 @@ impl TdmMatch {
             let mut controller = BotController::new(origin, snapshot.angles, speed)?;
             controller.set_match_engagement();
             bots.push(Bot {
+                view_motion: crate::game_motion::Motion::new(origin),
+                feedback: None,
+                damage_event: 0,
+                damage_count: 0,
                 snapshot_time: 1000,
                 weapon: None,
                 initial_weapon: None,
@@ -285,6 +294,29 @@ impl TdmMatch {
     }
     pub fn snapshots(&self) -> Vec<EnemySnapshot> {
         self.bots.iter().map(|bot| bot.snapshot).collect()
+    }
+    pub fn replay_views(&self) -> Vec<crate::game_replay::View> {
+        self.bots
+            .iter()
+            .filter_map(|bot| {
+                let weapon = bot.weapon.as_ref()?;
+                Some(crate::game_replay::View {
+                    client: bot.snapshot.client_index,
+                    motion: bot.view_motion.clone(),
+                    angles: bot.snapshot.angles,
+                    equipment: weapon.equipment(),
+                    vitals: codol_protocol::game_snapshot::PlayerVitals {
+                        health: bot.health,
+                        damage_event: bot.damage_event,
+                        damage_count: bot.damage_count,
+                        spawn_count: (self.rows[usize::from(bot.snapshot.client_index)].deaths
+                            + u32::from(bot.health > 0)) as u8,
+                        ..Default::default()
+                    },
+                    hit: bot.feedback,
+                })
+            })
+            .collect()
     }
     pub fn teams(&self) -> &[u8; 12] {
         &self.config.teams
@@ -388,6 +420,7 @@ impl TdmMatch {
             self.finish(now);
         }
         self.kills.push(Kill {
+            time: now,
             victim,
             attacker,
             weapon,
@@ -425,6 +458,8 @@ impl TdmMatch {
                 continue;
             }
             bot.health = bot.health.saturating_sub(damage);
+            bot.damage_event = bot.damage_event.wrapping_add(1);
+            bot.damage_count = damage.min(127) as u8;
             feedback.get_or_insert(HitKind::Hit);
             if bot.health == 0 {
                 feedback = Some(HitKind::Kill);
@@ -497,6 +532,9 @@ impl TdmMatch {
                 bot.snapshot.alive = true;
                 bot.snapshot.events = EventQueue::default();
                 bot.health = 100;
+                bot.damage_event = 0;
+                bot.damage_count = 0;
+                bot.feedback = None;
                 bot.birth = now;
                 bot.death = None;
                 bot.fire_time = None;
@@ -662,6 +700,7 @@ impl TdmMatch {
                     (frame.motion.origin[axis] - bot.snapshot.origin[axis]) / delta;
             }
             bot.snapshot_time = now;
+            bot.view_motion = frame.motion.clone();
             movement += move_started.elapsed();
             if report {
                 tracing::info!(client=bot.snapshot.client_index,team,health=bot.health,phase=?frame.phase,origin=?frame.motion.origin,target=?bot.route_target,route_nodes=bot.route.len(),"TDM bot state");
@@ -717,10 +756,15 @@ impl TdmMatch {
                     collision,
                 },
             );
-            self.damage_bots(now, attacker, shot.weapon, &outcome.damage);
+            let mut feedback = self.damage_bots(now, attacker, shot.weapon, &outcome.damage);
             for &(victim, damage, headshot) in &outcome.damage {
                 if victim == 0 && player_health > 0 {
                     player_health = player_health.saturating_sub(damage);
+                    if player_health == 0 {
+                        feedback = Some(codol_protocol::game_hit_feedback::HitKind::Kill);
+                    } else {
+                        feedback.get_or_insert(codol_protocol::game_hit_feedback::HitKind::Hit);
+                    }
                     tick.hits.push(PlayerHit {
                         damage,
                         attacker,
@@ -729,6 +773,9 @@ impl TdmMatch {
                     });
                     local.alive = player_health > 0;
                 }
+            }
+            if let Some(kind) = feedback {
+                self.bots[usize::from(attacker - 1)].feedback = Some((now, kind));
             }
             tick.impacts.extend(
                 outcome

@@ -511,6 +511,38 @@ class ClientAssets {
             "client_sha256","e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b",
             "map",map,"ncs_crc",r.Word(0x02df7d90),"captured_contents_mask",0x02814011|0x0280e831,"brushes",brushes,"triangles",triangles)));
     }
+    public static void ExportReplay(IntPtr process) {
+        var r=new ClientAssets(process);var frames=new List<object>();uint previousActive=uint.MaxValue;
+        for(int i=0;i<400;i++) {
+            if(r.Word(0x01a2e7ec)!=10)break;
+            uint slot=r.Word(0x07817ba8);if(slot>=256)throw new Exception("invalid cg slot");
+            uint cg=r.Word(0x01a19510+slot*4)^0xfbb2c97a;
+            byte[] ps=r.Read(cg,0xa78);
+            uint active=r.Word(cg+0xc6fe8);
+            if(active!=previousActive) { Console.Error.WriteLine("killcam_state="+active);Console.Error.Flush();previousActive=active; }
+            uint input=r.Word(0x01a2e838)^0x6891d1c7;uint command=r.Word(input+0x625c);
+            // Native L <client> 7 populates this bounded presentation card.
+            // Read its copied nickname, never profile/account identifiers.
+            byte[] card=r.Read(0x037e8108+7*0xa8,0xa8);
+            int nameEnd=Array.IndexOf(card,(byte)0,0x20,64);if(nameEnd<0)nameEnd=0x60;
+            frames.Add(Obj("time",r.Word(cg+0xae4c8),"active",r.Word(cg+0xc6fe8),
+                "card_time",U(card,0),"card_name",Encoding.GetEncoding(936).GetString(card,0x20,nameEnd-0x20),
+                "card_icon",U(card,4),"card_background",U(card,8),"card_title",U(card,12),
+                "buttons",r.Word(input+0x365c+(command&255)*44+4),
+                "timer_type",r.Word(cg+0xa78),"timer_end",r.Word(cg+0xa78+0x78),
+                "timer_font",r.Word(cg+0xa78+0x24),"timer_scale_bits",r.Word(cg+0xa78+0x14),
+                "delay",U(ps,0xa68),"client",U(ps,0x144),"target",U(ps,0xa6c),
+                "pm_type",U(ps,4),"other_flags",U(ps,0x10),"command_time",U(ps,0),
+                "origin",Floats(ps,0x1c,3),"angles",Floats(ps,0x14c,3),
+                "weapon",U(ps,0x340),"weapon_state",U(ps,0x27c),"clip",U(ps,0x3e0),
+                "health",U(ps,0x190),"spawn_count",U(ps,0x19c),"corpse_slot",U(ps,0xe8)));
+            System.Threading.Thread.Sleep(25);
+        }
+        var serializer=new JavaScriptSerializer();serializer.MaxJsonLength=4*1024*1024;
+        Console.WriteLine(serializer.Serialize(Obj("schema_version",1,"read_only",true,
+            "client_sha256","e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b",
+            "frames",frames)));
+    }
     public static void ExportFeedback(IntPtr process) {
         var r=new ClientAssets(process);
         if(r.Word(0x01a2e7ec)!=10)throw new Exception("feedback capture requires active map");
