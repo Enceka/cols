@@ -104,6 +104,8 @@ pub struct PreparedGameState {
     #[serde(default)]
     minimap: Option<crate::game_minimap::Minimap>,
     #[serde(default)]
+    feedback_resources: Option<crate::game_feedback::Resources>,
+    #[serde(default)]
     bootstrap_weapon: Option<BootstrapWeapon>,
     #[serde(default)]
     player_loadout: Option<loadout::Loadout>,
@@ -674,6 +676,9 @@ impl PreparedGameState {
             );
             minimap.validate(&state.map)?;
         }
+        if let Some(resources) = &state.feedback_resources {
+            resources.validate(state.ncs_crc)?;
+        }
         tracing::info!(
             ncs_crc = state.ncs_crc,
             common_crc = state.common_crc,
@@ -867,22 +872,8 @@ impl PreparedGameState {
         };
         enemy
     }
-    pub(crate) fn hit_feedback_material(&self) -> Option<u16> {
-        // This fixture binds the measured inherited material namespace to its
-        // NCS CRC. A different map must supply independently captured evidence.
-        static MATERIAL: std::sync::OnceLock<(u32, u16)> = std::sync::OnceLock::new();
-        let &(crc, material) = MATERIAL.get_or_init(|| {
-            let fixture: serde_json::Value = serde_json::from_str(include_str!(
-                "../../../fixtures/protocol/hit-feedback-hud-3.3.3.3.json"
-            ))
-            .expect("verified HUD fixture");
-            let known = &fixture["known_material"];
-            (
-                known["ncs_crc"].as_u64().unwrap() as u32,
-                known["index"].as_u64().unwrap() as u16,
-            )
-        });
-        (self.ncs_crc == crc).then_some(material)
+    pub(crate) fn feedback_resources(&self) -> Option<&crate::game_feedback::Resources> {
+        self.feedback_resources.as_ref()
     }
     pub(crate) fn next_weapon_index(&self) -> u16 {
         if let Some((index, _)) = self.registry_strings.last() {
@@ -1352,6 +1343,14 @@ impl PreparedGameState {
             values.extend(minimap.configstrings());
             values.sort_by_key(|value| value.0);
         }
+        if let Some(sound) = self
+            .feedback_resources
+            .as_ref()
+            .and_then(|r| r.sound_configstring())
+        {
+            values.push(sound);
+            values.sort_by_key(|v| v.0);
+        }
         if self.match_config.is_some() {
             values.retain(|(index, _)| *index != 1976);
             for client in 1..=11u16 {
@@ -1595,6 +1594,7 @@ pub(crate) fn synthetic() -> PreparedGameState {
         spawn_origin: None,
         map_entities_sha256: None,
         minimap: None,
+        feedback_resources: None,
         bootstrap_weapon: None,
         player_loadout: None,
         secondary_weapon: None,

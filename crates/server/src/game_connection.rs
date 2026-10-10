@@ -27,7 +27,7 @@ pub(crate) struct Connection {
     combat: Option<crate::game_combat::CombatWorld>,
     impacts: crate::game_impact::ImpactEvents,
     marks_command_sent: bool,
-    last_hit_time: Option<u32>,
+    hit_feedback: crate::game_feedback::Feedback,
     enemy_baseline: Option<codol_protocol::game_enemy::EnemySnapshot>,
     local_baseline: Option<codol_protocol::game_enemy::EnemySnapshot>,
     corpses: std::collections::BTreeMap<u16, (u32, codol_protocol::game_corpse::CorpseSnapshot)>,
@@ -461,6 +461,17 @@ impl Connection {
             let command = format!("c \"{message}\"");
             self.server_commands.push(command.as_bytes())?;
         }
+        let sounds = self.hit_feedback.take_sounds();
+        if let Some(resources) = self
+            .game_state
+            .as_ref()
+            .and_then(|s| s.feedback_resources())
+        {
+            for _ in 0..sounds {
+                self.server_commands
+                    .push(resources.sound_command().as_bytes())?;
+            }
+        }
         let state = self.game_state.as_ref().expect("enabled state");
         let angles = if state.has_spawn() {
             self.view_angles()
@@ -598,16 +609,9 @@ impl Connection {
                 },
                 corpses: &corpses,
                 obituaries: &obituaries,
-                hit_feedback: self.last_hit_time.and_then(|event_time| {
-                    state.hit_feedback_material().map(|material| {
-                        codol_protocol::game_hit_feedback::HitFeedbackSnapshot {
-                            material,
-                            event_time,
-                            visible: server_time.wrapping_sub(event_time)
-                                < codol_protocol::game_hit_feedback::DURATION_MSEC,
-                        }
-                    })
-                }),
+                hit_feedback: state
+                    .feedback_resources()
+                    .map(|resources| self.hit_feedback.snapshot(server_time, resources)),
             },
         )?;
         let budget = game_wire::FRAGMENT_SIZE - 5;
@@ -976,6 +980,7 @@ impl Connection {
         let state = self.game_state.as_ref().unwrap();
         if respawning {
             self.player_death = None;
+            self.hit_feedback.clear();
             self.player_birth = now;
             self.health_recovery = Default::default();
             let spawn_count = self.vitals.spawn_count.wrapping_add(1);
@@ -1082,6 +1087,7 @@ impl Connection {
                 );
                 if self.vitals.health == 0 {
                     self.player_death = Some(now);
+                    self.hit_feedback.clear();
                     if let Some(mut local) = state.local_player_snapshot(true) {
                         local.origin = motion.origin;
                         local.angles = self
@@ -1206,6 +1212,7 @@ impl Connection {
                 ..Default::default()
             };
             self.player_death = None;
+            self.hit_feedback.clear();
             self.player_birth = now;
             self.health_recovery = Default::default();
             if let Some(primary) = state.primary_player() {
@@ -1247,6 +1254,7 @@ impl Connection {
             self.health_recovery.damaged(now, self.vitals.health);
             if self.vitals.health == 0 {
                 self.player_death = Some(now);
+                self.hit_feedback.clear();
                 self.tdm.as_mut().unwrap().player_killed(now, local, hit);
                 if let Some(motion) = &mut self.motion {
                     motion.velocity = [0.0; 3];
@@ -1380,8 +1388,9 @@ impl Connection {
                             local.weapon = shot.weapon;
                             local.angles = shot.angles;
                             let outcome = tdm.player_fire(shot, eye, local, &collision, None);
-                            if !outcome.damage.is_empty() {
-                                self.last_hit_time = Some(through);
+                            if let Some(kind) = outcome.committed_feedback {
+                                self.hit_feedback.record(through, kind);
+                                tracing::info!(time = through, ?kind, "player damage feedback");
                             }
                             for impact in outcome.impacts {
                                 self.impacts.push(through, shot.weapon, impact);
@@ -1417,7 +1426,17 @@ impl Connection {
                         let headshot = outcome.headshot();
                         let location = outcome.location.map(|l| l.name());
                         if let Some(message) = outcome.feedback {
-                            self.last_hit_time = Some(through);
+                            let kind = if self
+                                .combat
+                                .as_ref()
+                                .is_some_and(|world| world.health() == 0)
+                            {
+                                codol_protocol::game_hit_feedback::HitKind::Kill
+                            } else {
+                                codol_protocol::game_hit_feedback::HitKind::Hit
+                            };
+                            self.hit_feedback.record(through, kind);
+                            tracing::info!(time = through, ?kind, "player damage feedback");
                             if self
                                 .combat
                                 .as_ref()

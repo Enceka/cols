@@ -69,6 +69,7 @@ def compute(capture, weapon_name=None, compose=False, viewhands=False,
     crc, count, included = seed, 0, 0
     weapons = []
     models = []
+    feedback_banks = {1: [], 6: []}
     for key, values in sorted(parsed):
         category = key[1]
         if category == 15:
@@ -80,6 +81,8 @@ def compute(capture, weapon_name=None, compose=False, viewhands=False,
             weapons.extend(kept)
         if category == 0:
             models.extend(kept)
+        if category in feedback_banks:
+            feedback_banks[category].extend(kept)
         for value in kept:
             crc = zlib.crc32(value, crc)
         previous[category].update(kept)
@@ -89,6 +92,29 @@ def compute(capture, weapon_name=None, compose=False, viewhands=False,
         raise ValueError("computed CRC differs from initialized client")
     result = {"ncs_crc": crc, "common_crc": seed, "constant_count": count,
               "asset_count": included, "observed_crc_verified": bool(capture["initialized"])}
+    materials, sounds = feedback_banks[1], feedback_banks[6]
+    required = [b"damage_feedback", b"kill_feedback"]
+    if any(name in materials for name in required):
+        if any(materials.count(name) != 1 for name in required):
+            raise ValueError("feedback materials absent or ambiguous")
+        layout = base64.b64decode(capture["category_layout_base64"], validate=True)
+        for category, expected in [(1, (4355, 1024, 1)), (6, (3107, 512, 1))]:
+            if len(layout) != 21 * 12 or struct.unpack_from("<III", layout, category * 12) != expected:
+                raise ValueError("feedback category layout mismatch")
+            if capture["initialized"]:
+                linked = [name for a in capture["linked"] if a["category"] == category
+                          for name in strings(a["strings_base64"])]
+                if linked != feedback_banks[category]:
+                    raise ValueError("feedback constant order differs from loaded client")
+        alias = b"MP_hit_alert"
+        if sounds.count(alias) > 1:
+            raise ValueError("ambiguous hit sound")
+        sound_index = sounds.index(alias) + 1 if alias in sounds else len(sounds) + 1
+        indices = [materials.index(name) + 1 for name in required]
+        if any(not 1 <= i < 1024 for i in indices) or not 1 <= sound_index < 512:
+            raise ValueError("feedback resource slots exhausted")
+        result["feedback_resources"] = dict(ncs_crc=crc, hit_material=indices[0],
+            kill_material=indices[1], sound_index=sound_index, register_sound=alias not in sounds)
     if weapon_name is not None:
         if weapon_name != "m4_mp" or weapons.count(weapon_name.encode("ascii")) != 1:
             raise ValueError("expected one basic M4 in target weapon constants")

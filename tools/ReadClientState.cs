@@ -48,6 +48,7 @@ class ReadClientState {
     }
     static int Main(string[] args) {
         try {
+            bool feedback=args.Length==1 && args[0]=="--feedback";
             bool assets=args.Length==1 && args[0]=="--assets";
             bool profiles=args.Length==1 && args[0]=="--profiles";
             bool netConstants=args.Length==1 && args[0]=="--net-constants";
@@ -61,7 +62,7 @@ class ReadClientState {
             bool bulletImpacts=args.Length==1 && args[0]=="--bullet-impacts";
             bool characters=args.Length==1 && args[0]=="--characters";
             bool hitRegions=args.Length==1 && args[0]=="--hit-regions";
-            if(args.Length!=0 && !hitRegions && !assets && !profiles && !netConstants && !mapEntities && !bootstrapWeapon && !weaponModels && !arsenal && !collision && !weaponRegistry && !trainingTarget && !bulletImpacts && !characters) throw new Exception("only fixed extraction modes are supported");
+            if(args.Length!=0 && !feedback && !hitRegions && !assets && !profiles && !netConstants && !mapEntities && !bootstrapWeapon && !weaponModels && !arsenal && !collision && !weaponRegistry && !trainingTarget && !bulletImpacts && !characters) throw new Exception("only fixed extraction modes are supported");
             IntPtr snapshot=CreateToolhelp32Snapshot(2,0); uint found=0;
             if(snapshot==new IntPtr(-1)) throw new Exception("process snapshot failed");
             try {
@@ -89,6 +90,7 @@ class ReadClientState {
                         throw new Exception("target executable hash differs from the recovered version");
                 }
                 if(assets) { ClientAssets.Export(process);return 0; }
+                if(feedback) { ClientAssets.ExportFeedback(process);return 0; }
                 if(profiles) { ClientAssets.ExportProfiles(process);return 0; }
                 if(netConstants) { ClientAssets.ExportNetConstants(process);return 0; }
                 if(mapEntities) { ClientAssets.ExportMapEntities(process);return 0; }

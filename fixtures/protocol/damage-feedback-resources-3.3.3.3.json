@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "client_sha256": "e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b",
+  "sound_play_consumer_va": 5747968,
+  "sound_lookup_va": 4475152,
+  "sound_configstring_base": 3107,
+  "sound_alias": "MP_hit_alert",
+  "maps": {
+    "mp_afghan": {
+      "capture_sha256": "d551f582aad7f759ce074a3a777d71cc71bf72cf3bb84a12ff95aae53164b20f",
+      "ncs_crc": 523897474,
+      "hit_material": 125,
+      "kill_material": 144,
+      "sound_index": 9,
+      "register_sound": true
+    },
+    "mp_killhouse_sh": {
+      "capture_sha256": "71032b043603ee94a6a8dd809f531fc49ebab3dc03400c5939a41308bb4b06e9",
+      "ncs_crc": 3852334052,
+      "hit_material": 125,
+      "kill_material": 144,
+      "sound_index": 9,
+      "register_sound": true
+    },
+    "mp_crash_tropical": {
+      "capture_sha256": "d5c64c9fd1cbd242665c75aa1192e4a1cd27a61d1aff4f0290222a96e48240f8",
+      "ncs_crc": 4159215889,
+      "hit_material": 125,
+      "kill_material": 144,
+      "sound_index": 9,
+      "register_sound": true
+    }
+  }
+}

@@ -41,6 +41,8 @@ pub(crate) struct Actor {
 pub(crate) struct ActorShot {
     pub damage: Vec<(u8, u16, bool)>,
     pub impacts: Vec<WorldImpact>,
+    /// Populated only after the match applies damage and protection rules.
+    pub committed_feedback: Option<codol_protocol::game_hit_feedback::HitKind>,
 }
 pub(crate) struct ActorScene<'a> {
     pub actors: &'a [Actor],

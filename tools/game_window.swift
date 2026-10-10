@@ -108,6 +108,23 @@ case "click", "move", "scroll":
         result["wheel_delta"] = wheelDelta
     }
     result["fraction"] = [rx, ry]
+case "look":
+    guard args.count == 5, let dx = Double(args[3]), let dy = Double(args[4]),
+          dx.isFinite, dy.isFinite, abs(dx) <= 300, abs(dy) <= 300,
+          let app = NSRunningApplication(processIdentifier: pid),
+          app.activate(options: [.activateAllWindows]), CGPreflightPostEventAccess()
+    else { fail("look requires bounded mouse deltas and an active research window") }
+    let deadline = Date().addingTimeInterval(2)
+    while !app.isActive && Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.05)) }
+    guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else { fail("research client did not become active") }
+    let point = CGPoint(x: x + width / 2 + dx, y: y + height / 2 + dy)
+    guard point.x > x && point.x < x + width && point.y > y && point.y < y + height,
+          CGWarpMouseCursorPosition(point) == .success,
+          let event = CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: point, mouseButton: .left)
+    else { fail("look would leave the game window") }
+    guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else { fail("research client lost focus") }
+    event.post(tap: .cghidEventTap)
+    result["delta"] = [dx, dy]
 case "hold":
     let keys: [String: CGKeyCode] = ["w":13,"s":1,"a":0,"d":2,"q":12,"e":14,"r":15,"space":49,"shift":56,"ctrl":59,"c":8,"1":18,"2":19,"escape":53]
     guard args.count == 5, let seconds = Double(args[4]), seconds.isFinite,
@@ -118,10 +135,15 @@ case "hold":
     let deadline=Date().addingTimeInterval(2)
     while !app.isActive && Date()<deadline {RunLoop.current.run(until:Date().addingTimeInterval(0.05))}
     guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else {fail("research client did not become active")}
+    let pointer = CGEvent(source: nil)?.location ?? CGPoint(x: x + width / 2, y: y + height / 2)
+    if ["fire", "ads"].contains(args[3]) {
+        guard pointer.x >= x && pointer.x < x + width && pointer.y >= y && pointer.y < y + height
+        else { fail("gameplay mouse button requires the pointer inside the game") }
+    }
     func gameplayEvent(_ down: Bool) -> CGEvent? {
         if let code=keys[args[3]] {return CGEvent(keyboardEventSource:nil,virtualKey:code,keyDown:down)}
         let right=args[3]=="ads"
-        return CGEvent(mouseEventSource:nil,mouseType:right ? (down ? .rightMouseDown : .rightMouseUp) : (down ? .leftMouseDown : .leftMouseUp),mouseCursorPosition:CGPoint(x:x+width/2,y:y+height/2),mouseButton:right ? .right : .left)
+        return CGEvent(mouseEventSource:nil,mouseType:right ? (down ? .rightMouseDown : .rightMouseUp) : (down ? .leftMouseDown : .leftMouseUp),mouseCursorPosition:pointer,mouseButton:right ? .right : .left)
     }
     guard let down=gameplayEvent(true), let up=gameplayEvent(false) else {fail("cannot construct gameplay event")}
     down.post(tap:.cghidEventTap)

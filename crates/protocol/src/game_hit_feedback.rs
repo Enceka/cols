@@ -6,7 +6,26 @@
 //! received-damage directional indicator 131 is a separate path.
 use crate::{game_state::Writer, lobby::LobbyError};
 
-pub const DURATION_MSEC: u32 = 150;
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum HitKind {
+    #[default]
+    Hit,
+    Kill,
+}
+impl HitKind {
+    pub fn duration_msec(self) -> u32 {
+        match self {
+            Self::Hit => 1000,
+            Self::Kill => 600,
+        }
+    }
+    pub fn rgb(self) -> [u8; 3] {
+        match self {
+            Self::Hit => [255; 3],
+            Self::Kill => [255, 41, 20],
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct HitFeedbackSnapshot {
@@ -14,6 +33,7 @@ pub struct HitFeedbackSnapshot {
     /// Authoritative hit time, in the same clock used by the snapshot.
     pub event_time: u32,
     pub visible: bool,
+    pub kind: HitKind,
 }
 
 /// Write the complete HUD extension gate and both arrays. The playerState
@@ -41,7 +61,7 @@ pub(crate) fn write_hit_feedback(
         field_gap(out, distance);
         previous = Some(index);
         match index {
-            0 => color(out, 0), // White target colour with zero alpha.
+            0 => color(out, feedback.kind.rgb(), 0), // Target colour, zero alpha.
             1 | 2 => {
                 // -91/-92: compact signed delta from the zero HUD baseline.
                 // Offsets and 24x48 dimensions follow the existing resource's
@@ -61,8 +81,8 @@ pub(crate) fn write_hit_feedback(
                     .extend_from_slice(&feedback.event_time.to_le_bytes());
             }
             11 => unsigned(out, 0x22, 8), // Screen centre/middle, local top-left.
-            12 => color(out, 31),         // Opaque white starting colour.
-            13 => unsigned(out, DURATION_MSEC, 16),
+            12 => color(out, feedback.kind.rgb(), 31), // Opaque starting colour.
+            13 => unsigned(out, feedback.kind.duration_msec(), 16),
             14 => unsigned(out, 1, 18), // Foreground HUD pass.
             _ => unreachable!(),
         }
@@ -82,13 +102,13 @@ fn unsigned(out: &mut Writer, value: u32, width: usize) {
     }
 }
 
-fn color(out: &mut Writer, alpha: u32) {
+fn color(out: &mut Writer, rgb: [u8; 3], alpha: u32) {
     // -85: explicit RGB branch (three direct bytes), then 5 pooled alpha bits.
     // Alpha 31 decodes to 255; other values decode to alpha*8.
     out.bits(0, 1); // Do not toggle the baseline alpha.
     out.bits(0, 1); // Explicit RGB.
     out.bits(1, 1); // Direct RGB bytes, not a palette index.
-    out.bytes.extend_from_slice(&[255; 3]);
+    out.bytes.extend_from_slice(&rgb);
     out.bits(alpha, 5);
 }
 
@@ -195,11 +215,17 @@ mod tests {
 
     #[test]
     fn native_material_hud_decodes_at_every_pool_alignment() {
-        for alignment in 0..8 {
+        for (alignment, kind, color, duration) in (0..8).flat_map(|a| {
+            [
+                (a, HitKind::Hit, 0x00ff_ffff, 1000),
+                (a, HitKind::Kill, 0x0014_29ff, 600),
+            ]
+        }) {
             let feedback = HitFeedbackSnapshot {
                 material: 125,
                 event_time: 12_345,
                 visible: true,
+                kind,
             };
             let mut out = Writer::default();
             out.bits(0x65, alignment);
@@ -221,10 +247,10 @@ mod tests {
             assert_eq!(hud[&8], (-12.0f32).to_bits());
             assert_eq!(hud[&0x10], 2047);
             assert_eq!(hud[&0x2c], 0x22);
-            assert_eq!(hud[&0x30], 0x00ff_ffff);
-            assert_eq!(hud[&0x34], 0xffff_ffff);
+            assert_eq!(hud[&0x30], color);
+            assert_eq!(hud[&0x34], color | 0xff00_0000);
             assert_eq!(hud[&0x38], 12_345);
-            assert_eq!(hud[&0x3c], 150);
+            assert_eq!(hud[&0x3c], duration);
             assert_eq!(hud[&0x44], 24);
             assert_eq!(hud[&0x48], 48);
             assert_eq!(hud[&0x4c], 125);
@@ -259,7 +285,8 @@ mod tests {
                     HitFeedbackSnapshot {
                         material,
                         event_time: 12_345,
-                        visible: true
+                        visible: true,
+                        kind: HitKind::Hit
                     },
                 )
                 .is_err()
@@ -277,6 +304,7 @@ mod tests {
                 material: 1023,
                 event_time: u32::MAX - 20,
                 visible: true,
+                kind: HitKind::Hit,
             },
         )
         .unwrap();

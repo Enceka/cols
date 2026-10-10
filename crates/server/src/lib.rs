@@ -8,6 +8,7 @@ mod game_class_selection;
 pub mod game_combat;
 mod game_connection;
 mod game_enemy;
+mod game_feedback;
 mod game_handshake;
 mod game_health;
 pub mod game_hit_location;

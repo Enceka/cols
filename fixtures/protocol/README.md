@@ -16,3 +16,5 @@
 - `room-roster-synthetic.bin`：来自3.3.3.3的type14完整房间成员表及定向manifold结构；人类UID替换为42，其他成员元数据清零，只保留实验Bot合成ID、阵营和准备位。验证普通广播内发给模拟Bot的名单不能被遗漏，不包含真实账号或会话资料。
 
 真实票据接受与大厅握手证据另见 docs/AUTH_LOBBY_PROGRESS.md；不将真实会话密钥、票据或业务明文加入这些 fixtures。
+
+`damage-feedback-resources-3.3.3.3.json`记录三图各自NCS捕获SHA/CRC、反馈材质槽和当前声音消费者。仅含资源身份和布局元数据；运行配置由准备器复算，原始采集仍在忽略目录。

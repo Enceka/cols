@@ -511,6 +511,31 @@ class ClientAssets {
             "client_sha256","e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b",
             "map",map,"ncs_crc",r.Word(0x02df7d90),"captured_contents_mask",0x02814011|0x0280e831,"brushes",brushes,"triangles",triangles)));
     }
+    public static void ExportFeedback(IntPtr process) {
+        var r=new ClientAssets(process);
+        if(r.Word(0x01a2e7ec)!=10)throw new Exception("feedback capture requires active map");
+        var resources=new Dictionary<string,object>();
+        foreach(string name in new string[]{"damage_feedback","kill_feedback","MP_hit_alert"}) {
+            try {
+            uint entry;uint asset=r.Find(name=="MP_hit_alert"?11u:5u,name,out entry);
+            resources[name]=asset==0?Obj("found",false):Obj("found",true,"header",asset,"layout",r.Layout(asset,name=="MP_hit_alert"?12:104,1));
+            } catch(Exception error) { resources[name]=Obj("found",false,"error",error.Message); }
+        }
+        var frames=new List<object>();
+        for(int i=0;i<200;i++) {
+            if(r.Word(0x01a2e7ec)!=10)break;
+            uint slot=r.Word(0x07817ba8);if(slot>=256)throw new Exception("invalid cg slot");
+            uint cg=r.Word(0x01a19510+slot*4)^0xfbb2c97a;
+            byte[] hud=r.Read(cg+0xa78,0xa8);
+            frames.Add(Obj("time",r.Word(cg+0xae4c8),"type",U(hud,0),"material",U(hud,0x4c),
+                "color",U(hud,0x30),"from_color",U(hud,0x34),"fade_start",U(hud,0x38),"fade_msec",U(hud,0x3c)));
+            System.Threading.Thread.Sleep(25);
+        }
+        var serializer=new JavaScriptSerializer();serializer.MaxJsonLength=4*1024*1024;
+        Console.WriteLine(serializer.Serialize(Obj("schema_version",1,"read_only",true,
+            "client_sha256","e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b",
+            "ncs_crc",r.Word(0x02df7d90),"resources",resources,"frames",frames)));
+    }
     public static void ExportCharacters(IntPtr process) {
         var r=new ClientAssets(process);
         var hudMaterials=new Dictionary<string,object>();

@@ -8,6 +8,7 @@ import zlib
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from prepare_game_state import CLIENT_SHA256, compute, spawn_origin, weapon_ammo, weapon_parts
 import json
+import struct
 
 
 def encoded(values):
@@ -33,6 +34,30 @@ def capture():
 
 
 class GameStatePreparation(unittest.TestCase):
+    def test_feedback_uses_each_maps_sorted_banks_and_reserves_a_free_sound_slot(self):
+        data = capture()
+        data["assets"] = []
+        layout = bytearray(21 * 12)
+        struct.pack_into("<III", layout, 12, 4355, 1024, 1)
+        struct.pack_into("<III", layout, 72, 3107, 512, 1)
+        data["category_layout_base64"] = base64.b64encode(layout).decode()
+        data["assets"] += [asset("ncs_mat_level", 1, 3, [b"damage_feedback", b"kill_feedback"]),
+                           asset("ncs_mat_common", 1, 0, [b"other", b"damage_feedback"]),
+                           asset("ncs_snl_common", 6, 0, [b"fire"])]
+        result = compute(data)
+        expected = dict(ncs_crc=result["ncs_crc"], hit_material=2, kill_material=3,
+                        sound_index=2, register_sound=True)
+        self.assertEqual(result["feedback_resources"], expected)
+        data["assets"][-1] = asset("ncs_snl_common", 6, 0, [b"fire", b"MP_hit_alert"])
+        result = compute(data)
+        self.assertFalse(result["feedback_resources"]["register_sound"])
+        self.assertNotEqual(result["ncs_crc"], expected["ncs_crc"])
+        data["assets"][-1] = asset("ncs_snl_common", 6, 0, [str(i).encode() for i in range(511)])
+        with self.assertRaises(ValueError): compute(data)
+        data["assets"][-1] = asset("ncs_snl_common", 6, 0, [])
+        data["assets"][-3] = asset("ncs_mat_level", 1, 3, [b"damage_feedback"])
+        with self.assertRaises(ValueError): compute(data)
+
     def test_only_cosmetic_camo_change_may_reuse_matching_runtime_weapon_parameters(self):
         weapon={"name":"m4_mp","index":352,"composed_name":"** 163 0 0 2683"}
         data=dict(schema_version=1,read_only=True,client_sha256=CLIENT_SHA256,ncs_crc=123,

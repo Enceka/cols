@@ -407,17 +407,27 @@ impl TdmMatch {
     pub fn player_killed(&mut self, now: u32, victim: EnemySnapshot, hit: PlayerHit) {
         self.credit(now, victim, hit.attacker, hit.weapon, hit.headshot);
     }
-    fn damage_bots(&mut self, now: u32, attacker: u8, weapon: u16, hits: &[(u8, u16, bool)]) {
+    fn damage_bots(
+        &mut self,
+        now: u32,
+        attacker: u8,
+        weapon: u16,
+        hits: &[(u8, u16, bool)],
+    ) -> Option<codol_protocol::game_hit_feedback::HitKind> {
+        use codol_protocol::game_hit_feedback::HitKind;
+        let mut feedback = None;
         for &(client, damage, headshot) in hits.iter().filter(|h| h.0 != 0) {
             if self.finished {
                 break;
             }
             let bot = &mut self.bots[usize::from(client - 1)];
-            if bot.health == 0 || now.wrapping_sub(bot.birth) < 1000 {
+            if damage == 0 || bot.health == 0 || now.wrapping_sub(bot.birth) < 1000 {
                 continue;
             }
             bot.health = bot.health.saturating_sub(damage);
+            feedback.get_or_insert(HitKind::Hit);
             if bot.health == 0 {
+                feedback = Some(HitKind::Kill);
                 let victim = bot.snapshot;
                 bot.death = Some(now);
                 bot.snapshot.alive = false;
@@ -425,6 +435,7 @@ impl TdmMatch {
                 self.credit(now, victim, attacker, weapon, headshot);
             }
         }
+        feedback
     }
     pub fn player_fire(
         &mut self,
@@ -437,7 +448,7 @@ impl TdmMatch {
         if self.finished {
             return ActorShot::default();
         }
-        let outcome = game_combat::fire_at_actors(
+        let mut outcome = game_combat::fire_at_actors(
             eye,
             shot.angles,
             shot.time,
@@ -449,7 +460,7 @@ impl TdmMatch {
                 collision,
             },
         );
-        self.damage_bots(shot.time, 0, shot.weapon, &outcome.damage);
+        outcome.committed_feedback = self.damage_bots(shot.time, 0, shot.weapon, &outcome.damage);
         outcome
     }
     pub fn take_kills(&mut self) -> Vec<Kill> {
@@ -916,14 +927,28 @@ mod tests {
             };
             let blocked = m.player_fire(shot, [0.0, 0.0, 60.0], local, &collision, None);
             assert!(blocked.damage.is_empty());
+            assert!(blocked.committed_feedback.is_none());
             assert!(m.bots.iter().all(|b| b.health == 100));
             assert_eq!(m.scoreboard(42).team_scores, [0; 4]);
 
             m.bots[1].snapshot.origin[1] = 100.0;
+            shot.time = 1500;
+            let protected = m.player_fire(shot, [0.0, 0.0, 60.0], local, &collision, None);
+            assert!(!protected.damage.is_empty());
+            assert!(protected.committed_feedback.is_none());
+            assert_eq!(m.bots[0].health, 100);
             for time in [2200, 2300] {
                 shot.time = time;
                 let hit = m.player_fire(shot, [0.0, 0.0, 60.0], local, &collision, None);
                 assert_eq!(hit.damage, [(1, 50, false)]);
+                assert_eq!(
+                    hit.committed_feedback,
+                    Some(if time == 2200 {
+                        codol_protocol::game_hit_feedback::HitKind::Hit
+                    } else {
+                        codol_protocol::game_hit_feedback::HitKind::Kill
+                    })
+                );
             }
             assert_eq!(m.bots[0].health, 0);
             assert_eq!(m.bots[1].health, 100);
@@ -937,6 +962,28 @@ mod tests {
             assert_eq!(kills.len(), 1);
             assert_eq!(kills[0].victim.client_index, 1);
         }
+    }
+    #[test]
+    fn committed_feedback_ignores_protection_and_keeps_a_multi_target_kill() {
+        use codol_protocol::game_hit_feedback::HitKind;
+        let collision = world();
+        let mut m = TdmMatch::new(config(), template(), 200.0, &collision).unwrap();
+        assert_eq!(m.damage_bots(1500, 0, 352, &[(6, 100, false)]), None);
+        assert_eq!(m.bots[5].health, 100);
+        assert_eq!(m.damage_bots(2100, 0, 352, &[(6, 0, false)]), None);
+        assert_eq!(
+            m.damage_bots(2200, 0, 352, &[(6, 100, false), (7, 30, false)]),
+            Some(HitKind::Kill)
+        );
+        assert_eq!(m.bots[5].health, 0);
+        assert_eq!(m.bots[6].health, 70);
+        assert_eq!(m.damage_bots(2300, 0, 352, &[(6, 100, false)]), None);
+        assert_eq!(
+            m.damage_bots(2400, 0, 352, &[(7, 30, false)]),
+            Some(HitKind::Hit)
+        );
+        m.finished = true;
+        assert_eq!(m.damage_bots(2500, 0, 352, &[(7, 100, false)]), None);
     }
     #[test]
     fn six_per_team_have_unique_clients_lives_scores_and_respawns() {
