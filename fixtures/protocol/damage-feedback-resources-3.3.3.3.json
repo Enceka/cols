@@ -12,7 +12,8 @@
       "hit_material": 125,
       "kill_material": 144,
       "sound_index": 9,
-      "register_sound": true
+      "register_sound": true,
+      "death_material": 169
     },
     "mp_killhouse_sh": {
       "capture_sha256": "71032b043603ee94a6a8dd809f531fc49ebab3dc03400c5939a41308bb4b06e9",
@@ -20,7 +21,8 @@
       "hit_material": 125,
       "kill_material": 144,
       "sound_index": 9,
-      "register_sound": true
+      "register_sound": true,
+      "death_material": 169
     },
     "mp_crash_tropical": {
       "capture_sha256": "d5c64c9fd1cbd242665c75aa1192e4a1cd27a61d1aff4f0290222a96e48240f8",
@@ -28,7 +30,8 @@
       "hit_material": 125,
       "kill_material": 144,
       "sound_index": 9,
-      "register_sound": true
+      "register_sound": true,
+      "death_material": 169
     }
   }
 }

@@ -9,6 +9,8 @@ pub(crate) struct Resources {
     pub ncs_crc: u32,
     pub hit_material: u16,
     pub kill_material: u16,
+    #[serde(default)]
+    pub death_material: Option<u16>,
     pub sound_index: u16,
     pub register_sound: bool,
 }
@@ -27,6 +29,12 @@ impl Resources {
         ensure!(
             (1..512).contains(&self.sound_index),
             "invalid feedback sound slot"
+        );
+        ensure!(
+            self.death_material.is_none_or(|m| (1..1024).contains(&m)
+                && m != self.hit_material
+                && m != self.kill_material),
+            "invalid death waypoint material"
         );
         Ok(())
     }
@@ -81,6 +89,7 @@ mod tests {
             ncs_crc: 123,
             hit_material: 125,
             kill_material: 144,
+            death_material: Some(169),
             sound_index: 9,
             register_sound: true,
         }

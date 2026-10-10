@@ -991,6 +991,10 @@ mod tests {
         let mut m = TdmMatch::new(config(), template(), 190.0, &collision).unwrap();
         assert_eq!(m.bots.len(), 11);
         let snapshots = m.snapshots();
+        let death_waypoints = [codol_protocol::game_hit_feedback::DeathWaypointSnapshot {
+            material: 169,
+            origin: [1234.0, -4321.0, 154.0],
+        }; 5];
         let baseline = codol_protocol::game_snapshot::player_frame_with_world(
             1000,
             1000,
@@ -1001,6 +1005,13 @@ mod tests {
             codol_protocol::game_snapshot::WorldSnapshot {
                 local_player: Some(template()),
                 players: &snapshots,
+                death_waypoints: Some(&death_waypoints),
+                hit_feedback: Some(codol_protocol::game_hit_feedback::HitFeedbackSnapshot {
+                    material: 144,
+                    event_time: 1000,
+                    visible: true,
+                    kind: codol_protocol::game_hit_feedback::HitKind::Kill,
+                }),
                 ..Default::default()
             },
         )

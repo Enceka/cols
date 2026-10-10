@@ -515,7 +515,7 @@ class ClientAssets {
         var r=new ClientAssets(process);
         if(r.Word(0x01a2e7ec)!=10)throw new Exception("feedback capture requires active map");
         var resources=new Dictionary<string,object>();
-        foreach(string name in new string[]{"damage_feedback","kill_feedback","MP_hit_alert"}) {
+        foreach(string name in new string[]{"damage_feedback","kill_feedback","MP_hit_alert","waypoint_dead"}) {
             try {
             uint entry;uint asset=r.Find(name=="MP_hit_alert"?11u:5u,name,out entry);
             resources[name]=asset==0?Obj("found",false):Obj("found",true,"header",asset,"layout",r.Layout(asset,name=="MP_hit_alert"?12:104,1));
@@ -526,8 +526,15 @@ class ClientAssets {
             if(r.Word(0x01a2e7ec)!=10)break;
             uint slot=r.Word(0x07817ba8);if(slot>=256)throw new Exception("invalid cg slot");
             uint cg=r.Word(0x01a19510+slot*4)^0xfbb2c97a;
-            byte[] hud=r.Read(cg+0xa78,0xa8);
-            frames.Add(Obj("time",r.Word(cg+0xae4c8),"type",U(hud,0),"material",U(hud,0x4c),
+            byte[] hud=r.Read(cg+0x1ed0,0xa8);
+            var deaths=new List<object>();
+            for(uint slotIndex=0;slotIndex<5;slotIndex++) {
+                byte[] death=r.Read(cg+0xa78+slotIndex*0xa8,0xa8);
+                if(U(death,0)==0)break;
+                deaths.Add(Obj("type",U(death,0),"material",U(death,0x4c),"origin",Floats(death,4,3),
+                    "color",U(death,0x30),"flags",U(death,0xa4),"entity",U(death,0x10),"width",U(death,0x44),"height",U(death,0x48)));
+            }
+            frames.Add(Obj("death_waypoints",deaths,"time",r.Word(cg+0xae4c8),"type",U(hud,0),"material",U(hud,0x4c),
                 "color",U(hud,0x30),"from_color",U(hud,0x34),"fade_start",U(hud,0x38),"fade_msec",U(hud,0x3c)));
             System.Threading.Thread.Sleep(25);
         }
@@ -539,7 +546,7 @@ class ClientAssets {
     public static void ExportCharacters(IntPtr process) {
         var r=new ClientAssets(process);
         var hudMaterials=new Dictionary<string,object>();
-        foreach(string name in new string[]{"compass_map_mp_crash_tropical","compass_map_mp_crash_dlc","compass_map_mp_crash","compass_map_mp_afghan","compass_map_mp_killhouse_sh"}) {
+        foreach(string name in new string[]{"compass_map_mp_crash_tropical","compass_map_mp_crash_dlc","compass_map_mp_crash","compass_map_mp_afghan","compass_map_mp_killhouse_sh","waypoint_dead","headicon_dead","waypoint_flag_friendly"}) {
             try {
                 uint entry;uint material=r.Find(5,name,out entry);
                 if(material==0) {hudMaterials[name]=Obj("found",false);continue;}
@@ -562,7 +569,8 @@ class ClientAssets {
                 }
                 hudMaterials[name]=Obj("found",true,"render_default",isDefault,
                     "entry_byte16",r.Read(entry+0x10,1)[0],"flags",r.Read(entry+0x11,1)[0],
-                    "header",material,"textures",textures);
+                    "header",material,"textures",textures,
+                    "render_layout",name.Contains("dead")?r.Layout(material,104,2):null);
             } catch(Exception error) {hudMaterials[name]=Obj("error",error.Message);}
         }
         if(r.Word(0x01a2e7ec)!=10)throw new Exception("load the map before character capture");

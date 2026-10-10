@@ -48,6 +48,9 @@ class GameStatePreparation(unittest.TestCase):
         expected = dict(ncs_crc=result["ncs_crc"], hit_material=2, kill_material=3,
                         sound_index=2, register_sound=True)
         self.assertEqual(result["feedback_resources"], expected)
+        data["assets"].append(asset("ncs_mat_death", 1, 3, [b"waypoint_dead"]))
+        self.assertEqual(compute(data)["feedback_resources"]["death_material"], 3)
+        data["assets"].pop()
         data["assets"][-1] = asset("ncs_snl_common", 6, 0, [b"fire", b"MP_hit_alert"])
         result = compute(data)
         self.assertFalse(result["feedback_resources"]["register_sound"])

@@ -18,3 +18,5 @@
 真实票据接受与大厅握手证据另见 docs/AUTH_LOBBY_PROGRESS.md；不将真实会话密钥、票据或业务明文加入这些 fixtures。
 
 `damage-feedback-resources-3.3.3.3.json`记录三图各自NCS捕获SHA/CRC、反馈材质槽和当前声音消费者。仅含资源身份和布局元数据；运行配置由准备器复算，原始采集仍在忽略目录。
+
+`death-waypoint-hud-3.3.3.3.json`固定本版HUD两组读取位置、waypoint绘制器、坐标codec/零中心、旗标与材质采集身份。发送顺序为archival后current；死亡标识属于current，命中反馈属于archival。

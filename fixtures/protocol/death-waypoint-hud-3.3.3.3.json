@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "client_sha256": "e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b",
+  "hud_layout_fixture": "hit-feedback-hud-3.3.3.3.json",
+  "wire_arrays": [
+    {
+      "offset": 7888,
+      "usage": "archival_hit_feedback"
+    },
+    {
+      "offset": 2680,
+      "usage": "current_death_waypoints"
+    }
+  ],
+  "array_decoder_calls": [
+    5919277,
+    5919303
+  ],
+  "waypoint_dispatch_va": 5464687,
+  "waypoint_draw_va": 5331008,
+  "waypoint_type": 13,
+  "flags": 8193,
+  "unattached_entity": 2047,
+  "dimensions": [
+    24,
+    24
+  ],
+  "position_codecs": {
+    "x": -92,
+    "y": -91,
+    "z": -90
+  },
+  "map_center": [
+    0,
+    0,
+    0
+  ],
+  "material": "waypoint_dead",
+  "image": "waypoint_deadguy",
+  "material_technique": "trivial_vertcol_simple2d",
+  "image_size": [
+    64,
+    64
+  ],
+  "material_layout_capture": "characters-1791624874797.json",
+  "material_layout_capture_sha256": "df49c933ce93b6042592c4b1700dbbae728fbc7234a9d7739973a704a1bf46de"
+}

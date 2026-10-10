@@ -171,8 +171,13 @@ class ReadClientState {
                         Field(process,"predicted_health",checked(cg+0x190),4);
                         Field(process,"predicted_spawn_count",checked(cg+0x19c),4);
                         Field(process,"predicted_corpse_slot",checked(cg+0xe8),4);
-                        Field(process,"predicted_hit_hud_type",checked(cg+0xa78),4);
-                        Field(process,"predicted_hit_hud_material",checked(cg+0xa78+0x4c),4);
+                        Field(process,"predicted_hit_hud_type",checked(cg+0x1ed0),4);
+                        Field(process,"predicted_hit_hud_material",checked(cg+0x1ed0+0x4c),4);
+                        Field(process,"predicted_death_hud_type",checked(cg+0xa78),4);
+                        Field(process,"predicted_death_hud_material",checked(cg+0xa78+0x4c),4);
+                        Field(process,"predicted_death_hud_flags",checked(cg+0xa78+0xa4),4);
+                        for(uint axis=0;axis<3;axis++)
+                            Field(process,"predicted_death_hud_origin_"+axis+"_bits",checked(cg+0xa78+4+axis*4),4);
                         Field(process,"predicted_pm_flags",checked(cg+0xc),4);
                         Field(process,"predicted_other_flags",checked(cg+0x10),4);
                         Field(process,"predicted_camera_reference_entity",checked(cg+0x200),4);

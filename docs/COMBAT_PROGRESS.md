@@ -77,3 +77,10 @@ python3 tools/gamehub_run.py client --seconds 900 \
 当前三图均由各自NCS捕获导出`feedback_resources`，旧版单Afghan CRC硬编码已撤掉。三份捕获哈希和消费者地址见`fixtures/protocol/damage-feedback-resources-3.3.3.3.json`。编码测试按独立实采字段表对八种bit-pool对齐分别解码白/红、时长、alpha；状态测试覆盖替换、清空、时钟回绕、声音只取一次；射击回归覆盖两阵营、出生保护和多目标致命优先。
 
 Afghan实机已验证HUD消费、红色标识和再次普通命中的白色恢复；资源表确认命中声加载。尚未把声音的听感或另外两图逐图视觉标作已验收，详细证据见`REFERENCE_ALIGNMENT.md`最新节。
+
+
+## 2026-10-10 队友死亡定位
+
+已接原生HUD type13与本图`waypoint_dead`：仅同队队友，固定死亡点z+54，不绑定尸体槽；24×24、白色保留贴图红色、不启用边缘箭头。十秒上限，重生/断开/换队/结束提前清理。实机确认骷髅显示和约三秒Bot重生后的消失。
+
+本轮纠正HUD分组：死亡定位current=PS+0xa78，命中反馈archival=PS+0x1ed0；网络先写archival后写current。此前命中探针历史记录来自另一个组，旧数据不能用于证明当前归档语义。完整回放仍未实现。详见`REFERENCE_ALIGNMENT.md`最新节及`death-waypoint-hud-3.3.3.3.json`。

@@ -28,6 +28,7 @@ pub(crate) struct Connection {
     impacts: crate::game_impact::ImpactEvents,
     marks_command_sent: bool,
     hit_feedback: crate::game_feedback::Feedback,
+    death_waypoints: crate::game_death_waypoints::DeathWaypoints,
     enemy_baseline: Option<codol_protocol::game_enemy::EnemySnapshot>,
     local_baseline: Option<codol_protocol::game_enemy::EnemySnapshot>,
     corpses: std::collections::BTreeMap<u16, (u32, codol_protocol::game_corpse::CorpseSnapshot)>,
@@ -578,6 +579,20 @@ impl Connection {
             .as_ref()
             .map_or(match_baselines, |h| h.players.as_slice());
         let snapshot_motion = self.snapshot_motion();
+        let death_waypoints = state
+            .feedback_resources()
+            .and_then(|r| r.death_material)
+            .map(|material| {
+                let team = self.tdm.as_ref().map_or(0, |m| m.teams()[0]);
+                self.death_waypoints.snapshot(
+                    server_time,
+                    team,
+                    &match_players,
+                    material,
+                    self.vitals.health > 0 && !self.vitals.intermission,
+                    self.tdm.as_ref().is_none_or(|m| m.finished),
+                )
+            });
         let snapshot = state.snapshot(
             server_time,
             command_time,
@@ -612,6 +627,7 @@ impl Connection {
                 hit_feedback: state
                     .feedback_resources()
                     .map(|resources| self.hit_feedback.snapshot(server_time, resources)),
+                death_waypoints: death_waypoints.as_deref(),
             },
         )?;
         let budget = game_wire::FRAGMENT_SIZE - 5;
@@ -1112,6 +1128,8 @@ impl Connection {
     fn drain_match_kills(&mut self, now: u32) {
         let kills = self.tdm.as_mut().unwrap().take_kills();
         for kill in kills {
+            self.death_waypoints
+                .record(now, self.tdm.as_ref().unwrap().teams()[0], kill.victim);
             let mut corpse = self
                 .game_state
                 .as_ref()

@@ -115,6 +115,10 @@ def compute(capture, weapon_name=None, compose=False, viewhands=False,
             raise ValueError("feedback resource slots exhausted")
         result["feedback_resources"] = dict(ncs_crc=crc, hit_material=indices[0],
             kill_material=indices[1], sound_index=sound_index, register_sound=alias not in sounds)
+        if b"waypoint_dead" in materials:
+            if materials.count(b"waypoint_dead") != 1 or materials.index(b"waypoint_dead") + 1 >= 1024:
+                raise ValueError("death waypoint material absent or ambiguous")
+            result["feedback_resources"]["death_material"] = materials.index(b"waypoint_dead") + 1
     if weapon_name is not None:
         if weapon_name != "m4_mp" or weapons.count(weapon_name.encode("ascii")) != 1:
             raise ValueError("expected one basic M4 in target weapon constants")

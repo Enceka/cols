@@ -192,6 +192,7 @@ pub fn player_frame_with_motion(
             players: &[],
             player_baselines: &[],
             hit_feedback: None,
+            death_waypoints: None,
             vitals: None,
             local_player: None,
             local_player_baseline: None,
@@ -212,6 +213,7 @@ pub struct WorldSnapshot<'a> {
     pub players: &'a [crate::game_enemy::EnemySnapshot],
     pub player_baselines: &'a [crate::game_enemy::EnemySnapshot],
     pub hit_feedback: Option<crate::game_hit_feedback::HitFeedbackSnapshot>,
+    pub death_waypoints: Option<&'a [crate::game_hit_feedback::DeathWaypointSnapshot]>,
     pub vitals: Option<PlayerVitals>,
     pub local_player: Option<crate::game_enemy::EnemySnapshot>,
     pub local_player_baseline: Option<crate::game_enemy::EnemySnapshot>,
@@ -562,8 +564,12 @@ pub fn player_frame_with_world(
         // HUD; four final indexed lists. 3.3.3.3 has fourteen gates in total.
         out.bits(0, 8);
     }
-    if let Some(feedback) = world.hit_feedback {
-        crate::game_hit_feedback::write_hit_feedback(&mut out, feedback)?;
+    if world.hit_feedback.is_some() || world.death_waypoints.is_some() {
+        crate::game_hit_feedback::write_hud(
+            &mut out,
+            world.hit_feedback,
+            world.death_waypoints.unwrap_or(&[]),
+        )?;
     } else {
         out.bits(0, 1); // HUD
     }

@@ -27,3 +27,5 @@ python3 tools/play.py
 实机验证及尚未完成的功能见`REFERENCE_ALIGNMENT.md`与`MAP_SELECTION_PROGRESS.md`。当前仍在对齐更多地图、武器、回放、装备及启动器功能，不能称作参考文档的完整移植。
 
 三图准备现含`feedback_resources`：由本图NCS导出普通/致命命中材质和命中声槽，分别显示白色/红色并按1000/600ms淡出。旧准备文件需用相应捕获重新生成此项；不要把另一图的CRC或资源槽直接复制进去。
+
+三图现支持原生队友死亡骷髅定位：只显示同队队友，重生或到期清理，视野外不显示边缘箭头。由本图`feedback_resources.death_material`绑定，缺失时关闭。
