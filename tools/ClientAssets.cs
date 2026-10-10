@@ -173,7 +173,8 @@ class ClientAssets {
         }
         foreach(string name in new string[]{"mp/coGameTypesTable.csv","mp/coMapList.csv","mp/coMarketplaceItems.csv","mp/coCharacterDefTable.csv","mp/cogroupdefs.csv","mp/coWeapSlotDefs.csv","mp/coCharItemStatsTable.csv","mp/coCharItems/cha.csv","mp/uiNotifications.csv","mp/functionalUnlockTable.csv","mp/unlockFlags.csv","mp/rankTable.csv",
             "mp/coWeapItems/ast.csv","mp/coWeapItems/pst.csv","mp/coWeapItems/cam.csv","mp/coWeapItems/oth.csv","mp/coWeapItems/ret.csv","mp/coItemDependency.csv",
-            "mp/coWeaponPrimaryRankTable.csv","mp/coWeaponSecondaryRankTable.csv"}) {
+            "mp/coWeaponPrimaryRankTable.csv","mp/coWeaponSecondaryRankTable.csv",
+            "mp/callsignTitle.csv","mp/callsignIcon.csv","mp/callsignBackground.csv","mp/callsignNameplate.csv"}) {
             try{tables[name]=reader.Table(name);}catch(Exception e){tables[name]=Obj("error",e.Message);}
         }
         object market;try{market=reader.MarketplaceHeader();}catch(Exception e){market=Obj("error",e.Message);}
@@ -526,8 +527,12 @@ class ClientAssets {
             byte[] card=r.Read(0x037e8108+7*0xa8,0xa8);
             int nameEnd=Array.IndexOf(card,(byte)0,0x20,64);if(nameEnd<0)nameEnd=0x60;
             frames.Add(Obj("time",r.Word(cg+0xae4c8),"active",r.Word(cg+0xc6fe8),
+                "card_visible",r.Read(0x0b5f3024,1)[0],
+                "render_origin",Floats(r.Read(cg+0xae504,12),0,3),
+                "render_angles",Floats(r.Read(cg+0xb2688,12),0,3),
+                "cmd_angles",new uint[]{r.Word(input+0x365c+(command&255)*44+8),r.Word(input+0x365c+(command&255)*44+12)},
                 "card_time",U(card,0),"card_name",Encoding.GetEncoding(936).GetString(card,0x20,nameEnd-0x20),
-                "card_icon",U(card,4),"card_background",U(card,8),"card_title",U(card,12),
+                "card_title",U(card,4),"card_background",U(card,8),"card_icon",U(card,12),"card_rank",U(card,0x14),
                 "buttons",r.Word(input+0x365c+(command&255)*44+4),
                 "timer_type",r.Word(cg+0xa78),"timer_end",r.Word(cg+0xa78+0x78),
                 "timer_font",r.Word(cg+0xa78+0x24),"timer_scale_bits",r.Word(cg+0xa78+0x14),
@@ -542,6 +547,40 @@ class ClientAssets {
         Console.WriteLine(serializer.Serialize(Obj("schema_version",1,"read_only",true,
             "client_sha256","e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b",
             "frames",frames)));
+    }
+    public static object TopPlayerCards(IntPtr process) {
+        var r=new ClientAssets(process);var cards=new List<object>();
+        // GetTop3Players0x6b0130 reads only presentation slots1..3.
+        for(uint slot=1;slot<=3;slot++) {
+            byte[] card=r.Read(0x037e8108+slot*0xa8,0xa8);
+            int end=Array.IndexOf(card,(byte)0,0x20,64);if(end<0)end=0x60;
+            cards.Add(Obj("slot",slot,"time",U(card,0),
+                "name",Encoding.GetEncoding(936).GetString(card,0x20,end-0x20),
+                "rank",U(card,0x14),"prestige",U(card,0x18),
+                "title",U(card,4),"background",U(card,8),"icon",U(card,12)));
+        }
+        return cards;
+    }
+    public static object ShowcaseActors(IntPtr process) {
+        var r=new ClientAssets(process);var actors=new List<object>();
+        uint slot=r.Word(0x07817bb0);if(slot>=256)throw new Exception("invalid entity slot");
+        uint entities=r.Word(0x01a19510+slot*4)^0x2168f672;
+        for(uint id=12;id<=14;id++) {
+            uint at=entities+id*0x238;bool valid=(r.Word(at+0x204)&1)!=0;
+            uint cgSlot=r.Word(0x07817ba8);if(cgSlot>=256)throw new Exception("invalid cg slot");
+            uint cg=r.Word(0x01a19510+cgSlot*4)^0xfbb2c97a,ci=cg+0x15dea8+id*0x3b8;
+            uint dobjSlot=BitConverter.ToUInt16(r.Read(0x02ef4858+id*2,2),0);var models=new List<string>();
+            if(dobjSlot!=0) {
+                uint obj=0x02e8e850+dobjSlot*0xcc;int count=Count(r.Read(obj+9,1)[0],32);
+                uint list=r.Word(obj+0xc0);for(uint part=0;part<count;part++)models.Add(r.Name(r.Word(r.Word(list+part*4))));
+            }
+            actors.Add(Obj("entity",id,"valid",valid,"type",r.Word(at+0xf4),
+                "dobj_slot",dobjSlot,"models",models,"cached_weapon",r.Word(ci+0x324),
+                "entity_bg_weapon",r.Word(at+0xf0+0x60),"weapon_flags",r.Word(at+0xf0+8),
+                "client",r.Word(at+0xf0+0x9c),"weapon",r.Word(at+0xf0+0xd0)&0xffff,
+                "origin",valid?r.EntityOrigin(at+0xf0):null));
+        }
+        return actors;
     }
     public static void ExportFeedback(IntPtr process) {
         var r=new ClientAssets(process);

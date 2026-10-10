@@ -488,7 +488,7 @@ impl GameServer {
                             let p=&mut bound.transport;
                             if let Some(admission)=self.admissions.get(&p.id,now) {
                                 match services.game_profile(admission.title,admission.owner).await {
-                                    Ok((public,owned))=>if let Err(error)=p.connection.refresh_profile(template,&public,&owned){tracing::warn!(%error,"player backpack update rejected");},
+                                    Ok(profile)=>if let Err(error)=p.connection.refresh_profile(template,&profile.public,&profile.owned,profile.rank){tracing::warn!(%error,"player backpack update rejected");},
                                     Err(error)=>tracing::warn!(%error,"saved backpack read failed"),
                                 }
                             }
@@ -567,9 +567,10 @@ impl GameServer {
                                 let services = self.services.as_ref().ok_or_else(|| {
                                     anyhow::anyhow!("player loadout requires local services")
                                 })?;
-                                let (public, owned) = services
+                                let profile = services
                                     .game_profile(admission.title, admission.owner)
                                     .await?;
+                                let (public, owned) = (&profile.public, &profile.owned);
                                 if state.dynamic_loadout() {
                                     let registry = weapon_registries
                                         .entry(registry_key(&admission, state))
@@ -582,10 +583,11 @@ impl GameServer {
                                         })
                                         .clone();
                                     let mut prepared = state.for_profile_at(
-                                        &public,
-                                        &owned,
+                                        public,
+                                        owned,
                                         state.first_weapon_index(),
                                     )?;
+                                    prepared.set_card_rank(profile.rank);
                                     {
                                         let mut guard = registry.lock().map_err(|_| {
                                             anyhow::anyhow!("weapon registry poisoned")
@@ -604,7 +606,9 @@ impl GameServer {
                                     weapon_registry = Some(registry);
                                     Arc::new(prepared)
                                 } else {
-                                    Arc::new(state.for_profile(&public, &owned)?)
+                                    let mut prepared = state.for_profile(public, owned)?;
+                                    prepared.set_card_rank(profile.rank);
+                                    Arc::new(prepared)
                                 }
                             } else {
                                 state.clone()

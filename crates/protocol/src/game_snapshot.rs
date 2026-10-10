@@ -204,6 +204,7 @@ pub fn player_frame_with_motion(
             hit_feedback: None,
             death_waypoints: None,
             replay: None,
+            local_card: None,
             vitals: None,
             local_player: None,
             local_player_baseline: None,
@@ -226,6 +227,7 @@ pub struct WorldSnapshot<'a> {
     pub hit_feedback: Option<crate::game_hit_feedback::HitFeedbackSnapshot>,
     pub death_waypoints: Option<&'a [crate::game_hit_feedback::DeathWaypointSnapshot]>,
     pub replay: Option<ReplayView>,
+    pub local_card: Option<crate::game_player_card::Card>,
     pub vitals: Option<PlayerVitals>,
     pub local_player: Option<crate::game_enemy::EnemySnapshot>,
     pub local_player_baseline: Option<crate::game_enemy::EnemySnapshot>,
@@ -468,7 +470,7 @@ pub fn player_frame_with_world(
                 (87, u32::from(equipment.unwrap().fire_count), 3),
                 (
                     54,
-                    if world.replay.is_some() {
+                    if world.replay.is_some() || vitals.is_some_and(|v| v.intermission) {
                         0x800
                     } else {
                         0x1000
@@ -740,7 +742,12 @@ pub fn player_frame_with_world(
             players.push(enemy);
         }
         players.extend_from_slice(world.players);
-        crate::game_enemy::write_player_clients(&mut out, &players, establish_baseline)?;
+        crate::game_enemy::write_player_clients_with_card(
+            &mut out,
+            &players,
+            establish_baseline,
+            world.local_card,
+        )?;
     } else if let Some(enemy) = world.enemy {
         crate::game_enemy::write_enemy_client(&mut out, enemy, establish_baseline)?;
     } else {

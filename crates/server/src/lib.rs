@@ -24,6 +24,7 @@ mod game_player;
 mod game_replay;
 pub mod game_server;
 pub mod game_state;
+mod game_top_players;
 mod game_weapon_registry;
 pub mod http;
 pub mod lobby_server;

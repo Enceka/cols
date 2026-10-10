@@ -141,6 +141,24 @@ pub fn private_record(user_id: u64, arguments: &[u8]) -> Result<Vec<u8>, LobbyEr
     Ok(out.0)
 }
 
+/// Presentation values from the saved, owner-checked private profile.
+/// rankVersion is a table version, never the prestige displayed on a card.
+pub fn player_rank(arguments: &[u8], user_id: u64) -> Result<(u8, u8), LobbyError> {
+    validate_private(arguments)?;
+    let (plain, _) = snapshot_and_tail(arguments)?;
+    if plain[4943..4947] != ((user_id >> 32) as u32).to_le_bytes()
+        || plain[4947..4951] != (user_id as u32).to_le_bytes()
+    {
+        return Err(LobbyError("private profile owner mismatch"));
+    }
+    let rank = u32::from_le_bytes(plain[4887..4891].try_into().unwrap());
+    let prestige = u32::from_le_bytes(plain[4883..4887].try_into().unwrap());
+    if !(1..=70).contains(&rank) || prestige > 255 {
+        return Err(LobbyError("private profile rank out of range"));
+    }
+    Ok(((rank - 1) as u8, prestige as u8))
+}
+
 /// Prepare a local level-one private profile from an intact client-default
 /// snapshot. Preserve all unrelated bytes, including the observed zero header.
 pub fn prepare_private(
@@ -250,6 +268,9 @@ mod tests {
         before[12345] = 42; // Unrelated progress must survive a boost.
         let old = encode_private(before.clone()).unwrap();
         let updated = maximize_test_rank(&old, uid).unwrap();
+        assert_eq!(player_rank(&old, uid).unwrap(), (0, 0));
+        assert_eq!(player_rank(&updated, uid).unwrap(), (69, 0));
+        assert!(player_rank(&updated, uid + 1).is_err());
         let (mut after, _) = snapshot_and_tail(&updated).unwrap();
         assert_eq!(&after[4844..4848], &0i32.to_le_bytes());
         assert_eq!(&after[4887..4891], &70i32.to_le_bytes());

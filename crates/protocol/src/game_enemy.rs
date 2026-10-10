@@ -204,6 +204,18 @@ pub(crate) fn write_player_clients(
     players: &[EnemySnapshot],
     establish_baseline: bool,
 ) -> Result<(), LobbyError> {
+    write_player_clients_with_card(out, players, establish_baseline, None)
+}
+
+pub(crate) fn write_player_clients_with_card(
+    out: &mut Writer,
+    players: &[EnemySnapshot],
+    establish_baseline: bool,
+    local_card: Option<crate::game_player_card::Card>,
+) -> Result<(), LobbyError> {
+    if let Some(card) = local_card {
+        card.validate()?;
+    }
     for (i, player) in players.iter().enumerate() {
         player.validate()?;
         if i > 0 && players[i - 1].client_index >= player.client_index {
@@ -217,14 +229,22 @@ pub(crate) fn write_player_clients(
     }
     if establish_baseline {
         for player in players {
-            write_client_record(out, *player)?;
+            write_client_record(
+                out,
+                *player,
+                local_card.filter(|_| player.client_index == 0),
+            )?;
         }
     }
     out.bits(0, 1);
     Ok(())
 }
 
-fn write_client_record(out: &mut Writer, enemy: EnemySnapshot) -> Result<(), LobbyError> {
+fn write_client_record(
+    out: &mut Writer,
+    enemy: EnemySnapshot,
+    card: Option<crate::game_player_card::Card>,
+) -> Result<(), LobbyError> {
     enemy.validate()?;
 
     out.bits(1, 1); // list entry
@@ -237,6 +257,16 @@ fn write_client_record(out: &mut Writer, enemy: EnemySnapshot) -> Result<(), Lob
         (23, u32::from(enemy.team), 3),
         (27, u32::from(enemy.model), 10),
     ];
+    if let Some(card) = card {
+        fields.extend([
+            (30, u32::from(card.rank), 8),
+            (37, u32::from(card.prestige), 8),
+            (39, u32::from(card.icon), 10),
+            (40, u32::from(card.title), 10),
+            (41, u32::from(card.background), 10),
+            (42, u32::from(card.nameplate), 10),
+        ]);
+    }
     for (slot, index) in [20, 21, 22, 31, 32, 33, 46, 47, 48, 49]
         .into_iter()
         .enumerate()
@@ -540,6 +570,45 @@ mod tests {
         }
     }
 
+    #[test]
+    fn local_card_decodes_through_the_measured_client_fields() {
+        for alignment in 0..8 {
+            let mut local = enemy();
+            local.client_index = 0;
+            local.entity_number = 0;
+            let card = crate::game_player_card::Card {
+                rank: 69,
+                prestige: 2,
+                icon: 138,
+                title: 214,
+                background: 396,
+                nameplate: 0,
+            };
+            let mut out = Writer::default();
+            out.bits(0, alignment);
+            write_player_clients_with_card(&mut out, &[local], true, Some(card)).unwrap();
+            let mut reader = Reader::new(&out.bytes);
+            reader.bits(alignment).unwrap();
+            assert_eq!(reader.bits(1).unwrap(), 1);
+            assert_eq!(reader.bits(1).unwrap(), 0);
+            assert_eq!(reader.bits(5).unwrap(), 0);
+            assert_eq!(reader.bits(1).unwrap(), 0);
+            assert_eq!(reader.bits(1).unwrap(), 1);
+            let fields = read_fields(&mut reader, &fixture()["client"], 7, true, &BTreeMap::new());
+            for (offset, value) in [
+                (0x6c, 69),
+                (0x70, 2),
+                (0x74, 138),
+                (0x78, 214),
+                (0x7c, 396),
+                (0x80, 0),
+            ] {
+                assert_eq!(fields[&offset], value);
+            }
+            assert_eq!(reader.bits(1).unwrap(), 0);
+            reader.finish().unwrap();
+        }
+    }
     #[test]
     fn death_repeats_removal_and_respawn_restores_entity_with_static_client() {
         let initial = enemy();

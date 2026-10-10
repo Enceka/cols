@@ -107,6 +107,9 @@ class ReadClientState {
                 if(hitRegions) { HitRegions.Export(process);return 0; }
                 Console.WriteLine("{");
                 Field(process,"connection_state",0x01a2e7ec,4);
+                Field(process,"player_card_visible",0x0b5f3024,1);
+                Console.WriteLine("\"top_player_cards\":"+new System.Web.Script.Serialization.JavaScriptSerializer().Serialize(ClientAssets.TopPlayerCards(process))+",");
+                if(Read(process,0x01a2e7ec,4)==10) Console.WriteLine("\"showcase_actors\":"+new System.Web.Script.Serialization.JavaScriptSerializer().Serialize(ClientAssets.ShowcaseActors(process))+",");
                 Field(process,"sound_fade_current_bits",0x0780e4b0,4);
                 Field(process,"sound_fade_target_bits",0x0780e4b4,4);
                 Field(process,"sound_fade_rate_bits",0x0780e4b8,4);
@@ -174,6 +177,11 @@ class ReadClientState {
                         Field(process,"predicted_spawn_count",checked(cg+0x19c),4);
                         Field(process,"predicted_corpse_slot",checked(cg+0xe8),4);
                         Field(process,"predicted_client_number",checked(cg+0x144),4);
+                        Field(process,"local_client_rank",checked(cg+0x15dea8+0x9c),4);
+                        Field(process,"local_client_prestige",checked(cg+0x15dea8+0xa0),4);
+                        Field(process,"local_client_card_icon",checked(cg+0x15dea8+0x358),4);
+                        Field(process,"local_client_card_title",checked(cg+0x15dea8+0x35c),4);
+                        Field(process,"local_client_card_background",checked(cg+0x15dea8+0x360),4);
                         Field(process,"predicted_replay_delay",checked(cg+0xa68),4);
                         Field(process,"predicted_replay_target",checked(cg+0xa6c),4);
                         Field(process,"native_killcam_active",checked(cg+0xc6fe8),4);

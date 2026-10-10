@@ -47,6 +47,12 @@ fn hash_valid(s: &str) -> bool {
     s.len() == 64 && s.bytes().all(|c| c.is_ascii_hexdigit())
 }
 impl Loadout {
+    pub(super) fn card(&self, public: &[u8]) -> Result<codol_protocol::game_player_card::Card> {
+        Ok(codol_protocol::game_player_card::Card::from_profile(
+            public,
+            &self.projection_offsets,
+        )?)
+    }
     pub(super) fn selected_for(&self, public: &[u8], slot: u8) -> Result<Self> {
         let snapshot = codol_protocol::profile::public_snapshot(public, &self.projection_offsets)?;
         let layout: serde_json::Value = serde_json::from_str(include_str!(

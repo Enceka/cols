@@ -69,7 +69,7 @@ def compute(capture, weapon_name=None, compose=False, viewhands=False,
     crc, count, included = seed, 0, 0
     weapons = []
     models = []
-    feedback_banks = {1: [], 6: []}
+    feedback_banks = {1: [], 6: [], 8: []}
     for key, values in sorted(parsed):
         category = key[1]
         if category == 15:
@@ -92,6 +92,19 @@ def compute(capture, weapon_name=None, compose=False, viewhands=False,
         raise ValueError("computed CRC differs from initialized client")
     result = {"ncs_crc": crc, "common_crc": seed, "constant_count": count,
               "asset_count": included, "observed_crc_verified": bool(capture["initialized"])}
+    menus = feedback_banks[8]
+    if b"sf_top3players" in menus:
+        layout = base64.b64decode(capture["category_layout_base64"], validate=True)
+        if len(layout) != 21 * 12 or struct.unpack_from("<III", layout, 8 * 12) != (4291, 64, 0):
+            raise ValueError("top players menu category layout mismatch")
+        if menus.count(b"sf_top3players") != 1 or len(menus) > 64:
+            raise ValueError("top players menu absent or ambiguous")
+        if capture["initialized"]:
+            linked = [name for a in capture["linked"] if a["category"] == 8
+                      for name in strings(a["strings_base64"])]
+            if linked != menus:
+                raise ValueError("menu constant order differs from loaded client")
+        result["top_players"] = dict(ncs_crc=crc, menu_index=menus.index(b"sf_top3players"))
     materials, sounds = feedback_banks[1], feedback_banks[6]
     required = [b"damage_feedback", b"kill_feedback"]
     if any(name in materials for name in required):

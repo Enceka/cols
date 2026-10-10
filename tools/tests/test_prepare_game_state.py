@@ -34,6 +34,25 @@ def capture():
 
 
 class GameStatePreparation(unittest.TestCase):
+    def test_top_players_uses_zero_based_loaded_menu_bank(self):
+        data = capture()
+        layout = bytearray(21 * 12)
+        struct.pack_into("<III", layout, 8 * 12, 4291, 64, 0)
+        data["category_layout_base64"] = base64.b64encode(layout).decode()
+        data["assets"] = [asset("ncs_mnu_level", 8, 3, [b"sf_top3players", b"pause"]),
+                          asset("ncs_mnu_common", 8, 0, [b"pause"])]
+        result = compute(data)
+        self.assertEqual(result["top_players"], dict(ncs_crc=result["ncs_crc"], menu_index=1))
+        data.update(initialized=1, checksum=result["ncs_crc"],
+                    linked=[asset("loaded", 8, 0, [b"pause", b"sf_top3players"])])
+        self.assertEqual(compute(data), {**result, "observed_crc_verified": True})
+        data["linked"][0]["strings_base64"].reverse()
+        with self.assertRaises(ValueError): compute(data)
+        data["initialized"] = 0
+        struct.pack_into("<III", layout, 8 * 12, 4291, 64, 1)
+        data["category_layout_base64"] = base64.b64encode(layout).decode()
+        with self.assertRaises(ValueError): compute(data)
+
     def test_feedback_uses_each_maps_sorted_banks_and_reserves_a_free_sound_slot(self):
         data = capture()
         data["assets"] = []

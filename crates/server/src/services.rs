@@ -21,6 +21,11 @@ pub struct LocalServices {
     writes: Mutex<()>,
     rooms: Mutex<crate::rooms::Rooms>,
 }
+pub(crate) struct GameProfile {
+    pub public: Vec<u8>,
+    pub owned: Vec<u32>,
+    pub rank: (u8, u8),
+}
 pub struct TaskResult {
     pub label: &'static str,
     pub result: Result<Vec<Vec<u8>>, u32>,
@@ -426,11 +431,7 @@ impl LocalServices {
 
     /// Freeze the latest saved backpack and ownership for one admitted player.
     /// Uses the same write lock and grant sources as lobby saves/purchases.
-    pub(crate) async fn game_profile(
-        &self,
-        title_id: u32,
-        user_id: u64,
-    ) -> Result<(Vec<u8>, Vec<u32>)> {
+    pub(crate) async fn game_profile(&self, title_id: u32, user_id: u64) -> Result<GameProfile> {
         let _lock = self.writes.lock().await;
         let session = Session {
             title_id,
@@ -444,13 +445,26 @@ impl LocalServices {
             .await?
             .context("saved player loadout is missing")?;
         profile::validate_public(&public)?;
+        let rank = match read_bounded(
+            &self.profile_path(&session, true).await?,
+            task::MAX_FILE_BYTES,
+        )
+        .await?
+        {
+            Some(private) => profile::player_rank(&private, user_id)?,
+            None => (0, 0),
+        };
         let mut owned = self.inventory(&session).await?;
         if let Some(wallet) = self.wallet(&session).await? {
             owned.extend(wallet.purchases.iter().map(|p| p.item_id));
         }
         owned.sort_unstable();
         owned.dedup();
-        Ok((public, owned))
+        Ok(GameProfile {
+            public,
+            owned,
+            rank,
+        })
     }
 
     /// Offline administration of one existing lab account. Stop all services
@@ -830,7 +844,12 @@ mod tests {
                 .unwrap()
                 .result
                 .unwrap();
-            let (saved, owned) = services.game_profile(s.title_id, s.user_id).await.unwrap();
+            let GameProfile {
+                public: saved,
+                owned,
+                rank,
+            } = services.game_profile(s.title_id, s.user_id).await.unwrap();
+            assert_eq!(rank, (0, 0));
             assert_eq!(saved, public.0);
             assert_eq!(owned, [10001, 20659]);
             assert!(services.game_profile(s.title_id, 2).await.is_err());

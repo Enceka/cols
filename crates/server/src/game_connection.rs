@@ -32,6 +32,7 @@ pub(crate) struct Connection {
     replay: crate::game_replay::Replay,
     last_kill: Option<crate::game_match::Kill>,
     final_replay_considered: bool,
+    top_players: crate::game_top_players::Presentation,
     enemy_baseline: Option<codol_protocol::game_enemy::EnemySnapshot>,
     local_baseline: Option<codol_protocol::game_enemy::EnemySnapshot>,
     corpses: std::collections::BTreeMap<u16, (u32, codol_protocol::game_corpse::CorpseSnapshot)>,
@@ -84,6 +85,7 @@ pub(crate) struct Connection {
 #[derive(Clone)]
 struct WorldHistory {
     replay_epoch: u32,
+    top_players_scene: bool,
     sequence: u32,
     local: Option<codol_protocol::game_enemy::EnemySnapshot>,
     players: Vec<codol_protocol::game_enemy::EnemySnapshot>,
@@ -118,6 +120,7 @@ impl Connection {
         template: &crate::game_state::PreparedGameState,
         public: &[u8],
         owned: &[u32],
+        rank: (u8, u8),
     ) -> Result<()> {
         if !template.dynamic_loadout()
             || !self.gamestate_acknowledged
@@ -129,7 +132,12 @@ impl Connection {
             return Ok(());
         };
         let hash: [u8; 32] = Sha256::digest(public).into();
-        if current.profile_hash == Some(hash) && self.requested_backpack.is_none() {
+        if current.profile_hash == Some(hash)
+            && current
+                .player_card
+                .is_none_or(|c| (c.rank, c.prestige) == rank)
+            && self.requested_backpack.is_none()
+        {
             return Ok(());
         }
         // Attribute resolution uses a temporary valid slot; the persistent
@@ -150,10 +158,14 @@ impl Connection {
             }
             Err(error) => return Err(error),
         };
+        state.set_card_rank(rank);
         self.active_backpack = slot;
         self.requested_backpack = None;
         tracing::info!(slot,global_class=?state.selected_backpack_class(),"selected in-game backpack");
         if current.selected_weapon_names() == state.selected_weapon_names() {
+            if current.player_card != state.player_card {
+                self.world_history.clear();
+            }
             Arc::make_mut(self.game_state.as_mut().unwrap()).update_profile_selection(&state);
             if self.next_spawn_loadout.take().is_some() {
                 self.feedback
@@ -332,7 +344,7 @@ impl Connection {
                 .push(format!("s ui_scorelimit \"{limit}\"").as_bytes())?;
             if self.tdm.is_some() {
                 self.server_commands
-                    .push(b"s scr_gameended \"0\" ui_match_complete \"0\" ui_eog_show \"0\"")?;
+                    .push(b"s scr_gameended \"0\" ui_match_complete \"0\" ui_eog_show \"0\" ui_hide_playercards \"0\"")?;
             }
             self.hud_rules_sent = true;
         }
@@ -612,6 +624,24 @@ impl Connection {
             });
         }
         let live_players = match_players.clone();
+        let top_players_scene = self.top_players.scene.is_some();
+        if let Some(scene) = &self.top_players.scene {
+            angles = scene.angles;
+            command_time = server_time;
+            let mut camera = scene.camera.clone();
+            camera.command_time = server_time;
+            snapshot_motion = Some(camera);
+            snapshot_vitals = Some(codol_protocol::game_snapshot::PlayerVitals {
+                intermission: true,
+                ..Default::default()
+            });
+            local_player = scene.actors.first().copied();
+            match_players = scene.actors[1..].to_vec();
+            corpses.clear();
+            impacts.clear();
+            obituaries.clear();
+            hit_feedback = None;
+        }
         let playback = self.replay.sample(server_time);
         let replay_epoch = playback.as_ref().map_or(self.replay.epoch, |p| p.epoch);
         let replay_wire = playback
@@ -671,6 +701,7 @@ impl Connection {
                 .find(|h| {
                     h.sequence <= self.native_ack
                         && h.replay_epoch == replay_epoch
+                        && h.top_players_scene == top_players_scene
                         && self.native_sent + 1 - h.sequence < 24
                         && h.players.len() == match_players.len()
                 })
@@ -781,6 +812,7 @@ impl Connection {
         if self.tdm.is_some() {
             self.world_history.push_back(WorldHistory {
                 replay_epoch,
+                top_players_scene,
                 sequence: self.native_sent,
                 local: local_player,
                 players: match_players,
@@ -1292,6 +1324,38 @@ impl Connection {
         self.vitals.intermission = true;
         if let Some(motion) = &mut self.motion {
             motion.velocity = [0.0; 3];
+        }
+        if let Some(menu) = self.game_state.as_ref().and_then(|s| s.top_players()) {
+            if self.top_players.scene.is_none() {
+                let state = self.game_state.as_ref().unwrap();
+                let mut actors = self.tdm.as_ref().unwrap().snapshots();
+                let mut local = state.local_player_snapshot(true).unwrap();
+                local.weapon = self.player.as_ref().unwrap().equipment().weapon;
+                actors.push(local);
+                self.top_players.scene = Some(state.top_players_scene(
+                    &self.tdm.as_ref().unwrap().scoreboard(self.owner_id).rows,
+                    actors,
+                )?);
+                return Ok(());
+            }
+            // Wait until the client has applied a live snapshot in the new
+            // epoch; opening the menu while it still displays killcam races
+            // the native replay HUD. Final scoreboard data must also be ACKed.
+            if self.server_commands.acknowledged() < self.match_summary_sequence.unwrap()
+                || !self.world_history.iter().any(|h| {
+                    h.sequence <= self.native_ack
+                        && h.replay_epoch == self.replay.epoch
+                        && h.top_players_scene
+                })
+                || !self.top_players.advance(
+                    now,
+                    menu,
+                    &self.tdm.as_ref().unwrap().scoreboard(self.owner_id).rows,
+                    &mut self.server_commands,
+                )?
+            {
+                return Ok(());
+            }
         }
         if self.match_ui_sequence.is_none()
             && self.server_commands.acknowledged() >= self.match_summary_sequence.unwrap()

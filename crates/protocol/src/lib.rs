@@ -9,6 +9,7 @@ pub mod game_events;
 pub mod game_hit_feedback;
 pub mod game_impact;
 pub mod game_obituary;
+pub mod game_player_card;
 pub mod game_scoreboard;
 pub mod game_snapshot;
 pub mod game_state;

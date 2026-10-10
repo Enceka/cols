@@ -8,6 +8,7 @@ use std::sync::Arc;
 #[path = "game_loadout.rs"]
 mod loadout;
 
+#[derive(Default)]
 pub(crate) struct SnapshotWorld<'a> {
     pub delta_distance: u8,
     pub corpse_baselines: &'a [codol_protocol::game_corpse::CorpseSnapshot],
@@ -108,6 +109,8 @@ pub struct PreparedGameState {
     #[serde(default)]
     feedback_resources: Option<crate::game_feedback::Resources>,
     #[serde(default)]
+    top_players: Option<crate::game_top_players::Resources>,
+    #[serde(default)]
     bootstrap_weapon: Option<BootstrapWeapon>,
     #[serde(default)]
     player_loadout: Option<loadout::Loadout>,
@@ -135,6 +138,8 @@ pub struct PreparedGameState {
     pub(crate) collision: Option<Arc<crate::game_motion::Collision>>,
     #[serde(skip)]
     pub(crate) profile_hash: Option<[u8; 32]>,
+    #[serde(skip)]
+    pub(crate) player_card: Option<codol_protocol::game_player_card::Card>,
     #[serde(skip)]
     registry_strings: Vec<(u16, String)>,
     #[serde(skip)]
@@ -681,6 +686,9 @@ impl PreparedGameState {
         if let Some(resources) = &state.feedback_resources {
             resources.validate(state.ncs_crc)?;
         }
+        if let Some(resources) = &state.top_players {
+            resources.validate(state.ncs_crc)?;
+        }
         tracing::info!(
             ncs_crc = state.ncs_crc,
             common_crc = state.common_crc,
@@ -877,6 +885,36 @@ impl PreparedGameState {
     pub(crate) fn feedback_resources(&self) -> Option<&crate::game_feedback::Resources> {
         self.feedback_resources.as_ref()
     }
+    pub(crate) fn top_players(&self) -> Option<&crate::game_top_players::Resources> {
+        self.top_players.as_ref()
+    }
+    pub(crate) fn top_players_scene(
+        &self,
+        rows: &[codol_protocol::game_scoreboard::ScoreboardRow],
+        mut actors: Vec<codol_protocol::game_enemy::EnemySnapshot>,
+    ) -> Result<crate::game_top_players::Scene> {
+        let config = self
+            .match_config
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("podium requires a match"))?;
+        for actor in &mut actors {
+            let animation = actor
+                .client_index
+                .checked_sub(1)
+                .and_then(|i| config.roster.get(usize::from(i)))
+                .map(|b| &b.animation)
+                .or(self.training_enemy.as_ref())
+                .ok_or_else(|| anyhow::anyhow!("podium idle animation missing"))?;
+            actor.legs_animation = animation.idle_animation;
+        }
+        let seeds: Vec<_> = config.spawns.iter().flatten().copied().collect();
+        crate::game_top_players::Scene::build(
+            rows,
+            &actors,
+            &seeds,
+            self.collision.as_ref().unwrap(),
+        )
+    }
     pub(crate) fn next_weapon_index(&self) -> u16 {
         if let Some((index, _)) = self.registry_strings.last() {
             return index - 5443 + 1;
@@ -921,6 +959,13 @@ impl PreparedGameState {
     pub(crate) fn update_profile_selection(&mut self, selected: &Self) {
         self.player_loadout = selected.player_loadout.clone();
         self.profile_hash = selected.profile_hash;
+        self.player_card = selected.player_card;
+    }
+    pub(crate) fn set_card_rank(&mut self, (rank, prestige): (u8, u8)) {
+        if let Some(card) = &mut self.player_card {
+            card.rank = rank;
+            card.prestige = prestige;
+        }
     }
     pub(crate) fn first_weapon_index(&self) -> u16 {
         self.bootstrap_weapon.as_ref().map_or(1, |w| w.index)
@@ -936,6 +981,7 @@ impl PreparedGameState {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("missing loadout catalogue"))?;
         let mut state = self.clone();
+        state.player_card = Some(loadout.card(public)?);
         if let Some(arsenal) = &self.arsenal {
             let selections = loadout.selections(public)?;
             let hands = self
@@ -1418,6 +1464,7 @@ impl PreparedGameState {
                 hit_feedback: world.hit_feedback,
                 death_waypoints: world.death_waypoints,
                 replay: world.replay,
+                local_card: self.player_card,
                 vitals: world.vitals,
                 local_player: world.local_player,
                 local_player_baseline: world.local_player_baseline,
@@ -1599,6 +1646,7 @@ pub(crate) fn synthetic() -> PreparedGameState {
         map_entities_sha256: None,
         minimap: None,
         feedback_resources: None,
+        top_players: None,
         bootstrap_weapon: None,
         player_loadout: None,
         secondary_weapon: None,
@@ -1613,6 +1661,7 @@ pub(crate) fn synthetic() -> PreparedGameState {
         arsenal: None,
         collision: None,
         profile_hash: None,
+        player_card: None,
         registry_strings: Vec::new(),
         snapshot_probe: false,
         snapshot_frames: 0,
@@ -1622,6 +1671,75 @@ pub(crate) fn synthetic() -> PreparedGameState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    #[ignore = "requires independently captured map states in CODOL_PRESENTATION_STATES"]
+    fn captured_maps_have_grounded_podiums_within_snapshot_budget() {
+        let paths =
+            std::env::var_os("CODOL_PRESENTATION_STATES").expect("set captured map state paths");
+        for path in std::env::split_paths(&paths) {
+            let mut state = PreparedGameState::load(&path).unwrap();
+            let config = state.match_config.as_ref().unwrap();
+            let mut actors = vec![state.local_player_snapshot(true).unwrap()];
+            for (i, entry) in config.roster.iter().enumerate() {
+                let mut actor = actors[0];
+                actor.client_index = i as u8 + 1;
+                actor.entity_number = i as u16 + 1;
+                actor.model = entry.animation.model;
+                actor.attachment_models = entry.attachment_models;
+                actor.team = config.teams[i + 1];
+                actor.weapon = 352 + i as u16;
+                actors.push(actor);
+            }
+            let rows: Vec<_> = (0..12)
+                .map(
+                    |client_number| codol_protocol::game_scoreboard::ScoreboardRow {
+                        client_number,
+                        score: 1200 - i32::from(client_number) * 100,
+                        ..Default::default()
+                    },
+                )
+                .collect();
+            let scene = state.top_players_scene(&rows, actors).unwrap();
+            state.player_card = Some(codol_protocol::game_player_card::Card {
+                rank: 69,
+                prestige: 2,
+                icon: 138,
+                title: 214,
+                background: 396,
+                nameplate: 0,
+            });
+            let snapshot = state
+                .snapshot(
+                    10000,
+                    10000,
+                    true,
+                    scene.angles,
+                    state.player().map(|p| p.equipment()),
+                    SnapshotWorld {
+                        motion: Some(&scene.camera),
+                        local_player: Some(scene.actors[0]),
+                        players: &scene.actors[1..],
+                        vitals: Some(codol_protocol::game_snapshot::PlayerVitals {
+                            intermission: true,
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+            eprintln!(
+                "{}: camera={:?}, actors={:?}, bytes={}",
+                state.map,
+                scene.camera.origin,
+                scene.actors[12..]
+                    .iter()
+                    .map(|a| a.origin)
+                    .collect::<Vec<_>>(),
+                snapshot.len()
+            );
+            assert!(snapshot.len() <= codol_protocol::game_wire::FRAGMENT_SIZE - 5);
+        }
+    }
     #[test]
     fn first_spawn_below_terrain_is_grounded_like_a_respawn() {
         let export = serde_json::json!({"schema_version":1,"read_only":true,"client_sha256":codol_protocol::CLIENT_SHA256,
