@@ -86,6 +86,11 @@ def animation_config(template, capture, definition):
     if fire is None or fire[0] != "torso" or select_action(script, "fireweapon", dict(context, movetype="walk")) is not None:
         raise ValueError("unsupported native Bot firing overlay")
     locomotion["fire_standing"] = index(fire[1])
+    reload = select_action(script, "reload", context)
+    if (reload is None or reload[0] != "torso"
+            or reload != select_action(script, "reload", dict(context, movetype="walk"))):
+        raise ValueError("unsupported native Bot reload overlay")
+    config["reload_animation"] = index(reload[1])
     locomotion["script_sha256"] = hashlib.sha256(script_bytes).hexdigest()
     config["locomotion"] = locomotion
     return config

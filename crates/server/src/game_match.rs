@@ -130,6 +130,7 @@ struct Bot {
     death: Option<u32>,
     fire_time: Option<u32>,
     fire_toggle: bool,
+    reload_animation: crate::game_enemy::ReloadAnimation,
     route: std::collections::VecDeque<[f32; 3]>,
     route_target: Option<[f32; 3]>,
     route_time: u32,
@@ -240,6 +241,7 @@ impl TdmMatch {
                 death: None,
                 fire_time: None,
                 fire_toggle: false,
+                reload_animation: Default::default(),
                 route: Default::default(),
                 route_target: None,
                 route_time: 0,
@@ -538,6 +540,7 @@ impl TdmMatch {
                 bot.birth = now;
                 bot.death = None;
                 bot.fire_time = None;
+                bot.reload_animation = Default::default();
                 bot.route.clear();
                 bot.route_target = None;
                 bot.steering = None;
@@ -732,6 +735,18 @@ impl TdmMatch {
             };
             bot.snapshot.events = events;
             bot.snapshot.weapon = active_weapon.weapon;
+            if bot.reload_animation.apply(
+                &mut bot.snapshot,
+                class.and_then(|c| c.animation.reload_animation),
+                bot.weapon.as_ref().map(|w| w.equipment()),
+            ) {
+                tracing::info!(
+                    client = bot.snapshot.client_index,
+                    weapon = bot.snapshot.weapon,
+                    torso = bot.snapshot.torso_animation,
+                    "TDM bot reload pose started"
+                );
+            }
         }
         self.next_route_client = (self.next_route_client + 1) % self.bots.len();
         let routing = started.elapsed().saturating_sub(movement);
@@ -1219,22 +1234,39 @@ mod tests {
                     continue;
                 }
                 let mut contacts = Vec::new();
-                for client in capture["clients"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .filter(|c| c["client"] != 0)
-                {
+                let clients: Vec<_> = if let Some(frames) = capture["frames"].as_array() {
+                    frames
+                        .iter()
+                        .flat_map(|f| f["clients"].as_array().unwrap())
+                        .collect()
+                } else {
+                    capture["clients"].as_array().unwrap().iter().collect()
+                };
+                for client in clients.into_iter().filter(|c| c["client"] != 0) {
                     let pose = &client["ground_pose"];
                     if pose["stable_read"] != true || pose["plausible"] != true {
                         continue;
                     }
+                    let root_origin: [f32; 3] =
+                        serde_json::from_value(pose["root_origin"].clone()).unwrap();
+                    // Include a small upward margin for integer network Z and
+                    // interpolation, without moving the authoritative actor.
+                    let support = collision.trace(
+                        [root_origin[0], root_origin[1], root_origin[2] + 2.0],
+                        [root_origin[0], root_origin[1], root_origin[2] - 32.0],
+                        70.0,
+                    );
                     for foot in pose["feet"].as_array().unwrap() {
                         let p: [f32; 3] = serde_json::from_value(foot["origin"].clone()).unwrap();
                         let floor =
                             collision.raycast([p[0], p[1], p[2] + 16.0], [p[0], p[1], p[2] - 64.0]);
+                        let movement_floor = collision
+                            .movement_surface([p[0], p[1], p[2] + 16.0], [p[0], p[1], p[2] - 64.0]);
                         contacts.push(serde_json::json!({"client":client["client"],"legs":client["legs_animation"],
                             "time":pose["time"],"bone":foot["name"],"origin":p,
+                            "root_origin":root_origin,"root_floor_gap":(support.fraction<1.0 && !support.start_solid).then_some(support.fraction*34.0-2.0),
+                            "root_normal":support.normal,
+                            "movement_floor_gap":(movement_floor.fraction<1.0 && !movement_floor.start_solid).then_some(movement_floor.fraction*80.0-16.0),
                             "floor_gap":(floor.fraction<1.0 && !floor.start_solid).then_some(floor.fraction*80.0-16.0),
                             "floor_normal":floor.normal}));
                     }

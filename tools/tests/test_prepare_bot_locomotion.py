@@ -38,9 +38,14 @@ fireweapon {
  weapon_position ads { torso fire_ads }
  default { torso fire_hip }
 }
+reload {
+ playerAnimType smg { torso reload_smg }
+ playerAnimType mg { torso reload_mg }
+ default { torso reload_rifle }
+}
 """
     names = ["walk", "back", "lmg_run", "rifle_run", "side_run", "generic_run", "run_back",
-             "rifle_sprint", "generic_sprint", "fire_ads", "fire_hip"]
+             "rifle_sprint", "generic_sprint", "fire_ads", "fire_hip", "reload_mg", "reload_rifle", "reload_smg"]
     capture = {"schema_version": 1, "client_sha256": "target", "read_only": True, "ncs_crc": 123,
                "animation_rules": {"mp/playeranim.script": asset("mp/playeranim.script", script),
                                    "mp/playeranimtypes.txt": asset("mp/playeranimtypes.txt", "none\nother\npistol\nsmg\nautorifle\n")},

@@ -803,6 +803,36 @@ class ClientAssets {
         }
         return origin;
     }
+    public static void ExportGrounding(IntPtr process) {
+        var r=new ClientAssets(process);var frames=new List<object>();
+        if(r.Word(0x01a2e7ec)!=10)throw new Exception("load the map before grounding capture");
+        uint crc=r.Word(0x02df7d90);var clock=System.Diagnostics.Stopwatch.StartNew();
+        for(int sample=0;sample<200 && clock.ElapsedMilliseconds<10000;sample++) {
+            if(r.Word(0x01a2e7ec)!=10||r.Word(0x02df7d90)!=crc)break;
+            uint cgSlot=r.Word(0x07817ba8),entitySlot=r.Word(0x07817bb0);
+            if(cgSlot>=256||entitySlot>=256)throw new Exception("invalid grounding context");
+            uint cg=r.Word(0x01a19510+cgSlot*4)^0xfbb2c97a;
+            uint entities=r.Word(0x01a19510+entitySlot*4)^0x2168f672;
+            var clients=new List<object>();
+            for(uint id=1;id<12;id++) {
+                uint at=entities+id*0x238;
+                if((r.Word(at+0x204)&1)==0||r.Word(at+0xf4)!=1)continue;
+                uint dobj=BitConverter.ToUInt16(r.Read(0x02ef4858+id*2,2),0);
+                object pose=r.GroundPose(at,dobj);
+                uint ci=cg+0x15dea8+id*0x3b8;
+                clients.Add(Obj("client",id,"entity_origin",r.EntityOrigin(at+0xf0),
+                    "legs_animation",r.Word(at+0xf0+0xd4),"ground_pose",pose,
+                    "torso_animation",r.Word(at+0xf0+0xd8),"torso_lerp_animation",r.Word(ci+0x1b0),
+                    "torso_lerp_rate",BitConverter.ToSingle(r.Read(ci+0x1d4,4),0)));
+            }
+            frames.Add(Obj("time",r.Word(cg+0xae4c8),"clients",clients));
+            System.Threading.Thread.Sleep(50);
+        }
+        var serializer=new JavaScriptSerializer();serializer.MaxJsonLength=8*1024*1024;
+        Console.WriteLine(serializer.Serialize(Obj("schema_version",1,"read_only",true,
+            "client_sha256","e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b",
+            "ncs_crc",crc,"frames",frames)));
+    }
     object GroundPose(uint entity,uint dobjSlot) {
         // Read existing render data only; off-screen actors may have no current
         // skeleton. Never request bone evaluation or treat a stale pose as proof.

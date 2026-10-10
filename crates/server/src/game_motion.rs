@@ -376,27 +376,42 @@ impl Collision {
     /// A point beginning inside a solid brush reports fraction zero even when
     /// its endpoint escapes, so a shot cannot originate through that brush.
     pub fn raycast(&self, start: V3, end: V3) -> Trace {
+        self.raycast_mask(start, end, SHOT_MASK)
+    }
+    #[cfg(test)]
+    pub fn movement_surface(&self, start: V3, end: V3) -> Trace {
+        self.raycast_mask(start, end, PLAYER_MASK)
+    }
+    fn raycast_mask(&self, start: V3, end: V3, mask: u32) -> Trace {
         let bounds = Bounds {
             min: std::array::from_fn(|i| start[i].min(end[i])),
             max: std::array::from_fn(|i| start[i].max(end[i])),
         };
         let mut result = Trace::default();
-        self.raycast_node(0, bounds, start, end, &mut result);
+        self.raycast_node(0, bounds, start, end, mask, &mut result);
         result
     }
-    fn raycast_node(&self, index: usize, bounds: Bounds, start: V3, end: V3, result: &mut Trace) {
+    fn raycast_node(
+        &self,
+        index: usize,
+        bounds: Bounds,
+        start: V3,
+        end: V3,
+        mask: u32,
+        result: &mut Trace,
+    ) {
         if !self.nodes[index].bounds().intersects(bounds) {
             return;
         }
         match self.nodes[index] {
             Node::Branch { left, right, .. } => {
-                self.raycast_node(left, bounds, start, end, result);
-                self.raycast_node(right, bounds, start, end, result);
+                self.raycast_node(left, bounds, start, end, mask, result);
+                self.raycast_node(right, bounds, start, end, mask, result);
             }
             Node::Leaf { first, count, .. } => {
                 for &i in &self.indices[first..first + count] {
                     let primitive = &self.primitives[i];
-                    if primitive.contents & SHOT_MASK == 0 || !primitive.bounds.intersects(bounds) {
+                    if primitive.contents & mask == 0 || !primitive.bounds.intersects(bounds) {
                         continue;
                     }
                     let hit = match &primitive.shape {

@@ -29,12 +29,29 @@ class BotRosterPreparation(unittest.TestCase):
         state, capture, arsenal = inputs()
         definition = bytearray(base64.b64decode(arsenal["weapons"][0]["definition_base64"]))
         rifle = animation_config({}, capture, definition)
+        self.assertEqual(rifle["reload_animation"], 13)
         struct.pack_into("<I", definition, 0x480, 2)
         machinegun = animation_config({}, capture, definition)
         self.assertNotEqual(rifle["locomotion"]["run_forward"], machinegun["locomotion"]["run_forward"])
+        struct.pack_into("<I", definition, 0x478, 3)
+        struct.pack_into("<I", definition, 0x480, 3)
+        smg = animation_config({}, capture, definition)
+        self.assertEqual(smg["reload_animation"], 14)
         struct.pack_into("<I", definition, 0x480, 12)
         with self.assertRaises(ValueError):
             animation_config({}, capture, definition)
+
+    def test_reload_binding_rejects_missing_or_ambiguous_selected_animation(self):
+        import base64
+        for missing in (True, False):
+            state, capture, arsenal = inputs()
+            definition = base64.b64decode(arsenal["weapons"][0]["definition_base64"])
+            if missing:
+                capture["animations"] = [a for a in capture["animations"] if a["name"] != "reload_rifle"]
+            else:
+                capture["animations"].append({"source":0x07817b80,"name":"reload_rifle","index":90})
+            with self.assertRaises(ValueError):
+                animation_config({}, capture, definition)
 
 
 if __name__ == "__main__":
