@@ -678,6 +678,18 @@ impl Player {
             .firing
             .map_or(0, |f| f.remaining_msec);
         if state == 5 {
+            // 0x424fa0 -> 0x423b10: requesting the held weapon again during
+            // the alternate drop finishes the change at once (state 2).
+            if remaining > 0
+                && Self::input_allowed(cmd)
+                && cmd.weapons[0] == self.current.equipment.weapon
+            {
+                self.switch_target = None;
+                self.current.equipment.aim = self.current.ads.map(|_| Aim::default());
+                self.current
+                    .animate(2, 20, self.alternate_timing.unwrap().raise_msec, 0);
+                return;
+            }
             if remaining == 0 {
                 if self.switch_target.take() == self.alternate.as_ref().map(|w| w.equipment.weapon)
                 {
@@ -691,14 +703,20 @@ impl Player {
             return;
         }
         if state == 3 {
-            // FinishWeaponChange reads the latest owned requested weapon. A
-            // request to return during the drop raises the original gun again.
+            // 0x424fa0 calls FinishWeaponChange 0x423b10 as soon as the
+            // request returns to the held weapon, so the original gun is
+            // raised without waiting for the rest of its drop.
+            if Self::input_allowed(cmd) && cmd.weapons[0] == self.current.equipment.weapon {
+                self.switch_target = None;
+                self.begin_raise();
+                return;
+            }
+            // Otherwise FinishWeaponChange reads the latest owned request.
             if Self::input_allowed(cmd)
-                && (cmd.weapons[0] == self.current.equipment.weapon
-                    || self
-                        .secondary
-                        .as_ref()
-                        .is_some_and(|other| other.equipment.weapon == cmd.weapons[0]))
+                && self
+                    .secondary
+                    .as_ref()
+                    .is_some_and(|other| other.equipment.weapon == cmd.weapons[0])
             {
                 self.switch_target = Some(cmd.weapons[0]);
             }
@@ -719,11 +737,17 @@ impl Player {
             }
             return;
         }
-        if matches!(state, 1 | 2) {
+        let raising = matches!(state, 1 | 2);
+        if raising {
             if remaining == 0 {
                 self.current.ready();
+                return;
             }
-            return;
+            // 0x424fa0 lets a new request interrupt a raise unless a weapon
+            // delay is pending; 0x4236a0 then starts the drop immediately.
+            if self.current.equipment.firing.unwrap().delay_msec != 0 {
+                return;
+            }
         }
         if Self::input_allowed(cmd)
             && self
@@ -741,6 +765,9 @@ impl Player {
             })
         {
             self.begin_drop(cmd.weapons[0]);
+            return;
+        }
+        if raising {
             return;
         }
         if state == 7 {
@@ -1418,6 +1445,41 @@ mod tests {
         assert_eq!(player.equipment().weapon, 352);
         assert_eq!(player.equipment().ammo.unwrap().clip, 29);
         assert_eq!(player.equipment().secondary.unwrap().ammo.unwrap().clip, 29);
+    }
+
+    #[test]
+    fn quick_wheel_switches_follow_native_interrupts_without_a_second_raise() {
+        let mut p = switchable_player(352, 0.9).with_secondary(switchable_player(180, 1.0));
+        p.apply(&select(1100, 352, 0));
+        // Returning during the drop finishes the change at once (0x423b10).
+        p.apply(&select(1200, 180, 0));
+        assert_eq!(p.equipment().firing.unwrap().state, 3);
+        p.apply(&select(1250, 352, 0));
+        assert_eq!(p.equipment().weapon, 352);
+        assert_eq!(p.equipment().firing.unwrap().state, 1);
+        assert_eq!(p.equipment().firing.unwrap().remaining_msec, 400);
+        p.apply(&select(1650, 352, 0));
+        assert_eq!(p.equipment().firing.unwrap().state, 0);
+        // A new request interrupts the raise and drops immediately (0x4236a0).
+        p.apply(&select(1700, 180, 0));
+        p.apply(&select(2000, 180, 0));
+        assert_eq!(
+            (p.equipment().weapon, p.equipment().firing.unwrap().state),
+            (180, 1)
+        );
+        p.apply(&select(2100, 352, 0));
+        assert_eq!(
+            (p.equipment().weapon, p.equipment().firing.unwrap().state),
+            (180, 3)
+        );
+        p.apply(&select(2400, 352, 0));
+        assert_eq!(
+            (p.equipment().weapon, p.equipment().firing.unwrap().state),
+            (352, 1)
+        );
+        p.apply(&select(2800, 352, 0));
+        assert_eq!(p.equipment().firing.unwrap().state, 0);
+        assert_eq!(p.equipment().secondary.unwrap().weapon, 180);
     }
 
     #[test]
