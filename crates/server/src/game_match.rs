@@ -442,7 +442,7 @@ impl TdmMatch {
             shot.angles,
             shot.time,
             shot.ballistics,
-            (0, 2),
+            (0, self.config.teams[0]),
             game_combat::ActorScene {
                 actors: &self.actors(local, 70.0),
                 regions,
@@ -878,6 +878,65 @@ mod tests {
         assert_eq!(m.scoreboard(42).team_scores, [0, 100, 0, 0]);
         assert_eq!(m.winning_team(), 1);
         assert_eq!(m.scoreboard(42).rows[1].deaths, 1);
+    }
+    #[test]
+    fn player_shots_follow_either_room_team_and_teammates_block_without_damage() {
+        let collision = world();
+        for player_team in [1, 2] {
+            let mut config = config();
+            config.teams = std::array::from_fn(|i| {
+                if i % 2 == 0 {
+                    player_team
+                } else {
+                    3 - player_team
+                }
+            });
+            let mut local = template();
+            local.team = player_team;
+            let mut m = TdmMatch::new(config, local, 200.0, &collision).unwrap();
+            for bot in &mut m.bots {
+                bot.snapshot.origin = [500.0, 500.0, 0.0];
+            }
+            // Bot 2 is friendly and shields the enemy Bot 1 directly behind.
+            m.bots[0].snapshot.origin = [200.0, 0.0, 0.0];
+            m.bots[1].snapshot.origin = [100.0, 0.0, 0.0];
+            let mut shot = crate::game_player::Shot {
+                time: 2100,
+                angles: [0; 3],
+                weapon: 352,
+                ballistics: game_combat::Ballistics {
+                    damage: 50,
+                    range: 8192.0,
+                    near_range: 500.0,
+                    location_multipliers: None,
+                    falloff: None,
+                    pellets: 1,
+                    spread_degrees: 0.0,
+                },
+            };
+            let blocked = m.player_fire(shot, [0.0, 0.0, 60.0], local, &collision, None);
+            assert!(blocked.damage.is_empty());
+            assert!(m.bots.iter().all(|b| b.health == 100));
+            assert_eq!(m.scoreboard(42).team_scores, [0; 4]);
+
+            m.bots[1].snapshot.origin[1] = 100.0;
+            for time in [2200, 2300] {
+                shot.time = time;
+                let hit = m.player_fire(shot, [0.0, 0.0, 60.0], local, &collision, None);
+                assert_eq!(hit.damage, [(1, 50, false)]);
+            }
+            assert_eq!(m.bots[0].health, 0);
+            assert_eq!(m.bots[1].health, 100);
+            let board = m.scoreboard(42);
+            assert_eq!(board.rows[0].kills, 1);
+            assert_eq!(board.rows[1].deaths, 1);
+            assert_eq!(board.rows[2].deaths, 0);
+            assert_eq!(board.team_scores[usize::from(player_team)], 100);
+            assert_eq!(board.team_scores[usize::from(3 - player_team)], 0);
+            let kills = m.take_kills();
+            assert_eq!(kills.len(), 1);
+            assert_eq!(kills[0].victim.client_index, 1);
+        }
     }
     #[test]
     fn six_per_team_have_unique_clients_lives_scores_and_respawns() {

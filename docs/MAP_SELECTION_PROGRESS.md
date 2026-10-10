@@ -66,3 +66,10 @@ Afghan/Killhouse均有独立CRC、实体、碰撞、HUD和TDM出生点准备。�
 - 长时间停留原房间后换图暴露930秒UDP准入过期：原实现只续期大厅房间。现正常模式在认证业务帧之后同步续期房间及同title/owner/seed的存活UDP准入；不延长未认证心跳，不恢复过期或撤销记录。时间驱动回归覆盖跨越原期限、错身份和撤销。正常模式的新连接仍需有效票据。
 - `minimap-lease-serial-check.log`：295 Rust、41 Python、fmt/Clippy通过；3个原有诊断测试忽略。并行全量的observe空闲测试再次出现调度相关失败（两条idle_timeout），单独复核和`RUST_TEST_THREADS=1 sh tools/check.sh`通过；未放宽500ms要求，保留两份失败日志。
 - 当前本机游玩prefix为`wine10-minimap-20261010`，正常入口默认同步更新；不再默认使用已卡住的旧容器。日志/只读探针为主要证据，本轮只在定位界面与小地图验收时留图。
+
+
+### 续期修复的实际复核
+
+`client-1791614156138`完成标准坠机局，422749ms结束，Axis7500/Allies7400；在客户端启动2153秒后仍保留原12人房间，再次准备成功进入坠机之地state10，材质仍为`compass_map_mp_crash_dlc`。`continuous-lease-reopen-proof.json`保留这次读数，本次日志没有`DATA without peer`或`admission expired`。证明跨过原930秒期限后的原房间再开局，不表述为无限时稳定性保证。随后主动结束验证进程并由harness恢复证书。
+
+按新版参考文档继续排查射击反馈时，另修正玩家射击友敌筛选的固定阵营遗漏，见`REFERENCE_ALIGNMENT.md`。此前房间/出生/结算的实机通过不等于玩家射击判定通过。
