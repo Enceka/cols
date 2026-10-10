@@ -651,9 +651,16 @@ impl Connection {
                 client: p.view.client,
                 delay_msec: p.delay,
                 end_time: p.end_time,
+                skip_text: state.replay_resources().and_then(|r| r.skip_text(p.kind)),
             });
         if let Some(playback) = playback {
             if playback.entering {
+                if playback.kind == crate::game_replay::Kind::Final {
+                    // Native HUD selects the final-kill title from this flag.
+                    // The summary menu remains gated until the podium ends;
+                    // the next round already resets scr_gameended to zero.
+                    self.server_commands.push(b"s scr_gameended \"1\"")?;
+                }
                 // 3.3.3.3 dispatcher0x57dc12: L <client> <card slot>.
                 // 0x6889c0 copies clientInfo identity/decorations; the native
                 // killcam HUD0x5d3f70 reads slot7 rather than followed PS.

@@ -16,6 +16,25 @@ const POST_DEATH_MSEC: u32 = 500;
 const HISTORY_MSEC: u32 = 8000;
 const MAX_FRAMES: usize = 180;
 
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct Resources {
+    pub ncs_crc: u32,
+    pub skip_text: u16,
+}
+impl Resources {
+    pub fn validate(&self, crc: u32) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.ncs_crc == crc && (1..1023).contains(&self.skip_text),
+            "invalid map-local replay text resource"
+        );
+        Ok(())
+    }
+    pub fn skip_text(&self, kind: Kind) -> Option<u16> {
+        (kind == Kind::Death).then_some(self.skip_text)
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct View {
     pub client: u8,
@@ -68,6 +87,7 @@ struct Playback {
     entered: bool,
 }
 pub(crate) struct Sample {
+    pub kind: Kind,
     pub frame: Frame,
     pub view: View,
     pub delay: u32,
@@ -225,6 +245,7 @@ impl Replay {
             tracing::info!(kind=?p.kind,killer=p.killer,source=frame.time,delay,"killcam entered");
         }
         Some(Sample {
+            kind: p.kind,
             frame,
             view: view.rebased(delay),
             delay,
@@ -239,6 +260,27 @@ impl Replay {
 mod tests {
     use super::*;
     use codol_protocol::game_snapshot::{Aim, Firing};
+    #[test]
+    fn skip_prompt_requires_this_maps_resource_and_a_personal_replay() {
+        let r = Resources {
+            ncs_crc: 123,
+            skip_text: 247,
+        };
+        r.validate(123).unwrap();
+        assert!(r.validate(124).is_err());
+        assert_eq!(r.skip_text(Kind::Death), Some(247));
+        assert_eq!(r.skip_text(Kind::Final), None);
+        for skip_text in [0, 1023, u16::MAX] {
+            assert!(
+                Resources {
+                    ncs_crc: 123,
+                    skip_text
+                }
+                .validate(123)
+                .is_err()
+            );
+        }
+    }
     fn frame(time: u32, life: u8) -> Frame {
         let mut motion = Motion::new([time as f32, 20.0, 30.0]);
         motion.command_time = time;

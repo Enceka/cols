@@ -36,6 +36,13 @@ pub struct HitFeedbackSnapshot {
     pub kind: HitKind,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct ReplayHudSnapshot {
+    pub end_time: u32,
+    /// Map-local NCS localized text slot; present only for skippable replays.
+    pub skip_text: Option<u16>,
+}
+
 /// Native world waypoint (type13). Position is frozen at death, not attached
 /// to a recyclable corpse entity. Coordinates use the published CS16 zero centre.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -61,7 +68,7 @@ pub(crate) fn write_hud(
     out: &mut Writer,
     feedback: Option<HitFeedbackSnapshot>,
     deaths: &[DeathWaypointSnapshot],
-    replay_end: Option<u32>,
+    replay: Option<ReplayHudSnapshot>,
 ) -> Result<(), LobbyError> {
     let feedback = feedback.unwrap_or_default();
     if feedback.visible && !(1..1024).contains(&feedback.material) {
@@ -70,6 +77,10 @@ pub(crate) fn write_hud(
     if deaths.len() > 5 || deaths.iter().any(|d| !d.valid()) {
         return Err(LobbyError("invalid friendly death waypoints"));
     }
+    let skip_text = replay.and_then(|r| r.skip_text);
+    if skip_text.is_some_and(|slot| !(1..1023).contains(&slot)) {
+        return Err(LobbyError("invalid replay skip text slot"));
+    }
     out.bits(1, 1); // HUD extension is present.
     // Wire order is archival then current; memory order is the reverse.
     // 0x5a4230 writes PS+0x1ed0 first, then PS+0xa78 (0x5a51f6 region).
@@ -77,14 +88,46 @@ pub(crate) fn write_hud(
     if feedback.visible {
         write_hit(out, feedback);
     }
-    out.bits(deaths.len() as u32 + u32::from(replay_end.is_some()), 5);
+    out.bits(
+        deaths.len() as u32 + u32::from(replay.is_some()) + u32::from(skip_text.is_some()),
+        5,
+    );
     for death in deaths {
         write_death(out, *death);
     }
-    if let Some(end) = replay_end {
-        write_replay_timer(out, end);
+    if let Some(replay) = replay {
+        write_replay_timer(out, replay.end_time);
+    }
+    if let Some(text) = skip_text {
+        write_replay_skip(out, text);
     }
     Ok(())
+}
+
+fn write_replay_skip(out: &mut Writer, text: u16) {
+    // Text HUD: +0x84/field22 -> 0x514230 -> CS952+slot, localized text
+    // expansion and native input bindings. No literal key name is painted.
+    out.bits(23, 6);
+    let mut previous = None;
+    for index in [0u32, 1, 3, 7, 11, 14, 15, 16, 22] {
+        field_gap(out, previous.map_or(index + 1, |p| index - p));
+        previous = Some(index);
+        match index {
+            0 => color(out, [255; 3], 31),
+            1 => {
+                out.bits(0, 1);
+                out.bits(38, 7);
+            } // y=-26
+            3 => unsigned(out, 1, 4),
+            7 => unsigned(out, 2047, 11),
+            11 => unsigned(out, 0x23, 8), // centre/bottom
+            14 => unsigned(out, 5, 18),
+            15 => unsigned(out, 5, 4),
+            16 => out.bits(10, 6), // fontScale1.0; font0 is native default
+            22 => unsigned(out, u32::from(text), 10),
+            _ => unreachable!(),
+        }
+    }
 }
 
 fn write_replay_timer(out: &mut Writer, end: u32) {
@@ -317,6 +360,59 @@ mod tests {
     }
 
     #[test]
+    fn replay_skip_text_uses_localized_hud_and_only_exists_with_the_prompt() {
+        for alignment in 0..8 {
+            for skip_text in [None, Some(1), Some(247), Some(1022)] {
+                let mut out = Writer::default();
+                out.bits(0x65, alignment);
+                write_hud(
+                    &mut out,
+                    None,
+                    &[],
+                    Some(ReplayHudSnapshot {
+                        end_time: 12345,
+                        skip_text,
+                    }),
+                )
+                .unwrap();
+                out.bytes.push(0xa7);
+                let mut r = Reader::new(&out.bytes);
+                r.bits(alignment).unwrap();
+                assert_eq!(r.bits(1).unwrap(), 1);
+                assert!(read_array(&mut r).is_empty());
+                let current = read_array(&mut r);
+                assert_eq!(current.len(), 1 + usize::from(skip_text.is_some()));
+                if let Some(slot) = skip_text {
+                    let text = &current[1];
+                    assert_eq!(text[&0], 1);
+                    assert_eq!(text[&0x84], u32::from(slot));
+                    assert_eq!(text[&8], (-26.0f32).to_bits());
+                    assert_eq!(text[&0x14], 1.0f32.to_bits());
+                    assert_eq!(text[&0x2c], 0x23);
+                    assert_eq!(text[&0xa4], 5);
+                    assert_eq!(text[&0x30], 0xffffffff);
+                }
+                assert_eq!(r.u8().unwrap(), 0xa7);
+            }
+        }
+        for invalid in [0, 1023, u16::MAX] {
+            let mut out = Writer::default();
+            assert!(
+                write_hud(
+                    &mut out,
+                    None,
+                    &[],
+                    Some(ReplayHudSnapshot {
+                        end_time: 1,
+                        skip_text: Some(invalid)
+                    })
+                )
+                .is_err()
+            );
+            assert!(out.bytes.is_empty());
+        }
+    }
+    #[test]
     fn native_material_hud_decodes_at_every_pool_alignment() {
         for (alignment, kind, color, duration) in (0..8).flat_map(|a| {
             [
@@ -422,7 +518,16 @@ mod tests {
         for alignment in 0..8 {
             let mut out = Writer::default();
             out.bits(0x65, alignment);
-            write_hud(&mut out, None, &[], Some(12345)).unwrap();
+            write_hud(
+                &mut out,
+                None,
+                &[],
+                Some(ReplayHudSnapshot {
+                    end_time: 12345,
+                    skip_text: None,
+                }),
+            )
+            .unwrap();
             out.bytes.push(0xa7);
             let mut r = Reader::new(&out.bytes);
             r.bits(alignment).unwrap();

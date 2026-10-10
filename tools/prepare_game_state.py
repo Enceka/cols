@@ -69,7 +69,7 @@ def compute(capture, weapon_name=None, compose=False, viewhands=False,
     crc, count, included = seed, 0, 0
     weapons = []
     models = []
-    feedback_banks = {1: [], 6: [], 8: []}
+    feedback_banks = {1: [], 4: [], 6: [], 8: []}
     for key, values in sorted(parsed):
         category = key[1]
         if category == 15:
@@ -92,6 +92,20 @@ def compute(capture, weapon_name=None, compose=False, viewhands=False,
         raise ValueError("computed CRC differs from initialized client")
     result = {"ncs_crc": crc, "common_crc": seed, "constant_count": count,
               "asset_count": included, "observed_crc_verified": bool(capture["initialized"])}
+    localized = feedback_banks[4]
+    skip = b"PLATFORM_PRESS_TO_SKIP"
+    if skip in localized:
+        layout = base64.b64decode(capture["category_layout_base64"], validate=True)
+        if len(layout) != 21 * 12 or struct.unpack_from("<III", layout, 4 * 12) != (952, 1023, 1):
+            raise ValueError("replay localized category layout mismatch")
+        if localized.count(skip) != 1 or not 1 <= localized.index(skip) + 1 < 1023:
+            raise ValueError("replay skip text ambiguous or outside bank")
+        if capture["initialized"]:
+            linked = [name for a in capture["linked"] if a["category"] == 4
+                      for name in strings(a["strings_base64"])]
+            if linked != localized:
+                raise ValueError("localized constant order differs from loaded client")
+        result["replay_resources"] = dict(ncs_crc=crc, skip_text=localized.index(skip) + 1)
     menus = feedback_banks[8]
     if b"sf_top3players" in menus:
         layout = base64.b64decode(capture["category_layout_base64"], validate=True)

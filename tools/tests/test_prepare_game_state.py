@@ -34,6 +34,25 @@ def capture():
 
 
 class GameStatePreparation(unittest.TestCase):
+    def test_replay_prompt_uses_sorted_localized_bank_and_loaded_order(self):
+        data = capture()
+        layout = bytearray(21 * 12)
+        struct.pack_into("<III", layout, 4 * 12, 952, 1023, 1)
+        data["category_layout_base64"] = base64.b64encode(layout).decode()
+        data["assets"] = [asset("ncs_loc_level", 4, 3, [b"first", b"PLATFORM_PRESS_TO_SKIP"]),
+                          asset("ncs_loc_common", 4, 0, [b"first"])]
+        result = compute(data)
+        self.assertEqual(result["replay_resources"], dict(ncs_crc=result["ncs_crc"], skip_text=2))
+        data.update(initialized=1, checksum=result["ncs_crc"],
+                    linked=[asset("loaded", 4, 0, [b"first", b"PLATFORM_PRESS_TO_SKIP"])])
+        self.assertEqual(compute(data)["replay_resources"], result["replay_resources"])
+        data["linked"][0]["strings_base64"].reverse()
+        with self.assertRaises(ValueError): compute(data)
+        data["initialized"] = 0
+        struct.pack_into("<III", layout, 4 * 12, 952, 1023, 0)
+        data["category_layout_base64"] = base64.b64encode(layout).decode()
+        with self.assertRaises(ValueError): compute(data)
+
     def test_top_players_uses_zero_based_loaded_menu_bank(self):
         data = capture()
         layout = bytearray(21 * 12)

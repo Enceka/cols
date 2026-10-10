@@ -110,6 +110,8 @@ pub struct PreparedGameState {
     #[serde(default)]
     feedback_resources: Option<crate::game_feedback::Resources>,
     #[serde(default)]
+    replay_resources: Option<crate::game_replay::Resources>,
+    #[serde(default)]
     top_players: Option<crate::game_top_players::Resources>,
     #[serde(default)]
     bootstrap_weapon: Option<BootstrapWeapon>,
@@ -687,6 +689,9 @@ impl PreparedGameState {
         if let Some(resources) = &state.feedback_resources {
             resources.validate(state.ncs_crc)?;
         }
+        if let Some(resources) = &state.replay_resources {
+            resources.validate(state.ncs_crc)?;
+        }
         if let Some(resources) = &state.top_players {
             resources.validate(state.ncs_crc)?;
         }
@@ -885,6 +890,9 @@ impl PreparedGameState {
     }
     pub(crate) fn feedback_resources(&self) -> Option<&crate::game_feedback::Resources> {
         self.feedback_resources.as_ref()
+    }
+    pub(crate) fn replay_resources(&self) -> Option<&crate::game_replay::Resources> {
+        self.replay_resources.as_ref()
     }
     pub(crate) fn top_players(&self) -> Option<&crate::game_top_players::Resources> {
         self.top_players.as_ref()
@@ -1656,6 +1664,7 @@ pub(crate) fn synthetic() -> PreparedGameState {
         map_entities_sha256: None,
         minimap: None,
         feedback_resources: None,
+        replay_resources: None,
         top_players: None,
         bootstrap_weapon: None,
         player_loadout: None,

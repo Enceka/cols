@@ -100,6 +100,7 @@ pub struct ReplayView {
     pub client: u8,
     pub delay_msec: u32,
     pub end_time: u32,
+    pub skip_text: Option<u16>,
 }
 
 /// A full baseline with command time and health, no entities/clients/weapons.
@@ -616,7 +617,12 @@ pub fn player_frame_with_world(
             &mut out,
             world.hit_feedback,
             world.death_waypoints.unwrap_or(&[]),
-            world.replay.map(|r| r.end_time),
+            world
+                .replay
+                .map(|r| crate::game_hit_feedback::ReplayHudSnapshot {
+                    end_time: r.end_time,
+                    skip_text: r.skip_text,
+                }),
         )?;
     } else {
         out.bits(0, 1); // HUD
@@ -964,6 +970,7 @@ mod tests {
                 client: 7,
                 delay_msec: 4000,
                 end_time: 10000,
+                skip_text: Some(247),
             }),
             None,
         ] {
@@ -1006,11 +1013,13 @@ mod tests {
                 client: 12,
                 delay_msec: 4000,
                 end_time: 10000,
+                skip_text: None,
             },
             ReplayView {
                 client: 7,
                 delay_msec: 0,
                 end_time: 10000,
+                skip_text: None,
             },
         ] {
             assert!(
