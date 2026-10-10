@@ -1,5 +1,6 @@
 // macOS-only helper for a currently running, marked GameHub research copy.
 // Usage: game-window EXPERIMENT_JSON info|capture|click|move X_FRACTION Y_FRACTION
+//        game-window EXPERIMENT_JSON scroll X_FRACTION Y_FRACTION WHEEL_DELTA
 // Targets the recorded PID; never searches or clicks unrelated application windows.
 import AppKit
 import CoreGraphics
@@ -55,10 +56,16 @@ case "capture":
     let output = experiment.deletingLastPathComponent().appendingPathComponent("ui-\(Int(Date().timeIntervalSince1970 * 1000)).png")
     _ = try run("/usr/sbin/screencapture", ["-x", "-o", "-l", String(number), output.path])
     result["path"] = output.path
-case "click", "move":
-    guard args.count == 5, let rx = Double(args[3]), let ry = Double(args[4]),
+case "click", "move", "scroll":
+    guard args.count == (args[2] == "scroll" ? 6 : 5), let rx = Double(args[3]), let ry = Double(args[4]),
           rx.isFinite, ry.isFinite, (0...1).contains(rx), (0...1).contains(ry)
     else { fail("click coordinates must be fractions from 0 to 1") }
+    var wheelDelta: Int32 = 0
+    if args[2] == "scroll" {
+        guard let delta = Int32(args[5]), (-20...20).contains(delta), delta != 0
+        else { fail("scroll requires a nonzero wheel delta from -20 to 20") }
+        wheelDelta = delta
+    }
     guard let app = NSRunningApplication(processIdentifier: pid),
           app.activate(options: [.activateAllWindows])
     else { fail("unable to activate the research client") }
@@ -79,7 +86,7 @@ case "click", "move":
     // Wine games may poll GetCursorPos instead of using an event's coordinates.
     guard CGPreflightPostEventAccess(), CGWarpMouseCursorPosition(point) == .success
     else { fail("mouse event access unavailable; no click sent") }
-    let kinds: [CGEventType] = args[2] == "move" ? [.mouseMoved] : [.mouseMoved, .leftMouseDown, .leftMouseUp]
+    let kinds: [CGEventType] = args[2] == "click" ? [.mouseMoved, .leftMouseDown, .leftMouseUp] : [.mouseMoved]
     for kind in kinds {
         guard let event = CGEvent(mouseEventSource: nil, mouseType: kind, mouseCursorPosition: point, mouseButton: .left)
         else { fail("unable to create mouse event") }
@@ -91,6 +98,14 @@ case "click", "move":
         else { fail("research client lost focus; click aborted") }
         event.post(tap: .cghidEventTap)
         Thread.sleep(forTimeInterval: 0.08)
+    }
+    if args[2] == "scroll" {
+        guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid,
+              let event = CGEvent(scrollWheelEvent2Source: nil, units: .line, wheelCount: 1,
+                                  wheel1: wheelDelta, wheel2: 0, wheel3: 0)
+        else { fail("research client lost focus or scroll event unavailable") }
+        event.post(tap: .cghidEventTap)
+        result["wheel_delta"] = wheelDelta
     }
     result["fraction"] = [rx, ry]
 case "hold":

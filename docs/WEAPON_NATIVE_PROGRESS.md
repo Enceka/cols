@@ -110,3 +110,6 @@ TDM动画选用实际位移/时间得到的横向速度，包括此前未计入�
 `client-1791531728855`角色更新改用native d后，用户实测确认“确实有不同模型了”。这标志着当前3.3的角色差异和9种主武器已实际恢复；不是仅根据准备文件宣称成功。角色缺省DB占位资源经客户端加载后显示。当前阶段正式继续第二地图/原生地图选择。最新检查的observe字节预算集成测试出现两个idle_timeout，正在单独复核，不将这一轮检查标为全通过。
 
 最新角色实采：11个Bot分别装配fpa_zombieranger_tf_m、fpa_acuacuheavy_tf_m_00、fpa_athena_tf_f_00、fpa_ironman_tf_m_woo、fpa_snibasea_tf_m_00、fpa_cowprestigea_sc_m_00、fpa_eve_sc_f_tech、fpa_lycra_ss_f_leatherstocking、fpa_pingoles_sc_f、fpa_zombieranger_sc_m、fpa_acubasea_sc_m_00，DObj各5~6部件。已挂载角色模型从17增长为58。当前安全屋资源采集使用隔离服务目录`research-output/killhouse-capture-services`和实验`client-1791532684884`，不用它覆盖玩家原账户。该采集运行暂不下发完整gamestate/快照，会停在等待玩家数据，这是资源取样阶段，不是可玩对局。
+
+Bot接受阶段完整检查 `bot-roster-accepted-full-check.log`最终272 Rust +35 Python、fmt/Clippy通过。此前observe集成偶发idle失败未改代码，停掉繁忙实机后完整检查通过；保留失败日志，不将其称作功能回归已修复。Bot阶段已提交2e1457a。
+Killhouse实体实采99,955字节，双方18/17个TDM起点，独立NCS复算3852334052 (common3451066449)，不同于Afghan523897474。bare采集在state7未初始化CM，碰撞头为空，尚未输出碰撞，不伪造为成功。下一轮 `client-1791533718818`下发正确CRC和实体来源出生点的bootstrap以完成地图初始化，再读实际collision/arsenal/characters。

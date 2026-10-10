@@ -44,7 +44,7 @@ class ClientAssets {
             uint entry=checked(0x01fc4e28+index*28);byte[] raw=Read(entry,28);
             if(U(raw,0)==kind) {
                 uint header=U(raw,8);
-                if(String.Equals(Name(Word(header)),name,StringComparison.OrdinalIgnoreCase)) {
+                if(String.Equals(Name(Word(header+(kind==5?0x10u:0u))),name,StringComparison.OrdinalIgnoreCase)) {
                     if((raw[17]&5)==0)throw new Exception("asset is not loaded");
                     entryAddress=entry;return header;
                 }
@@ -52,6 +52,25 @@ class ClientAssets {
             index=U(raw,20);
         }
         entryAddress=0;return 0;
+    }
+    // Layout-agnostic read of a loaded asset: each pointer word reports a
+    // printable string at its target and, to the given depth, nested words.
+    string Printable(uint at) {
+        byte[] b;try{b=Read(at,64);}catch(Exception){return null;}
+        int n=Array.IndexOf(b,(byte)0);if(n<3)return null;
+        for(int i=0;i<n;i++)if(b[i]<32||b[i]>126)return null;
+        return Encoding.ASCII.GetString(b,0,n);
+    }
+    object Layout(uint at,int size,int depth) {
+        byte[] raw;try{raw=Read(at,size);}catch(Exception e){return Obj("error",e.Message);}
+        var words=new List<object>();
+        for(int i=0;i+4<=size;i+=4) {
+            uint w=U(raw,i);if(w<0x10000||w>=0x7fff0000)continue;
+            string text=Printable(w);
+            words.Add(text!=null ? Obj("offset",i,"pointer",w,"string",text)
+                : depth>0 ? Obj("offset",i,"pointer",w,"target",Layout(w,0x40,depth-1)) : Obj("offset",i,"pointer",w));
+        }
+        return Obj("hex",BitConverter.ToString(raw).Replace("-",""),"pointers",words);
     }
     object Definition(uint at) {
         byte[] d=Read(at,60);
@@ -152,7 +171,7 @@ class ClientAssets {
         foreach(string name in new string[]{"mp/playerdata.def","mp/playersecuredata.def"}) {
             try{schemas[name]=reader.Schema(name);}catch(Exception e){schemas[name]=Obj("error",e.Message);}
         }
-        foreach(string name in new string[]{"mp/coMarketplaceItems.csv","mp/coCharacterDefTable.csv","mp/cogroupdefs.csv","mp/coWeapSlotDefs.csv","mp/coCharItemStatsTable.csv","mp/coCharItems/cha.csv","mp/uiNotifications.csv","mp/functionalUnlockTable.csv","mp/unlockFlags.csv","mp/rankTable.csv",
+        foreach(string name in new string[]{"mp/coGameTypesTable.csv","mp/coMapList.csv","mp/coMarketplaceItems.csv","mp/coCharacterDefTable.csv","mp/cogroupdefs.csv","mp/coWeapSlotDefs.csv","mp/coCharItemStatsTable.csv","mp/coCharItems/cha.csv","mp/uiNotifications.csv","mp/functionalUnlockTable.csv","mp/unlockFlags.csv","mp/rankTable.csv",
             "mp/coWeapItems/ast.csv","mp/coWeapItems/pst.csv","mp/coWeapItems/cam.csv","mp/coWeapItems/oth.csv","mp/coWeapItems/ret.csv","mp/coItemDependency.csv",
             "mp/coWeaponPrimaryRankTable.csv","mp/coWeaponSecondaryRankTable.csv"}) {
             try{tables[name]=reader.Table(name);}catch(Exception e){tables[name]=Obj("error",e.Message);}
@@ -450,7 +469,7 @@ class ClientAssets {
         var r=new ClientAssets(process);
         uint state=r.Word(0x01a2e7ec);if(state<6||state>10)throw new Exception("load the map before collision capture");
         uint cm=0x02dfb000;byte[] header=r.Read(cm,256);string map=r.Name(U(header,0));
-        if(map!="maps/mp/mp_afghan.d3dbsp"&&map!="maps/mp/mp_killhouse_sh.d3dbsp")throw new Exception("unexpected collision map: "+map);
+        if(map!="maps/mp/mp_afghan.d3dbsp"&&map!="maps/mp/mp_killhouse_sh.d3dbsp"&&map!="maps/mp/mp_crash_tropical.d3dbsp")throw new Exception("unexpected collision map: "+map);
         var brushes=new List<object>();int count=Count(BitConverter.ToUInt16(header,0x38),65535);
         int materialCount=Count(U(header,0x10),65536);byte[] materials=r.Read(U(header,0x14),materialCount*12);
         byte[] raw=r.Read(U(header,0x3c),count*36),bounds=r.Read(U(header,0x40),count*24),contents=r.Read(U(header,0x44),count*4);
@@ -494,6 +513,33 @@ class ClientAssets {
     }
     public static void ExportCharacters(IntPtr process) {
         var r=new ClientAssets(process);
+        var hudMaterials=new Dictionary<string,object>();
+        foreach(string name in new string[]{"compass_map_mp_crash_tropical","compass_map_mp_crash_dlc","compass_map_mp_crash","compass_map_mp_afghan","compass_map_mp_killhouse_sh"}) {
+            try {
+                uint entry;uint material=r.Find(5,name,out entry);
+                if(material==0) {hudMaterials[name]=Obj("found",false);continue;}
+                // 0xaa3650 tests rendering data, not XAssetEntry+0x10.
+                uint fallback=r.Word(0x00f31444);
+                bool isDefault=r.Word(material+0x58)==r.Word(fallback+0x58)
+                    && r.Word(material+0x5c)==r.Word(fallback+0x5c)
+                    && r.Word(material+0x60)==r.Word(fallback+0x60);
+                int count=Count(r.Read(material+0x50,1)[0],32);
+                uint textureTable=r.Word(material+0x5c);
+                var textures=new List<object>();
+                for(int t=0;t<count;t++) {
+                    uint texture=textureTable+(uint)t*12;
+                    uint image=r.Word(texture+8);
+                    textures.Add(Obj("semantic",r.Read(texture+7,1)[0],"image",image,
+                        "name",r.Name(r.Word(image+0x30)),
+                        "width",BitConverter.ToUInt16(r.Read(image+0x20,2),0),
+                        "height",BitConverter.ToUInt16(r.Read(image+0x22,2),0),
+                        "texture",r.Word(image)));
+                }
+                hudMaterials[name]=Obj("found",true,"render_default",isDefault,
+                    "entry_byte16",r.Read(entry+0x10,1)[0],"flags",r.Read(entry+0x11,1)[0],
+                    "header",material,"textures",textures);
+            } catch(Exception error) {hudMaterials[name]=Obj("error",error.Message);}
+        }
         if(r.Word(0x01a2e7ec)!=10)throw new Exception("load the map before character capture");
         uint slot=r.Word(0x07817bac);if(slot>=256)throw new Exception("cgs model slot invalid");
         uint cgs=r.Word(0x01a19510+slot*4)^0xce9af8cf;
@@ -512,7 +558,7 @@ class ClientAssets {
             models.Add(Obj("model",id,"name",r.Name(U(header,0)),"bounds_min",min,"bounds_max",max,"bone_names",bones));
         }
         var tables=new Dictionary<string,object>();
-        foreach(string name in new string[]{"mp/coCharacterDefTable.csv","mp/coCharItemStatsTable.csv","mp/coCharItems/cha.csv","mp/coMapList.csv","mp/botClassTable.csv","mp/botDifficultyTable.csv","mp/botNames.csv"}) {
+        foreach(string name in new string[]{"mp/coCharacterDefTable.csv","mp/coCharItemStatsTable.csv","mp/coCharItems/cha.csv","mp/coMapList.csv","mp/coGameTypesTable.csv","mp/botClassTable.csv","mp/botDifficultyTable.csv","mp/botNames.csv"}) {
             try { tables[name]=r.Table(name); } catch(Exception error) { tables[name]=Obj("error",error.Message); }
         }
         // Enumerate only character model/table identities and bounded headers;
@@ -538,7 +584,7 @@ class ClientAssets {
             }
         }
         var animationRules=new Dictionary<string,object>();
-        foreach(string name in new string[]{"mp/playeranim.script","mp/playeranimtypes.txt","waypoints/mp_afghan_wp.csv","waypoints/mp_killhouse_sh_wp.csv"}) {
+        foreach(string name in new string[]{"mp/playeranim.script","mp/playeranimtypes.txt","waypoints/mp_afghan_wp.csv","waypoints/mp_killhouse_sh_wp.csv","waypoints/mp_crash_tropical_wp.csv"}) {
             try {animationRules[name]=r.AnimationRules(name);}catch(Exception error){animationRules[name]=Obj("error",error.Message);}
         }
         uint bg=r.Word(0x07817b80);var clients=new List<object>();
@@ -592,7 +638,7 @@ class ClientAssets {
         var serializer=new JavaScriptSerializer();serializer.MaxJsonLength=16*1024*1024;
         Console.WriteLine(serializer.Serialize(Obj("schema_version",1,"read_only",true,
             "client_sha256","e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b",
-            "ncs_crc",r.Word(0x02df7d90),"models",models,"character_assets",characterAssets,"tables",tables,"clients",clients,
+            "ncs_crc",r.Word(0x02df7d90),"models",models,"character_assets",characterAssets,"tables",tables,"clients",clients,"map_hud_materials",hudMaterials,
             "animation_contexts",animationContexts,"animations",animations,"animation_rules",animationRules,"corpses",corpses)));
     }
     public static void ExportTrainingTarget(IntPtr process) {

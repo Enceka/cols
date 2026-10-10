@@ -37,6 +37,15 @@ class ReadClientState {
     static void Field(IntPtr process,string name,uint address,int size) {
         Console.WriteLine("\""+name+"\":"+Read(process,address,size)+",");
     }
+    static void IdentityField(IntPtr process,string name,uint address) {
+        uint pointer=Read(process,address,4);
+        if(pointer<0x10000)return;
+        byte[] bytes=ReadBytes(process,pointer,64);
+        int length=Array.IndexOf(bytes,(byte)0);
+        if(length<0)return;
+        for(int i=0;i<length;i++)if(!(bytes[i]>=65&&bytes[i]<=90)&&!(bytes[i]>=97&&bytes[i]<=122)&&!(bytes[i]>=48&&bytes[i]<=57)&&bytes[i]!=95)return;
+        Console.WriteLine("\""+name+"\":\""+Encoding.ASCII.GetString(bytes,0,length)+"\",");
+    }
     static int Main(string[] args) {
         try {
             bool assets=args.Length==1 && args[0]=="--assets";
@@ -113,6 +122,8 @@ class ReadClientState {
                 uint maxPackets=Read(process,0x01a2e7cc,4);
                 if(maxPackets>=0x10000) Field(process,"client_max_packets",checked(maxPackets+12),4);
                 Field(process,"native_server_id",0x0796f2d8,4);
+                // This cache is the last full baseline, not necessarily the
+                // latest delta. Use current_* / predicted_* for live movement.
                 Field(process,"full_snapshot_valid",0x0799964c,4);
                 Field(process,"full_snapshot_flags",0x07999650,4);
                 Field(process,"full_snapshot_server_time",0x07999654,4);
@@ -197,6 +208,31 @@ class ReadClientState {
                         Field(process,"predicted_ads_fraction_bits",checked(cg+0x34c),4);
                         Field(process,"cg_frame_msec",checked(cg+0xae4c4),4);
                         Field(process,"cg_time",checked(cg+0xae4c8),4);
+                        Field(process,"compass_north_yaw_bits",checked(cg+0xbdb28),4);
+                        Field(process,"compass_material",checked(cg+0xbdb34),4);
+                        uint compassMaterial=Read(process,checked(cg+0xbdb34),4);
+                        // Material GetAssetName 0x483d30 reads header+0x10.
+                        if(compassMaterial>=0x10000)IdentityField(process,"compass_material_name",checked(compassMaterial+0x10));
+                        Field(process,"compass_upper_left_x_bits",checked(cg+0xbdb38),4);
+                        Field(process,"compass_upper_left_y_bits",checked(cg+0xbdb3c),4);
+                        Field(process,"compass_width_bits",checked(cg+0xbdb40),4);
+                        Field(process,"compass_height_bits",checked(cg+0xbdb44),4);
+                        // Binary J offsets exclude the public snapshot's CRC.
+                        const uint aarRecord=0x0c95be0c+4;
+                        Field(process,"aar_winning_team",aarRecord+3833,1);
+                        Field(process,"aar_duration",aarRecord+47,4);
+                        Field(process,"aar_map_id",aarRecord+51,4);
+                        Field(process,"aar_mode_id",aarRecord+55,4);
+                        for(uint team=1;team<=2;team++)Field(process,"aar_team_score_"+team,aarRecord+9778+team*4,4);
+                        for(uint client=0;client<12;client++)Field(process,"aar_client_team_"+client,aarRecord+260+client*198,1);
+                        uint bg=Read(process,0x07817b80,4);
+                        if(bg>=0x10000 && Read(process,0x01a2e7ec,4)==10) {
+                            for(uint client=0;client<12;client++) {
+                                uint ci=checked(bg+0x96e20+client*0x3b8);
+                                Field(process,"game_client_valid_"+client,ci,4);
+                                Field(process,"game_client_team_"+client,checked(ci+0x80),4);
+                            }
+                        }
                         // 0x451720 copies/interpolates these two CG snapshots.
                         for(uint slot=0;slot<2;slot++) {
                             uint snap=Read(process,checked(cg+0x3578+slot*4),4);
@@ -299,7 +335,46 @@ class ReadClientState {
                     Console.WriteLine("\"room_controller\":"+roomController+",");
                     Console.WriteLine("\"room_vtable\":"+roomVtable+",");
                     Field(process,"room_create_method",checked(roomVtable+4),4);
+                    Field(process,"room_native_options_pointer",checked(roomController+0xf738),4);
+                    // FString::c_str 0xb2d8c0 returns its stored char pointer.
+                    IdentityField(process,"room_native_mode",checked(roomController+0xf730));
+                    IdentityField(process,"room_native_map",checked(roomController+0xf738));
+                    Field(process,"room_native_playlist",checked(roomController+0xf73c),1);
+                    Field(process,"room_minimum_players",checked(roomController+0xf73d),1);
+                    Field(process,"room_member_count",checked(roomController+0xf718),4);
+                    uint memberCount=Read(process,checked(roomController+0xf718),4);
+                    if(memberCount<=32) {
+                        Console.Write("\"room_members\":[");
+                        for(uint i=0;i<memberCount;i++) {
+                            uint member=checked(roomController+0xda98+i*0x180);
+                            ulong uid=BitConverter.ToUInt64(ReadBytes(process,member,8),0);
+                            byte[] name=ReadBytes(process,checked(member+8),64);
+                            int end=Array.IndexOf(name,(byte)0);if(end<0)end=name.Length;
+                            byte[] clan=ReadBytes(process,checked(member+0x48),64);
+                            int clanEnd=Array.IndexOf(clan,(byte)0);if(clanEnd<0)clanEnd=clan.Length;
+                            if(i>0)Console.Write(",");
+                            Console.Write(new System.Web.Script.Serialization.JavaScriptSerializer().Serialize(new {
+                                slot=i, bot_client=uid>0x7fff434f444f0000UL && uid<=0x7fff434f444f000bUL ? (int)(uid-0x7fff434f444f0000UL) : 0,
+                                name=Encoding.ASCII.GetString(name,0,end), clan=Encoding.ASCII.GetString(clan,0,clanEnd),
+                                room_team=Read(process,checked(member+0x88),4), ready=Read(process,checked(member+0x8c),1), party=Read(process,checked(member+0xa8),4)
+                            }));
+                        }
+                        Console.WriteLine("],");
+                    }
+                    Field(process,"room_is_host",checked(roomController+0x260),1);
+                    Field(process,"room_join_request_handler",0x078b0760+6*4,4);
+                    uint channel=Read(process,checked(roomController+0x10),4);
+                    Console.WriteLine("\"room_channel_pointer\":"+channel+",");
+                    if(channel>=0x0c8032b0 && channel<0x0c80a420) {
+                        Field(process,"room_channel_active",channel,1);
+                        Field(process,"room_channel_subscribed",checked(channel+1),1);
+                        Field(process,"room_channel_member_count",checked(channel+0x18),4);
+                        Field(process,"room_channel_message_handler",checked(channel+0x25b8),4);
+                        Field(process,"room_channel_receiver",checked(channel+0x25c8),4);
+                    }
                 }
+                Field(process,"native_minimum_players",checked(Read(process,0x01a323c4,4)+12),4);
+                Field(process,"native_maximum_players",checked(Read(process,0x01a32368,4)+12),4);
                 Field(process,"cqb_training_flag",0x0c9670b5,2);
                 Field(process,"prestige_rank_unlock",0x0c966f9d,2);
                 Field(process,"onboard_character_id",0x0c95e386,4);
