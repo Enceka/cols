@@ -1180,4 +1180,116 @@ mod tests {
         let state = crate::game_state::PreparedGameState::load(&path).unwrap();
         assert!(state.is_match());
     }
+
+    #[test]
+    #[ignore = "requires local three-map captures and CODOL_GROUND_PROFILE directory"]
+    fn captured_bot_ground_contacts() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../research-output");
+        let profile = std::path::PathBuf::from(
+            std::env::var_os("CODOL_GROUND_PROFILE").expect("set local profile directory"),
+        );
+        let public = std::fs::read(profile.join("public.bin")).unwrap();
+        let inventory: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(profile.join("inventory.json")).unwrap())
+                .unwrap();
+        let owned: Vec<u32> = serde_json::from_value(inventory["items"].clone()).unwrap();
+        let suffix = std::env::var("CODOL_GROUND_CAPTURE").unwrap_or_else(|_| "current".into());
+        assert!(
+            suffix
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        );
+        for name in [
+            "tdm-afghan-hud-state",
+            "tdm-killhouse-hud-state",
+            "tdm-crash-tropical-state",
+        ] {
+            let state =
+                crate::game_state::PreparedGameState::load(&root.join(format!("{name}.json")))
+                    .unwrap()
+                    .for_profile(&public, &owned)
+                    .unwrap();
+            let collision = state.collision.as_ref().unwrap();
+            if let Some(path) = std::env::var_os("CODOL_GROUND_POSES") {
+                let capture: serde_json::Value =
+                    serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+                assert_eq!(capture["client_sha256"], codol_protocol::CLIENT_SHA256);
+                assert_eq!(capture["read_only"], true);
+                if capture["ncs_crc"] != state.ncs_crc() {
+                    continue;
+                }
+                let mut contacts = Vec::new();
+                for client in capture["clients"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter(|c| c["client"] != 0)
+                {
+                    let pose = &client["ground_pose"];
+                    if pose["stable_read"] != true || pose["plausible"] != true {
+                        continue;
+                    }
+                    for foot in pose["feet"].as_array().unwrap() {
+                        let p: [f32; 3] = serde_json::from_value(foot["origin"].clone()).unwrap();
+                        let floor =
+                            collision.raycast([p[0], p[1], p[2] + 16.0], [p[0], p[1], p[2] - 64.0]);
+                        contacts.push(serde_json::json!({"client":client["client"],"legs":client["legs_animation"],
+                            "time":pose["time"],"bone":foot["name"],"origin":p,
+                            "floor_gap":(floor.fraction<1.0 && !floor.start_solid).then_some(floor.fraction*80.0-16.0),
+                            "floor_normal":floor.normal}));
+                    }
+                }
+                assert!(!contacts.is_empty(), "no current rendered feet in capture");
+                let output = root.join(format!("bot-feet-{name}-{suffix}.json"));
+                std::fs::write(&output, serde_json::to_vec(&contacts).unwrap()).unwrap();
+                eprintln!(
+                    "rendered feet diagnostic: {} -> {}",
+                    contacts.len(),
+                    output.display()
+                );
+                continue;
+            }
+            let mut game = state.tdm_match().unwrap().unwrap();
+            for bot in &mut game.bots {
+                bot.random = u64::from(bot.snapshot.client_index) * 0x9e3779b9;
+            }
+            let mut local = game.bots[0].snapshot;
+            local.entity_number = 0;
+            local.client_index = 0;
+            local.alive = false;
+            let mut frames = Vec::new();
+            for now in (1000..=61_000).step_by(50) {
+                game.step(
+                    now,
+                    (local, 70.0, 0),
+                    state.match_bot_weapon().unwrap(),
+                    collision,
+                    |enemy, frame, firing, toggle| {
+                        state.animate_enemy(enemy, frame, firing, toggle)
+                    },
+                )
+                .unwrap();
+                for bot in game.bots.iter().filter(|b| b.health > 0) {
+                    let motion = &bot.view_motion;
+                    let origin = motion.origin;
+                    let down =
+                        collision.trace(origin, [origin[0], origin[1], origin[2] - 16.0], 70.0);
+                    let point = collision.raycast(origin, [origin[0], origin[1], origin[2] - 32.0]);
+                    frames.push(
+                        serde_json::json!({"time":now,"client":bot.snapshot.client_index,
+                        "origin":origin,"velocity":motion.velocity,"grounded":motion.grounded(),
+                        "drop":down.fraction * 16.0,"normal":down.normal,"solid":down.start_solid,
+                        "point_drop":point.fraction * 32.0,"legs":bot.snapshot.legs_animation}),
+                    );
+                }
+            }
+            let output = root.join(format!("bot-ground-{name}-{suffix}.json"));
+            std::fs::write(&output, serde_json::to_vec(&frames).unwrap()).unwrap();
+            eprintln!(
+                "ground contact diagnostic: {} samples -> {}",
+                frames.len(),
+                output.display()
+            );
+        }
+    }
 }

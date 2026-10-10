@@ -988,6 +988,29 @@ impl Motion {
     pub fn grounded(&self) -> bool {
         self.ground_entity != NONE
     }
+    /// Apply a small crowd-avoidance displacement through the same capsule
+    /// solver as walking. This is not elapsed movement time: preserve the
+    /// actor's velocity and clocks, and never apply gravity a second time.
+    pub fn move_separation(&mut self, shift: [f32; 2], c: &Collision) {
+        if shift == [0.0; 2] {
+            return;
+        }
+        self.ground(c, 0.25);
+        let velocity = self.velocity;
+        self.velocity = [shift[0], shift[1], 0.0];
+        if self.grounded() {
+            self.velocity[2] = -(shift[0] * self.ground_normal[0]
+                + shift[1] * self.ground_normal[1])
+                / self.ground_normal[2];
+            self.step_slide(c, 1.0, false);
+        } else {
+            // Airborne avoidance may slide against a wall but cannot step up
+            // or attach itself to a floor below a ledge.
+            self.slide(c, 1.0, false);
+        }
+        self.velocity = velocity;
+        self.ground(c, 0.25);
+    }
     /// `weapon_scale` is the currently selected weapon's hip/ADS scale.
     /// Command time belongs to input, never the snapshot clock.
     pub fn apply(
@@ -1399,6 +1422,52 @@ mod tests {
         for _ in 0..n {
             m.apply(&cmd(m.command_time + 16, direction, buttons), 1.0, false, c);
         }
+    }
+    #[test]
+    fn separation_respects_walls_and_preserves_airborne_velocity_and_time() {
+        let c = world(
+            vec![floor(), brush([50.0, 0.0, 100.0], [10.0, 1000.0, 100.0])],
+            vec![],
+        );
+        let mut m = Motion::new([0.0, 0.0, 0.03125]);
+        tick(&mut m, &c, 0, 0, 1);
+        let time = m.command_time;
+        for _ in 0..20 {
+            m.move_separation([4.0, 0.0], &c);
+            assert!(m.grounded());
+            assert!(!c.trace(m.origin, m.origin, 70.0).start_solid);
+        }
+        assert!(m.origin[0] > 24.0 && m.origin[0] < 25.0);
+        assert_eq!(m.command_time, time);
+        for vertical in [-50.0, 50.0] {
+            let mut air = Motion::new([0.0, 0.0, 5.0]);
+            air.velocity = [10.0, 20.0, vertical];
+            air.move_separation([4.0, 0.0], &c);
+            assert_eq!(air.origin, [4.0, 0.0, 5.0]);
+            assert_eq!(air.velocity, [10.0, 20.0, vertical]);
+            assert_eq!(air.command_time, 0);
+            assert!(!air.grounded());
+        }
+    }
+    #[test]
+    fn separation_leaves_a_ledge_without_snapping_to_a_distant_floor() {
+        let c = world(
+            vec![
+                brush([0.0, 0.0, -20.0], [32.0, 1000.0, 20.0]),
+                brush([0.0, 0.0, -120.0], [1000.0, 1000.0, 20.0]),
+            ],
+            vec![],
+        );
+        let mut m = Motion::new([30.0, 0.0, 0.03125]);
+        tick(&mut m, &c, 0, 0, 1);
+        for _ in 0..10 {
+            m.move_separation([4.0, 0.0], &c);
+        }
+        assert!(!m.grounded());
+        assert!(m.origin[0] > 60.0 && m.origin[2] > -18.0, "{:?}", m.origin);
+        tick(&mut m, &c, 0, 0, 100);
+        assert!(m.grounded());
+        assert!((m.origin[2] + 100.0).abs() < 0.1);
     }
     #[test]
     fn wall_stops_forward_motion_but_allows_sliding() {

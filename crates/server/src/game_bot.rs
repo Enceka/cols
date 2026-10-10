@@ -524,17 +524,8 @@ impl BotController {
         let length = shift[0].hypot(shift[1]);
         if length > 0.0 {
             let scale = (4.0 / length).min(1.0);
-            let end = [
-                self.motion.origin[0] + shift[0] * scale,
-                self.motion.origin[1] + shift[1] * scale,
-                self.motion.origin[2],
-            ];
-            let trace = collision.trace(self.motion.origin, end, 70.0);
-            if !trace.start_solid && !trace.all_solid {
-                for (i, value) in end.into_iter().enumerate() {
-                    self.motion.origin[i] += (value - self.motion.origin[i]) * trace.fraction;
-                }
-            }
+            self.motion
+                .move_separation([shift[0] * scale, shift[1] * scale], collision);
         }
     }
 }
@@ -621,6 +612,47 @@ mod tests {
             fire_interval_msec: 80,
         }
     }
+
+    #[test]
+    fn crowd_separation_follows_walkable_slopes_in_both_directions() {
+        for terrain in [false, true] {
+            let normal = [0.5 / 1.25f32.sqrt(), 0.0, 1.0 / 1.25f32.sqrt()];
+            let export = json!({
+                "schema_version":1,"read_only":true,"client_sha256":codol_protocol::CLIENT_SHA256,
+                "map":"maps/mp/test.d3dbsp","ncs_crc":0,
+                "brushes": if terrain {json!([])} else {json!([{"center":[0,0,-500],"half":[500,500,1000],"contents":1,
+                    "planes":[[normal[0],normal[1],normal[2],0]]}])},
+                "triangles":if terrain {json!([{"vertices":[[-500,-500,250],[500,-500,-250],[0,500,0]],"contents":1,"surface_flags":0}])} else {json!([])}
+            });
+            let file = tempfile::NamedTempFile::new().unwrap();
+            std::fs::write(file.path(), serde_json::to_vec(&export).unwrap()).unwrap();
+            let world = Collision::load(file.path()).unwrap();
+            let origin = grounded_spawn([0.0, 0.0, 8.0], &world).unwrap();
+            for direction in [-1.0, 1.0] {
+                let mut bot = BotController::new(origin, [0; 3], 190.0).unwrap();
+                bot.step(1000, None, weapon(), &world);
+                bot.step(1050, None, weapon(), &world);
+                for now in (1100..=1550).step_by(50) {
+                    let start = bot.motion.origin;
+                    let peer = [start[0] - direction * 8.0, start[1], start[2]];
+                    bot.separate_from(1, &[(2, peer)], &world);
+                    let frame = bot.step(now, None, weapon(), &world);
+                    let end = frame.motion.origin;
+                    let down = world.trace(end, [end[0], end[1], end[2] - 9.0], 70.0);
+                    assert!(
+                        (end[0] - start[0]) * direction > 3.0,
+                        "slope avoidance stopped: terrain={terrain}, direction={direction}, {start:?} -> {end:?}"
+                    );
+                    assert!(
+                        !down.start_solid && down.fraction * 9.0 < 0.1,
+                        "slope avoidance lifted hull: terrain={terrain}, direction={direction}, {end:?}, {down:?}"
+                    );
+                    assert!(frame.motion.grounded());
+                }
+            }
+        }
+    }
+
     #[test]
     fn match_bot_engages_a_visible_rifle_target_beyond_the_training_distance() {
         let open_world = collision(false);

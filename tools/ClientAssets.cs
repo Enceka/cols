@@ -749,7 +749,8 @@ class ClientAssets {
                 "entity_client",r.Word(entity+0xf0+0x9c),"entity_type",r.Word(entity+0xf4),
                 "entity_events_sequence",r.Word(entity+0xf0+0xac),"entity_event0",r.Word(entity+0xf0+0xb0),
                 "body",root>=0x10000?r.Name(root):null,"parts",parts,"animation_tree_ready",tree>=0x10000,
-                "dobj_slot",dobjSlot,"dobj_models",objModels,"entity_origin",r.EntityOrigin(entities+id*0x238+0xf0)));
+                "dobj_slot",dobjSlot,"dobj_models",objModels,"ground_pose",r.GroundPose(entity,dobjSlot),
+                "entity_origin",r.EntityOrigin(entities+id*0x238+0xf0)));
         }
         var corpses=new List<object>();uint corpseEntitySlot=r.Word(0x07817bb0);
         if(corpseEntitySlot>=256)throw new Exception("corpse entity slot invalid");
@@ -798,6 +799,48 @@ class ClientAssets {
             if(Single.IsNaN(origin[axis])||Single.IsInfinity(origin[axis]))throw new Exception("nonfinite entity origin");
         }
         return origin;
+    }
+    object GroundPose(uint entity,uint dobjSlot) {
+        // Read existing render data only; off-screen actors may have no current
+        // skeleton. Never request bone evaluation or treat a stale pose as proof.
+        try {
+            if(dobjSlot==0||dobjSlot>=2048||(Word(entity+0x204)&1)==0)return null;
+            uint cgSlot=Word(0x07817ba8);if(cgSlot>=256)return null;
+            uint cg=Word(0x01a19510+cgSlot*4)^0xfbb2c97a,time=Word(cg+0xae4c8);
+            uint dobj=0x02e8e850+dobjSlot*0xcc,pose=Word(dobj+0x98);
+            if(pose<0x10000)return null;
+            // 0x4f9750: only +0x74 part bits in the current skeleton frame
+            // identify calculated bones. Off-screen matrices can contain old data.
+            uint skeletonFrame=Word(0x078b16c8);
+            if(Word(dobj+0x94)!=skeletonFrame)return null;
+            byte[] calculated=Read(dobj+0x74,32);
+            if((U(calculated,0)&0x80000000)==0)return null;
+            uint model=Word(Word(dobj+0xc0));byte[] header=Read(model,0x44);
+            int count=header[4];if(count<1||count>253)return null;
+            byte[] ids=Read(U(header,0x2c),count*2),matrices=Read(pose,count*32);
+            uint pool=Word(0x02f37164);
+            float[] reference=Floats(Read(cg+0xae538,12),0,3),snapshot=EntityOrigin(entity+0xf0);
+            float[] root=new float[3];double error=0;
+            for(int a=0;a<3;a++){root[a]=BitConverter.ToSingle(matrices,16+a*4)+reference[a];double delta=(double)root[a]-snapshot[a];error+=delta*delta;}
+            var feet=new List<object>();
+            bool plausible=error<32*32;
+            for(int b=0;b<count;b++) {
+                string name=Name(pool+(uint)BitConverter.ToUInt16(ids,b*2)*20+4);
+                if(!name.StartsWith("j_ankle_")&&!name.StartsWith("j_ball_"))continue;
+                if((U(calculated,(b>>5)*4)&(0x80000000u>>(b&31)))==0)continue;
+                var point=new float[3];for(int a=0;a<3;a++)point[a]=BitConverter.ToSingle(matrices,b*32+16+a*4)+reference[a];
+                double norm=0,range=0;
+                for(int a=0;a<4;a++){double q=BitConverter.ToSingle(matrices,b*32+a*4);norm+=q*q;}
+                for(int a=0;a<3;a++){double delta=(double)point[a]-root[a];range+=delta*delta;}
+                plausible &= norm>0.000001 && norm<4 && range<100*100;
+                feet.Add(Obj("name",name,"origin",point));
+            }
+            bool stable=time==Word(cg+0xae4c8)&&pose==Word(dobj+0x98)
+                &&skeletonFrame==Word(dobj+0x94)&&skeletonFrame==Word(0x078b16c8);
+            // Root/snapshot distance includes normal interpolation delay.
+            return Obj("time",time,"stable_read",stable,"plausible",plausible,"root_origin",root,
+                "root_snapshot_distance_squared",Double.IsNaN(error)||Double.IsInfinity(error)?(object)null:error,"feet",feet);
+        } catch(Exception e) {return Obj("error",e.Message);}
     }
     public static void ExportBulletImpacts(IntPtr process) {
         var r=new ClientAssets(process);
