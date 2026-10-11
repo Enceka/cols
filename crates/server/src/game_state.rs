@@ -1002,6 +1002,15 @@ impl PreparedGameState {
             .as_ref()
             .map(|loadout| loadout.class_index())
     }
+    pub(crate) fn for_initial_backpack(&self, public: &[u8]) -> Result<Self> {
+        let slot = self
+            .player_loadout
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("missing backpack schema"))?
+            .class_index()
+            % crate::game_class_selection::BACKPACKS_PER_CHARACTER;
+        self.for_backpack(public, slot)
+    }
     pub(crate) fn update_profile_selection(&mut self, selected: &Self) {
         self.player_loadout = selected.player_loadout.clone();
         self.profile_hash = selected.profile_hash;

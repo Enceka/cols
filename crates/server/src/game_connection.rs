@@ -98,6 +98,9 @@ struct WorldHistory {
 impl Connection {
     pub fn with_game_state(state: Arc<crate::game_state::PreparedGameState>) -> Self {
         Self {
+            active_backpack: state
+                .selected_backpack_class()
+                .map(|i| i % crate::game_class_selection::BACKPACKS_PER_CHARACTER),
             player: state.player(),
             motion: state.motion(),
             combat: state.combat(),

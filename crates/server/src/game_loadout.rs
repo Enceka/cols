@@ -1,6 +1,6 @@
 //! Resolve the saved primary backpack against target item/attachment records.
-//! Training currently chooses the configured backpack (zero-based), not a UI
-//! selection guessed from currentCharacterIndex. Runtime variants keep timing
+//! Match entry resolves the configured backpack within the saved current
+//! character; menu changes keep that local slot. Runtime variants keep timing
 //! changes explicit until the complete attachment-stat evaluator is ported.
 use super::{BootstrapAmmo, BootstrapWeapon, PreparedGameState};
 use anyhow::{Result, ensure};
@@ -279,6 +279,58 @@ impl Loadout {
 mod tests {
     use super::*;
     use codol_protocol::task::Writer;
+
+    #[test]
+    fn initial_backpack_uses_current_character_and_preserves_the_configured_local_slot() {
+        let layout: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../fixtures/protocol/backpack-class-offsets-3.3.3.3.json"
+        ))
+        .unwrap();
+        for (character, slot) in [(0u8, 0u8), (1, 0), (7, 3), (11, 4)] {
+            let mut state = state();
+            state.player_loadout.as_mut().unwrap().class_index = slot;
+            let class = usize::from(character * 5 + slot);
+            let offsets: Vec<usize> =
+                serde_json::from_value(layout["class_offsets"][class].clone()).unwrap();
+            let mut plain = vec![0u8; 32768];
+            plain[layout["current_character_offset"].as_u64().unwrap() as usize] = character;
+            for (i, &offset) in offsets.iter().enumerate() {
+                plain[offset..offset + 4]
+                    .copy_from_slice(&(10000 + i as u32 + class as u32 * 100).to_le_bytes());
+            }
+            let crc = crc32fast::hash(&plain[4..]);
+            plain[..4].copy_from_slice(&crc.to_le_bytes());
+            let mut w = Writer::default();
+            w.u32(0);
+            w.u32(1);
+            w.u32(crc);
+            w.blob(&plain).unwrap();
+            for _ in 0..125 {
+                w.i32(0);
+            }
+            w.0.push(0);
+            let prepared = state.for_initial_backpack(&w.0).unwrap();
+            assert_eq!(prepared.selected_backpack_class(), Some(class as u8));
+            let selected = prepared
+                .player_loadout
+                .as_ref()
+                .unwrap()
+                .selections(&w.0)
+                .unwrap();
+            assert_eq!(selected[0].0, 10000 + class as u32 * 100);
+            assert_eq!(selected[1].0, 10007 + class as u32 * 100);
+            assert_eq!(
+                selected[0].1,
+                (1..7)
+                    .map(|i| 10000 + i + class as u32 * 100)
+                    .collect::<Vec<_>>()
+            );
+            assert_eq!(
+                prepared.player_loadout.as_ref().unwrap().class_index() % 5,
+                slot
+            );
+        }
+    }
 
     fn profile(primary: u32, selected: [u32; 6]) -> Vec<u8> {
         let mut plain = vec![0u8; 32768];

@@ -571,6 +571,8 @@ impl GameServer {
                                     .game_profile(admission.title, admission.owner)
                                     .await?;
                                 let (public, owned) = (&profile.public, &profile.owned);
+                                let selected = state.for_initial_backpack(public)?;
+                                let state = &selected;
                                 if state.dynamic_loadout() {
                                     let registry = weapon_registries
                                         .entry(registry_key(&admission, state))
