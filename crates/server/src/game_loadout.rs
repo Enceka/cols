@@ -393,6 +393,7 @@ mod tests {
             switch: None,
             move_scale: None,
             sprint_duration_scale: None,
+            sprint_timing: None,
             fire_type: None,
             alternate_base: None,
             alternate: None,

@@ -1835,34 +1835,6 @@ impl Connection {
                 input.buttons = 0;
                 input.direction = 0;
             }
-            let melee_approach = self.tdm.as_ref().and_then(|tdm| {
-                let motion = self.motion.as_ref()?;
-                let state = self.game_state.as_ref()?;
-                let mut local = state.local_player_snapshot(self.vitals.health > 0)?;
-                local.origin = motion.origin;
-                tdm.player_melee_approach(&input, motion, local, state.collision.as_ref()?)
-            });
-            if let Some(player) = &mut self.player {
-                if let Some(motion) = &self.motion {
-                    player.spread_environment(motion);
-                }
-                let equipment = player.equipment();
-                let requested = input.weapons[0];
-                if requested != 0
-                    && !player.owns_weapon(requested)
-                    && self
-                        .last_input
-                        .as_ref()
-                        .is_none_or(|l| l.weapons[0] != requested)
-                {
-                    tracing::info!(
-                        requested,
-                        current = equipment.weapon,
-                        "unowned weapon switch requested"
-                    );
-                }
-                player.apply_with_melee_approach(&input, melee_approach);
-            }
             if let Some(motion) = &mut self.motion
                 && let Some(collision) = self.game_state.as_ref().and_then(|s| s.collision.as_ref())
             {
@@ -1898,15 +1870,6 @@ impl Connection {
                     tracing::debug!(command_time=input.time,origin=?motion.origin,velocity=?motion.velocity,
                         active=motion.melee_charge().is_some(),"melee approach motion");
                 }
-                if let Some((approach, duration)) =
-                    self.player.as_mut().and_then(|p| p.take_melee_approach())
-                {
-                    // 0x41e525/0x429320: movement precedes starting the melee
-                    // action, so the first displacement belongs to the next command.
-                    motion.start_melee_charge(approach, duration);
-                    tracing::info!(distance=approach.distance,yaw=approach.yaw,duration,
-                        origin=?motion.origin,"native melee approach started");
-                }
                 if let Some(player) = &mut self.player {
                     let surface = (motion.surface_flags >> 20) & 31;
                     if was_ground
@@ -1931,7 +1894,42 @@ impl Connection {
                     }
                 }
             }
+            // Native0x41e525/0x429320 advances movement before the weapon
+            // state machine. Sprint entry/exit and melee use this command's hull.
+            let melee_approach = self.tdm.as_ref().and_then(|tdm| {
+                let motion = self.motion.as_ref()?;
+                let state = self.game_state.as_ref()?;
+                let mut local = state.local_player_snapshot(self.vitals.health > 0)?;
+                local.origin = motion.origin;
+                tdm.player_melee_approach(&input, motion, local, state.collision.as_ref()?)
+            });
             if let Some(player) = &mut self.player {
+                if let Some(motion) = &self.motion {
+                    player.spread_environment(motion);
+                    player.set_sprinting(motion.flags & 0x4000 != 0);
+                }
+                let requested = input.weapons[0];
+                if requested != 0
+                    && !player.owns_weapon(requested)
+                    && self
+                        .last_input
+                        .as_ref()
+                        .is_none_or(|l| l.weapons[0] != requested)
+                {
+                    tracing::info!(
+                        requested,
+                        current = player.equipment().weapon,
+                        "unowned weapon switch requested"
+                    );
+                }
+                player.apply_with_melee_approach(&input, melee_approach);
+                if let Some(motion) = &mut self.motion
+                    && let Some((approach, duration)) = player.take_melee_approach()
+                {
+                    motion.start_melee_charge(approach, duration);
+                    tracing::info!(distance=approach.distance,yaw=approach.yaw,duration,
+                        origin=?motion.origin,"native melee approach started");
+                }
                 let shots = player.take_shots();
                 let melee_strikes = player.take_melee_strikes();
                 let throws = player.take_throws();

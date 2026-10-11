@@ -72,6 +72,8 @@ struct BootstrapWeapon {
     #[serde(default)]
     sprint_duration_scale: Option<f32>,
     #[serde(default)]
+    sprint_timing: Option<crate::game_player::SprintTiming>,
+    #[serde(default)]
     fire_type: Option<u32>,
     #[serde(default)]
     alternate_base: Option<u16>,
@@ -605,6 +607,7 @@ impl PreparedGameState {
             );
             ensure!(
                 weapon.switch.is_none_or(|t| t.valid())
+                    && weapon.sprint_timing.is_none_or(|t| t.valid())
                     && weapon.spread.is_none_or(|s| s.valid())
                     && weapon
                         .move_scale
@@ -1398,6 +1401,10 @@ impl PreparedGameState {
             switch: Some(switch),
             move_scale: Some(scale),
             sprint_duration_scale: Some(sprint_duration_scale),
+            sprint_timing: Some(crate::game_player::SprintTiming {
+                in_msec: time(0x76c)?,
+                out_msec: time(0x774)?,
+            }),
             fire_type: Some(fire_type),
             alternate_base,
             alternate: None,
@@ -1797,6 +1804,9 @@ impl PreparedGameState {
         }
         if let Some(scale) = w.sprint_duration_scale {
             player.set_sprint_duration_scale(scale);
+        }
+        if let Some(timing) = w.sprint_timing {
+            player.set_sprint_timing(timing);
         }
         if let Some(kind) = w.fire_type {
             player.set_fire_type(kind).expect("validated fire type");

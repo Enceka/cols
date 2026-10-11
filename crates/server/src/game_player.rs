@@ -87,6 +87,19 @@ impl SwitchTiming {
     }
 }
 
+/// Native0x4283c0/0x428490; loop0x428440 has no duration.
+#[derive(Debug, Clone, Copy, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SprintTiming {
+    pub in_msec: u16,
+    pub out_msec: u16,
+}
+impl SprintTiming {
+    pub fn valid(self) -> bool {
+        self.in_msec <= 15000 && self.out_msec <= 15000
+    }
+}
+
 #[derive(Debug, Clone, Copy, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct AlternateTiming {
@@ -194,6 +207,7 @@ struct Weapon {
     switch: Option<SwitchTiming>,
     move_scale: f32,
     sprint_duration_scale: f32,
+    sprint_timing: Option<SprintTiming>,
     ballistics: Option<crate::game_combat::Ballistics>,
     rechamber: Option<RechamberTiming>,
     rechamber_pending: bool,
@@ -253,6 +267,7 @@ pub(crate) struct Player {
     offhand_pending: bool,
     throws: Vec<crate::game_grenade::Throw>,
     perks: crate::game_perks::Perks,
+    sprinting: bool,
     current: Weapon,
     secondary: Option<Weapon>,
     alternate: Option<Weapon>,
@@ -315,6 +330,7 @@ impl Player {
             offhand_pending: false,
             throws: Vec::new(),
             perks: Default::default(),
+            sprinting: false,
             current: Weapon {
                 offhand_switch: None,
                 fast_reload: false,
@@ -329,6 +345,7 @@ impl Player {
                 switch: None,
                 move_scale: 1.0,
                 sprint_duration_scale: 1.0,
+                sprint_timing: None,
                 ballistics: None,
                 rechamber: None,
                 rechamber_pending: false,
@@ -523,6 +540,13 @@ impl Player {
     }
     pub fn set_sprint_duration_scale(&mut self, scale: f32) {
         self.current.sprint_duration_scale = scale;
+    }
+    pub fn set_sprint_timing(&mut self, timing: SprintTiming) {
+        assert!(timing.valid());
+        self.current.sprint_timing = Some(timing);
+    }
+    pub fn set_sprinting(&mut self, active: bool) {
+        self.sprinting = active;
     }
     pub fn sprint_rules(&self) -> crate::game_sprint::Rules {
         crate::game_sprint::Rules {
@@ -814,11 +838,13 @@ impl Player {
         let reloading = firing.is_some_and(|f| reloading(f.state));
         let switching = firing.is_some_and(|f| (1..=5).contains(&f.state));
         let melee = firing.is_some_and(|f| (13..=15).contains(&f.state));
+        let sprint = firing.is_some_and(|f| (23..=25).contains(&f.state));
         aim.button = cmd.buttons & 0x800 != 0
             && self.selected_offhand.is_none()
             && Self::input_allowed(cmd)
             && !switching
             && !melee
+            && !sprint
             && cmd.weapons[0] == self.current.equipment.weapon;
         aim.movement_slow = aim.button && !reloading;
         let reload_blocks = reloading
@@ -991,6 +1017,42 @@ impl Player {
         self.emit(events::ALT_WEAPON_SWITCH, 0);
         self.current
             .animate(5, 19, self.alternate_timing.unwrap().drop_msec, 0);
+    }
+
+    fn apply_sprint(&mut self) -> bool {
+        let Some(timing) = self.current.sprint_timing else {
+            return false;
+        };
+        let firing = self.current.equipment.firing.unwrap();
+        if matches!(firing.state, 23 | 24) {
+            if !self.sprinting {
+                // 0x4284f2 divides the authored out time by ability11's
+                // value, then truncates. Dexterity's +0.5 resolves to1.5.
+                let out = (f64::from(timing.out_msec)
+                    / f64::from(self.perks.value("modWeaponRecoveryTimeScale", 1.0)))
+                    as u16;
+                self.current.animate(25, 27, out, 0);
+            } else if firing.state == 23 && firing.remaining_msec == 0 {
+                self.current.animate(24, 26, 0, 0);
+            }
+            return true;
+        }
+        if firing.state == 25 {
+            if firing.remaining_msec == 0 {
+                self.current.ready();
+            }
+            return true;
+        }
+        if !self.sprinting || matches!(firing.state, 1..=7 | 13..=21 | 29..=33) {
+            return false;
+        }
+        if reloading(firing.state) {
+            self.emit(2, u32::from(firing.state));
+        }
+        self.current.cancel_burst();
+        self.current.reload_transfer_pending = false;
+        self.current.animate(23, 25, timing.in_msec, 0);
+        true
     }
 
     fn apply_weapon(&mut self, cmd: &UserCommand, elapsed: u32, approach: Option<MeleeApproach>) {
@@ -1167,6 +1229,9 @@ impl Player {
             return;
         }
         if raising {
+            return;
+        }
+        if self.current.equipment.firing.is_some() && self.apply_sprint() {
             return;
         }
         if self.current.is_burst()
@@ -2591,6 +2656,68 @@ pub(crate) mod tests {
         assert_eq!(p.sprint_rules().maximum(), 0);
         p.set_perks(Default::default());
         assert_eq!(p.sprint_rules().maximum(), 2000);
+    }
+    #[test]
+    fn sprint_uses_native_in_loop_out_and_blocks_shots_until_recovery() {
+        let mut p = aiming_player();
+        p.set_sprint_timing(SprintTiming {
+            in_msec: 300,
+            out_msec: 450,
+        });
+        let clip = p.equipment().ammo.unwrap().clip;
+        p.set_sprinting(true);
+        p.apply(&cmd(1100, 2));
+        let entered = p.equipment().firing.unwrap();
+        assert_eq!(
+            (
+                entered.state,
+                entered.animation & 0x3ff,
+                entered.remaining_msec
+            ),
+            (23, 25, 300)
+        );
+        p.apply(&cmd(1399, 2));
+        assert_eq!(p.equipment().firing.unwrap().state, 23);
+        p.apply(&cmd(1400, 2));
+        assert_eq!(p.equipment().firing.unwrap().state, 24);
+        assert_eq!(p.equipment().firing.unwrap().animation & 0x3ff, 26);
+        p.apply(&cmd(1500, 2));
+        assert_eq!(p.equipment().ammo.unwrap().clip, clip);
+        p.set_sprinting(false);
+        p.apply(&cmd(1501, 1));
+        let out = p.equipment().firing.unwrap();
+        assert_eq!(
+            (out.state, out.animation & 0x3ff, out.remaining_msec),
+            (25, 27, 450)
+        );
+        p.apply(&cmd(1950, 1));
+        assert_eq!(p.equipment().ammo.unwrap().clip, clip);
+        p.apply(&cmd(1951, 1));
+        assert_eq!(p.equipment().firing.unwrap().state, 0);
+        p.apply(&cmd(1952, 1));
+        assert_eq!(p.equipment().ammo.unwrap().clip, clip - 1);
+    }
+    #[test]
+    fn dexterity_divides_sprint_recovery_without_changing_authored_times() {
+        let mut p = aiming_player();
+        p.set_sprint_timing(SprintTiming {
+            in_msec: 300,
+            out_msec: 500,
+        });
+        p.set_perks(crate::game_perks::Perks::selected([0, 0, 60073], &[60073]).unwrap());
+        p.set_sprinting(true);
+        p.apply(&cmd(1100, 2));
+        p.set_sprinting(false);
+        p.apply(&cmd(1101, 0));
+        let out = p.equipment().firing.unwrap();
+        assert_eq!((out.state, out.remaining_msec), (25, 333));
+        assert_eq!(p.current.sprint_timing.unwrap().out_msec, 500);
+        let unchanged = p.equipment().firing.unwrap();
+        p.apply(&cmd(1101, 0));
+        assert_eq!(
+            p.equipment().firing.unwrap().remaining_msec,
+            unchanged.remaining_msec
+        );
     }
     #[test]
     fn switching_away_cancels_partial_burst_and_does_not_resume_it_on_return() {

@@ -196,12 +196,11 @@ class ClientAssets {
                     if(menus.Count>=4096)throw new Exception("HUD menu budget");
                     string name=r.Name(r.Word(header));
                     bool selected=kind==26&&(name=="perk_sidebar_hud"||name=="perk_gained"||name=="hud_fullscreen"||name=="loadsprite"||name=="splash"||name=="extra_info"||name=="announcer_line"||name=="weaponbar_hd"||name=="weaponbar_hd_extend"||name=="kd_rate_bar"||name=="combat_performance"||name=="scorebar_hd"||name=="exp_bar");
-                    bool events=kind==26&&(name=="endgameupdate"||name=="uiscript_startserver"||name=="connect"||name=="pregame"||name=="round_start"||name=="perk_sidebar_hud");
                     menus.Add(Obj("type",kind,"name",name,"header_base64",Convert.ToBase64String(r.Read(header,64)),
                         "full_header_base64",selected?Convert.ToBase64String(r.Read(header,0x194)):null,
                         "visible_expression",selected?r.HudExpression(r.Word(header+0xe8)):null,
                         "items",selected?r.HudItems(header):null,
-                        "on_open",events?r.HudEvents(r.Word(header+0xd4)):null));
+                        "on_open",kind==26?r.HudEvents(r.Word(header+0xd4)):null));
                 }
                 index=U(entries,at+20);
             }
