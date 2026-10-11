@@ -594,7 +594,7 @@ impl GameServer {
                                         })?;
                                         let mut candidate = guard.clone();
                                         prepared.register_history(&mut candidate)?;
-                                        codol_protocol::game_wire::server_packet(
+                                        codol_protocol::game_wire::compact_server_packet(
                                             3,
                                             0,
                                             0,

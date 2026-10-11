@@ -63,8 +63,10 @@ class ReadClientState {
             bool bulletImpacts=args.Length==1 && args[0]=="--bullet-impacts";
             bool characters=args.Length==1 && args[0]=="--characters";
             bool grounding=args.Length==1 && args[0]=="--grounding";
+            bool outfits=args.Length==1 && args[0]=="--outfits";
+            bool appearanceLoad=args.Length==1 && args[0]=="--appearance-load";
             bool hitRegions=args.Length==1 && args[0]=="--hit-regions";
-            if(args.Length!=0 && !grounding && !replay && !feedback && !hitRegions && !assets && !profiles && !netConstants && !mapEntities && !bootstrapWeapon && !weaponModels && !arsenal && !collision && !weaponRegistry && !trainingTarget && !bulletImpacts && !characters) throw new Exception("only fixed extraction modes are supported");
+            if(args.Length!=0 && !appearanceLoad && !outfits && !grounding && !replay && !feedback && !hitRegions && !assets && !profiles && !netConstants && !mapEntities && !bootstrapWeapon && !weaponModels && !arsenal && !collision && !weaponRegistry && !trainingTarget && !bulletImpacts && !characters) throw new Exception("only fixed extraction modes are supported");
             IntPtr snapshot=CreateToolhelp32Snapshot(2,0); uint found=0;
             if(snapshot==new IntPtr(-1)) throw new Exception("process snapshot failed");
             try {
@@ -106,6 +108,8 @@ class ReadClientState {
                 if(bulletImpacts) { ClientAssets.ExportBulletImpacts(process);return 0; }
                 if(characters) { ClientAssets.ExportCharacters(process);return 0; }
                 if(grounding) { ClientAssets.ExportGrounding(process);return 0; }
+                if(outfits) { ClientAssets.ExportOutfits(process);return 0; }
+                if(appearanceLoad) { ClientAssets.ExportAppearanceLoad(process);return 0; }
                 if(hitRegions) { HitRegions.Export(process);return 0; }
                 Console.WriteLine("{");
                 Field(process,"connection_state",0x01a2e7ec,4);

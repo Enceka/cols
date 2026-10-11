@@ -2,6 +2,7 @@
 pub mod auth_server;
 pub mod capture;
 pub mod config;
+mod game_appearance;
 mod game_arsenal;
 mod game_bot;
 mod game_class_selection;

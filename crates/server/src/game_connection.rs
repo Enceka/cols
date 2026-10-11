@@ -147,7 +147,8 @@ impl Connection {
         let selected = slot
             .map(|slot| template.for_backpack(public, slot))
             .transpose()?;
-        let source = selected.as_ref().unwrap_or(template);
+        let mut source = selected.as_ref().unwrap_or(template).clone();
+        source.preserve_match_appearance(current);
         let mut state = match source.for_profile_at(public, owned, template.first_weapon_index()) {
             Ok(state) => state,
             Err(error) if self.requested_backpack.is_some() => {
@@ -160,6 +161,7 @@ impl Connection {
             Err(error) => return Err(error),
         };
         state.set_card_rank(rank);
+        state.preserve_match_appearance(current);
         self.active_backpack = slot;
         self.requested_backpack = None;
         tracing::info!(slot,global_class=?state.selected_backpack_class(),"selected in-game backpack");
@@ -362,13 +364,8 @@ impl Connection {
             self.marks_command_sent = true;
         }
         if !self.model_rules_sent {
-            if let Some(state) = &self.game_state {
-                for (id, name) in state.model_configstrings() {
-                    self.server_commands
-                        .push(format!("d {id} {name}").as_bytes())?;
-                    self.model_rules_sequence = self.server_commands.sequence();
-                }
-            }
+            // Initial model registrations are already in the acknowledged
+            // gamestate. Sending d here starts streaming only after spawning.
             self.model_rules_sent = true;
         }
         if let Some(combat) = &mut self.combat
@@ -571,6 +568,11 @@ impl Connection {
             current.events = self.enemy_events;
         }
         let models_ready = self.server_commands.acknowledged() >= self.model_rules_sequence;
+        if self.tdm.is_some() && !models_ready {
+            // The selected local outfit now needs the same registration/ACK
+            // gate as remote actors. PS input can start without its DObj.
+            local_player = None;
+        }
         let mut match_players = if models_ready {
             self.tdm.as_ref().map_or(Vec::new(), |m| m.snapshots())
         } else {
@@ -1048,7 +1050,8 @@ impl Connection {
             && let Some(state) = &self.game_state
         {
             let body = state.body_named(commands.sequence(), self.display_name.as_deref())?;
-            let reply = game_wire::server_packet(3, client_ack, challenge, client_command, &body)?;
+            let reply =
+                game_wire::compact_server_packet(3, client_ack, challenge, client_command, &body)?;
             sending_gamestate = true;
             Some(reply)
         } else if client_ack > self.client_commands.sequence() {

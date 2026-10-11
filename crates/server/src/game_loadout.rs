@@ -47,6 +47,12 @@ fn hash_valid(s: &str) -> bool {
     s.len() == 64 && s.bytes().all(|c| c.is_ascii_hexdigit())
 }
 impl Loadout {
+    pub(super) fn profile_snapshot(&self, public: &[u8]) -> Result<Vec<u8>> {
+        Ok(codol_protocol::profile::public_snapshot(
+            public,
+            &self.projection_offsets,
+        )?)
+    }
     pub(super) fn card(&self, public: &[u8]) -> Result<codol_protocol::game_player_card::Card> {
         Ok(codol_protocol::game_player_card::Card::from_profile(
             public,

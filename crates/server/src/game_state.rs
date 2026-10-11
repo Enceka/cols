@@ -135,6 +135,14 @@ pub struct PreparedGameState {
     arsenal_file: Option<std::path::PathBuf>,
     #[serde(default)]
     collision_file: Option<std::path::PathBuf>,
+    #[serde(default)]
+    appearance_file: Option<std::path::PathBuf>,
+    #[serde(default)]
+    appearance_first_model: Option<u16>,
+    #[serde(skip)]
+    appearance_catalog: Option<Arc<crate::game_appearance::Catalog>>,
+    #[serde(skip)]
+    player_appearance: Option<crate::game_appearance::Appearance>,
     #[serde(skip)]
     arsenal: Option<Arc<crate::game_arsenal::Arsenal>>,
     #[serde(skip)]
@@ -486,6 +494,17 @@ impl PreparedGameState {
             );
             state.collision = Some(Arc::new(collision));
         }
+        if let Some(file) = &state.appearance_file {
+            ensure!(
+                state
+                    .appearance_first_model
+                    .is_some_and(|i| (1..1024).contains(&i)),
+                "appearance model range missing"
+            );
+            state.appearance_catalog = Some(Arc::new(crate::game_appearance::Catalog::load(
+                &directory.join(file),
+            )?));
+        }
         state.validate()?;
         state.ground_first_spawn()?;
         if let Some(config) = &state.match_config {
@@ -762,6 +781,17 @@ impl PreparedGameState {
         player.model = 4;
         player.attachment_models = [3, 2, 5, 6, 0, 0, 0, 0, 0, 0];
         player.attachment_tags = [0; 10];
+        if let Some(appearance) = &self.player_appearance {
+            player.model = appearance.indices[0];
+            player.attachment_models = [0; 10];
+            for (slot, &index) in player
+                .attachment_models
+                .iter_mut()
+                .zip(&appearance.indices[1..])
+            {
+                *slot = index;
+            }
+        }
         player.origin = self.spawn_origin?;
         player.angles = [0; 3];
         Some(player)
@@ -948,7 +978,13 @@ impl PreparedGameState {
                 .map_or(self.next_weapon_index(), |w| w.index),
         )?;
         let mut next = self.bootstrap_weapon.as_ref().map_or(1, |w| w.index);
-        state.register_weapons(&mut std::collections::BTreeMap::new(), &mut next)?;
+        let mut names = std::collections::BTreeMap::new();
+        state.register_weapons(&mut names, &mut next)?;
+        state.registry_strings = names
+            .into_iter()
+            .map(|(name, index)| (5443 + index, name))
+            .collect();
+        state.registry_strings.sort_by_key(|v| v.0);
         Ok(state)
     }
     pub(crate) fn for_backpack(&self, public: &[u8], slot: u8) -> Result<Self> {
@@ -971,6 +1007,11 @@ impl PreparedGameState {
         self.profile_hash = selected.profile_hash;
         self.player_card = selected.player_card;
     }
+    pub(crate) fn preserve_match_appearance(&mut self, current: &Self) {
+        // Character changes belong to the next match. Existing actor/corpse
+        // baselines and historical replays retain the current model identities.
+        self.player_appearance = current.player_appearance.clone();
+    }
     pub(crate) fn set_card_rank(&mut self, (rank, prestige): (u8, u8)) {
         if let Some(card) = &mut self.player_card {
             card.rank = rank;
@@ -992,6 +1033,24 @@ impl PreparedGameState {
             .ok_or_else(|| anyhow::anyhow!("missing loadout catalogue"))?;
         let mut state = self.clone();
         state.player_card = Some(loadout.card(public)?);
+        if let Some(catalog) = &self.appearance_catalog
+            && self.player_appearance.is_none()
+        {
+            let snapshot = loadout.profile_snapshot(public)?;
+            let mut appearance = catalog.compose(
+                &snapshot,
+                owned,
+                self.match_config.as_ref().map_or(2, |c| c.teams[0]),
+            )?;
+            appearance.register(
+                self.match_config
+                    .as_ref()
+                    .map_or(&[], |c| c.models.as_slice()),
+                self.appearance_first_model.unwrap(),
+            )?;
+            tracing::info!(package=appearance.package,models=?appearance.models,"resolved saved third-person character");
+            state.player_appearance = Some(appearance);
+        }
         if let Some(arsenal) = &self.arsenal {
             let selections = loadout.selections(public)?;
             let hands = self
@@ -1243,13 +1302,22 @@ impl PreparedGameState {
         })
     }
     pub(crate) fn model_configstrings(&self) -> Vec<(u16, String)> {
-        self.match_config.as_ref().map_or_else(Vec::new, |config| {
+        let mut values = self.match_config.as_ref().map_or_else(Vec::new, |config| {
             config
                 .models
                 .iter()
                 .map(|(id, name)| (2051 + id, name.clone()))
                 .collect()
-        })
+        });
+        if let Some(appearance) = &self.player_appearance {
+            values.extend(
+                appearance
+                    .registrations
+                    .iter()
+                    .map(|(id, name)| (2051 + id, name.clone())),
+            );
+        }
+        values
     }
     pub(crate) fn weapon_configstrings(&self) -> Vec<(u16, String)> {
         if !self.registry_strings.is_empty() {
@@ -1423,6 +1491,9 @@ impl PreparedGameState {
             }
             values.sort_by_key(|v| v.0);
         }
+        // Publish names before cgame/model initialization, not after spawning.
+        values.extend(self.model_configstrings());
+        values.sort_by_key(|v| v.0);
         for (index, name) in self.weapon_configstrings() {
             // NCS inherited weapon bank starts at5443; unused indices are
             // untyped and accept a regular configstring. Parser0x42e3b0.
@@ -1678,6 +1749,10 @@ pub(crate) fn synthetic() -> PreparedGameState {
         navigation: None,
         arsenal_file: None,
         collision_file: None,
+        appearance_file: None,
+        appearance_first_model: None,
+        appearance_catalog: None,
+        player_appearance: None,
         arsenal: None,
         collision: None,
         profile_hash: None,

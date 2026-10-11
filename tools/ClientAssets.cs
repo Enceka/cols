@@ -761,9 +761,16 @@ class ClientAssets {
         for(uint id=19;id<=26;id++) {
             uint entity=corpseEntities+id*0x238;
             uint slotId=BitConverter.ToUInt16(r.Read(0x02ef4858+id*2,2),0);
+            var corpseModels=new List<string>();
+            bool corpseValid=(r.Word(entity+0x204)&1)!=0 && r.Word(entity+0xf4)==2;
+            if(corpseValid&&slotId!=0&&slotId<2048) {
+                uint dobj=0x02e8e850+slotId*0xcc,list=r.Word(dobj+0xc0);
+                int count=Count(r.Read(dobj+9,1)[0],32);
+                for(uint part=0;part<count;part++)corpseModels.Add(r.Name(r.Word(r.Word(list+part*4))));
+            }
             corpses.Add(Obj("entity",id,"type",r.Word(entity+0xf4),"flags",r.Word(entity+0xf8),
                 "donor",r.Word(entity+0xf0+0x9c),"legs",r.Word(entity+0xf0+0xd4),"torso",r.Word(entity+0xf0+0xd8),
-                "dobj_slot",slotId,"origin",r.EntityOrigin(entity+0xf0)));
+                "valid",corpseValid,"dobj_models",corpseModels,"dobj_slot",slotId,"origin",r.EntityOrigin(entity+0xf0)));
         }
         var serializer=new JavaScriptSerializer();serializer.MaxJsonLength=16*1024*1024;
         Console.WriteLine(serializer.Serialize(Obj("schema_version",1,"read_only",true,
@@ -802,6 +809,88 @@ class ClientAssets {
             if(Single.IsNaN(origin[axis])||Single.IsInfinity(origin[axis]))throw new Exception("nonfinite entity origin");
         }
         return origin;
+    }
+    public static void ExportAppearanceLoad(IntPtr process) {
+        var r=new ClientAssets(process);var frames=new List<object>();var clock=System.Diagnostics.Stopwatch.StartNew();
+        while(clock.ElapsedMilliseconds<18000) {
+            uint state=r.Word(0x01a2e7ec);var actors=new List<object>();
+            uint time=0;
+            if(state==10) {
+                uint slot=r.Word(0x07817bb0),cgSlot=r.Word(0x07817ba8);
+                if(slot>=256||cgSlot>=256)throw new Exception("invalid appearance context");
+                uint entities=r.Word(0x01a19510+slot*4)^0x2168f672;
+                uint cg=r.Word(0x01a19510+cgSlot*4)^0xfbb2c97a;time=r.Word(cg+0xae4c8);
+                for(uint id=0;id<=26;id++) {
+                    uint entity=entities+id*0x238;
+                    if((r.Word(entity+0x204)&1)==0)continue;
+                    uint type=r.Word(entity+0xf4);if(type!=1&&type!=2)continue;
+                    uint dobjSlot=BitConverter.ToUInt16(r.Read(0x02ef4858+id*2,2),0);var models=new List<string>();
+                    if(dobjSlot>0&&dobjSlot<2048) {
+                        uint dobj=0x02e8e850+dobjSlot*0xcc,list=r.Word(dobj+0xc0);
+                        int count=Count(r.Read(dobj+9,1)[0],32);
+                        for(uint part=0;part<count;part++)models.Add(r.Name(r.Word(r.Word(list+part*4))));
+                    }
+                    actors.Add(Obj("entity",id,"type",type,"client",r.Word(entity+0xf0+0x9c),"models",models));
+                }
+            }
+            frames.Add(Obj("elapsed",clock.ElapsedMilliseconds,"time",time,"connection_state",state,"actors",actors));
+            System.Threading.Thread.Sleep(50);
+        }
+        var serializer=new JavaScriptSerializer();serializer.MaxJsonLength=8*1024*1024;
+        Console.WriteLine(serializer.Serialize(Obj("schema_version",1,"read_only",true,
+            "client_sha256","e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b","frames",frames)));
+    }
+    public static void ExportOutfits(IntPtr process) {
+        var r=new ClientAssets(process);var items=new List<object>();var variants=new List<object>();
+        var marketplace=(Dictionary<string,object>)r.Table("mp/coMarketplaceItems.csv");
+        var cells=(List<string>)marketplace["cells_base64"];int columns=(int)marketplace["columns"];
+        if(columns!=12)throw new Exception("outfit marketplace schema differs");
+        for(int row=0;row<cells.Count/columns;row++) {
+            string type=Encoding.ASCII.GetString(Convert.FromBase64String(cells[row*columns+2]));
+            if(type!="cha"&&type!="cat")continue;
+            ushort id=UInt16.Parse(Encoding.ASCII.GetString(Convert.FromBase64String(cells[row*columns])));
+            string name=Encoding.ASCII.GetString(Convert.FromBase64String(cells[row*columns+1]));
+            uint at=r.ItemRecord(id);
+            if(at==0||!String.Equals(r.Name(r.Word(at+12)),name,StringComparison.OrdinalIgnoreCase)) {
+                items.Add(Obj("item_id",id,"name",name,"error","outfit registry identity mismatch"));continue;
+            }
+            var item=Obj("item_id",id,"name",name,"type",type,"kind",r.Read(at+6,1)[0],
+                "detail_index",BitConverter.ToUInt16(r.Read(at+2,2),0));
+            if(type=="cha") {
+                uint detail=BitConverter.ToUInt16(r.Read(at+2,2),0);
+                if(detail==0||detail>=r.Word(0x02dbba48))throw new Exception("character package index outside pool");
+                byte[] record=r.Read(r.Word(0x02dbba44)+detail*40,40);
+                item["package_base64"]=Convert.ToBase64String(record);
+                if(U(record,32)>1000)throw new Exception("character package members exceed1000: "+id+" count="+U(record,32));
+                int count=(int)U(record,32);var members=new List<ushort>();
+                byte[] memberBytes=count==0?new byte[0]:r.Read(U(record,36),count*2);
+                for(int i=0;i<count;i++)members.Add(BitConverter.ToUInt16(memberBytes,i*2));
+                item["members"]=members;
+            }
+            items.Add(item);
+        }
+        // 0x40d320 builds the sorted, retained sixteen-byte variant records.
+        int total=BitConverter.ToUInt16(r.Read(0x017db2a4,2),0);
+        if(total>3584)throw new Exception("character variant budget exceeded");
+        byte[] entries=r.Read(0x017cd290,total*16),groups=r.Read(0x017e02e4,11*4);
+        for(int group=0;group<11;group++) {
+            int start=BitConverter.ToUInt16(groups,group*4),count=BitConverter.ToUInt16(groups,group*4+2);
+            if(start+count>total)throw new Exception("character variant span invalid");
+            string name=r.Name(r.Word(0x00ce410c+(uint)group*4));
+            for(int i=start;i<start+count;i++) {
+                int at=i*16;
+                variants.Add(Obj("group",name,"index",BitConverter.ToUInt16(entries,at),
+                    "selectors_base64",Convert.ToBase64String(entries,at+2,6),
+                    "model",r.Name(U(entries,at+8)),"viewmodel",r.Name(U(entries,at+12))));
+            }
+        }
+        var serializer=new JavaScriptSerializer();serializer.MaxJsonLength=8*1024*1024;
+        Console.WriteLine(serializer.Serialize(Obj("schema_version",1,"read_only",true,
+            "client_sha256","e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b",
+            "ncs_crc",r.Word(0x02df7d90),"items",items,"variants",variants,
+            "variant_items_base64",Convert.ToBase64String(r.Read(0x017db2a8,2560*8)),
+            "variant_groups_base64",Convert.ToBase64String(r.Read(0x017cd1bc,11*4)),
+            "selector_hashes_base64",Convert.ToBase64String(r.Read(0x017cd1e8,Count(r.Word(0x017db290),128)*4)))));
     }
     public static void ExportGrounding(IntPtr process) {
         var r=new ClientAssets(process);var frames=new List<object>();

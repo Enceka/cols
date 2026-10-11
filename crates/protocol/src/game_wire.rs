@@ -239,6 +239,51 @@ pub fn server_packet(
     Ok(packet)
 }
 
+/// Initial resource lists can exceed one raw datagram. Target0x467520 reads
+/// ACK bit31, XORs the body, then0x46e6a0/0x659040 inflates zlib into128KiB.
+/// Keep small messages byte-for-byte unchanged and reject compressed output
+/// that still needs the as-yet unsupported native fragmentation path.
+pub fn compact_server_packet(
+    sequence: u32,
+    client_ack: u32,
+    challenge: u32,
+    client_command: &[u8],
+    body: &[u8],
+) -> Result<Vec<u8>, LobbyError> {
+    if body.len() + 4 < FRAGMENT_SIZE {
+        return server_packet(sequence, client_ack, challenge, client_command, body);
+    }
+    if sequence == 0
+        || sequence > SEQUENCE_MASK
+        || client_ack > i32::MAX as u32
+        || body.len() > 0x20000
+    {
+        return Err(LobbyError("invalid compressed server message bounds"));
+    }
+    use std::io::Write;
+    let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+    encoder
+        .write_all(body)
+        .map_err(|_| LobbyError("server message compression failed"))?;
+    let compressed = encoder
+        .finish()
+        .map_err(|_| LobbyError("server message compression failed"))?;
+    if compressed.len() + 4 >= FRAGMENT_SIZE {
+        return Err(LobbyError(
+            "compressed server message requires fragmentation",
+        ));
+    }
+    let mut packet = sequence.to_le_bytes().to_vec();
+    packet.extend_from_slice(&(client_ack | 0x8000_0000).to_le_bytes());
+    packet.extend_from_slice(&compressed);
+    xor_stream(
+        &mut packet[8..],
+        sequence as u8 ^ challenge as u8,
+        client_command,
+    );
+    Ok(packet)
+}
+
 /// Target bit reader 0x40c370/0x5a13a0: byte fields advance the byte cursor
 /// without discarding unused bits in the previously reserved pool byte.
 pub struct Reader<'a> {
@@ -407,6 +452,38 @@ mod tests {
                 .0
                 .is_empty()
         );
+    }
+    #[test]
+    fn compressed_gamestate_keeps_clear_ack_and_inflates_after_xor() {
+        use std::io::Read;
+        let mut body = b"fpa_infbasee_tf_m_00\0boo_infbasea_tf_m_00\0".repeat(80);
+        body.push(SERVER_EOF);
+        let packet = compact_server_packet(3, 7, 0x75, b"ready\0ignored", &body).unwrap();
+        assert_eq!(&packet[..4], &3u32.to_le_bytes());
+        assert_eq!(&packet[4..8], &0x80000007u32.to_le_bytes());
+        assert!(packet.len() - 4 < FRAGMENT_SIZE);
+        let mut encoded = packet[8..].to_vec();
+        xor_stream(&mut encoded, 0x76, b"ready");
+        let mut decoded = Vec::new();
+        flate2::read::ZlibDecoder::new(&encoded[..])
+            .read_to_end(&mut decoded)
+            .unwrap();
+        assert_eq!(decoded, body);
+        assert_eq!(
+            compact_server_packet(3, 0, 0x75, b"", &[6]).unwrap(),
+            server_packet(3, 0, 0x75, b"", &[6]).unwrap()
+        );
+        assert!(compact_server_packet(3, 0, 0, b"", &vec![0; 0x20001]).is_err());
+        let mut random = Vec::new();
+        let mut seed = 12345u32;
+        for _ in 0..4000 {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            random.push(seed as u8);
+        }
+        assert!(compact_server_packet(3, 0, 0, b"", &random).is_err());
+        assert!(compact_server_packet(3, 0x80000000, 0, b"", &body).is_err());
     }
     #[test]
     fn independent_headers_and_xor_vectors() {
