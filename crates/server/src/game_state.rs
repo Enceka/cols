@@ -1218,9 +1218,14 @@ impl PreparedGameState {
             n if n < 900 => Some(n as u16),
             _ => anyhow::bail!("alternate weapon base outside registry"),
         };
-        // Weapon class +0x480: grenade/rocket launchers (6/7), riot shield (11)
-        // and melee (12) are not hitscan; spread (4) fires +0x6c8 pellets.
-        let ballistics = if matches!(word(0x480), 6 | 7 | 11 | 12) || w.definition[0xd79] != 0 {
+        // Type names at0xce3f78: bullet0/grenade1/projectile2/shield3/bomb4/melee5.
+        // Crossbows and ballistic knives use rifle/pistol classes, so class
+        // alone cannot select hitscan. The native gun consumer0x55e45f also
+        // gates its bullet path on WeaponDef+0x47c==0.
+        let ballistics = if word(0x47c) != 0
+            || matches!(word(0x480), 6 | 7 | 11 | 12)
+            || w.definition[0xd79] != 0
+        {
             None
         } else {
             let damage = word(0xbb4);
@@ -1790,6 +1795,101 @@ pub(crate) fn synthetic() -> PreparedGameState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn projectile_rifle_and_pistol_classes_never_create_hitscan_damage() {
+        for (kind, class, shoots_bullets) in [
+            (0, 0, true),
+            (0, 5, true),
+            (2, 0, false),
+            (2, 5, false),
+            (2, 7, false),
+        ] {
+            let mut definition = vec![0; crate::weapon_attributes::WEAPON_DEF_SIZE];
+            for (offset, value) in [
+                (0x47c, kind),
+                (0x480, class),
+                (0x6b8, 1),
+                (0xd08, 2),
+                (0xd10, 80),
+                (0x71c, 500),
+                (0x728, 700),
+                (0x730, 400),
+                (0x738, 600),
+                (0x74c, 100),
+                (0x750, 100),
+                (0x7c8, 1.0f32.to_bits()),
+                (0xbb4, 40),
+                (0xbcc, 1000.0f32.to_bits()),
+            ] {
+                definition[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+            }
+            let weapon = PreparedGameState::resolved_weapon(
+                crate::game_arsenal::ResolvedWeapon {
+                    name: "test_mp".into(),
+                    base_index: 1,
+                    index: 352,
+                    attachments: vec![],
+                    composed_name: "** 1 0 0".into(),
+                    definition,
+                },
+                &"a".repeat(64),
+                Some(54),
+            )
+            .unwrap();
+            let mut player = PreparedGameState::make_player(&weapon);
+            player.apply(&codol_protocol::game_usercmd::UserCommand {
+                time: 1001,
+                buttons: 1,
+                weapons: [352, 0, 0],
+                ..Default::default()
+            });
+            assert_eq!(player.equipment().ammo.unwrap().clip, 1);
+            assert_eq!(
+                player.take_shots().len(),
+                usize::from(shoots_bullets),
+                "kind={kind} class={class}"
+            );
+        }
+    }
+    #[test]
+    #[ignore = "requires local captured Afghan arsenal"]
+    fn captured_crossbow_and_ballistic_knife_types_cannot_enter_bullet_combat() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../research-output");
+        let state: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(root.join("tdm-afghan-hud-state.json")).unwrap())
+                .unwrap();
+        let arsenal = crate::game_arsenal::Arsenal::load(
+            root.join(state["arsenal_file"].as_str().unwrap()),
+            state["ncs_crc"].as_u64().unwrap() as u32,
+        )
+        .unwrap();
+        for name in ["crossbow_mp", "crossbowrare_mp", "knifeballistic_mp"] {
+            let mut resolved = arsenal.bot_weapon(name, 352).unwrap();
+            assert_eq!(
+                u32::from_le_bytes(resolved.definition[0x47c..0x480].try_into().unwrap()),
+                2
+            );
+            let original_range =
+                f32::from_le_bytes(resolved.definition[0xbcc..0xbd0].try_into().unwrap());
+            let weapon = PreparedGameState::resolved_weapon(
+                resolved.clone(),
+                &arsenal.source_sha256,
+                Some(54),
+            )
+            .unwrap();
+            assert!(weapon.ballistics.is_none());
+            // Native data has range999999, which the old generic range check
+            // also rejected. A legal-range variation must remain projectile.
+            resolved.definition[0xbcc..0xbd0].copy_from_slice(&1000.0f32.to_le_bytes());
+            let weapon =
+                PreparedGameState::resolved_weapon(resolved, &arsenal.source_sha256, Some(54))
+                    .unwrap();
+            assert!(weapon.ballistics.is_none());
+            eprintln!(
+                "{name}: native_type=2 original_range={original_range} legal_range_variation_has_no_hitscan=true"
+            );
+        }
+    }
     #[test]
     #[ignore = "requires local captured Afghan arsenal"]
     fn captured_ranger_triggers_use_the_composed_two_shell_magazine() {
