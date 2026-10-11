@@ -22,6 +22,8 @@ pub(crate) struct EnemyConfig {
     pub locomotion: Option<NativeLocomotion>,
     pub fire_animation: u16,
     #[serde(default)]
+    pub fire_animation_msec: Option<u16>,
+    #[serde(default)]
     pub reload_animation: Option<u16>,
     pub death_animation: u16,
     pub move_speed: f32,
@@ -49,6 +51,11 @@ pub(crate) struct NativeLocomotion {
 impl EnemyConfig {
     pub fn validate(&self) -> Result<()> {
         self.target().validate()?;
+        ensure!(
+            self.fire_animation_msec
+                .is_none_or(|t| (1..=15000).contains(&t)),
+            "invalid native firing animation duration"
+        );
         if let Some(a) = &self.locomotion {
             ensure!(
                 [

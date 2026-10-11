@@ -171,7 +171,7 @@ class ClientAssets {
         foreach(string name in new string[]{"mp/playerdata.def","mp/playersecuredata.def"}) {
             try{schemas[name]=reader.Schema(name);}catch(Exception e){schemas[name]=Obj("error",e.Message);}
         }
-        foreach(string name in new string[]{"mp/coGameTypesTable.csv","mp/coMapList.csv","mp/coMarketplaceItems.csv","mp/coCharacterDefTable.csv","mp/cogroupdefs.csv","mp/coWeapSlotDefs.csv","mp/coCharItemStatsTable.csv","mp/coCharItems/cha.csv","mp/uiNotifications.csv","mp/functionalUnlockTable.csv","mp/unlockFlags.csv","mp/rankTable.csv",
+        foreach(string name in new string[]{"mp/coGameTypesTable.csv","mp/coMapList.csv","mp/coMarketplaceItems.csv","mp/coCharacterDefTable.csv","mp/cogroupdefs.csv","mp/coWeapSlotDefs.csv","mp/coCharItemStatsTable.csv","mp/coCharItems/cha.csv","mp/coKnifeStatsTable.csv","mp/uiNotifications.csv","mp/functionalUnlockTable.csv","mp/unlockFlags.csv","mp/rankTable.csv",
             "mp/coWeapItems/ast.csv","mp/coWeapItems/pst.csv","mp/coWeapItems/cam.csv","mp/coWeapItems/oth.csv","mp/coWeapItems/ret.csv","mp/coItemDependency.csv",
             "mp/coWeaponPrimaryRankTable.csv","mp/coWeaponSecondaryRankTable.csv",
             "mp/callsignTitle.csv","mp/callsignIcon.csv","mp/callsignBackground.csv","mp/callsignNameplate.csv"}) {
@@ -547,6 +547,20 @@ class ClientAssets {
             uint active=r.Word(cg+0xc6fe8);
             if(active!=previousActive) { Console.Error.WriteLine("killcam_state="+active);Console.Error.Flush();previousActive=active; }
             uint input=r.Word(0x01a2e838)^0x6891d1c7;uint command=r.Word(input+0x625c);
+            // AimAssist's local client is0; the CG pointer slot is an
+            // obfuscation-bank index, not a local-client number.
+            uint assist=0x02c27580;
+            byte[] assistState=r.Read(assist,0xe90);
+            uint candidateCount=U(assistState,0xe80);
+            var meleeCandidates=new List<object>();
+            if(candidateCount<=64) for(int candidate=0;candidate<candidateCount;candidate++) {
+                int at=0x180+candidate*0x34;
+                meleeCandidates.Add(Obj("entity",U(assistState,at),
+                    "clip_min",Floats(assistState,at+4,2),"clip_max",Floats(assistState,at+12,2),
+                    "target",Floats(assistState,at+20,3),"velocity",Floats(assistState,at+32,3),
+                    "distance_squared",BitConverter.ToSingle(assistState,at+44),
+                    "crosshair_distance_squared",BitConverter.ToSingle(assistState,at+48)));
+            }
             // Native L <client> 7 populates this bounded presentation card.
             // Read its copied nickname, never profile/account identifiers.
             byte[] card=r.Read(0x037e8108+7*0xa8,0xa8);
@@ -576,11 +590,20 @@ class ClientAssets {
                 "cmd_melee_entity",BitConverter.ToUInt16(r.Read(input+0x365c+(command&255)*44+34,2),0),
                 "pm_flags",U(ps,12),"melee_yaw",BitConverter.ToSingle(ps,0x4a8),
                 "melee_distance",U(ps,0x4ac),"melee_time",U(ps,0x4b0),
+                "melee_assist_range",BitConverter.ToSingle(assistState,0x14),
+                "melee_assist_half_clip",Floats(assistState,0x154,2),
+                "melee_assist_origin",Floats(assistState,0xc4,3),
+                "melee_assist_matrix",Floats(assistState,0x40,16),
+                "melee_assist_viewport",Floats(assistState,0x108,2),
+                "melee_assist_fov_scale",BitConverter.ToSingle(assistState,0xf8),
+                "melee_assist_base_fov",BitConverter.ToSingle(r.Read(r.Word(0x01a2035c)+12,4),0),
+                "melee_candidate_count",candidateCount,"melee_candidates",meleeCandidates,
+                "melee_row",U(ps,0x33c),
                 "health",U(ps,0x190),"spawn_count",U(ps,0x19c),"corpse_slot",U(ps,0xe8),
                 "stable_command",r.Word(cg)==U(ps,0)));
             System.Threading.Thread.Sleep(25);
         }
-        var serializer=new JavaScriptSerializer();serializer.MaxJsonLength=4*1024*1024;
+        var serializer=new JavaScriptSerializer();serializer.MaxJsonLength=16*1024*1024;
         Console.WriteLine(serializer.Serialize(Obj("schema_version",1,"read_only",true,
             "client_sha256","e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b",
             "frames",frames)));
@@ -759,7 +782,8 @@ class ClientAssets {
             for(int animation=1;animation<count;animation++) {
                 int begin=animation*0x68,len=0;while(len<64&&records[begin+len]!=0)len++;
                 string name=Encoding.ASCII.GetString(records,begin,len);if(name.Length==0)continue;
-                animations.Add(Obj("source",address,"index",animation,"name",name,"duration",U(records,begin+0x40),
+                animations.Add(Obj("source",address,"index",animation,"name",name,
+                    "initial_lerp_msec",U(records,begin+0x40),"duration_msec",U(records,begin+0x48),
                     "move_speed_bits",U(records,begin+0x44),"flags",U(records,begin+0x50)));
             }
         }
@@ -811,7 +835,8 @@ class ClientAssets {
             }
             corpses.Add(Obj("entity",id,"type",r.Word(entity+0xf4),"flags",r.Word(entity+0xf8),
                 "donor",r.Word(entity+0xf0+0x9c),"legs",r.Word(entity+0xf0+0xd4),"torso",r.Word(entity+0xf0+0xd8),
-                "valid",corpseValid,"dobj_models",corpseModels,"dobj_slot",slotId,"origin",r.EntityOrigin(entity+0xf0)));
+                "valid",corpseValid,"dobj_models",corpseModels,"dobj_slot",slotId,"origin",r.EntityOrigin(entity+0xf0),
+                "ground_pose",corpseValid?r.GroundPose(entity,slotId):null));
         }
         var serializer=new JavaScriptSerializer();serializer.MaxJsonLength=16*1024*1024;
         Console.WriteLine(serializer.Serialize(Obj("schema_version",1,"read_only",true,

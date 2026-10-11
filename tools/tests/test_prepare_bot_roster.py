@@ -3,11 +3,54 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from prepare_bot_roster import animation_config, rows, variant, model_registry, NativeBotCharacters
+from prepare_bot_roster import animation_config, rebind_animations, rows, variant, model_registry, NativeBotCharacters
 from test_prepare_bot_locomotion import inputs
 
 
 class BotRosterPreparation(unittest.TestCase):
+    def test_bolt_action_uses_captured_full_clip_while_auto_rule_uses_its_override(self):
+        import base64,struct
+        from test_prepare_bot_locomotion import asset
+        from prepare_bot_locomotion import rawfile
+        state,capture,arsenal=inputs()
+        script=rawfile(capture,"mp/playeranim.script").decode()
+        script=script.replace("default { torso fire_hip }", "playerAnimType sniper { torso bolt_fire }\n default { torso fire_hip duration 150 }")
+        capture['animation_rules']['mp/playeranim.script']=asset('mp/playeranim.script',script)
+        capture['animation_rules']['mp/playeranimtypes.txt']=asset('mp/playeranimtypes.txt','none other pistol smg autorifle sniper')
+        capture['animations'].append({'source':0x07817b80,'name':'bolt_fire','index':89,'initial_lerp_msec':30,'duration_msec':1800})
+        definition=bytearray(base64.b64decode(arsenal['weapons'][0]['definition_base64']))
+        self.assertEqual(animation_config({},capture,definition)['fire_animation_msec'],150)
+        struct.pack_into('<I',definition,0x478,5);struct.pack_into('<I',definition,0x480,1);definition[0xd74]=1
+        bound=animation_config({'fire_animation_msec':150},capture,definition)
+        self.assertEqual(bound['locomotion']['fire_standing'],89)
+        self.assertEqual(bound['fire_animation_msec'],1800)
+        capture['animations'][-1].pop('duration_msec')
+        with self.assertRaises(ValueError):animation_config({},capture,definition)
+
+    def test_rebinding_weapon_actions_retains_roster_identity_and_is_atomic_on_failure(self):
+        import copy
+        from prepare_game_state import CLIENT_SHA256
+        state, capture, arsenal = inputs()
+        for value in (state,capture,arsenal):value['client_sha256']=CLIENT_SHA256
+        state['match_config']={'roster':[{'weapon_name':'m4_mp','class_name':'existing',
+            'personality':'camper','outfits':[1,2],
+            'animation':{'model':42,'move_speed':94.0,'locomotion':{'fire_standing':99}}}]}
+        identity=copy.deepcopy(state['match_config']['roster'][0])
+        self.assertEqual(rebind_animations(state,capture,arsenal),{'rebound_bot_animations':1})
+        bot=state['match_config']['roster'][0]
+        self.assertEqual(bot['animation']['locomotion']['fire_standing'],11)
+        self.assertEqual(bot['animation']['reload_animation'],13)
+        self.assertEqual(bot['animation']['model'],42)
+        self.assertEqual(bot['animation']['move_speed'],94.0)
+        self.assertEqual({k:v for k,v in bot.items() if k!='animation'},
+                         {k:v for k,v in identity.items() if k!='animation'})
+        state['match_config']['roster'].append(dict(bot,weapon_name='missing'))
+        before=copy.deepcopy(state)
+        with self.assertRaises(ValueError):rebind_animations(state,capture,arsenal)
+        self.assertEqual(state,before)
+        capture['ncs_crc']+=1
+        with self.assertRaises(ValueError):rebind_animations(state,capture,arsenal)
+
     def test_native_bot_composition_uses_one_skin_and_preserves_item_identity(self):
         import base64
         import struct

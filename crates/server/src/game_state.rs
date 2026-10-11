@@ -303,6 +303,7 @@ impl PreparedGameState {
             walk_back_animation: Some(animation("pb_stand_shoot_walk_back")?.index),
             locomotion: None,
             fire_animation: animation("pt_stand_shoot_auto")?.index,
+            fire_animation_msec: None,
             reload_animation: None,
             death_animation: animation("pb_stand_death_chest_blowback")?.index,
             move_speed: f32::from_bits(walk.move_speed_bits),

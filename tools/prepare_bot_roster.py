@@ -72,6 +72,7 @@ def animation_config(template, capture, definition):
         return next(iter(found))
 
     config = copy.deepcopy(template)
+    config.pop("fire_animation_msec", None)
     locomotion = {}
     for field, move, strafe in [
         ("walk_animation", "walk", "not"), ("walk_back_animation", "walkbk", "not"),
@@ -83,10 +84,21 @@ def animation_config(template, capture, definition):
         if action is None or action[0] != "both":
             raise ValueError("unsupported native Bot movement action")
         (config if field.startswith("walk_") else locomotion)[field] = index(action[1])
-    fire = select_action(script, "fireweapon", context)
+    fire = select_action(script, "fireweapon", context, with_duration=True)
     if fire is None or fire[0] != "torso" or select_action(script, "fireweapon", dict(context, movetype="walk")) is not None:
         raise ValueError("unsupported native Bot firing overlay")
     locomotion["fire_standing"] = index(fire[1])
+    duration = fire[2]
+    if duration is None:
+        found = [a.get("duration_msec") for a in capture["animations"]
+                 if a.get("source", 0x07817b80) == 0x07817b80 and a["name"].lower() == fire[1].lower()]
+        duration = found[0] if len(found) == 1 else None
+    if duration is not None:
+        if not isinstance(duration, int) or not 1 <= duration <= 15000:
+            raise ValueError("invalid captured Bot firing action duration")
+        config["fire_animation_msec"] = duration
+    elif definition[0xd74] != 0:
+        raise ValueError("bolt-action body animation duration was not captured")
     reload = select_action(script, "reload", context)
     if (reload is None or reload[0] != "torso"
             or reload != select_action(script, "reload", dict(context, movetype="walk"))):
@@ -111,6 +123,29 @@ def model_registry(state, capture):
             raise ValueError("conflicting explicit Bot model registration")
         ids[index]=name;models[name]=index
     return models,list(registered)
+
+
+def rebind_animations(state, capture, arsenal):
+    """Bind each retained Bot's motions to its current weapon definition."""
+    for value in (state, capture, arsenal):
+        if value["client_sha256"] != CLIENT_SHA256 or value["ncs_crc"] != state["ncs_crc"]:
+            raise ValueError("Bot capture client/map identity mismatch")
+    if capture.get("read_only") is not True or arsenal.get("read_only") is not True:
+        raise ValueError("Bot animation preparation requires read-only captures")
+    weapons = {w["name"]: w for w in arsenal["weapons"]}
+    if len(weapons) != len(arsenal["weapons"]):
+        raise ValueError("duplicate captured Bot weapon")
+    roster = copy.deepcopy(state["match_config"]["roster"])
+    for bot in roster:
+        weapon = weapons.get(bot["weapon_name"])
+        if weapon is None:
+            raise ValueError("Bot weapon not captured: " + bot["weapon_name"])
+        definition = base64.b64decode(weapon["definition_base64"], validate=True)
+        if len(definition) != 0xe28:
+            raise ValueError("native weapon layout mismatch")
+        bot["animation"] = animation_config(bot["animation"], capture, definition)
+    state["match_config"]["roster"] = roster
+    return {"rebound_bot_animations": len(roster)}
 
 
 class NativeBotCharacters:
@@ -262,11 +297,17 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--stream-outfits", action="store_true", help="allow captured DB placeholder names through the native asynchronous model loader")
     parser.add_argument("--native-characters", type=Path, help="read-only retained outfit cache for native sleeves/gloves in Bot replays")
+    parser.add_argument("--rebind-animations", action="store_true", help="retain the current roster and bind each Bot's animations to its current weapon")
     args = parser.parse_args()
     state = json.loads(args.game_state.read_text())
     arsenal_path = args.game_state.parent / state["arsenal_file"]
     native = NativeBotCharacters(json.loads(args.native_characters.read_text())) if args.native_characters else None
-    result = prepare(state, json.loads(args.characters.read_text()), json.loads(arsenal_path.read_text()), args.stream_outfits, native)
+    if args.rebind_animations:
+        if args.stream_outfits or args.native_characters:
+            parser.error("animation rebinding retains existing outfits")
+        result = rebind_animations(state, json.loads(args.characters.read_text()), json.loads(arsenal_path.read_text()))
+    else:
+        result = prepare(state, json.loads(args.characters.read_text()), json.loads(arsenal_path.read_text()), args.stream_outfits, native)
     for name in ("arsenal_file", "collision_file"):
         state[name] = str((args.game_state.parent / state[name]).resolve())
     with args.output.open("x") as target:

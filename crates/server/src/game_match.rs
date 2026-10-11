@@ -800,6 +800,7 @@ impl TdmMatch {
                 bot.controller
                     .step_navigated(now, target, bot.steering, active_weapon, collision);
             if let Some(held) = &mut bot.weapon {
+                let previous_weapon_state = held.equipment().firing.map(|f| f.state);
                 let ammo = held.equipment().ammo;
                 let reload = ammo.is_some_and(|a| a.clip == 0 && a.reserve > 0);
                 held.spread_environment(&frame.motion);
@@ -817,6 +818,12 @@ impl TdmMatch {
                     ..Default::default()
                 };
                 held.apply(&command);
+                let equipment = held.equipment();
+                if previous_weapon_state != equipment.firing.map(|f| f.state) {
+                    tracing::debug!(client=bot.snapshot.client_index, now, weapon=equipment.weapon,
+                        firing=?equipment.firing, needs_rechamber=equipment.needs_rechamber,
+                        "TDM bot weapon state");
+                }
                 let shots = held.take_shots();
                 frame.shot = shots.first().map(|s| crate::game_bot::BotShot {
                     time: s.time,
@@ -847,6 +854,12 @@ impl TdmMatch {
                 tracing::info!(client=bot.snapshot.client_index,team,health=bot.health,phase=?frame.phase,origin=?frame.motion.origin,target=?bot.route_target,route_nodes=bot.route.len(),"TDM bot state");
             }
             if let Some(shot) = frame.shot {
+                tracing::debug!(
+                    client = bot.snapshot.client_index,
+                    now,
+                    weapon = shot.weapon,
+                    "TDM bot weapon shot"
+                );
                 bot.fire_time = Some(now);
                 bot.fire_toggle = !bot.fire_toggle;
                 if bot.weapon.is_none() {
@@ -860,7 +873,12 @@ impl TdmMatch {
                 shots.push((bot.snapshot.client_index, team, shot));
             }
             let events = bot.snapshot.events;
-            let firing = bot.fire_time.is_some_and(|t| now.wrapping_sub(t) < 150);
+            let firing_duration = class
+                .and_then(|c| c.animation.fire_animation_msec)
+                .map_or(150, u32::from);
+            let firing = bot
+                .fire_time
+                .is_some_and(|t| now.wrapping_sub(t) < firing_duration);
             bot.snapshot = match class {
                 Some(class) => crate::game_state::PreparedGameState::animate_with_config(
                     &class.animation,

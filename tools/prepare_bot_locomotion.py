@@ -83,16 +83,20 @@ def conditions_match(header, context):
     return True
 
 
-def select_action(rules, name, context):
+def select_action(rules, name, context, with_duration=False):
     groups = [body for header, body in blocks(rules) if header == name]
     if len(groups) != 1:
         raise ValueError("native animation state missing or duplicated: " + name)
     for header, body in blocks(groups[0]):
         if conditions_match(header, context):
-            actions = re.findall(r"(?m)^\s*(both|legs|torso)\s+([a-zA-Z0-9_]+)\b", body)
+            actions = re.findall(r"(?m)^\s*(both|legs|torso)\s+([a-zA-Z0-9_]+)\b([^\n]*)", body)
             if len(actions) > 1:
                 raise ValueError("random/multiple native actions require another policy")
-            return actions[0] if actions else None
+            if not actions:
+                return None
+            kind, animation, suffix = actions[0]
+            duration = re.search(r"\bduration\s+(\d+)\b", suffix)
+            return (kind, animation, int(duration[1]) if duration else None) if with_duration else (kind, animation)
     raise ValueError("no matching native animation rule: " + name)
 
 
