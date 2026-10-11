@@ -394,6 +394,7 @@ mod tests {
             alternate: None,
             alternate_timing: None,
             rechamber: None,
+            melee: None,
             spread: None,
             ballistics: None,
         });

@@ -134,6 +134,10 @@ case "hold":
     else { fail("unable to focus game or post gameplay key") }
     let deadline=Date().addingTimeInterval(2)
     while !app.isActive && Date()<deadline {RunLoop.current.run(until:Date().addingTimeInterval(0.05))}
+    if !app.isActive {
+        _ = try run("/usr/bin/osascript", ["-e", "tell application \"System Events\" to set frontmost of first process whose unix id is \(pidNumber) to true"])
+        RunLoop.current.run(until:Date().addingTimeInterval(0.15))
+    }
     guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else {fail("research client did not become active")}
     let pointer = CGEvent(source: nil)?.location ?? CGPoint(x: x + width / 2, y: y + height / 2)
     if ["fire", "ads"].contains(args[3]) {

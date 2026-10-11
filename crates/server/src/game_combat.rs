@@ -133,6 +133,42 @@ impl ShotOutcome {
     }
 }
 
+/// Ordinary close-range held-gun melee.64 is the native normal/charge
+/// boundary at0x426692; charge movement and a wider assisted sweep are not
+/// implemented here. Recheck the current authoritative bodies and world,
+/// never accept the client's predicted melee entity as proof of a hit.
+pub(crate) fn melee_at_actors(
+    eye: [f32; 3],
+    angles: [u16; 3],
+    damage: u16,
+    shooter: (u8, u8),
+    scene: ActorScene<'_>,
+) -> ActorShot {
+    let mut outcome = fire_at_actors(
+        eye,
+        angles,
+        0,
+        Ballistics {
+            damage,
+            range: 64.0,
+            near_range: 64.0,
+            location_multipliers: None,
+            falloff: None,
+            pellets: 1,
+            spread_degrees: 0.0,
+        },
+        shooter,
+        ActorScene {
+            regions: None,
+            ..scene
+        },
+    );
+    // A knife strike must not create bullet holes, ricochets or headshot
+    // multipliers. Hit/kill feedback is committed by the match afterwards.
+    outcome.impacts.clear();
+    outcome
+}
+
 /// A captured body pose placed at the target's current origin and yaw.
 struct BodyPose<'a> {
     regions: &'a HitRegions,
@@ -764,6 +800,33 @@ mod tests {
             },
         );
         assert_eq!(hit.damage, vec![(6, 264, false)]);
+    }
+    #[test]
+    fn melee_cannot_hit_through_a_world_face_or_create_a_bullet_impact() {
+        let actor = Actor {
+            client: 1,
+            team: 1,
+            origin: [60.0, 0.0, 0.0],
+            height: 70.0,
+            yaw: 0.0,
+        };
+        let actors = [actor];
+        for wall in [Some((30.0, 1)), None] {
+            let world = collision(wall);
+            let hit = melee_at_actors(
+                [0.0, 0.0, 60.0],
+                [0; 3],
+                135,
+                (0, 2),
+                ActorScene {
+                    actors: &actors,
+                    regions: None,
+                    collision: &world,
+                },
+            );
+            assert_eq!(hit.damage.is_empty(), wall.is_some());
+            assert!(hit.impacts.is_empty());
+        }
     }
 
     fn shoot(

@@ -568,6 +568,10 @@ class ClientAssets {
                 "origin",Floats(ps,0x1c,3),"angles",Floats(ps,0x14c,3),
                 "weapon",U(ps,0x340),"weapon_state",U(ps,0x27c),"clip",U(ps,0x3e0),
                 "weapon_time",U(ps,0x270),"fire_count",U(ps,0x284),"queued_burst",U(ps,0x280)&1,
+                "weapon_delay",U(ps,0x274),"weapon_animation",U(ps,0x26c),
+                "cmd_melee_yaw",r.Word(input+0x365c+(command&255)*44+32),
+                "cmd_melee_distance",r.Read(input+0x365c+(command&255)*44+36,1)[0],
+                "cmd_melee_entity",BitConverter.ToUInt16(r.Read(input+0x365c+(command&255)*44+38,2),0),
                 "health",U(ps,0x190),"spawn_count",U(ps,0x19c),"corpse_slot",U(ps,0xe8)));
             System.Threading.Thread.Sleep(25);
         }

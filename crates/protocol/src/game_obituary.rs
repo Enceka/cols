@@ -13,6 +13,8 @@ pub struct ObituarySnapshot {
     pub weapon: u16,
     /// Show the native headshot icon instead of the registered weapon.
     pub headshot: bool,
+    /// MOD8 (908), while keeping the real held weapon for replay identity.
+    pub melee: bool,
     /// Current training world has local client0 and enemy client1.
     pub victim: u8,
     pub attacker: u8,
@@ -23,7 +25,9 @@ const MOD_HEAD_SHOT: u32 = 9;
 
 impl ObituarySnapshot {
     fn event_parameter(self) -> u32 {
-        if self.headshot {
+        if self.melee {
+            MEANS_OF_DEATH_BASE + 8
+        } else if self.headshot {
             MEANS_OF_DEATH_BASE + MOD_HEAD_SHOT
         } else {
             u32::from(self.weapon)
@@ -31,6 +35,7 @@ impl ObituarySnapshot {
     }
     fn validate(self) -> Result<(), LobbyError> {
         if !(27..2046).contains(&self.entity_number)
+            || (self.headshot && self.melee)
             || !(1..900).contains(&self.weapon)
             || self.victim > 18
             || self.attacker > 18
@@ -156,6 +161,7 @@ mod tests {
             entity_number: 1800,
             weapon: 352,
             headshot: false,
+            melee: false,
             victim: 11,
             attacker: 6,
         };
@@ -254,6 +260,7 @@ mod tests {
             entity_number: 1800,
             weapon: 352,
             headshot: false,
+            melee: false,
             victim: 1,
             attacker: 0,
         }
@@ -276,7 +283,13 @@ mod tests {
     #[test]
     fn kills_and_suicides_decode_with_current_fields_at_every_pool_alignment() {
         for prefix in 0..8 {
-            for (weapon, headshot) in [(1, false), (352, false), (899, false), (352, true)] {
+            for (weapon, headshot, melee) in [
+                (1, false, false),
+                (352, false, false),
+                (899, false, false),
+                (352, true, false),
+                (352, false, true),
+            ] {
                 let mut out = Writer::default();
                 out.bits(0x56, prefix);
                 out.bytes.push(0xa6);
@@ -285,6 +298,7 @@ mod tests {
                         entity_number: 27,
                         weapon,
                         headshot,
+                        melee,
                         victim: 0,
                         attacker: 0,
                     },
@@ -292,6 +306,7 @@ mod tests {
                         entity_number: 1800,
                         weapon,
                         headshot,
+                        melee,
                         victim: 1,
                         attacker: 0,
                     },
@@ -299,6 +314,7 @@ mod tests {
                         entity_number: 1801,
                         weapon,
                         headshot,
+                        melee,
                         victim: 0,
                         attacker: 1,
                     },
@@ -306,6 +322,7 @@ mod tests {
                         entity_number: 2045,
                         weapon,
                         headshot,
+                        melee,
                         victim: 1,
                         attacker: 1,
                     },
@@ -321,7 +338,9 @@ mod tests {
                     assert_eq!(fields[&4], 154);
                     assert_eq!(
                         fields[&0xa8],
-                        if expected.headshot {
+                        if expected.melee {
+                            908
+                        } else if expected.headshot {
                             909
                         } else {
                             u32::from(expected.weapon)

@@ -1104,7 +1104,15 @@ impl Connection {
         }
         self.pending_inputs.entry(input.time).or_insert(input);
     }
-    fn queue_obituary(&mut self, now: u32, weapon: u16, victim: u8, attacker: u8, headshot: bool) {
+    fn queue_obituary(
+        &mut self,
+        now: u32,
+        weapon: u16,
+        victim: u8,
+        attacker: u8,
+        headshot: bool,
+        melee: bool,
+    ) {
         let entity_number = if self.next_obituary < 1800 {
             1800
         } else {
@@ -1121,6 +1129,7 @@ impl Connection {
                 entity_number,
                 weapon,
                 headshot,
+                melee,
                 victim,
                 attacker,
             },
@@ -1275,7 +1284,7 @@ impl Connection {
                         self.death_sequence[0] = self.death_sequence[0].wrapping_add(1).max(1);
                         self.corpses
                             .insert(20, (now, state.corpse(local, self.death_sequence[0])));
-                        self.queue_obituary(now, shot.weapon, 0, 1, false);
+                        self.queue_obituary(now, shot.weapon, 0, 1, false, false);
                     }
                 }
             }
@@ -1326,6 +1335,7 @@ impl Connection {
                 kill.victim.client_index,
                 kill.attacker,
                 kill.headshot,
+                kill.melee,
             );
         }
     }
@@ -1596,6 +1606,7 @@ impl Connection {
             }
             if let Some(player) = &mut self.player {
                 let shots = player.take_shots();
+                let melee_strikes = player.take_melee_strikes();
                 if let (Some(motion), Some(collision)) = (
                     &self.motion,
                     self.game_state
@@ -1609,6 +1620,22 @@ impl Connection {
                         motion.origin[2] + motion.view_height,
                     ];
                     let origin = motion.origin;
+                    for strike in melee_strikes {
+                        if let Some(tdm) = &mut self.tdm {
+                            let state = self.game_state.as_ref().unwrap();
+                            let mut local =
+                                state.local_player_snapshot(self.vitals.health > 0).unwrap();
+                            local.origin = origin;
+                            local.weapon = strike.weapon;
+                            local.angles = strike.angles;
+                            let outcome = tdm.player_melee(strike, eye, local, &collision);
+                            if let Some(kind) = outcome.committed_feedback {
+                                self.hit_feedback.record(through, kind);
+                            }
+                            tracing::info!(time=through,weapon=strike.weapon,damage=?outcome.damage,
+                                feedback=?outcome.committed_feedback,"player melee resolved");
+                        }
+                    }
                     for shot in shots {
                         if let Some(tdm) = &mut self.tdm {
                             let state = self.game_state.as_ref().unwrap();
@@ -1687,7 +1714,14 @@ impl Connection {
                                         19,
                                         (through, state.corpse(enemy, self.death_sequence[1])),
                                     );
-                                    self.queue_obituary(through, shot.weapon, 1, 0, headshot);
+                                    self.queue_obituary(
+                                        through,
+                                        shot.weapon,
+                                        1,
+                                        0,
+                                        headshot,
+                                        false,
+                                    );
                                 }
                             }
                             tracing::info!(
@@ -1951,9 +1985,9 @@ mod tests {
     #[test]
     fn headshot_kills_are_counted_for_their_attacker() {
         let mut c = Connection::default();
-        c.queue_obituary(1000, 352, 1, 0, true);
-        c.queue_obituary(1100, 352, 1, 0, false);
-        c.queue_obituary(1200, 352, 0, 1, true);
+        c.queue_obituary(1000, 352, 1, 0, true, false);
+        c.queue_obituary(1100, 352, 1, 0, false, false);
+        c.queue_obituary(1200, 352, 0, 1, true, false);
         assert_eq!(c.headshots, [1, 1]);
         assert!(c.obituaries[0].1.headshot && !c.obituaries[1].1.headshot);
     }

@@ -66,6 +66,8 @@ struct BootstrapWeapon {
     #[serde(default)]
     rechamber: Option<crate::game_player::RechamberTiming>,
     #[serde(default)]
+    melee: Option<crate::game_player::MeleeTiming>,
+    #[serde(default)]
     spread: Option<crate::game_player::SpreadTiming>,
     #[serde(default)]
     ballistics: Option<crate::game_combat::Ballistics>,
@@ -589,6 +591,10 @@ impl PreparedGameState {
             ensure!(
                 weapon.fire_type.is_none_or(|v| v <= 5),
                 "unsupported special firing state machine"
+            );
+            ensure!(
+                weapon.melee.is_none_or(|m| m.valid()),
+                "invalid melee timing"
             );
             ensure!(
                 weapon.viewmodel_index.is_none_or(|i| i > 0 && i < 1024),
@@ -1272,6 +1278,18 @@ impl PreparedGameState {
         } else {
             None
         };
+        let melee = if word(0x47c) == 0 && word(0x6e0) > 0 {
+            let timing = crate::game_player::MeleeTiming {
+                duration_msec: time(0x714)?,
+                hit_msec: time(0x6f4)?,
+                recover_msec: time(0x75c)?,
+                damage: u16::try_from(word(0x6e0))?,
+            };
+            ensure!(timing.valid(), "invalid held-gun melee parameters");
+            Some(timing)
+        } else {
+            None
+        };
         let spread = crate::game_player::SpreadTiming {
             minimum: std::array::from_fn(|i| f32::from_bits(word(0x810 + i * 4))),
             maximum: std::array::from_fn(|i| f32::from_bits(word(0x81c + i * 4))),
@@ -1312,6 +1330,7 @@ impl PreparedGameState {
             alternate_timing,
             rechamber,
             spread: Some(spread),
+            melee,
             ballistics,
         })
     }
@@ -1613,10 +1632,23 @@ impl PreparedGameState {
             })
     }
     pub(crate) fn primary_player(&self) -> Option<crate::game_player::Player> {
-        self.bootstrap_weapon.as_ref().map(Self::make_player)
+        self.bootstrap_weapon
+            .as_ref()
+            .map(|w| self.playable_weapon(w))
     }
     pub(crate) fn secondary_player(&self) -> Option<crate::game_player::Player> {
-        self.secondary_weapon.as_ref().map(Self::make_player)
+        self.secondary_weapon
+            .as_ref()
+            .map(|w| self.playable_weapon(w))
+    }
+    fn playable_weapon(&self, weapon: &BootstrapWeapon) -> crate::game_player::Player {
+        let mut player = Self::make_player(weapon);
+        // The ordinary melee damage path currently belongs to TDM. Legacy
+        // prop/pose diagnostics must not emit an animation with no resolver.
+        if !self.is_match() {
+            player.disable_melee();
+        }
+        player
     }
     fn make_player(w: &BootstrapWeapon) -> crate::game_player::Player {
         let mut player = crate::game_player::Player::new(
@@ -1656,6 +1688,9 @@ impl PreparedGameState {
         }
         if let Some(timing) = w.spread {
             player.set_spread_timing(timing);
+        }
+        if let Some(timing) = w.melee {
+            player.set_melee_timing(timing);
         }
         if let Some(scale) = w.move_scale {
             player.set_move_scale(scale);
@@ -1795,6 +1830,137 @@ pub(crate) fn synthetic() -> PreparedGameState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    #[ignore = "prepares a local captured-map melee contact diagnostic"]
+    fn captured_melee_contact_scene_has_a_clear_close_target() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../research-output");
+        let mut raw: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(root.join("tdm-afghan-hud-state.json")).unwrap())
+                .unwrap();
+        let collision = crate::game_motion::Collision::load(
+            &root.join(raw["collision_file"].as_str().unwrap()),
+        )
+        .unwrap();
+        let starts: [Vec<[f32; 3]>; 2] =
+            serde_json::from_value(raw["match_config"]["spawns"].clone()).unwrap();
+        let pair = starts[1]
+            .iter()
+            .find_map(|&seed| {
+                let player = crate::game_bot::grounded_spawn(seed, &collision).ok()?;
+                let target =
+                    crate::game_bot::grounded_spawn([seed[0] + 50.0, seed[1], seed[2]], &collision)
+                        .ok()?;
+                if (target[2] - player[2]).abs() > 8.0 {
+                    return None;
+                }
+                let eye = [player[0], player[1], player[2] + 60.0];
+                let actors = [crate::game_combat::Actor {
+                    client: 6,
+                    team: 1,
+                    origin: target,
+                    height: 70.0,
+                    yaw: 180.0,
+                }];
+                let hit = crate::game_combat::melee_at_actors(
+                    eye,
+                    [0; 3],
+                    135,
+                    (0, 2),
+                    crate::game_combat::ActorScene {
+                        actors: &actors,
+                        regions: None,
+                        collision: &collision,
+                    },
+                );
+                (!hit.damage.is_empty()).then_some((player, target))
+            })
+            .expect("no verified nearby contact placement");
+        let mut friend_starts = vec![pair.0];
+        friend_starts.extend_from_slice(&starts[0][..5]);
+        let mut enemy_starts = vec![pair.1];
+        enemy_starts.extend_from_slice(&starts[0][5..10]);
+        raw["spawn_origin"] = serde_json::json!(pair.0);
+        raw["match_config"]["spawns"] = serde_json::json!([enemy_starts, friend_starts]);
+        raw["match_config"]["time_limit_msec"] = 60000.into();
+        // A captured 98-damage bolt-action target provides a controllable
+        // contact window. No altered weapon definitions or account edits.
+        raw["match_config"]["roster"][5]["weapon_name"] = "cheytac_mp".into();
+        let output = root.join("tdm-afghan-melee-contact-test.json");
+        std::fs::write(&output, serde_json::to_vec_pretty(&raw).unwrap()).unwrap();
+        PreparedGameState::load(&output).unwrap();
+        eprintln!(
+            "melee contact: player={:?} target={:?} yaw=0; output={}",
+            pair.0,
+            pair.1,
+            output.display()
+        );
+    }
+    #[test]
+    #[ignore = "requires local captured Afghan arsenal"]
+    fn captured_guns_keep_native_melee_timings_ammo_and_snapshot_encoding() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../research-output");
+        let state: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(root.join("tdm-afghan-hud-state.json")).unwrap())
+                .unwrap();
+        let arsenal = crate::game_arsenal::Arsenal::load(
+            root.join(state["arsenal_file"].as_str().unwrap()),
+            state["ncs_crc"].as_u64().unwrap() as u32,
+        )
+        .unwrap();
+        for (name, duration, delay, recover) in [
+            ("m4_mp", 699, 250, 400),
+            ("ak104common_mp", 699, 250, 400),
+            ("usp_mp", 500, 50, 250),
+        ] {
+            let w = PreparedGameState::resolved_weapon(
+                arsenal.bot_weapon(name, 352).unwrap(),
+                &arsenal.source_sha256,
+                Some(54),
+            )
+            .unwrap();
+            let timing = w.melee.unwrap();
+            assert_eq!(
+                (
+                    timing.duration_msec,
+                    timing.hit_msec,
+                    timing.recover_msec,
+                    timing.damage
+                ),
+                (duration, delay, recover, 135)
+            );
+            let mut p = PreparedGameState::make_player(&w);
+            let clip = p.equipment().ammo.unwrap().clip;
+            for (time, state) in [
+                (1100, 13),
+                (1100 + u32::from(delay), 14),
+                (1100 + u32::from(duration), 15),
+                (1100 + u32::from(duration + recover), 0),
+            ] {
+                p.apply(&codol_protocol::game_usercmd::UserCommand {
+                    time,
+                    buttons: 4,
+                    weapons: [352, 0, 0],
+                    ..Default::default()
+                });
+                assert_eq!(p.equipment().firing.unwrap().state, state);
+                let body = codol_protocol::game_snapshot::player_frame(
+                    time,
+                    time,
+                    Some([0.0; 3]),
+                    true,
+                    Some(p.equipment()),
+                    [0; 3],
+                )
+                .unwrap();
+                codol_protocol::game_wire::server_packet(4, 0, 0, b"", &body).unwrap();
+            }
+            assert_eq!(p.take_melee_strikes().len(), 1);
+            assert_eq!(p.equipment().ammo.unwrap().clip, clip);
+            eprintln!(
+                "{name} melee={duration}/{delay}/{recover}ms damage=135 clip={clip} unchanged; states13/14/15/0 encoded"
+            );
+        }
+    }
     #[test]
     fn projectile_rifle_and_pistol_classes_never_create_hitscan_damage() {
         for (kind, class, shoots_bullets) in [

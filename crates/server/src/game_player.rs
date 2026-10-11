@@ -101,6 +101,24 @@ pub(crate) struct RechamberTiming {
     pub eject_msec: u16,
 }
 
+/// Ordinary held-gun melee: WeaponDef+0x714/+0x6f4/+0x75c/+0x6e0.
+#[derive(Debug, Clone, Copy, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct MeleeTiming {
+    pub duration_msec: u16,
+    pub hit_msec: u16,
+    pub recover_msec: u16,
+    pub damage: u16,
+}
+impl MeleeTiming {
+    pub fn valid(self) -> bool {
+        (1..=15000).contains(&self.duration_msec)
+            && self.hit_msec <= self.duration_msec
+            && self.recover_msec <= 15000
+            && self.damage > 0
+    }
+}
+
 #[derive(Debug, Clone, Copy, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct SpreadTiming {
@@ -151,6 +169,7 @@ struct Weapon {
     rechamber_pending: bool,
     needs_rechamber: bool,
     spread: Option<SpreadTiming>,
+    melee: Option<MeleeTiming>,
 }
 impl Weapon {
     fn attack_mask(&self) -> u32 {
@@ -207,7 +226,9 @@ pub(crate) struct Player {
     events: EventQueue,
     switch_target: Option<u16>,
     attack_held: bool,
+    melee_held: bool,
     shots: Vec<Shot>,
+    melee_strikes: Vec<MeleeStrike>,
     spread_scale: f32,
     spread_stance: usize,
     spread_speed: f32,
@@ -220,6 +241,14 @@ pub(crate) struct Shot {
     pub angles: [u16; 3],
     pub weapon: u16,
     pub ballistics: crate::game_combat::Ballistics,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct MeleeStrike {
+    pub time: u32,
+    pub angles: [u16; 3],
+    pub weapon: u16,
+    pub damage: u16,
 }
 
 impl Player {
@@ -256,6 +285,7 @@ impl Player {
                 rechamber_pending: false,
                 needs_rechamber: false,
                 spread: None,
+                melee: None,
             },
             secondary: None,
             alternate: None,
@@ -266,7 +296,9 @@ impl Player {
             events: EventQueue::default(),
             switch_target: None,
             attack_held: false,
+            melee_held: false,
             shots: Vec::new(),
+            melee_strikes: Vec::new(),
             spread_scale: 0.0,
             spread_stance: 0,
             spread_speed: 0.0,
@@ -296,6 +328,22 @@ impl Player {
 
     pub fn set_rechamber_timing(&mut self, timing: RechamberTiming) {
         self.current.rechamber = Some(timing);
+    }
+    pub fn set_melee_timing(&mut self, timing: MeleeTiming) {
+        assert!(timing.valid());
+        self.current.melee = Some(timing);
+    }
+    pub fn take_melee_strikes(&mut self) -> Vec<MeleeStrike> {
+        std::mem::take(&mut self.melee_strikes)
+    }
+    pub fn disable_melee(&mut self) {
+        for weapon in std::iter::once(&mut self.current)
+            .chain(&mut self.alternate)
+            .chain(&mut self.secondary)
+            .chain(&mut self.secondary_alternate)
+        {
+            weapon.melee = None;
+        }
     }
     pub fn set_spread_timing(&mut self, timing: SpreadTiming) {
         self.current.spread = Some(timing);
@@ -434,6 +482,7 @@ impl Player {
         self.sync_ammunition();
         self.apply_aim(cmd, elapsed);
         self.attack_held = cmd.buttons & self.current.attack_mask() != 0;
+        self.melee_held = cmd.buttons & 4 != 0;
         self.last_angles = Some(cmd.angles);
     }
 
@@ -513,9 +562,11 @@ impl Player {
         let firing = self.current.equipment.firing;
         let reloading = firing.is_some_and(|f| reloading(f.state));
         let switching = firing.is_some_and(|f| (1..=5).contains(&f.state));
+        let melee = firing.is_some_and(|f| (13..=15).contains(&f.state));
         aim.button = cmd.buttons & 0x800 != 0
             && Self::input_allowed(cmd)
             && !switching
+            && !melee
             && cmd.weapons[0] == self.current.equipment.weapon;
         aim.movement_slow = aim.button && !reloading;
         let reload_blocks = reloading
@@ -701,6 +752,54 @@ impl Player {
             .equipment
             .firing
             .map_or(0, |f| f.remaining_msec);
+        if let Some(timing) = self.current.melee {
+            if (13..=15).contains(&state) {
+                if state == 13 && self.current.equipment.firing.unwrap().delay_msec == 0 {
+                    // 0x425f00: one impact transition, without restarting the
+                    // swipe animation or consuming a round.
+                    self.current.equipment.firing.as_mut().unwrap().state = 14;
+                    self.emit(events::FIRE_MELEE, 0);
+                    self.melee_strikes.push(MeleeStrike {
+                        time: cmd.time,
+                        angles: cmd.angles,
+                        weapon: self.current.equipment.weapon,
+                        damage: timing.damage,
+                    });
+                } else if state == 14 && remaining == 0 {
+                    self.current.animate(15, 22, timing.recover_msec, 0);
+                    self.emit(events::MELEE_END, 0);
+                } else if state == 15 && remaining == 0 {
+                    self.current.ready();
+                }
+                return;
+            }
+            // 0x427000 accepts an edge during reload, but not during a
+            // weapon change or another pending non-reload action delay.
+            if cmd.buttons & 4 != 0
+                && !self.melee_held
+                && cmd.buttons & 0x10000000 == 0
+                && cmd.weapons[0] == self.current.equipment.weapon
+                && !(1..=5).contains(&state)
+                && (reloading(state)
+                    || self
+                        .current
+                        .equipment
+                        .firing
+                        .is_none_or(|f| f.delay_msec == 0))
+            {
+                self.current.cancel_burst();
+                self.current.reload_transfer_pending = false;
+                if reloading(state) {
+                    self.emit(2, u32::from(state));
+                }
+                self.current.equipment.aim = self.current.ads.map(|_| Aim::default());
+                self.current
+                    .animate(13, 8, timing.duration_msec, timing.hit_msec);
+                self.emit(events::MELEE_SWIPE, 0);
+                self.emit(events::MELEE_INIT, 0);
+                return;
+            }
+        }
         if state == 5 {
             // 0x424fa0 -> 0x423b10: requesting the held weapon again during
             // the alternate drop finishes the change at once (state 2).
@@ -1062,6 +1161,91 @@ impl Player {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn melee_player() -> Player {
+        let mut p = aiming_player();
+        p.set_melee_timing(MeleeTiming {
+            duration_msec: 699,
+            hit_msec: 250,
+            recover_msec: 400,
+            damage: 135,
+        });
+        p
+    }
+    #[test]
+    fn held_gun_melee_hits_once_after_delay_and_never_spends_ammo() {
+        let mut p = melee_player();
+        let ammo = p.equipment().ammo.unwrap();
+        p.apply(&cmd(1100, 4 | 1));
+        let swipe = p.equipment().firing.unwrap();
+        assert_eq!(
+            (swipe.state, swipe.animation & 0x3ff, swipe.delay_msec),
+            (13, 8, 250)
+        );
+        assert!(p.take_shots().is_empty());
+        assert!(p.take_melee_strikes().is_empty());
+        p.apply(&cmd(1349, 4));
+        assert!(p.take_melee_strikes().is_empty());
+        let mut hit = cmd(1350, 4);
+        hit.angles = [0, 1234, 0];
+        p.apply(&hit);
+        let strikes = p.take_melee_strikes();
+        assert_eq!(strikes.len(), 1);
+        assert_eq!(
+            (strikes[0].time, strikes[0].angles, strikes[0].damage),
+            (1350, hit.angles, 135)
+        );
+        assert_eq!(p.equipment().firing.unwrap().state, 14);
+        p.apply(&hit);
+        assert!(p.take_melee_strikes().is_empty());
+        p.apply(&cmd(1799, 4));
+        let recover = p.equipment().firing.unwrap();
+        assert_eq!(
+            (
+                recover.state,
+                recover.animation & 0x3ff,
+                recover.remaining_msec
+            ),
+            (15, 22, 400)
+        );
+        p.apply(&cmd(2199, 4));
+        p.apply(&cmd(2300, 4));
+        assert_eq!(p.equipment().firing.unwrap().state, 0);
+        assert!(p.take_melee_strikes().is_empty());
+        assert_eq!(p.equipment().ammo.unwrap().clip, ammo.clip);
+        assert_eq!(p.equipment().ammo.unwrap().reserve, ammo.reserve);
+        p.apply(&cmd(2301, 0));
+        p.apply(&cmd(2302, 4));
+        assert_eq!(p.equipment().firing.unwrap().state, 13);
+    }
+    #[test]
+    fn melee_interrupts_reload_without_finishing_its_ammo_transfer() {
+        let mut p = melee_player();
+        p.current.equipment.ammo.as_mut().unwrap().clip = 5;
+        p.apply(&cmd(1100, 16));
+        assert_eq!(p.equipment().firing.unwrap().state, 8);
+        p.apply(&cmd(1150, 4 | 0x800));
+        assert_eq!(p.equipment().firing.unwrap().state, 13);
+        assert_eq!(p.equipment().aim.unwrap().fraction, 0.0);
+        p.apply(&cmd(1800, 0));
+        assert_eq!(p.equipment().ammo.unwrap().clip, 5);
+        assert_eq!(p.take_melee_strikes().len(), 1);
+        assert!(!p.current.reload_transfer_pending);
+    }
+    #[test]
+    fn menu_and_weapon_raise_reject_melee_edges_without_buffering_them() {
+        let mut p = melee_player();
+        p.apply(&cmd(1100, 4 | 0x10000000));
+        p.apply(&cmd(1200, 4));
+        assert_eq!(p.equipment().firing.unwrap().state, 0);
+        p.apply(&cmd(1300, 0));
+        p.current.animate(1, 11, 500, 0);
+        p.apply(&cmd(1400, 4));
+        assert_eq!(p.equipment().firing.unwrap().state, 1);
+        p.apply(&cmd(1800, 4));
+        p.apply(&cmd(1900, 4));
+        assert_eq!(p.equipment().firing.unwrap().state, 0);
+        assert!(p.take_melee_strikes().is_empty());
+    }
     #[test]
     fn single_bullets_use_stance_spread_and_ads_and_movement_changes() {
         let mut p = aiming_player();
