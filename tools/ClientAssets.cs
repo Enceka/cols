@@ -255,6 +255,53 @@ class ClientAssets {
         Console.WriteLine(serializer.Serialize(output));
     }
 
+    public static void ExportTacticalAssets(IntPtr process) {
+        var r=new ClientAssets(process);var rawfiles=new Dictionary<string,object>();var tables=new Dictionary<string,object>();
+        foreach(string name in new string[]{"shock/flashbang_mp.shock","shock/concussion_grenade_mp.shock","shock/default.shock",
+            "shock/damage_mp.shock","shock/frag_grenade_mp.shock","shock/tabun_gas_mp.shock","shock/tabun_gas_nokick_mp.shock","shock/dog_bite.shock","shock/emp_grenade_mp.shock"}) {
+            try{rawfiles[name]=r.AnimationRules(name);}catch(Exception e){rawfiles[name]=Obj("error",e.Message);}
+        }
+        foreach(string name in new string[]{"mp/fxflashstatus.csv","mp/coPerkStatsTable.csv","mp/coAbilityModifiersTable.csv"}) {
+            try{tables[name]=r.Table(name);}catch(Exception e){tables[name]=Obj("error",e.Message);}
+        }
+        // Asset identities contain no profile or connection material. Enumerate
+        // only loaded rawfiles and string tables; retain related data losslessly.
+        var names=new List<object>();byte[] entries=r.Read(0x01fc4e28,100000*28),heads=r.Read(0x01bc9f20,80000*4);
+        var seen=new HashSet<uint>();
+        for(int bucket=0;bucket<80000;bucket++) {
+            uint index=U(heads,bucket*4);int length=0;
+            while(index!=0) {
+                if(index>=100000||!seen.Add(index)||++length>128)throw new Exception("invalid tactical asset chain");
+                int at=(int)index*28;uint kind=U(entries,at),header=U(entries,at+8);
+                if((kind==36||kind==37)&&(entries[at+17]&5)!=0) {
+                    string name=r.Name(r.Word(header)),lower=name.ToLowerInvariant();
+                    if(names.Count>=8192)throw new Exception("tactical asset name budget");
+                    names.Add(Obj("kind",kind,"name",name));
+                    bool related=lower.Contains("flash")||lower.Contains("shock")||lower.Contains("concussion")||lower.Contains("stun")||lower.Contains("shell")||lower.Contains("emp");
+                    if(related&&kind==36&&!rawfiles.ContainsKey(name)) {
+                        try{rawfiles[name]=r.AnimationRules(name);}catch(Exception e){rawfiles[name]=Obj("error",e.Message);}
+                    }
+                    if(related&&kind==37&&!tables.ContainsKey(name)) {
+                        try{tables[name]=r.Table(name);}catch(Exception e){tables[name]=Obj("error",e.Message);}
+                    }
+                }
+                index=U(entries,at+20);
+            }
+        }
+        var shocks=new List<object>();for(uint i=0;i<16;i++)
+            shocks.Add(Obj("index",i,"parameters_base64",Convert.ToBase64String(r.Read(0x017e2dc0+i*0x268,0x268))));
+        var linked=new List<object>();seen.Clear();uint node=r.Word(0x02df7d20);
+        while(node!=0) {
+            if(!seen.Add(node)||seen.Count>64)throw new Exception("invalid shock NCS linked list");
+            byte[] item=r.Read(node,8);linked.Add(r.NetConstant(U(item,0)));node=U(item,4);
+        }
+        var serializer=new JavaScriptSerializer();serializer.MaxJsonLength=32*1024*1024;
+        Console.WriteLine(serializer.Serialize(Obj("schema_version",1,"read_only",true,
+            "client_sha256","e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b",
+            "connection_state",r.Word(0x01a2e7ec),"rawfiles",rawfiles,"tables",tables,
+            "asset_names",names,"shocks",shocks,"shock_ncs",linked)));
+    }
+
     public static void ExportMapEntities(IntPtr process) {
         var r=new ClientAssets(process);var maps=new List<object>();
         byte[] entries=r.Read(0x01fc4e28,100000*28),heads=r.Read(0x01bc9f20,80000*4);
@@ -683,6 +730,8 @@ class ClientAssets {
                 "delay",U(ps,0xa68),"client",U(ps,0x144),"target",U(ps,0xa6c),
                 "character",r.CharacterInfo(cg,U(ps,0x144)),"first_person",r.ViewModelNames(),"missiles",r.MissileStates(),"smokes",r.SmokeStates(),"effects",r.EffectStates(),"effect_visibility",r.EffectVisibility(),
                 "pm_type",U(ps,4),"other_flags",U(ps,0x10),"command_time",U(ps,0),
+                "shellshock_index",U(ps,0x5ac),"shellshock_begin",U(ps,0x5b0),"shellshock_duration",U(ps,0x5b4),"shellshock_adjacent",U(ps,0x5a8),
+                "shellshock_cache_base64",Convert.ToBase64String(r.Read(cg+0xbdb68,0x30)),
                 "origin",Floats(ps,0x1c,3),"angles",Floats(ps,0x14c,3),
                 "weapon",U(ps,0x340),"weapon_state",U(ps,0x27c),"clip",U(ps,0x3e0),
                 "offhand_weapon",U(ps,0x32c),"lethal_weapon",U(ps,0x330),"secondary_offhand_weapon",U(ps,0x334),"tactical_weapon",U(ps,0x338),

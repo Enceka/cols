@@ -40,6 +40,7 @@ pub(crate) struct View {
     pub client: u8,
     pub motion: Motion,
     pub angles: [u16; 3],
+    pub shellshock: Option<codol_protocol::game_shellshock::ShellShockSnapshot>,
     pub equipment: Equipment,
     pub vitals: PlayerVitals,
     pub hit: Option<(u32, HitKind)>,
@@ -55,6 +56,11 @@ impl View {
             if *time != 0 {
                 *time = time.wrapping_add(delay);
             }
+        }
+        if let Some(shock) = &mut self.shellshock
+            && shock.begin_time != 0
+        {
+            shock.begin_time = shock.begin_time.wrapping_add(delay);
         }
         self.hit = self
             .hit
@@ -246,7 +252,8 @@ impl Replay {
             smoke.end_time = smoke.end_time.wrapping_add(delay);
         }
         for impact in &mut frame.impacts {
-            if let codol_protocol::game_impact::ImpactEvent::SmokeExplosion { start_time } =
+            if let codol_protocol::game_impact::ImpactEvent::SmokeExplosion { start_time }
+            | codol_protocol::game_impact::ImpactEvent::ConcussionExplosion { start_time } =
                 &mut impact.event
             {
                 *start_time = start_time.wrapping_add(delay);
@@ -336,6 +343,7 @@ mod tests {
             missiles: vec![],
             time,
             views: vec![View {
+                shellshock: None,
                 client: 7,
                 motion,
                 angles: [0, 1234, 0],
@@ -361,6 +369,27 @@ mod tests {
         replay
     }
     #[test]
+    fn replay_rebases_active_shellshock_but_preserves_a_named_zero_reset() {
+        let mut view = frame(1000, 1).views.remove(0);
+        view.shellshock = Some(codol_protocol::game_shellshock::ShellShockSnapshot {
+            index: 1,
+            begin_time: 900,
+            duration_msec: 5000,
+        });
+        view.motion.flags |= 0x8000;
+        let shifted = view.clone().rebased(4000);
+        assert_eq!(shifted.shellshock.unwrap().begin_time, 4900);
+        assert_eq!(shifted.shellshock.unwrap().duration_msec, 5000);
+        assert_ne!(shifted.motion.flags & 0x8000, 0);
+        assert_eq!(view.shellshock.unwrap().begin_time, 900);
+        view.shellshock = Some(codol_protocol::game_shellshock::ShellShockSnapshot {
+            index: 1,
+            begin_time: 0,
+            duration_msec: 0,
+        });
+        assert_eq!(view.clone().rebased(4000).shellshock, view.shellshock);
+    }
+    #[test]
     fn smoke_snapshot_and_custom_explosion_rebase_together_without_changing_history() {
         let mut replay = Replay::default();
         for time in (1000..=4500).step_by(50) {
@@ -384,6 +413,16 @@ mod tests {
                 surface: 0,
                 weapon: 236,
             });
+            f.impacts.push(codol_protocol::game_impact::ImpactSnapshot {
+                event: codol_protocol::game_impact::ImpactEvent::ConcussionExplosion {
+                    start_time: 1000,
+                },
+                entity_number: 101,
+                origin: [10.0, 20.0, 2.0],
+                normal_byte: 5,
+                surface: 0,
+                weapon: 57,
+            });
             replay.record(f);
         }
         assert!(replay.start(Kind::Death, 4000, 4000, 7));
@@ -393,6 +432,14 @@ mod tests {
         assert_eq!(
             first.frame.impacts[0].event,
             codol_protocol::game_impact::ImpactEvent::SmokeExplosion { start_time: 5000 }
+        );
+        assert_eq!(
+            first.frame.impacts[1].event,
+            codol_protocol::game_impact::ImpactEvent::ConcussionExplosion { start_time: 5000 }
+        );
+        assert_eq!(
+            replay.frames.front().unwrap().impacts[1].event,
+            codol_protocol::game_impact::ImpactEvent::ConcussionExplosion { start_time: 1000 }
         );
         assert_eq!(replay.frames.front().unwrap().smokes[0].start_time, 1000);
         assert_eq!(replay.frames.front().unwrap().smokes[0].end_time, 61001);

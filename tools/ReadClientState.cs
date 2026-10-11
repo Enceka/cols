@@ -66,7 +66,8 @@ class ReadClientState {
             bool outfits=args.Length==1 && args[0]=="--outfits";
             bool appearanceLoad=args.Length==1 && args[0]=="--appearance-load";
             bool hitRegions=args.Length==1 && args[0]=="--hit-regions";
-            if(args.Length!=0 && !appearanceLoad && !outfits && !grounding && !replay && !feedback && !hitRegions && !assets && !profiles && !netConstants && !mapEntities && !bootstrapWeapon && !weaponModels && !arsenal && !collision && !weaponRegistry && !trainingTarget && !bulletImpacts && !characters) throw new Exception("only fixed extraction modes are supported");
+            bool tacticalAssets=args.Length==1 && args[0]=="--tactical-assets";
+            if(args.Length!=0 && !tacticalAssets && !appearanceLoad && !outfits && !grounding && !replay && !feedback && !hitRegions && !assets && !profiles && !netConstants && !mapEntities && !bootstrapWeapon && !weaponModels && !arsenal && !collision && !weaponRegistry && !trainingTarget && !bulletImpacts && !characters) throw new Exception("only fixed extraction modes are supported");
             IntPtr snapshot=CreateToolhelp32Snapshot(2,0); uint found=0;
             if(snapshot==new IntPtr(-1)) throw new Exception("process snapshot failed");
             try {
@@ -111,6 +112,7 @@ class ReadClientState {
                 if(outfits) { ClientAssets.ExportOutfits(process);return 0; }
                 if(appearanceLoad) { ClientAssets.ExportAppearanceLoad(process);return 0; }
                 if(hitRegions) { HitRegions.Export(process);return 0; }
+                if(tacticalAssets) { ClientAssets.ExportTacticalAssets(process);return 0; }
                 Console.WriteLine("{");
                 Field(process,"connection_state",0x01a2e7ec,4);
                 Field(process,"player_card_visible",0x0b5f3024,1);

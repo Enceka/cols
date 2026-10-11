@@ -24,6 +24,8 @@ pub(crate) struct Definition {
     explosion_kind: u32,
     #[serde(default)]
     pub smoke: Option<crate::game_smoke::Definition>,
+    #[serde(default)]
+    pub tactical: Option<crate::game_tactical::Kind>,
     pub radius: u16,
     pub inner_damage: u16,
     pub outer_damage: u16,
@@ -57,10 +59,18 @@ impl Definition {
     fn supported(&self) -> bool {
         self.weapon_type == 1
             && self.weapon_class == 6
-            && ((self.explosion_kind == 5
-                && self.offhand_class == 2
-                && self.name == "smoke_grenade_mp"
-                && self.smoke.as_ref().is_some_and(|s| s.valid()))
+            && (((self.tactical == Some(crate::game_tactical::Kind::Flash)
+                && self.explosion_kind == 2
+                && self.offhand_class == 3
+                && self.name == "flash_grenade_mp")
+                || (self.tactical == Some(crate::game_tactical::Kind::Concussion)
+                    && self.explosion_kind == 3
+                    && self.offhand_class == 2
+                    && self.name == "concussion_grenade_mp"))
+                || (self.explosion_kind == 5
+                    && self.offhand_class == 2
+                    && self.name == "smoke_grenade_mp"
+                    && self.smoke.as_ref().is_some_and(|s| s.valid()))
                 || (self.explosion_kind == 0
                     && matches!(self.offhand_class, 1 | 5)
                     && self.smoke.is_none()
@@ -135,7 +145,7 @@ pub(crate) fn resolve(snapshot: &[u8], class: u8, owned: &[u32]) -> Result<[Opti
             continue;
         }
         ensure!(
-            slot == usize::from(def.smoke.is_some()),
+            slot == usize::from(matches!(def.offhand_class, 2 | 3)),
             "offhand equipped in the wrong slot"
         );
         def.validate()?;

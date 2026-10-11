@@ -510,6 +510,18 @@ impl Player {
         self.begin_raise();
     }
 
+    pub fn tactical_protection(&self, kind: crate::game_tactical::Kind) -> f32 {
+        self.perks.value(
+            match kind {
+                crate::game_tactical::Kind::Flash => "modFlashProtectionScale",
+                crate::game_tactical::Kind::Concussion => "modStunProtectionScale",
+            },
+            1.0,
+        )
+    }
+    pub fn asym_robot(&self) -> bool {
+        self.perks.has("modAsymRobot")
+    }
     pub fn equipment(&self) -> Equipment {
         let mut equipment = self.current.equipment;
         equipment.perks = self.perks.slots;

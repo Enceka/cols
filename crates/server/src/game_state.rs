@@ -10,6 +10,7 @@ mod loadout;
 
 #[derive(Default)]
 pub(crate) struct SnapshotWorld<'a> {
+    pub shellshock: Option<codol_protocol::game_shellshock::ShellShockSnapshot>,
     pub smokes: &'a [codol_protocol::game_smoke::SmokeSnapshot],
     pub smoke_baselines: &'a [codol_protocol::game_smoke::SmokeSnapshot],
     pub missiles: &'a [codol_protocol::game_missile::MissileSnapshot],
@@ -1621,6 +1622,7 @@ impl PreparedGameState {
             equipment,
             angles,
             codol_protocol::game_snapshot::WorldSnapshot {
+                shellshock: world.shellshock,
                 smokes: world.smokes,
                 smoke_baselines: world.smoke_baselines,
                 missiles: world.missiles,

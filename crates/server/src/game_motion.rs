@@ -1092,7 +1092,7 @@ impl Motion {
         }
         self.velocity = mul(direction, next);
         state.remaining_msec = state.remaining_msec.saturating_sub(dt_ms as u16);
-        self.flags = self.stance.flags() | 0x10000;
+        self.flags = self.stance.flags() | 0x10000 | (self.flags & 0x8000);
         if state.remaining_msec == 0 {
             self.velocity[0] = 0.0;
             self.velocity[1] = 0.0;
@@ -1207,6 +1207,7 @@ impl Motion {
         };
         let sprint = cmd.buttons & 2 != 0 && f > 0.0 && !ads && self.stance == Stance::Stand;
         self.flags = self.stance.flags()
+            | (self.flags & 0x8000)
             | if sprint { 0x4000 } else { 0 }
             | if !self.grounded() && self.jump_time != 0 {
                 0x2000

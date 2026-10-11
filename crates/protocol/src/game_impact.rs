@@ -1,4 +1,4 @@
-//! 3.3.3.3 world bullet impacts: ET_EVENTS22 + EV_BULLET_HIT74.
+//! 3.3.3.3 world bullet impacts and grenade explosion events: ET_EVENTS22.
 //! Uses descriptor22 (0xc52888), eventParm width8 (0xc56d70), and
 //! world hitEntity2046. Consumer 0x513970 latches each event entity once.
 use crate::{game_state::Writer, lobby::LobbyError};
@@ -42,15 +42,31 @@ pub enum ImpactEvent {
     #[default]
     Bullet,
     GrenadeExplosion,
+    FlashExplosion,
+    ConcussionExplosion {
+        /// ES+0x58: the caller's actual missile expiry time, unchanged.
+        start_time: u32,
+    },
     SmokeExplosion {
+        /// ES+0x58: the original smoke begin time.
         start_time: u32,
     },
 }
 impl ImpactEvent {
-    fn smoke_time(self) -> Option<u32> {
+    fn custom_time(self) -> Option<u32> {
         match self {
-            Self::SmokeExplosion { start_time } => Some(start_time),
+            Self::ConcussionExplosion { start_time } | Self::SmokeExplosion { start_time } => {
+                Some(start_time)
+            }
             _ => None,
+        }
+    }
+
+    fn smoke_flags(self) -> u32 {
+        if matches!(self, Self::SmokeExplosion { .. }) {
+            0x40
+        } else {
+            0
         }
     }
 }
@@ -65,7 +81,10 @@ impl ImpactSnapshot {
             || self.normal_byte >= 162
             || self.surface > 30
             || !(1..900).contains(&self.weapon)
-            || self.event.smoke_time().is_some_and(|t| t > i32::MAX as u32)
+            || self
+                .event
+                .custom_time()
+                .is_some_and(|t| t > i32::MAX as u32)
         {
             return Err(LobbyError("invalid world bullet impact"));
         }
@@ -156,15 +175,16 @@ pub(crate) fn write_impacts_with_baselines(
         out.bits(0, 1); // retained
         out.bits(1, 1); // changed
         out.bits(1, 1); // zero position base
-        let smoke = impact.event.smoke_time();
-        let base_smoke = base.and_then(|b| b.event.smoke_time());
-        let smoke_fields = smoke.is_some() || base_smoke.is_some();
-        out.bits(if smoke_fields { 40 } else { 22 }, 6);
+        let custom_time = impact.event.custom_time();
+        let base_time = base.and_then(|b| b.event.custom_time());
+        let custom_fields = custom_time.is_some() || base_time.is_some();
+        out.bits(if custom_fields { 40 } else { 22 }, 6);
         gap(out, 1);
         out.bytes.push(match impact.event {
             ImpactEvent::Bullet => 96,
             ImpactEvent::GrenadeExplosion => 109,
-            ImpactEvent::SmokeExplosion { .. } => 115, // EV_CUSTOM_EXPLODE93
+            ImpactEvent::FlashExplosion => 114, // EV_FLASHBANG_EXPLODE92
+            ImpactEvent::ConcussionExplosion { .. } | ImpactEvent::SmokeExplosion { .. } => 115, // EV_CUSTOM_EXPLODE93
         });
         let mut previous = 0;
         for (index, value) in [
@@ -189,13 +209,13 @@ pub(crate) fn write_impacts_with_baselines(
             }
             previous = 6;
         }
-        if smoke_fields {
+        if custom_fields {
             gap(out, 11 - previous);
-            let time = smoke.unwrap_or(0);
+            let time = custom_time.unwrap_or(0);
             out.bits(u32::from(time != 0), 1);
             if time != 0 {
                 out.bytes
-                    .extend_from_slice(&(time ^ base_smoke.unwrap_or(0)).to_le_bytes());
+                    .extend_from_slice(&(time ^ base_time.unwrap_or(0)).to_le_bytes());
             }
             previous = 11;
         }
@@ -207,10 +227,10 @@ pub(crate) fn write_impacts_with_baselines(
         );
         gap(out, 22 - 16);
         out.bits(1, 1); // -96 compact world2046; 2047 would suppress FX
-        if smoke_fields {
+        if custom_fields {
             gap(out, 40 - 22);
             out.bits(1, 1); // ES+8 flags: -98 absolute30, not scalar XOR
-            out.bits(if smoke.is_some() { 0x40 } else { 0 }, 30);
+            out.bits(impact.event.smoke_flags(), 30);
         }
     }
     Ok(())
@@ -249,6 +269,13 @@ mod tests {
     // Independent decoder follows the current field table. In particular -93
     // uses pool bits while generic positive widths split pool and raw bytes.
     fn decode(r: &mut Reader<'_>) -> (u16, BTreeMap<u32, u32>) {
+        decode_with_baseline(r, &BTreeMap::new())
+    }
+
+    fn decode_with_baseline(
+        r: &mut Reader<'_>,
+        baseline: &BTreeMap<u32, u32>,
+    ) -> (u16, BTreeMap<u32, u32>) {
         assert_eq!(r.bits(2).unwrap(), 2);
         let number = r.bits(11).unwrap() as u16;
         assert_eq!(r.bits(3).unwrap(), 6);
@@ -298,7 +325,8 @@ mod tests {
                     for shift in (rem..width).step_by(8) {
                         value |= u32::from(r.u8().unwrap()) << shift;
                     }
-                    value
+                    let mask = u32::MAX >> (32 - width);
+                    value ^ (baseline.get(&offset).copied().unwrap_or(0) & mask)
                 }
                 _ => panic!("unexpected event codec {codec}"),
             };
@@ -315,6 +343,183 @@ mod tests {
             normal_byte: 0,
             surface: 0,
             weapon: 352,
+        }
+    }
+
+    #[test]
+    fn flash_and_concussion_events_match_native_names_and_fields() {
+        let names: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../fixtures/protocol/native-event-names-3.3.3.3.json"
+        ))
+        .unwrap();
+        assert_eq!(names["client_sha256"], crate::CLIENT_SHA256);
+        assert_eq!(names["table_va"], 0xce4390);
+        assert_eq!(names["names"][92], "EV_FLASHBANG_EXPLODE");
+        assert_eq!(names["names"][93], "EV_CUSTOM_EXPLODE");
+        let table = fixture();
+        assert_eq!(table["event_entity_base"], 22);
+        assert_eq!(table["fields"][11], serde_json::json!([0x58, 32, 0]));
+        assert_eq!(table["fields"][40], serde_json::json!([8, -98, 0]));
+        for alignment in 0..8 {
+            for (event, weapon, event_id, time) in [
+                (ImpactEvent::FlashExplosion, 89, 92, None),
+                (
+                    ImpactEvent::ConcussionExplosion { start_time: 0 },
+                    57,
+                    93,
+                    Some(0),
+                ),
+                (
+                    ImpactEvent::ConcussionExplosion { start_time: 70_000 },
+                    57,
+                    93,
+                    Some(70_000),
+                ),
+                (
+                    ImpactEvent::ConcussionExplosion {
+                        start_time: i32::MAX as u32,
+                    },
+                    74,
+                    93,
+                    Some(i32::MAX as u32),
+                ),
+            ] {
+                let current = ImpactSnapshot {
+                    event,
+                    weapon,
+                    ..impact()
+                };
+                let mut out = Writer::default();
+                out.bits(0x55, alignment);
+                write_impacts(&mut out, &[current], false).unwrap();
+                out.bytes.push(0xee);
+                let mut r = Reader::new(&out.bytes);
+                r.bits(alignment).unwrap();
+                let (number, fields) = decode(&mut r);
+                assert_eq!(number, current.entity_number);
+                assert_eq!(fields[&4], 22 + event_id);
+                assert_eq!(fields.get(&8).copied().unwrap_or(0), 0);
+                assert_eq!(fields.get(&0x58).copied(), time);
+                assert_eq!(fields[&0xd0], u32::from(weapon));
+                assert_eq!(fields[&0x88], 2046); // world FX remains enabled
+                assert_eq!(r.u8().unwrap(), 0xee);
+                r.finish().unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn smoke_baseline_reuse_clears_flags_and_preserves_or_clears_custom_time() {
+        let smoke = ImpactSnapshot {
+            event: ImpactEvent::SmokeExplosion { start_time: 12500 },
+            weapon: 236,
+            surface: 3,
+            ..impact()
+        };
+        for alignment in 0..8 {
+            let mut full = Writer::default();
+            full.bits(0x55, alignment);
+            write_impacts(&mut full, &[smoke], false).unwrap();
+            let mut r = Reader::new(&full.bytes);
+            r.bits(alignment).unwrap();
+            let (_, smoke_fields) = decode(&mut r);
+            assert_eq!(smoke_fields[&4], 115);
+            assert_eq!(smoke_fields[&8], 0x40);
+            assert_eq!(smoke_fields[&0x58], 12500);
+            r.finish().unwrap();
+            for start_time in [12500, 14000, 0] {
+                let concussion = ImpactSnapshot {
+                    event: ImpactEvent::ConcussionExplosion { start_time },
+                    weapon: 57,
+                    surface: 0,
+                    ..smoke
+                };
+                let mut delta = Writer::default();
+                delta.bits(0x55, alignment);
+                write_impacts_with_baselines(&mut delta, &[concussion], &[smoke], false).unwrap();
+                delta.bytes.push(0xee);
+                let mut r = Reader::new(&delta.bytes);
+                r.bits(alignment).unwrap();
+                let (_, fields) = decode_with_baseline(&mut r, &smoke_fields);
+                // Both variants are EV_CUSTOM_EXPLODE; changing their flags
+                // must still transmit a changed entity even with equal time.
+                assert_eq!(fields[&4], 115);
+                assert_eq!(fields[&8], 0);
+                assert_eq!(fields[&0x58], start_time);
+                assert_eq!(fields[&0x90], 0);
+                assert_eq!(fields[&0xd0], 57);
+                assert_eq!(r.u8().unwrap(), 0xee);
+                r.finish().unwrap();
+
+                // Reusing either timed variant for Flash clears the timer
+                // with its scalar zero gate and keeps the smoke flag clear.
+                let flash = ImpactSnapshot {
+                    event: ImpactEvent::FlashExplosion,
+                    weapon: 89,
+                    ..concussion
+                };
+                for (base, base_fields) in [(smoke, &smoke_fields), (concussion, &fields)] {
+                    let mut delta = Writer::default();
+                    delta.bits(0x55, alignment);
+                    write_impacts_with_baselines(&mut delta, &[flash], &[base], false).unwrap();
+                    delta.bytes.push(0xee);
+                    let mut r = Reader::new(&delta.bytes);
+                    r.bits(alignment).unwrap();
+                    let (_, fields) = decode_with_baseline(&mut r, base_fields);
+                    assert_eq!(fields[&4], 114);
+                    assert_eq!(fields[&8], 0);
+                    assert_eq!(fields[&0x58], 0);
+                    assert_eq!(fields[&0xd0], 89);
+                    assert_eq!(r.u8().unwrap(), 0xee);
+                    r.finish().unwrap();
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn tactical_events_keep_pinned_full_delta_and_expiry_rules() {
+        for event in [
+            ImpactEvent::FlashExplosion,
+            ImpactEvent::ConcussionExplosion { start_time: 12500 },
+            ImpactEvent::SmokeExplosion { start_time: 12500 },
+        ] {
+            let current = ImpactSnapshot { event, ..impact() };
+            let mut out = Writer::default();
+            out.bits(5, 3);
+            let before = out.bytes.clone();
+            write_impacts_with_baselines(&mut out, &[current], &[current], true).unwrap();
+            assert_eq!(out.bytes, before); // transient events never pin to a full baseline
+            write_impacts_with_baselines(&mut out, &[current], &[current], false).unwrap();
+            assert_eq!(out.bytes, before); // an unchanged ACK delta inherits the event
+            write_impacts_with_baselines(&mut out, &[], &[current], false).unwrap();
+            out.bytes.push(0xee);
+            let mut r = Reader::new(&out.bytes);
+            assert_eq!(r.bits(3).unwrap(), 5);
+            assert_eq!(r.bits(2).unwrap(), 2);
+            assert_eq!(r.bits(11).unwrap(), u32::from(current.entity_number));
+            assert_eq!(r.bits(1).unwrap(), 1); // expired entity is removed
+            assert_eq!(r.u8().unwrap(), 0xee);
+            r.finish().unwrap();
+        }
+        for event in [
+            ImpactEvent::ConcussionExplosion {
+                start_time: i32::MAX as u32 + 1,
+            },
+            ImpactEvent::SmokeExplosion {
+                start_time: i32::MAX as u32 + 1,
+            },
+        ] {
+            for establish_baseline in [true, false] {
+                assert!(
+                    write_impacts(
+                        &mut Writer::default(),
+                        &[ImpactSnapshot { event, ..impact() }],
+                        establish_baseline,
+                    )
+                    .is_err()
+                );
+            }
         }
     }
 

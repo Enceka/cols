@@ -143,6 +143,8 @@ pub struct BotController {
     physics_chop_msec: u32,
     match_move_scale: f32,
     locomotion: Locomotion,
+    control_move_scale: f32,
+    control_turn_limit: Option<[f32; 2]>,
 }
 
 impl BotController {
@@ -171,6 +173,8 @@ impl BotController {
             physics_chop_msec: PHYSICS_CHOP_MSEC,
             match_move_scale: 1.0,
             locomotion: Locomotion::Walk,
+            control_move_scale: 1.0,
+            control_turn_limit: None,
         })
     }
 
@@ -301,7 +305,7 @@ impl BotController {
         );
         let Some(target) = target else {
             if let Some(travel) = travel {
-                self.angles = turn_toward(self.angles, aim_angles(self.eye(), travel.eye), delta);
+                self.angles = self.control_turn(aim_angles(self.eye(), travel.eye), delta);
             }
             self.phase = if travel.is_some() {
                 BotPhase::Chase
@@ -318,7 +322,7 @@ impl BotController {
             aim_angles(eye, target.eye)
         };
         self.angles = if self.engagement.is_some() {
-            turn_toward(self.angles, desired_angles, delta)
+            self.control_turn(desired_angles, delta)
         } else {
             desired_angles
         };
@@ -389,6 +393,27 @@ impl BotController {
         self.frame(now, Some(shot))
     }
 
+    pub(crate) fn set_tactical_control(&mut self, scale: f32, limit: Option<[f32; 2]>) {
+        self.control_move_scale = scale;
+        self.control_turn_limit = limit;
+        self.motion.flags = (self.motion.flags & !0x8000) | if scale < 1.0 { 0x8000 } else { 0 };
+    }
+    fn control_turn(&self, desired: [u16; 3], delta: u32) -> [u16; 3] {
+        let angles = turn_toward(self.angles, desired, delta);
+        let Some(limit) = self.control_turn_limit else {
+            return angles;
+        };
+        std::array::from_fn(|i| {
+            if i >= 2 {
+                return angles[i];
+            }
+            let maximum = (limit[i] * delta as f32 * 0.001 * 65536.0 / 360.0).round() as i32;
+            self.angles[i].wrapping_add(
+                i32::from(angles[i].wrapping_sub(self.angles[i]) as i16).clamp(-maximum, maximum)
+                    as i16 as u16,
+            )
+        })
+    }
     pub(crate) fn eye(&self) -> [f32; 3] {
         [
             self.motion.origin[0],
@@ -438,7 +463,7 @@ impl BotController {
             };
             self.motion.apply(
                 &command,
-                speed_scale,
+                speed_scale * self.control_move_scale,
                 self.engagement.is_some() && mode == Locomotion::Walk,
                 collision,
             );
@@ -611,6 +636,44 @@ mod tests {
             },
             fire_interval_msec: 80,
         }
+    }
+    #[test]
+    fn concussion_control_slows_actual_ground_motion_and_caps_turning_then_restores_it() {
+        let world = collision(false);
+        let target = BotTarget {
+            origin: [1000.0, 0.0, 0.0],
+            eye: [1000.0, 0.0, 60.0],
+            alive: true,
+        };
+        let mut normal = BotController::new([0.0; 3], [0; 3], 190.0).unwrap();
+        let mut stunned = BotController::new([0.0; 3], [0; 3], 190.0).unwrap();
+        normal.set_match_engagement();
+        stunned.set_match_engagement();
+        stunned.set_tactical_control(0.4, Some([75.0, 75.0]));
+        let mut last = None;
+        for now in (1000..=2000).step_by(50) {
+            let a = normal.step(now, Some(target), weapon(), &world);
+            let b = stunned.step(now, Some(target), weapon(), &world);
+            last = Some((a, b));
+        }
+        let (a, b) = last.unwrap();
+        assert!(a.motion.velocity[0] > 0.0);
+        assert!((b.motion.velocity[0] / a.motion.velocity[0] - 0.4).abs() < 0.02);
+        assert_ne!(b.motion.flags & 0x8000, 0);
+        let side = BotTarget {
+            origin: [0.0, 1000.0, 0.0],
+            eye: [0.0, 1000.0, 60.0],
+            alive: true,
+        };
+        let previous = b.angles[1];
+        let turned = stunned.step(2050, Some(side), weapon(), &world);
+        assert!(
+            (f32::from(turned.angles[1].wrapping_sub(previous) as i16) * 360.0 / 65536.0).abs()
+                <= 3.76
+        );
+        stunned.set_tactical_control(1.0, None);
+        let restored = stunned.step(2100, Some(target), weapon(), &world);
+        assert_eq!(restored.motion.flags & 0x8000, 0);
     }
 
     #[test]

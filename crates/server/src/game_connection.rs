@@ -25,6 +25,7 @@ pub(crate) struct Connection {
     player: Option<crate::game_player::Player>,
     grenades: crate::game_grenade::Grenades,
     smoke: crate::game_smoke::Smoke,
+    tactical: crate::game_tactical::State,
     motion: Option<crate::game_motion::Motion>,
     combat: Option<crate::game_combat::CombatWorld>,
     impacts: crate::game_impact::ImpactEvents,
@@ -407,6 +408,12 @@ impl Connection {
         } else {
             self.advance_bot(server_time)?;
         }
+        if self.vitals.health == 0 || self.tdm.as_ref().is_some_and(|m| m.finished) {
+            self.tactical.clear();
+            if let Some(motion) = &mut self.motion {
+                motion.flags &= !0x8000;
+            }
+        }
         if self.tdm.as_ref().is_some_and(|m| m.finished) && !self.final_replay_considered {
             self.final_replay_considered = true;
             if let Some(kill) = self.last_kill {
@@ -526,6 +533,7 @@ impl Connection {
         let mut impacts = self.impacts.snapshot(server_time);
         let mut missiles = self.grenades.snapshots();
         let mut smokes = self.smoke.snapshots(server_time);
+        let mut shellshock = self.tactical.snapshot(server_time);
         if self.tdm.is_some() {
             impacts.sort_by_key(|i| {
                 if i.event != codol_protocol::game_impact::ImpactEvent::Bullet {
@@ -610,6 +618,7 @@ impl Connection {
             if let (Some(motion), Some(equipment)) = (self.motion.as_ref(), equipment) {
                 views.push(crate::game_replay::View {
                     client: 0,
+                    shellshock,
                     motion: motion.clone(),
                     angles,
                     equipment,
@@ -691,6 +700,7 @@ impl Connection {
                 self.server_commands
                     .push(format!("L {} 7", playback.view.client).as_bytes())?;
             }
+            shellshock = playback.view.shellshock;
             angles = playback.view.angles;
             command_time = playback.view.motion.command_time;
             equipment = Some(playback.view.equipment);
@@ -776,6 +786,7 @@ impl Connection {
             angles,
             equipment,
             crate::game_state::SnapshotWorld {
+                shellshock,
                 smokes: &smokes,
                 smoke_baselines: previous.as_ref().map_or(&[], |h| h.smokes.as_slice()),
                 missiles: &missiles,
@@ -1479,6 +1490,17 @@ impl Connection {
     }
 
     fn advance_match(&mut self, now: u32) -> Result<()> {
+        if self.vitals.health == 0 || self.tdm.as_ref().is_some_and(|m| m.finished) {
+            self.tactical.clear();
+        }
+        if let Some(motion) = &mut self.motion {
+            motion.flags = (motion.flags & !0x8000)
+                | if self.tactical.stunned(now) {
+                    0x8000
+                } else {
+                    0
+                };
+        }
         let tick_started = Instant::now();
         if self.server_commands.acknowledged() < self.model_rules_sequence {
             return Ok(());
@@ -1589,6 +1611,7 @@ impl Connection {
         if self.tdm.as_ref().is_none_or(|m| m.finished) {
             self.grenades.clear();
             self.smoke.clear();
+            self.tactical.clear();
             return Ok(());
         }
         let state = self.game_state.as_ref().unwrap().clone();
@@ -1623,12 +1646,50 @@ impl Connection {
                     origin=?explosion.origin, "smoke grenade deployed");
                 continue;
             }
-            self.impacts.explosion(
-                now,
-                explosion.definition.index,
-                explosion.origin,
-                explosion.normal,
-            );
+            if let Some(kind) = explosion.definition.tactical {
+                self.impacts.tactical(
+                    now,
+                    explosion.time,
+                    explosion.definition.index,
+                    explosion.origin,
+                    explosion.normal,
+                    kind,
+                );
+                let affected = self
+                    .tdm
+                    .as_mut()
+                    .unwrap()
+                    .player_tactical(now, &explosion, local, collision);
+                let protection = self.player.as_ref().unwrap().tactical_protection(kind);
+                if local.alive
+                    && let Some(hit) = crate::game_tactical::hit(
+                        &explosion,
+                        crate::game_tactical::Recipient {
+                            feet: local.origin,
+                            eye,
+                            angles: local.angles,
+                        },
+                        protection,
+                        collision,
+                    )
+                {
+                    self.tactical.apply(now, hit);
+                    tracing::info!(now,kind=?kind,duration=hit.duration_msec,protection,"player tactical status applied");
+                }
+                tracing::info!(
+                    now,
+                    weapon = explosion.definition.index,
+                    affected,
+                    "tactical grenade detonated"
+                );
+            } else {
+                self.impacts.explosion(
+                    now,
+                    explosion.definition.index,
+                    explosion.origin,
+                    explosion.normal,
+                );
+            }
             let (feedback, damage) = self
                 .tdm
                 .as_mut()
@@ -1739,6 +1800,14 @@ impl Connection {
                     continue;
                 }
                 let scale = self.player.as_ref().map_or(1.0, |p| p.move_scale());
+                let robot = self.player.as_ref().is_some_and(|p| p.asym_robot());
+                let scale = scale * self.tactical.move_scale(input.time, robot);
+                motion.flags = (motion.flags & !0x8000)
+                    | if self.tactical.stunned(input.time) {
+                        0x8000
+                    } else {
+                        0
+                    };
                 let ads = self
                     .player
                     .as_ref()

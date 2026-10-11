@@ -164,6 +164,7 @@ struct Bot {
     progress_origin: [f32; 3],
     progress_time: u32,
 
+    tactical: crate::game_tactical::State,
     controller: BotController,
     snapshot: EnemySnapshot,
     health: u16,
@@ -276,6 +277,7 @@ impl TdmMatch {
                     ^ (u64::from(client) * 0x9e3779b9),
                 progress_origin: origin,
                 progress_time: 1000,
+                tactical: Default::default(),
                 controller,
                 snapshot,
                 health: 100,
@@ -346,6 +348,7 @@ impl TdmMatch {
             .filter_map(|bot| {
                 let weapon = bot.weapon.as_ref()?;
                 Some(crate::game_replay::View {
+                    shellshock: bot.tactical.snapshot(bot.snapshot_time),
                     client: bot.snapshot.client_index,
                     motion: bot.view_motion.clone(),
                     angles: bot.snapshot.angles,
@@ -455,6 +458,11 @@ impl TdmMatch {
         if self.finished {
             return;
         }
+        if victim.client_index != 0 {
+            self.bots[usize::from(victim.client_index - 1)]
+                .tactical
+                .clear();
+        }
         self.rows[usize::from(victim.client_index)].deaths += 1;
         let row = &mut self.rows[usize::from(attacker)];
         let suicide = attacker == victim.client_index;
@@ -487,6 +495,43 @@ impl TdmMatch {
     }
     pub fn player_killed(&mut self, now: u32, victim: EnemySnapshot, hit: PlayerHit) {
         self.credit(now, victim, hit.attacker, hit.weapon, hit.headshot, false);
+    }
+    pub fn player_tactical(
+        &mut self,
+        now: u32,
+        explosion: &crate::game_grenade::Explosion,
+        local: EnemySnapshot,
+        collision: &Collision,
+    ) -> usize {
+        if self.finished {
+            return 0;
+        }
+        let Some(kind) = explosion.definition.tactical else {
+            return 0;
+        };
+        let mut affected = 0;
+        for bot in &mut self.bots {
+            if bot.health == 0 || bot.snapshot.team == local.team {
+                continue;
+            }
+            let protection = bot
+                .weapon
+                .as_ref()
+                .map_or(1.0, |w| w.tactical_protection(kind));
+            if let Some(hit) = crate::game_tactical::hit(
+                explosion,
+                crate::game_tactical::Recipient {
+                    feet: bot.snapshot.origin,
+                    eye: bot.controller.eye(),
+                    angles: bot.snapshot.angles,
+                },
+                protection,
+                collision,
+            ) {
+                affected += usize::from(bot.tactical.apply(now, hit));
+            }
+        }
+        affected
     }
     pub fn player_explosion(
         &mut self,
@@ -724,6 +769,7 @@ impl TdmMatch {
                 bot.steering = None;
                 bot.snapshot_time = now;
                 bot.weapon = bot.initial_weapon.clone();
+                bot.tactical.clear();
                 bot.memory = None;
                 bot.visible_target = None;
                 bot.perception_time = 0;
@@ -752,15 +798,19 @@ impl TdmMatch {
             // radius. Occluded actors never update last-known coordinates.
             if now.wrapping_sub(bot.perception_time) >= 150 {
                 bot.perception_time = now;
-                let found = visible_enemy(
-                    origin,
-                    bot.snapshot.angles[1],
-                    team,
-                    &actors,
-                    now,
-                    smoke,
-                    collision,
-                );
+                let found = (!bot.tactical.blind(now))
+                    .then(|| {
+                        visible_enemy(
+                            origin,
+                            bot.snapshot.angles[1],
+                            team,
+                            &actors,
+                            now,
+                            smoke,
+                            collision,
+                        )
+                    })
+                    .flatten();
                 bot.visible_target = found.map(|(_, t)| t);
                 if let Some((client, target)) = found {
                     bot.memory = Some((client, target, now));
@@ -774,6 +824,7 @@ impl TdmMatch {
             }
             let target = bot
                 .visible_target
+                .filter(|_| !bot.tactical.blind(now))
                 .filter(|t| smoke.visible(now, bot.controller.eye(), t.eye));
             let remembered = bot.memory.map(|(_, t, _)| t.origin);
             if i == self.next_route_client {
@@ -846,6 +897,11 @@ impl TdmMatch {
                     _ => 0.5,
                 };
             bot.controller.set_match_range(range, spacing);
+            let robot = bot.weapon.as_ref().is_some_and(|w| w.asym_robot());
+            bot.controller.set_tactical_control(
+                bot.tactical.move_scale(now, robot),
+                bot.tactical.turn_limit(now),
+            );
             let mut frame =
                 bot.controller
                     .step_navigated(now, target, bot.steering, active_weapon, collision);
@@ -1270,6 +1326,47 @@ mod tests {
             )
             .is_some()
         );
+    }
+    #[test]
+    fn tactical_notifications_exclude_team_mates_and_death_resets_the_native_named_state() {
+        let collision = world();
+        let local = template();
+        let mut game = TdmMatch::new(config(), local, 190.0, &collision).unwrap();
+        let enemy = game
+            .bots
+            .iter()
+            .position(|b| b.snapshot.team != local.team)
+            .unwrap();
+        let ally = game
+            .bots
+            .iter()
+            .position(|b| b.snapshot.team == local.team)
+            .unwrap();
+        for bot in &mut game.bots {
+            bot.snapshot.origin = [2000.0, 0.0, 0.0];
+        }
+        game.bots[enemy].snapshot.origin = [128.0, 0.0, 0.0];
+        game.bots[ally].snapshot.origin = [128.0, 0.0, 0.0];
+        let explosion = crate::game_grenade::Explosion {
+            time: 1000,
+            origin: [128.0, 0.0, 60.0],
+            normal: [0.0, 0.0, 1.0],
+            definition: crate::game_grenade::captured("flash_grenade_mp"),
+        };
+        assert_eq!(game.player_tactical(1000, &explosion, local, &collision), 1);
+        assert!(game.bots[enemy].tactical.blind(1000));
+        assert!(!game.bots[ally].tactical.blind(1000));
+        let victim = game.bots[enemy].snapshot;
+        game.credit(1200, victim, 0, 89, false, false);
+        assert_eq!(
+            game.bots[enemy].tactical.snapshot(1200),
+            Some(codol_protocol::game_shellshock::ShellShockSnapshot {
+                index: 5,
+                begin_time: 0,
+                duration_msec: 0
+            })
+        );
+        assert!(!game.bots[enemy].tactical.blind(1200));
     }
     #[test]
     fn grenade_blast_excludes_allies_and_suicide_never_awards_a_kill() {

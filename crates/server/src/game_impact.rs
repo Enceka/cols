@@ -57,6 +57,33 @@ impl ImpactEvents {
             codol_protocol::game_impact::ImpactEvent::SmokeExplosion { start_time },
         )
     }
+    pub fn tactical(
+        &mut self,
+        now: u32,
+        start_time: u32,
+        weapon: u16,
+        origin: [f32; 3],
+        normal: [f32; 3],
+        kind: crate::game_tactical::Kind,
+    ) -> Option<ImpactSnapshot> {
+        self.push_event(
+            now,
+            weapon,
+            crate::game_combat::WorldImpact {
+                origin,
+                normal,
+                surface: 0,
+            },
+            match kind {
+                crate::game_tactical::Kind::Flash => {
+                    codol_protocol::game_impact::ImpactEvent::FlashExplosion
+                }
+                crate::game_tactical::Kind::Concussion => {
+                    codol_protocol::game_impact::ImpactEvent::ConcussionExplosion { start_time }
+                }
+            },
+        )
+    }
     fn push_event(
         &mut self,
         now: u32,

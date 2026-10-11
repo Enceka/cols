@@ -28,6 +28,7 @@ mod game_replay;
 pub mod game_server;
 mod game_smoke;
 pub mod game_state;
+mod game_tactical;
 mod game_top_players;
 mod game_weapon_registry;
 pub mod http;

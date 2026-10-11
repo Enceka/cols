@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "client_sha256": "e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b",
+  "capture_sha256": "0fc1ff247a69a5d0de9a93189549faefa2b9be843000ac5705569fd3be92c54d",
+  "bindings": [
+    {
+      "kind": "flash",
+      "name": "flashbang_mp",
+      "index": 5,
+      "configstring": 4280,
+      "screen_type": 1,
+      "movement": false,
+      "look_control": false,
+      "max_pitch_speed": 90.0,
+      "max_yaw_speed": 90.0,
+      "mouse_sensitivity_scale": 0.5,
+      "rawfile_sha256": "5d3efc98b55a01b686619dd4278f178aebb6f78d5393369a467f16964731c30d",
+      "parameter_sha256": "de075b1a5e2302ccf4f5f48d7448e1aace5197174557fe5754deed7ce332aff7"
+    },
+    {
+      "kind": "concussion",
+      "name": "concussion_grenade_mp",
+      "index": 1,
+      "configstring": 4276,
+      "screen_type": 0,
+      "movement": true,
+      "look_control": true,
+      "max_pitch_speed": 75.0,
+      "max_yaw_speed": 75.0,
+      "mouse_sensitivity_scale": 0.10000000149011612,
+      "rawfile_sha256": "e4b5667928f6e8bc885aff1c41dbcc66b95791b51d8dc92982dd96d771d59123",
+      "parameter_sha256": "76f86b3c29fcef33e4716c681c51eeb31c20896da6a9be9fe8555ffc07306132"
+    }
+  ],
+  "server_rules": {
+    "source": "Alpha/LAN reference script port; current client production rules unverified",
+    "sources": [
+      {
+        "path": "maps/mp/_flashgrenades.gsc",
+        "sha256": "851a44a93f857746f7dd6b4071b4409dfd14c1741d2986baabf3dc052d789b51"
+      },
+      {
+        "path": "maps/mp/gametypes/_weapons.gsc",
+        "sha256": "d8faf5ee99d9b33f74885a758461bff5d667a987c3cfab91d586a60453a5ecd2"
+      }
+    ],
+    "flash_max_msec": 6000,
+    "flash_min_msec": 250,
+    "flash_angle_floor": 0.5,
+    "flash_angle_full_threshold": 0.8,
+    "concussion_min_msec": 2000,
+    "concussion_distance_msec": 4000
+  }
+}

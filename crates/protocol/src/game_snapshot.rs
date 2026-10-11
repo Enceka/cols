@@ -1,6 +1,9 @@
 //! Bounded bootstrap snapshot probe for 3.3.3.3, NOT a world simulator.
 //! Parser: 0x46d170; playerState: 0x5a4230; table: 0xc55f70 (235 fields).
-use crate::{game_events, game_state::Writer, game_wire::SERVER_EOF, lobby::LobbyError};
+use crate::{
+    game_events, game_shellshock::ShellShockSnapshot, game_state::Writer, game_wire::SERVER_EOF,
+    lobby::LobbyError,
+};
 
 #[derive(Debug, Clone, Copy)]
 pub struct Ammo {
@@ -231,6 +234,7 @@ pub fn player_frame_with_motion(
             impact_baselines: &[],
             obituary_baselines: &[],
             motion,
+            shellshock: None,
             target: None,
             impacts: &[],
             enemy: None,
@@ -263,6 +267,12 @@ pub struct WorldSnapshot<'a> {
     pub local_abilities_baseline: Option<crate::game_abilities::Abilities>,
     pub delta_distance: u8,
     pub motion: Option<MotionSnapshot>,
+    /// Current shellshock state; requires authoritative motion. Every frame
+    /// selects the zero PS base. None encodes index/begin/duration zero, which
+    /// may select the native CG override. Reset a named effect with its last
+    /// index and begin/duration zero. Replay callers add delay to nonzero
+    /// begin_time in the receiving client's CG time domain.
+    pub shellshock: Option<ShellShockSnapshot>,
     pub target: Option<crate::game_target::TargetSnapshot>,
     pub impacts: &'a [crate::game_impact::ImpactSnapshot],
     pub enemy: Option<crate::game_enemy::EnemySnapshot>,
@@ -298,7 +308,11 @@ pub fn player_frame_with_world(
     world: WorldSnapshot<'_>,
 ) -> Result<Vec<u8>, LobbyError> {
     let motion = world.motion;
+    let shellshock = world.shellshock;
     let vitals = world.vitals;
+    if shellshock.is_some_and(|s| s.index > 15 || motion.is_none()) {
+        return Err(LobbyError("invalid authoritative shellshock state"));
+    }
     if vitals.is_some_and(|v| {
         v.health > 100 || v.damage_count > 127 || v.corpse_slot >= 8 || motion.is_none()
     }) {
@@ -458,39 +472,11 @@ pub fn player_frame_with_world(
     if origin.is_some_and(|v| v.iter().any(|n| !n.is_finite() || n.abs() > 1_000_000.0)) {
         return Err(LobbyError("bootstrap origin out of range"));
     }
-    let mut out = Writer::default();
-    out.bytes.push(0); // svc_snapshot, byte pool starts at zero
-    out.bytes.extend_from_slice(&server_time.to_le_bytes());
-    out.bytes.extend_from_slice(&[
-        if establish_baseline {
-            0
-        } else {
-            world.delta_distance
-        },
-        if establish_baseline { 8 } else { 0 },
-    ]);
-    out.bits(0, 1); // no prior playerState
-    out.bits(1, 1); // transmit origin/velocity rather than local prediction
-    out.bits(
-        if motion.is_some() {
-            228
-        } else if weapon.is_some() {
-            88
-        } else if origin.is_some() {
-            69
-        } else {
-            1
-        },
-        8,
-    );
-    out.bits(1, 1); // field gap +1 from -1
-    out.bits(1, 1); // -97 codec, absolute LE32 (0x5a20c0)
-    out.bytes.extend_from_slice(&command_time.to_le_bytes());
+    let mut fields = Vec::new();
     if let Some(origin) = origin {
         // Target field table 0xc55f70. Hint-2 fields use the later tail pass.
         // Equipment and angles must also be reflected in the input delta base.
-        let mut previous = 0;
-        let mut fields = vec![
+        fields.extend([
             (8, origin[0].to_bits(), 0),
             (10, origin[2].to_bits(), 0),
             (11, origin[1].to_bits(), 0),
@@ -503,7 +489,14 @@ pub fn player_frame_with_world(
             (47, u32::from(motion.map_or(2047, |m| m.ground_entity)), 11),
             (61, 2047, 16),
             (68, 2047, 11),
-        ];
+        ]);
+        if let Some(shellshock) = shellshock {
+            // Duration104 belongs exclusively to the later hint-2 pass.
+            fields.extend([
+                (103, shellshock.begin_time, 97),
+                (105, u32::from(shellshock.index), 4),
+            ]);
+        }
         if let Some(motion) = motion {
             if let Some(charge) = motion.melee_charge {
                 fields.extend([
@@ -648,52 +641,69 @@ pub fn player_frame_with_world(
                 fields.push((index, u32::from(value), 87));
             }
         }
-        fields.sort_by_key(|f| f.0);
-        for (index, value, width) in fields {
-            gap(&mut out, index - previous);
-            previous = index;
-            if width == 0 {
-                // target -88: full raw float XOR with zero baseline
-                out.bytes.extend_from_slice(&value.to_le_bytes());
-            } else if width == 87 {
-                out.bytes.extend_from_slice(&(value as u16).to_le_bytes());
-            } else if width == 75 {
-                game_events::write_sequence(&mut out, value as u8);
-            } else if width == 94 {
-                game_events::write_event(&mut out, events.unwrap().slots[value as usize]);
-            } else if width == 100 {
-                // Generic float codec 0 differs from raw-float codec -88:
-                // nonzero + full-precision gates, then the raw XOR word.
-                out.bits(1, 1);
-                out.bits(1, 1);
-                out.bytes.extend_from_slice(&value.to_le_bytes());
-            } else if width == 101 {
-                // -100 at0x5a25c0: skip both short-delta branches and read
-                // an absolute network angle via0x5a17d0.
-                out.bits(0, 2);
-                out.bytes.extend_from_slice(&(value as u16).to_le_bytes());
-            } else {
-                // 0x5a27f0 nonzero gate -> 0x5a2510 -> 0x5a2470:
-                // remainder bits first, then whole bytes (not all pool bits).
-                out.bits(1, 1);
-                let remainder = width % 8;
-                out.bits(value, remainder);
-                for shift in (remainder..width).step_by(8) {
-                    out.bytes.push((value >> shift) as u8);
-                }
+    }
+    fields.sort_by_key(|f| f.0);
+    let last_changed = fields.last().map_or(0, |f| f.0);
+    let mut out = Writer::default();
+    out.bytes.push(0); // svc_snapshot, byte pool starts at zero
+    out.bytes.extend_from_slice(&server_time.to_le_bytes());
+    out.bytes.extend_from_slice(&[
+        if establish_baseline {
+            0
+        } else {
+            world.delta_distance
+        },
+        if establish_baseline { 8 } else { 0 },
+    ]);
+    out.bits(0, 1); // no prior playerState, including full/delta/replay frames
+    out.bits(1, 1); // transmit origin/velocity rather than local prediction
+    out.bits(last_changed + 1, 8);
+    out.bits(1, 1); // field gap +1 from -1
+    out.bits(1, 1); // -97 codec, absolute LE32 (0x5a20c0)
+    out.bytes.extend_from_slice(&command_time.to_le_bytes());
+    let mut previous = 0;
+    for (index, value, width) in fields {
+        gap(&mut out, index - previous);
+        previous = index;
+        if width == 0 {
+            // target -88: full raw float XOR with zero baseline
+            out.bytes.extend_from_slice(&value.to_le_bytes());
+        } else if width == 87 {
+            out.bytes.extend_from_slice(&(value as u16).to_le_bytes());
+        } else if width == 75 {
+            game_events::write_sequence(&mut out, value as u8);
+        } else if width == 94 {
+            game_events::write_event(&mut out, events.unwrap().slots[value as usize]);
+        } else if width == 97 {
+            // -97 reads an absolute LE32; it is not an XOR32 scalar.
+            out.bits(1, 1);
+            out.bytes.extend_from_slice(&value.to_le_bytes());
+        } else if width == 100 {
+            // Generic float codec 0 differs from raw-float codec -88:
+            // nonzero + full-precision gates, then the raw XOR word.
+            out.bits(1, 1);
+            out.bits(1, 1);
+            out.bytes.extend_from_slice(&value.to_le_bytes());
+        } else if width == 101 {
+            // -100 at0x5a25c0: skip both short-delta branches and read
+            // an absolute network angle via0x5a17d0.
+            out.bits(0, 2);
+            out.bytes.extend_from_slice(&(value as u16).to_le_bytes());
+        } else if index == 105 && value == 0 {
+            out.bits(0, 1); // scalar zero gate, including an explicit clear
+        } else {
+            // 0x5a27f0 nonzero gate -> 0x5a2510 -> 0x5a2470:
+            // remainder bits first, then whole bytes (not all pool bits).
+            out.bits(1, 1);
+            let remainder = width % 8;
+            out.bits(value, remainder);
+            for shift in (remainder..width).step_by(8) {
+                out.bytes.push((value >> shift) as u8);
             }
         }
     }
     if let Some(motion) = motion {
-        // 0x5a4541..0x5a458d: all hint-2 fields strictly below the last
-        // ordinary field, in table order. No gaps and no enclosing gate.
-        // 82(-101),89(1),93(1),98(1),101(1),104(16),106(1),122(-57).
-        out.bits(0, 1); // 82: preserve the initialized protected float.
-        out.bits(u32::from(motion.view_height_lerp_down), 1); // 89 nonzero gate
-        if motion.view_height_lerp_down {
-            out.bits(1, 1);
-        }
-        out.bits(0, 6); // Five zero numeric gates, then direct bool at122.
+        write_hint2_tail(&mut out, last_changed, motion, shellshock);
     }
     // 0x5a463d: stats presence, 4-bit mask, first stat is a short.
     out.bits(1, 1);
@@ -1002,6 +1012,43 @@ pub fn player_frame_with_world(
     Ok(out.bytes)
 }
 
+fn write_hint2_tail(
+    out: &mut Writer,
+    last_changed: u32,
+    motion: MotionSnapshot,
+    shellshock: Option<ShellShockSnapshot>,
+) {
+    // 0x5a4541..0x5a458d: hint-2 fields strictly below the last ordinary
+    // field, in table order. No gaps and no enclosing gate. Width0 denotes
+    // the single preserve gate at82 (-101) or the direct bool at122 (-57).
+    for (index, value, width) in [
+        (82, 0, 0),
+        (89, u32::from(motion.view_height_lerp_down), 1),
+        (93, 0, 1),
+        (98, 0, 1),
+        (101, 0, 1),
+        (
+            104,
+            shellshock.map_or(0, |s| u32::from(s.duration_msec)),
+            16,
+        ),
+        (106, 0, 1),
+        (122, 0, 0),
+    ] {
+        if index >= last_changed {
+            break;
+        }
+        out.bits(u32::from(value != 0), 1);
+        if width != 0 && value != 0 {
+            let remainder = width % 8;
+            out.bits(value, remainder);
+            for shift in (remainder..width).step_by(8) {
+                out.bytes.push((value >> shift) as u8);
+            }
+        }
+    }
+}
+
 fn gap(out: &mut Writer, distance: u32) {
     out.bits(u32::from(distance == 1), 1);
     if distance == 1 {
@@ -1127,6 +1174,364 @@ mod tests {
         }
         (fields, parameters)
     }
+
+    fn shellshock_from_fields(fields: &BTreeMap<usize, u32>) -> ShellShockSnapshot {
+        ShellShockSnapshot {
+            index: fields.get(&105).copied().unwrap_or(0).try_into().unwrap(),
+            begin_time: fields.get(&103).copied().unwrap_or(0),
+            duration_msec: fields.get(&104).copied().unwrap_or(0).try_into().unwrap(),
+        }
+    }
+
+    fn authoritative_motion() -> MotionSnapshot {
+        MotionSnapshot {
+            ground_entity: 2046,
+            view_height: 60.0,
+            view_height_target: 60,
+            view_height_lerp_target: 40,
+            view_height_lerp_time: 800,
+            speed: 190,
+            gravity: 800,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn shellshock_duration_and_existing_hint2_fields_decode_in_full_and_delta_frames() {
+        for establish_baseline in [true, false] {
+            for delta_distance in [0, 1] {
+                for lerp_down in [false, true] {
+                    for duration_msec in [0, 1, 255, 256, 0x1234, u16::MAX] {
+                        let shellshock = ShellShockSnapshot {
+                            index: 5,
+                            begin_time: 70_000,
+                            duration_msec,
+                        };
+                        let body = player_frame_with_world(
+                            100_000,
+                            99_950,
+                            Some([1.0, 2.0, 3.0]),
+                            establish_baseline,
+                            None,
+                            [0; 3],
+                            WorldSnapshot {
+                                motion: Some(MotionSnapshot {
+                                    view_height_lerp_down: lerp_down,
+                                    ..authoritative_motion()
+                                }),
+                                shellshock: Some(shellshock),
+                                delta_distance,
+                                ..Default::default()
+                            },
+                        )
+                        .unwrap();
+                        let mut r = Reader::new(&body);
+                        assert_eq!(r.u8().unwrap(), 0);
+                        assert_eq!(r.u32().unwrap(), 100_000);
+                        assert_eq!(
+                            r.u8().unwrap(),
+                            if establish_baseline {
+                                0
+                            } else {
+                                delta_distance
+                            }
+                        );
+                        assert_eq!(r.u8().unwrap(), if establish_baseline { 8 } else { 0 });
+                        assert_eq!(r.bits(1).unwrap(), 0); // zero PS base, even on ACK deltas
+                        assert_eq!(r.bits(1).unwrap(), 1);
+                        // The final ordinary camera field is227, so count228
+                        // includes both new ordinary fields and duration104.
+                        assert_eq!((body[7] >> 2) | ((body[8] & 3) << 6), 228);
+                        let (fields, parameters) = read_fields(&mut r);
+                        assert_eq!(shellshock_from_fields(&fields), shellshock);
+                        assert!(parameters.is_empty());
+                        assert_eq!(fields[&0], 99_950);
+                        assert_eq!(fields[&89], u32::from(lerp_down));
+                        assert_eq!(fields[&227], 2047);
+                        for index in [82, 93, 98, 101, 106, 122] {
+                            assert_eq!(fields[&index], 0, "hint-2 field {index}");
+                        }
+                        // The stats and section terminators must remain aligned
+                        // after duration's gate and separate LE16 byte payload.
+                        assert_eq!(r.bits(1).unwrap(), 1);
+                        assert_eq!(r.bits(4).unwrap(), 1);
+                        assert_eq!(r.u16().unwrap(), 100);
+                        assert_eq!(r.bits(15).unwrap(), 0);
+                        assert_eq!(r.bits(2).unwrap(), 2);
+                        assert_eq!(r.bits(11).unwrap(), 2047);
+                        assert_eq!(r.bits(2).unwrap(), 0);
+                        assert_eq!(r.u8().unwrap(), SERVER_EOF);
+                        r.finish().unwrap();
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn shellshock_named_resets_and_zero_ps_states_decode_in_every_frame() {
+        let mut previous = ShellShockSnapshot::default();
+        for (frame, shellshock) in [
+            Some(ShellShockSnapshot {
+                index: 1,
+                begin_time: 70_000,
+                duration_msec: u16::MAX,
+            }),
+            Some(ShellShockSnapshot {
+                index: 1,
+                begin_time: 0,
+                duration_msec: 0,
+            }),
+            Some(ShellShockSnapshot {
+                index: 15,
+                begin_time: 90_000,
+                duration_msec: 256,
+            }),
+            Some(ShellShockSnapshot {
+                index: 15,
+                begin_time: 0,
+                duration_msec: 0,
+            }),
+            None,
+            // Index0 selects the native local override, not a named preset.
+            Some(ShellShockSnapshot {
+                index: 0,
+                begin_time: 99_000,
+                duration_msec: 511,
+            }),
+            Some(ShellShockSnapshot::default()),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            for establish_baseline in [true, false] {
+                let body = player_frame_with_world(
+                    100_000 + frame as u32 * 50,
+                    99_950 + frame as u32 * 50,
+                    Some([0.0; 3]),
+                    establish_baseline,
+                    None,
+                    [0; 3],
+                    WorldSnapshot {
+                        motion: Some(authoritative_motion()),
+                        shellshock,
+                        delta_distance: 1,
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+                let mut r = Reader::new(&body);
+                r.u8().unwrap();
+                r.u32().unwrap();
+                r.u8().unwrap();
+                r.u8().unwrap();
+                let use_previous = r.bits(1).unwrap() != 0;
+                assert!(!use_previous);
+                assert_eq!(r.bits(1).unwrap(), 1);
+                let (fields, _) = read_fields(&mut r);
+                let mut decoded = if use_previous {
+                    previous
+                } else {
+                    ShellShockSnapshot::default()
+                };
+                if let Some(&index) = fields.get(&105) {
+                    decoded.index = index.try_into().unwrap();
+                }
+                if let Some(&begin_time) = fields.get(&103) {
+                    decoded.begin_time = begin_time;
+                }
+                decoded.duration_msec = fields[&104].try_into().unwrap();
+                assert_eq!(decoded, shellshock.unwrap_or_default());
+                assert_eq!(fields.contains_key(&103), shellshock.is_some());
+                assert_eq!(fields.contains_key(&105), shellshock.is_some());
+                previous = decoded;
+            }
+        }
+    }
+
+    #[test]
+    fn shellshock_hint2_tail_stops_strictly_before_the_last_ordinary_field() {
+        let layout: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../fixtures/protocol/player-state-fields-3.3.3.3.json"
+        ))
+        .unwrap();
+        for last_changed in [81, 83, 88, 92, 99, 102, 103, 105, 107, 121, 123, 227] {
+            for duration_msec in [0, 256, u16::MAX] {
+                let mut out = Writer::default();
+                out.bits(last_changed + 1, 8);
+                gap(&mut out, last_changed + 1);
+                if last_changed == 103 {
+                    out.bits(1, 1); // ordinary -97 absolute time
+                    out.bytes.extend_from_slice(&0u32.to_le_bytes());
+                } else {
+                    out.bits(0, 1); // ordinary scalar zero gate
+                }
+                write_hint2_tail(
+                    &mut out,
+                    last_changed,
+                    MotionSnapshot {
+                        view_height_lerp_down: true,
+                        ..authoritative_motion()
+                    },
+                    Some(ShellShockSnapshot {
+                        index: 5,
+                        begin_time: 70_000,
+                        duration_msec,
+                    }),
+                );
+                out.bits(1, 1); // stats gate immediately follows the hint-2 tail
+                out.bits(1, 4);
+                out.bytes.extend_from_slice(&100u16.to_le_bytes());
+                let mut r = Reader::new(&out.bytes);
+                let (fields, _) = read_fields(&mut r);
+                for (index, entry) in layout["fields"].as_array().unwrap().iter().enumerate() {
+                    if entry[2] == 2 {
+                        assert_eq!(
+                            fields.contains_key(&index),
+                            index < last_changed as usize,
+                            "hint-2 field {index}, last ordinary field {last_changed}"
+                        );
+                    }
+                }
+                if last_changed > 89 {
+                    assert_eq!(fields[&89], 1);
+                }
+                if last_changed > 104 {
+                    assert_eq!(fields[&104], u32::from(duration_msec));
+                }
+                assert_eq!(r.bits(1).unwrap(), 1);
+                assert_eq!(r.bits(4).unwrap(), 1);
+                assert_eq!(r.u16().unwrap(), 100);
+                r.finish().unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn shellshock_requires_authoritative_motion_and_a_four_bit_index() {
+        let encode = |origin, motion, shellshock| {
+            player_frame_with_world(
+                1000,
+                950,
+                origin,
+                true,
+                None,
+                [0; 3],
+                WorldSnapshot {
+                    motion,
+                    shellshock: Some(shellshock),
+                    ..Default::default()
+                },
+            )
+        };
+        for index in [0, 1, 5, 15, 16, u8::MAX] {
+            let shellshock = ShellShockSnapshot {
+                index,
+                begin_time: 900,
+                duration_msec: 1000,
+            };
+            assert!(encode(None, None, shellshock).is_err());
+            assert!(encode(Some([0.0; 3]), None, shellshock).is_err());
+            assert!(encode(None, Some(authoritative_motion()), shellshock).is_err());
+            assert_eq!(
+                encode(Some([0.0; 3]), Some(authoritative_motion()), shellshock).is_ok(),
+                index <= 15
+            );
+        }
+        assert!(encode(Some([0.0; 3]), None, ShellShockSnapshot::default()).is_err());
+    }
+
+    #[test]
+    fn shellshock_replay_uses_caller_delay_and_preserves_named_reset() {
+        let equipment = Equipment {
+            perks: Default::default(),
+            abilities: Default::default(),
+            offhands: [None, None],
+            offhand_weapon: 0,
+            grenade_time: 0,
+            move_multiplier: 1.0,
+            weapon: 352,
+            inventory_weapon: None,
+            alternate_weapon: None,
+            fire_count: 0,
+            queued_burst: false,
+            barrel_flags: 0,
+            spread_scale: 0.0,
+            needs_rechamber: false,
+            ammo: None,
+            viewmodel: Some(54),
+            firing: None,
+            aim: None,
+            secondary: None,
+            events: None,
+        };
+        let archived = ShellShockSnapshot {
+            index: 5,
+            begin_time: 45_250,
+            duration_msec: 4321,
+        };
+        let replay_delay_msec = 4000;
+        let rebased = ShellShockSnapshot {
+            begin_time: archived.begin_time + replay_delay_msec,
+            ..archived
+        };
+        let named_reset = ShellShockSnapshot {
+            begin_time: 0,
+            duration_msec: 0,
+            ..archived
+        };
+        for establish_baseline in [true, false] {
+            for shellshock in [
+                Some(rebased),
+                Some(named_reset),
+                Some(ShellShockSnapshot::default()),
+                None,
+            ] {
+                let body = player_frame_with_world(
+                    50_000,
+                    49_950,
+                    Some([1.0, 2.0, 3.0]),
+                    establish_baseline,
+                    Some(equipment),
+                    [0; 3],
+                    WorldSnapshot {
+                        motion: Some(authoritative_motion()),
+                        vitals: Some(PlayerVitals::default()),
+                        replay: Some(ReplayView {
+                            client: 7,
+                            delay_msec: replay_delay_msec,
+                            end_time: 55_000,
+                            skip_text: None,
+                        }),
+                        shellshock,
+                        delta_distance: 1,
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+                let mut r = Reader::new(&body);
+                r.u8().unwrap();
+                assert_eq!(r.u32().unwrap(), 50_000);
+                r.u8().unwrap();
+                r.u8().unwrap();
+                assert_eq!(r.bits(2).unwrap(), 2);
+                let (fields, _) = read_fields(&mut r);
+                assert_eq!(
+                    shellshock_from_fields(&fields),
+                    shellshock.unwrap_or_default()
+                );
+                assert_eq!(fields[&59], 7);
+                assert_eq!(fields[&142], replay_delay_msec);
+                assert_eq!(fields[&54], 0x800);
+                assert_eq!(r.bits(1).unwrap(), 1);
+                assert_eq!(r.bits(4).unwrap(), 13);
+                assert_eq!(r.u16().unwrap(), 100);
+                assert_eq!(r.u16().unwrap(), 100);
+                assert_eq!(r.u8().unwrap(), 1);
+            }
+        }
+    }
+
     #[test]
     fn saved_tactical_smoke_is_published_in_the_default_q_selected_slot() {
         let equipment = Equipment {
@@ -1844,7 +2249,9 @@ mod tests {
             (98, 0x210, 1, 2),
             (101, 0x23c, 1, 2),
             (102, 0xbc, 32, 0),
+            (103, 0x5b0, -97, 0),
             (104, 0x5b4, 16, 2),
+            (105, 0x5ac, 4, 0),
             (106, 0x360, 1, 2),
             (114, 0xc0, 0, 0),
             (122, 0x4bc, -57, 2),

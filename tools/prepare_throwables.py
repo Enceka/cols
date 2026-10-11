@@ -11,7 +11,7 @@ from clientlib import manifest
 from schema_fields import flatten
 
 SUPPORTED = {"frag_grenade_mp", "fragholiday_grenade_mp", "fragshort_grenade_mp",
-             "fragtech_grenade_mp", "semtex_mp", "stielhandgranate_mp", "smoke_grenade_mp"}
+             "fragtech_grenade_mp", "semtex_mp", "stielhandgranate_mp", "smoke_grenade_mp", "flash_grenade_mp", "concussion_grenade_mp"}
 
 
 def smoke_effect(effect):
@@ -106,6 +106,8 @@ def prepare(assets_path, registry_path):
                        "speed": word(0x8f4), "speed_up": word(0x8f8), "speed_forward": word(0x8fc),
                        "stickiness": word(0x928), "parallel": [number(0x934 + 4 * i) for i in range(31)],
                        "perpendicular": [number(0x9b0 + 4 * i) for i in range(31)]})
+        if name in ("flash_grenade_mp", "concussion_grenade_mp"):
+            result[-1]["tactical"] = "flash" if name == "flash_grenade_mp" else "concussion"
         if name == "smoke_grenade_mp":
             result[-1]["smoke"] = smoke_effect(weapon["explosion_effect"])
     if {r["name"] for r in result} != SUPPORTED:
