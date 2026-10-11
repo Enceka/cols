@@ -1523,6 +1523,17 @@ impl PreparedGameState {
             .filter_map(|w| w.composed_name.as_deref())
             .collect()
     }
+    pub(crate) fn same_spawn_equipment(&self, selected: &Self) -> bool {
+        let offhands = |state: &Self| {
+            state
+                .player_grenades
+                .each_ref()
+                .map(|g| g.as_ref().map(|g| (g.definition.index, g.count)))
+        };
+        self.selected_weapon_names() == selected.selected_weapon_names()
+            && self.player_perks.slots == selected.player_perks.slots
+            && offhands(self) == offhands(selected)
+    }
     pub(crate) fn register_history(
         &mut self,
         registry: &mut crate::game_weapon_registry::WeaponRegistry,
@@ -1698,6 +1709,7 @@ impl PreparedGameState {
                 corpses: world.corpses,
                 obituaries: world.obituaries,
                 motion: motion.map(|m| codol_protocol::game_snapshot::MotionSnapshot {
+                    pm_time: m.pm_time,
                     sprint: m.sprint,
                     velocity: m.velocity,
                     flags: m.flags,
@@ -1945,6 +1957,26 @@ pub(crate) fn synthetic() -> PreparedGameState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn identical_guns_do_not_hide_changed_passive_or_offhand_spawn_equipment() {
+        let current = synthetic();
+        let mut selected = current.clone();
+        selected.player_perks =
+            crate::game_perks::Perks::selected([60041, 0, 0], &[60041]).unwrap();
+        assert_eq!(
+            current.selected_weapon_names(),
+            selected.selected_weapon_names()
+        );
+        assert!(!current.same_spawn_equipment(&selected));
+        selected.player_perks = Default::default();
+        selected.player_grenades[0] = Some(crate::game_grenade::Equipped {
+            definition: crate::game_grenade::captured("frag_grenade_mp"),
+            count: 1,
+        });
+        assert!(!current.same_spawn_equipment(&selected));
+        selected.player_grenades = [None, None];
+        assert!(current.same_spawn_equipment(&selected));
+    }
     fn write_captured_sniper_contact(root: &Path, output: &Path, raw: &serde_json::Value) {
         let staged = output.with_extension("animation-input.json");
         std::fs::write(&staged, serde_json::to_vec_pretty(raw).unwrap()).unwrap();

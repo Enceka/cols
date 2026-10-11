@@ -182,6 +182,7 @@ struct Bot {
 
 #[derive(Clone, Copy)]
 pub(crate) struct Kill {
+    pub falling: bool,
     pub time: u32,
     pub victim: EnemySnapshot,
     pub attacker: u8,
@@ -470,11 +471,14 @@ impl TdmMatch {
         row.score += if suicide { -100 } else { 100 };
         row.headshots += u32::from(headshot);
         let team = usize::from(self.config.teams[usize::from(attacker)]);
-        self.scores[team] += if suicide { -100 } else { 100 };
+        // Reference war.onNormalDeath awards team points only for opposing
+        // player kills. Self-grenade penalties affect the personal row only.
+        self.scores[team] += if suicide { 0 } else { 100 };
         if self.scores[team] >= self.config.score_limit as i32 {
             self.finish(now);
         }
         self.kills.push(Kill {
+            falling: false,
             time: now,
             victim,
             attacker,
@@ -495,6 +499,30 @@ impl TdmMatch {
     }
     pub fn player_killed(&mut self, now: u32, victim: EnemySnapshot, hit: PlayerHit) {
         self.credit(now, victim, hit.attacker, hit.weapon, hit.headshot, false);
+    }
+    pub fn player_fell(&mut self, now: u32, victim: EnemySnapshot) {
+        if self.finished {
+            return;
+        }
+        // A world fall has no attacker. Reference handleWorldDeath does not
+        // apply suicidepointloss or invoke war.onNormalDeath in that case.
+        self.rows[usize::from(victim.client_index)].deaths += 1;
+        self.kills.push(Kill {
+            falling: true,
+            time: now,
+            attacker: victim.client_index,
+            weapon: victim.weapon,
+            headshot: false,
+            melee: false,
+            sequence: self.rows[usize::from(victim.client_index)].deaths,
+            victim,
+        });
+        self.dirty = true;
+        tracing::info!(
+            now,
+            victim = victim.client_index,
+            "TDM environmental fall death"
+        );
     }
     pub fn player_tactical(
         &mut self,
@@ -1219,6 +1247,29 @@ mod tests {
         }
     }
     #[test]
+    fn fatal_fall_scores_once_as_an_environmental_death_without_awarding_a_kill() {
+        let mut game = TdmMatch::new(config(), template(), 190.0, &world()).unwrap();
+        game.player_fell(2000, template());
+        let board = game.scoreboard(1);
+        assert_eq!(
+            (
+                board.rows[0].kills,
+                board.rows[0].deaths,
+                board.rows[0].score
+            ),
+            (0, 1, 0)
+        );
+        assert_eq!(board.team_scores[2], 0);
+        let kills = game.take_kills();
+        assert_eq!(kills.len(), 1);
+        assert!(kills[0].falling && !kills[0].headshot && !kills[0].melee);
+        assert_eq!(kills[0].weapon, 352);
+        assert_eq!(kills[0].attacker, kills[0].victim.client_index);
+        game.finished = true;
+        game.player_fell(2100, template());
+        assert!(game.take_kills().is_empty());
+    }
+    #[test]
     fn perception_obeys_team_field_of_view_close_awareness_and_walls() {
         let collision = world();
         let actor = |client, team, x, y| Actor {
@@ -1417,6 +1468,7 @@ mod tests {
             (game.rows[0].kills, game.rows[0].deaths, game.rows[0].score),
             (1, 1, 0)
         );
+        assert_eq!(game.scoreboard(1).team_scores[2], 100);
         assert!(
             game.take_kills()
                 .iter()

@@ -7,6 +7,7 @@ use crate::{game_state::Writer, lobby::LobbyError};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ObituarySnapshot {
+    pub falling: bool,
     /// One temporary entity, outside the player/corpse slots0..20. The caller
     /// allocates IDs separately from impacts and sorts the complete stream.
     pub entity_number: u16,
@@ -25,7 +26,9 @@ const MOD_HEAD_SHOT: u32 = 9;
 
 impl ObituarySnapshot {
     fn event_parameter(self) -> u32 {
-        if self.melee {
+        if self.falling {
+            MEANS_OF_DEATH_BASE + 13 // target0x50d270:killiconfalling
+        } else if self.melee {
             MEANS_OF_DEATH_BASE + 8
         } else if self.headshot {
             MEANS_OF_DEATH_BASE + MOD_HEAD_SHOT
@@ -35,7 +38,7 @@ impl ObituarySnapshot {
     }
     fn validate(self) -> Result<(), LobbyError> {
         if !(27..2046).contains(&self.entity_number)
-            || (self.headshot && self.melee)
+            || (u8::from(self.headshot) + u8::from(self.melee) + u8::from(self.falling) > 1)
             || !(1..900).contains(&self.weapon)
             || self.victim > 18
             || self.attacker > 18
@@ -158,6 +161,7 @@ mod tests {
     #[test]
     fn rolling_obituary_deltas_clear_changed_clients_and_remove_expired_events_once() {
         let old = ObituarySnapshot {
+            falling: false,
             entity_number: 1800,
             weapon: 352,
             headshot: false,
@@ -257,6 +261,7 @@ mod tests {
 
     fn obituary() -> ObituarySnapshot {
         ObituarySnapshot {
+            falling: false,
             entity_number: 1800,
             weapon: 352,
             headshot: false,
@@ -264,6 +269,36 @@ mod tests {
             victim: 1,
             attacker: 0,
         }
+    }
+    #[test]
+    fn falling_uses_this_builds_mod13_icon_while_preserving_the_held_weapon() {
+        let falling = ObituarySnapshot {
+            falling: true,
+            victim: 0,
+            attacker: 0,
+            ..obituary()
+        };
+        let mut out = Writer::default();
+        write_obituaries(&mut out, &[falling], false).unwrap();
+        let (_, fields) = decode(&mut Reader::new(&out.bytes));
+        assert_eq!(fields[&0xa8], 913);
+        assert_eq!(falling.weapon, 352);
+        assert!(
+            ObituarySnapshot {
+                headshot: true,
+                ..falling
+            }
+            .validate()
+            .is_err()
+        );
+        assert!(
+            ObituarySnapshot {
+                melee: true,
+                ..falling
+            }
+            .validate()
+            .is_err()
+        );
     }
 
     fn finish(out: &mut Writer) {
@@ -295,6 +330,7 @@ mod tests {
                 out.bytes.push(0xa6);
                 let records = [
                     ObituarySnapshot {
+                        falling: false,
                         entity_number: 27,
                         weapon,
                         headshot,
@@ -303,6 +339,7 @@ mod tests {
                         attacker: 0,
                     },
                     ObituarySnapshot {
+                        falling: false,
                         entity_number: 1800,
                         weapon,
                         headshot,
@@ -311,6 +348,7 @@ mod tests {
                         attacker: 0,
                     },
                     ObituarySnapshot {
+                        falling: false,
                         entity_number: 1801,
                         weapon,
                         headshot,
@@ -319,6 +357,7 @@ mod tests {
                         attacker: 1,
                     },
                     ObituarySnapshot {
+                        falling: false,
                         entity_number: 2045,
                         weapon,
                         headshot,
@@ -395,10 +434,12 @@ mod tests {
         let valid = obituary();
         for invalid in [
             ObituarySnapshot {
+                falling: false,
                 entity_number: 20,
                 ..valid
             },
             ObituarySnapshot {
+                falling: false,
                 entity_number: 2046,
                 ..valid
             },
@@ -433,6 +474,7 @@ mod tests {
             [
                 valid,
                 ObituarySnapshot {
+                    falling: false,
                     entity_number: 27,
                     ..valid
                 },

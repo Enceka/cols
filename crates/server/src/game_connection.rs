@@ -6,6 +6,13 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+#[derive(Clone, Copy, Default)]
+struct KillCause {
+    headshot: bool,
+    melee: bool,
+    falling: bool,
+}
+
 #[derive(Default)]
 pub(crate) struct Connection {
     challenge: Option<u32>,
@@ -14,7 +21,6 @@ pub(crate) struct Connection {
     scoreboard_sent: bool,
     hud_rules_sent: bool,
     hud_rules_sequence: u32,
-    perk_hud_life: Option<(u8, u32)>,
     profile_ready_sent: bool,
     model_rules_sent: bool,
     model_rules_sequence: u32,
@@ -180,11 +186,19 @@ impl Connection {
         self.requested_backpack = None;
         tracing::info!(slot,global_class=?state.selected_backpack_class(),"selected in-game backpack");
         if current.selected_weapon_names() == state.selected_weapon_names() {
+            let unchanged = current.same_spawn_equipment(&state);
             if current.player_card != state.player_card {
                 self.world_history.clear();
             }
             Arc::make_mut(self.game_state.as_mut().unwrap()).update_profile_selection(&state);
-            if self.next_spawn_loadout.take().is_some() {
+            self.pending_loadout = None;
+            if !unchanged {
+                // Same guns need no new resource registration, but passive
+                // skills and offhands still belong to the next life.
+                self.next_spawn_loadout = Some(Arc::new(state));
+                self.feedback
+                    .push_back("Backpack will change on next spawn".into());
+            } else if self.next_spawn_loadout.take().is_some() {
                 self.feedback
                     .push_back("Current backpack kept for next spawn".into());
             }
@@ -556,7 +570,7 @@ impl Connection {
             .player
             .as_ref()
             .map(|p| self.hud_equipment(p.equipment()));
-        let perk_display = self.perk_display(server_time, equipment);
+        let perk_display = self.perk_display(equipment);
         let state = self.game_state.as_ref().expect("enabled state");
         let mut angles = if state.has_spawn() {
             self.view_angles()
@@ -1219,22 +1233,14 @@ impl Connection {
         }
         equipment
     }
-    fn perk_display(
-        &mut self,
-        now: u32,
-        equipment: Option<codol_protocol::game_snapshot::Equipment>,
-    ) -> bool {
+    fn perk_display(&self, equipment: Option<codol_protocol::game_snapshot::Equipment>) -> bool {
         if self.vitals.health == 0
             || self.tdm.as_ref().is_some_and(|m| m.finished)
             || equipment.is_none_or(|e| e.perks == [0; 3])
         {
             return false;
         }
-        let count = self.vitals.spawn_count;
-        if self.perk_hud_life.is_none_or(|(life, _)| life != count) {
-            self.perk_hud_life = Some((count, now));
-        }
-        now.wrapping_sub(self.perk_hud_life.unwrap().1) < 5000
+        true
     }
 
     fn queue_obituary(
@@ -1243,8 +1249,7 @@ impl Connection {
         weapon: u16,
         victim: u8,
         attacker: u8,
-        headshot: bool,
-        melee: bool,
+        cause: KillCause,
     ) {
         let entity_number = if self.next_obituary < 1800 {
             1800
@@ -1259,15 +1264,16 @@ impl Connection {
         self.obituaries.push_back((
             now,
             codol_protocol::game_obituary::ObituarySnapshot {
+                falling: cause.falling,
                 entity_number,
                 weapon,
-                headshot,
-                melee,
+                headshot: cause.headshot,
+                melee: cause.melee,
                 victim,
                 attacker,
             },
         ));
-        if headshot && attacker < 2 {
+        if cause.headshot && attacker < 2 {
             self.headshots[usize::from(attacker)] += 1;
         }
         self.scoreboard_sent = false;
@@ -1275,7 +1281,7 @@ impl Connection {
             victim,
             attacker,
             weapon,
-            headshot,
+            headshot = cause.headshot,
             "training kill obituary queued"
         );
     }
@@ -1417,7 +1423,7 @@ impl Connection {
                         self.death_sequence[0] = self.death_sequence[0].wrapping_add(1).max(1);
                         self.corpses
                             .insert(20, (now, state.corpse(local, self.death_sequence[0])));
-                        self.queue_obituary(now, shot.weapon, 0, 1, false, false);
+                        self.queue_obituary(now, shot.weapon, 0, 1, KillCause::default());
                     }
                 }
             }
@@ -1440,7 +1446,9 @@ impl Connection {
             ) {
                 tracing::info!(time = kill.time, entity = bag.entity_number, victim = kill.victim.client_index, origin = ?bag.origin, "scavenger bag dropped");
             }
-            self.last_kill = Some(kill);
+            if !kill.falling {
+                self.last_kill = Some(kill);
+            }
             if kill.victim.client_index == 0
                 && kill.attacker != 0
                 && !self.tdm.as_ref().unwrap().finished
@@ -1488,8 +1496,11 @@ impl Connection {
                 kill.weapon,
                 kill.victim.client_index,
                 kill.attacker,
-                kill.headshot,
-                kill.melee,
+                KillCause {
+                    headshot: kill.headshot,
+                    melee: kill.melee,
+                    falling: kill.falling,
+                },
             );
         }
     }
@@ -1836,6 +1847,73 @@ impl Connection {
         Ok(())
     }
 
+    fn apply_landing(&mut self, landing: crate::game_landing::Landing) {
+        if self.vitals.health == 0 || self.tdm.as_ref().is_some_and(|m| m.finished) {
+            return;
+        }
+        let Some(player) = &mut self.player else {
+            return;
+        };
+        if let Some(event) = landing.event {
+            player.movement_event(event.id, event.parameter);
+        }
+        let damage = player.fall_damage(landing.damage);
+        if damage == 0 {
+            return;
+        }
+        let now = landing.time;
+        self.vitals.health = self.vitals.health.saturating_sub(damage);
+        self.vitals.damage_event = self.vitals.damage_event.wrapping_add(1);
+        self.vitals.damage_count = damage.min(127) as u8;
+        self.health_recovery.damaged(now, self.vitals.health);
+        tracing::info!(
+            now,
+            raw_damage = landing.damage,
+            damage,
+            health = self.vitals.health,
+            "player landing damage"
+        );
+        if self.vitals.health != 0 {
+            return;
+        }
+        self.player_death = Some(now);
+        self.hit_feedback.clear();
+        self.tactical.clear();
+        let angles = self.view_angles();
+        let state = self.game_state.as_ref().unwrap();
+        let mut local = state.local_player_snapshot(false).unwrap();
+        local.origin = self.motion.as_ref().unwrap().origin;
+        local.angles = angles;
+        local.weapon = self.player.as_ref().unwrap().equipment().weapon;
+        self.player
+            .as_mut()
+            .unwrap()
+            .drop_offhand_on_death(now, angles);
+        if let Some(tdm) = &mut self.tdm {
+            tdm.player_fell(now, local);
+            self.drain_match_kills(now);
+        } else {
+            self.death_sequence[0] = self.death_sequence[0].wrapping_add(1).max(1);
+            self.corpses
+                .insert(20, (now, state.corpse(local, self.death_sequence[0])));
+            self.queue_obituary(
+                now,
+                local.weapon,
+                0,
+                0,
+                KillCause {
+                    falling: true,
+                    ..Default::default()
+                },
+            );
+        }
+        if let Some(motion) = &mut self.motion {
+            motion.cancel_melee_charge();
+            motion.cancel_sprint();
+            motion.velocity = [0.0; 3];
+        }
+    }
+
     fn consume_inputs(&mut self, through: u32) {
         while self
             .pending_inputs
@@ -1921,6 +1999,17 @@ impl Connection {
                         player.movement_event(event, surface);
                     }
                 }
+            }
+            let landings = self
+                .motion
+                .as_mut()
+                .map_or_else(Vec::new, |m| m.take_landings());
+            for landing in landings {
+                self.apply_landing(landing);
+            }
+            if self.vitals.health == 0 {
+                input.buttons = 0;
+                input.direction = 0;
             }
             // Native0x41e525/0x429320 advances movement before the weapon
             // state machine. Sprint entry/exit and melee use this command's hull.
@@ -2077,8 +2166,10 @@ impl Connection {
                                         shot.weapon,
                                         1,
                                         0,
-                                        headshot,
-                                        false,
+                                        KillCause {
+                                            headshot,
+                                            ..Default::default()
+                                        },
                                     );
                                 }
                             }
@@ -2269,6 +2360,29 @@ fn decode_connect_name(name: &str) -> String {
 mod tests {
     use super::*;
     #[test]
+    fn raw_landing_event_and_profile_immunity_apply_once_before_health_recovery() {
+        let landing = crate::game_landing::calculate(2000, 214.0, 0.0, 0.0, 800, 3 << 20).unwrap();
+        let mut c = Connection {
+            player: Some(crate::game_player::tests::scavenger_player(90, 180)),
+            ..Default::default()
+        };
+        c.apply_landing(landing);
+        assert_eq!(c.vitals.health, 50);
+        assert_eq!(c.vitals.damage_event, 1);
+        let events = c.player.as_ref().unwrap().equipment().events.unwrap();
+        assert_eq!(events.slots[0], landing.event.unwrap());
+        assert_eq!(c.health_recovery.recover(6999, 50), 50);
+        assert_eq!(c.health_recovery.recover(7000, 50), 60);
+        c.vitals.health = 100;
+        c.player
+            .as_mut()
+            .unwrap()
+            .set_perks(crate::game_perks::Perks::selected([60041, 0, 0], &[60041]).unwrap());
+        c.apply_landing(landing);
+        assert_eq!(c.vitals.health, 100);
+        assert_eq!(c.vitals.damage_event, 1);
+    }
+    #[test]
     fn profile_notice_waits_for_loaded_profile_hud_and_first_snapshot_ack() {
         let mut state = crate::game_state::synthetic();
         state.profile_hash = Some([1; 32]);
@@ -2316,22 +2430,25 @@ mod tests {
         assert_eq!(player.equipment().perks, [4, 0, 0]);
     }
     #[test]
-    fn native_perk_sidebar_has_one_five_second_window_per_live_spawn() {
+    fn native_perk_sidebar_stays_visible_in_each_live_spawn_without_expiring() {
         let equipment = crate::game_player::tests::scavenger_player(90, 180).equipment();
         let mut c = Connection {
             vitals: Default::default(),
             ..Default::default()
         };
-        assert!(!c.perk_display(1000, None));
-        assert!(c.perk_display(1100, Some(equipment)));
-        assert!(c.perk_display(6099, Some(equipment)));
-        assert!(!c.perk_display(6100, Some(equipment)));
+        assert!(!c.perk_display(None));
+        assert!(c.perk_display(Some(equipment)));
         c.vitals.health = 0;
-        assert!(!c.perk_display(6200, Some(equipment)));
+        assert!(!c.perk_display(Some(equipment)));
         c.vitals.health = 100;
         c.vitals.spawn_count += 1;
-        assert!(c.perk_display(6300, Some(equipment)));
-        assert_eq!(c.perk_hud_life, Some((c.vitals.spawn_count, 6300)));
+        assert!(c.perk_display(Some(equipment)));
+        let empty = codol_protocol::game_snapshot::Equipment {
+            perks: [0; 3],
+            ..equipment
+        };
+        assert!(!c.perk_display(Some(empty)));
+        assert_eq!(equipment.perks, [4, 0, 0]);
     }
     #[test]
     fn a_stalled_ack_keeps_its_input_base_while_new_snapshot_history_stays_bounded() {
@@ -2414,9 +2531,27 @@ mod tests {
     #[test]
     fn headshot_kills_are_counted_for_their_attacker() {
         let mut c = Connection::default();
-        c.queue_obituary(1000, 352, 1, 0, true, false);
-        c.queue_obituary(1100, 352, 1, 0, false, false);
-        c.queue_obituary(1200, 352, 0, 1, true, false);
+        c.queue_obituary(
+            1000,
+            352,
+            1,
+            0,
+            KillCause {
+                headshot: true,
+                ..Default::default()
+            },
+        );
+        c.queue_obituary(1100, 352, 1, 0, KillCause::default());
+        c.queue_obituary(
+            1200,
+            352,
+            0,
+            1,
+            KillCause {
+                headshot: true,
+                ..Default::default()
+            },
+        );
         assert_eq!(c.headshots, [1, 1]);
         assert!(c.obituaries[0].1.headshot && !c.obituaries[1].1.headshot);
     }

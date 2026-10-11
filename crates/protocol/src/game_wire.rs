@@ -527,6 +527,7 @@ mod tests {
             .collect();
         let obituaries: Vec<_> = (0..32)
             .map(|i| ObituarySnapshot {
+                falling: false,
                 entity_number: 1800 + i,
                 weapon: 352,
                 headshot: false,

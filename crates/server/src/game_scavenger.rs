@@ -110,6 +110,7 @@ mod tests {
     use super::*;
     fn kill(time: u32) -> crate::game_match::Kill {
         crate::game_match::Kill {
+            falling: false,
             time,
             attacker: 0,
             weapon: 352,

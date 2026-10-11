@@ -989,6 +989,8 @@ impl Stance {
 
 #[derive(Debug, Clone)]
 pub struct Motion {
+    pub pm_time: u16,
+    landings: Vec<crate::game_landing::Landing>,
     pub sprint: codol_protocol::game_snapshot::SprintState,
     sprint_rules: crate::game_sprint::Rules,
     pub origin: V3,
@@ -1016,6 +1018,8 @@ pub struct Motion {
 impl Motion {
     pub fn new(origin: V3) -> Self {
         Self {
+            pm_time: 0,
+            landings: Vec::new(),
             sprint: Default::default(),
             sprint_rules: Default::default(),
             origin,
@@ -1043,6 +1047,9 @@ impl Motion {
     }
     pub fn grounded(&self) -> bool {
         self.ground_entity != NONE
+    }
+    pub(crate) fn take_landings(&mut self) -> Vec<crate::game_landing::Landing> {
+        std::mem::take(&mut self.landings)
     }
     pub(crate) fn set_sprint_rules(&mut self, rules: crate::game_sprint::Rules) {
         self.sprint_rules = rules;
@@ -1154,6 +1161,7 @@ impl Motion {
         if cmd.time <= self.command_time || !weapon_scale.is_finite() || weapon_scale < 0.0 {
             return;
         }
+        self.landings.clear();
         if cmd.time - self.command_time > 1000 {
             self.command_time = cmd.time - 1000;
         }
@@ -1165,6 +1173,13 @@ impl Motion {
         }
     }
     fn step(&mut self, cmd: &UserCommand, weapon_scale: f32, ads: bool, dt_ms: u32, c: &Collision) {
+        self.pm_time = self.pm_time.saturating_sub(dt_ms as u16);
+        if self.pm_time == 0 {
+            self.flags &= !0x80;
+        }
+        let entered_airborne = !self.grounded();
+        let previous_z = self.origin[2];
+        let previous_velocity_z = self.velocity[2];
         let dt = dt_ms as f32 * 0.001;
         let desired = if cmd.buttons & 0x100 != 0 {
             Stance::Prone
@@ -1235,7 +1250,7 @@ impl Motion {
             self.sprint_rules,
         );
         self.flags = self.stance.flags()
-            | (self.flags & 0x8000)
+            | (self.flags & (0x8000 | 0x80))
             | if sprint { 0x4000 } else { 0 }
             | if !self.grounded() && self.jump_time != 0 {
                 0x2000
@@ -1274,6 +1289,11 @@ impl Motion {
                 * self.stance.scale()
                 * if ads { 0.4 } else { 1.0 }
                 * if sprint { 1.5 } else { 1.0 }
+                * if self.pm_time != 0 && self.flags & 0x80 != 0 {
+                    0.25
+                } else {
+                    1.0
+                }
         } else {
             0.0
         };
@@ -1310,6 +1330,24 @@ impl Motion {
             self.step_slide(c, dt, !was_grounded);
         }
         self.ground(c, 0.25);
+        if entered_airborne
+            && self.grounded()
+            && let Some(landing) = crate::game_landing::calculate(
+                self.command_time,
+                previous_z,
+                previous_velocity_z,
+                self.origin[2],
+                self.gravity,
+                self.surface_flags,
+            )
+        {
+            self.velocity = mul(self.velocity, landing.velocity_scale);
+            if landing.pm_time != 0 {
+                self.pm_time = landing.pm_time;
+                self.flags |= 0x80;
+            }
+            self.landings.push(landing);
+        }
     }
     fn update_view_height(&mut self) {
         if self.view_height_lerp_time == 0 {
@@ -1532,6 +1570,72 @@ fn clip_planes(v: V3, planes: &[V3]) -> V3 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    #[ignore = "derives a supported ledge and fall route from captured Killhouse collision"]
+    fn prepare_captured_landing_scene() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../research-output");
+        let mut state: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(root.join("tdm-killhouse-hud-state.json")).unwrap(),
+        )
+        .unwrap();
+        let c = Collision::load(std::path::Path::new(
+            state["collision_file"].as_str().unwrap(),
+        ))
+        .unwrap();
+        let mut selected = None;
+        'search: for x in (2900..4400).step_by(40) {
+            for y in (-1000..1300).step_by(40) {
+                let start = [x as f32, y as f32, 500.0];
+                let hit = c.trace(start, [start[0], start[1], 100.0], 70.0);
+                if hit.start_solid || hit.fraction == 1.0 || hit.normal[2] < 0.9 {
+                    continue;
+                }
+                let origin = [start[0], start[1], 500.0 - 400.0 * hit.fraction];
+                if origin[2] < 180.0 || origin[2] > 400.0 {
+                    continue;
+                }
+                for yaw in (0..65536u32).step_by(8192) {
+                    let mut m = Motion::new(origin);
+                    m.command_time = 1000;
+                    let mut ledge = origin;
+                    for _ in 0..130 {
+                        let input = UserCommand {
+                            time: m.command_time + 16,
+                            direction: 1,
+                            angles: [0, yaw as u16, 0],
+                            ..Default::default()
+                        };
+                        m.apply(&input, 1.0, false, &c);
+                        if m.grounded() && m.origin[2] >= origin[2] - 2.0 {
+                            ledge = m.origin;
+                        }
+                        for landing in m.take_landings() {
+                            if landing.damage >= 30 {
+                                selected = Some((ledge, yaw, m.origin, landing));
+                                break 'search;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let (origin, yaw, end, landing) =
+            selected.expect("supported ledge route with a damaging fall");
+        for team in 0..2 {
+            state["match_config"]["spawns"][team][0] = serde_json::json!(origin);
+        }
+        // These files are diagnostic only; normal map settings are not replaced.
+        std::fs::write(
+            root.join("landing-diagnostic-state.json"),
+            serde_json::to_vec_pretty(&state).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(root.join("landing-diagnostic-route.json"), serde_json::to_vec_pretty(&serde_json::json!({"origin":origin,"yaw":yaw,"end":end,"time":landing.time,"raw_damage":landing.damage,"event":landing.event.map(|e|(e.id,e.parameter)),"collision_file":state["collision_file"]})).unwrap()).unwrap();
+        println!(
+            "landing diagnostic: origin={origin:?} yaw={yaw} end={end:?} raw_damage={}",
+            landing.damage
+        );
+    }
     fn world(brushes: Vec<BrushExport>, triangles: Vec<TriangleExport>) -> Collision {
         Collision::from_export(Export {
             schema_version: 1,
@@ -1742,6 +1846,30 @@ mod tests {
         m.apply(&cmd(1100, 0, 0), 1.0, false, &c);
         assert!((0.0..=0.25).contains(&m.origin[2]), "{:?}", m);
         assert!(m.grounded());
+    }
+    #[test]
+    fn real_collision_landing_records_one_hit_and_expires_the_movement_timer() {
+        let mut f = floor();
+        f.plane_surface_flags = vec![3 << 20; 6];
+        let c = world(vec![f], vec![]);
+        let mut m = Motion::new([0.0, 0.0, 220.0]);
+        m.command_time = 1000;
+        let mut hits = Vec::new();
+        for _ in 0..80 {
+            m.apply(&cmd(m.command_time + 16, 0, 0), 1.0, false, &c);
+            hits.extend(m.take_landings());
+        }
+        assert_eq!(hits.len(), 1);
+        assert!((52..=54).contains(&hits[0].damage), "{:?}", hits);
+        assert!(m.grounded());
+        assert!(m.pm_time > 0);
+        assert_ne!(m.flags & 0x80, 0);
+        for _ in 0..150 {
+            m.apply(&cmd(m.command_time + 16, 0, 0), 1.0, false, &c);
+            assert!(m.take_landings().is_empty());
+        }
+        assert_eq!(m.pm_time, 0);
+        assert_eq!(m.flags & 0x80, 0);
     }
     #[test]
     fn jump_returns_to_real_ground_and_does_not_repeat_while_held() {

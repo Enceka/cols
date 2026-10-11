@@ -75,6 +75,7 @@ pub struct Aim {
 /// remains the frame's `origin` argument so it has a single source of truth.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct MotionSnapshot {
+    pub pm_time: u16,
     pub sprint: SprintState,
     pub melee_charge: Option<MeleeCharge>,
     pub velocity: [f32; 3],
@@ -420,6 +421,7 @@ pub fn player_frame_with_world(
             || m.jump_time > command_time
             || m.sprint.last_start > command_time
             || m.sprint.last_end > command_time
+            || m.pm_time > i16::MAX as u16
     }) {
         return Err(LobbyError("invalid authoritative movement"));
     }
@@ -526,6 +528,7 @@ pub fn player_frame_with_world(
             }
             fields.extend([
                 (12, u32::from(motion.bob_cycle), 8),
+                (52, u32::from(motion.pm_time), 16),
                 (13, motion.velocity[1].to_bits(), 0),
                 (14, motion.velocity[0].to_bits(), 0),
                 (16, motion.velocity[2].to_bits(), 0),
@@ -711,7 +714,7 @@ pub fn player_frame_with_world(
             // an absolute network angle via0x5a17d0.
             out.bits(0, 2);
             out.bytes.extend_from_slice(&(value as u16).to_le_bytes());
-        } else if (index == 43 || index == 105) && value == 0 {
+        } else if matches!(index, 43 | 52 | 105) && value == 0 {
             out.bits(0, 1); // scalar zero gate, including an explicit clear
         } else {
             // 0x5a27f0 nonzero gate -> 0x5a2510 -> 0x5a2470:
@@ -1231,6 +1234,42 @@ mod tests {
             speed: 190,
             gravity: 800,
             ..Default::default()
+        }
+    }
+    #[test]
+    fn landing_timer_and_packed_pain_event_survive_full_delta_and_clear() {
+        for baseline in [true, false] {
+            for timer in [2000, 15, 0] {
+                let mut motion = authoritative_motion();
+                motion.pm_time = timer;
+                motion.flags = if timer != 0 { 0x80 } else { 0 };
+                let body = player_frame_with_world(
+                    3000,
+                    2950,
+                    Some([0.0; 3]),
+                    baseline,
+                    None,
+                    [0; 3],
+                    WorldSnapshot {
+                        motion: Some(motion),
+                        delta_distance: 1,
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+                let mut r = Reader::new(&body);
+                r.u8().unwrap();
+                r.u32().unwrap();
+                r.u8().unwrap();
+                r.u8().unwrap();
+                r.bits(2).unwrap();
+                let (fields, _) = read_fields(&mut r);
+                assert_eq!(fields[&52], u32::from(timer));
+                assert_eq!(
+                    fields.get(&20).copied().unwrap_or(0) & 0x80,
+                    if timer != 0 { 0x80 } else { 0 }
+                );
+            }
         }
     }
 
@@ -1782,6 +1821,7 @@ mod tests {
             generation: 1,
         };
         let kill = crate::game_obituary::ObituarySnapshot {
+            falling: false,
             entity_number: 1800,
             weapon: 352,
             headshot: false,
@@ -1994,6 +2034,7 @@ mod tests {
         };
         for lerp_down in [false, true] {
             let motion = MotionSnapshot {
+                pm_time: 0,
                 sprint: SprintState::default(),
                 melee_charge: None,
                 velocity: [127.25, -52.5, 190.0],
@@ -2120,6 +2161,7 @@ mod tests {
             None,
         ] {
             let motion = MotionSnapshot {
+                pm_time: 0,
                 sprint: SprintState::default(),
                 melee_charge: charge,
                 velocity: [0.0; 3],

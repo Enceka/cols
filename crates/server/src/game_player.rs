@@ -520,6 +520,11 @@ impl Player {
     pub fn explosive_damage(&self, damage: u16) -> u16 {
         (f32::from(damage) * self.perks.value("modArmorExplosiveDamageScale", 1.0)).ceil() as u16
     }
+    pub fn fall_damage(&self, damage: u16) -> u16 {
+        // Defensive scaling follows the supplied MP perk script. The native
+        // movement event carries raw landing energy; immunity remains zero.
+        (f32::from(damage) * self.perks.value("modFallDamageScale", 1.0)) as u16
+    }
     pub fn hides_victim_death_icon(&self) -> bool {
         self.perks.has("modVictimNoDeadIcon")
     }
@@ -2656,6 +2661,17 @@ pub(crate) mod tests {
         assert_eq!(p.sprint_rules().maximum(), 0);
         p.set_perks(Default::default());
         assert_eq!(p.sprint_rules().maximum(), 2000);
+    }
+    #[test]
+    fn captured_lightweight_removes_landing_damage_without_affecting_explosions() {
+        let mut p = switchable_player(352, 1.0);
+        assert_eq!(p.fall_damage(100), 100);
+        p.set_perks(crate::game_perks::Perks::selected([60041, 0, 0], &[60041]).unwrap());
+        assert_eq!(p.fall_damage(100), 0);
+        assert_eq!(p.fall_damage(50), 0);
+        assert_eq!(p.explosive_damage(50), 50);
+        p.set_perks(Default::default());
+        assert_eq!(p.fall_damage(50), 50);
     }
     #[test]
     fn sprint_uses_native_in_loop_out_and_blocks_shots_until_recovery() {
