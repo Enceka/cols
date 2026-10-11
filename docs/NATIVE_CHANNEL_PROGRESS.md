@@ -15,6 +15,8 @@
 
 双方都在 DTLS DATA 内再做上述 XOR。目标 0x4602a0 构造 C2S 的9字节应用头，0x46bff0/0x46bf00 只 XOR 其后内容，0x5a5720 添加序号。目标 0x467520 读取 S2C 两个 LE32，0x46bf80 XOR 后续正文。ACK 的最高位标记 zlib；当前只写未压缩包。
 
+2026-10-11更新：大的初始gamestate现已使用本版ACK高位zlib路径，先压缩再XOR，客户端先XOR再解压；小消息保持未压缩。详见 `PLAYER_APPEARANCE_PROGRESS.md`，原生分片仍未实现，不能把压缩视作任意大消息传输支持。
+
 `DAT_0796f2d8` 是 configstring3 经十进制解析的 serverId，参与 **C2S** 初值；不是独立随机密钥，也不参与 S2C 初值。gamestate 尾部的 checksumFeed 是另一字段（连接对象+0x13c），不可混淆。旧 `incoming_xor/outgoing_xor/server_outgoing_xor` 的方向命名和4字节 XOR 偏移已被 `open_client/server_packet` 取代。
 
 ## opcode 和位池
