@@ -13,8 +13,19 @@ async fn discovery(
     // deadline; a dead service or the old512-request cutoff still fails.
     for _ in 0..3 {
         client.send_to(request, server).await.unwrap();
-        if let Ok(reply) =
-            tokio::time::timeout(Duration::from_secs(2), client.recv_from(buffer)).await
+        if let Ok(reply) = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let (size, from) = client.recv_from(buffer).await?;
+                // A retried primary request can arrive after a later alternate
+                // probe. Match response kind and socket, within one deadline.
+                let expected = if request[0] == 30 { 31 } else { 21 };
+                let alternate = request[0] == 20 && request[3] != 0;
+                if size > 0 && buffer[0] == expected && (from == server) != alternate {
+                    return std::io::Result::Ok((size, from));
+                }
+            }
+        })
+        .await
         {
             return reply.unwrap();
         }
