@@ -18,6 +18,33 @@ impl ImpactEvents {
         weapon: u16,
         hit: crate::game_combat::WorldImpact,
     ) -> Option<ImpactSnapshot> {
+        self.push_event(now, weapon, hit, Default::default())
+    }
+    pub fn explosion(
+        &mut self,
+        now: u32,
+        weapon: u16,
+        origin: [f32; 3],
+        normal: [f32; 3],
+    ) -> Option<ImpactSnapshot> {
+        self.push_event(
+            now,
+            weapon,
+            crate::game_combat::WorldImpact {
+                origin,
+                normal,
+                surface: 0,
+            },
+            codol_protocol::game_impact::ImpactEvent::GrenadeExplosion,
+        )
+    }
+    fn push_event(
+        &mut self,
+        now: u32,
+        weapon: u16,
+        hit: crate::game_combat::WorldImpact,
+        event: codol_protocol::game_impact::ImpactEvent,
+    ) -> Option<ImpactSnapshot> {
         if !(1..900).contains(&weapon)
             || hit.surface > 30
             || hit
@@ -30,17 +57,18 @@ impl ImpactEvents {
         let normal_byte = codol_protocol::game_impact::normal_byte(hit.normal).ok()?;
         self.expire(now);
         let first = codol_protocol::game_held_weapon::END_ENTITY;
-        let entity_number = if !(first..1800).contains(&self.next_entity) {
+        let entity_number = if !(first..1700).contains(&self.next_entity) {
             first
         } else {
             self.next_entity
         };
-        self.next_entity = if entity_number == 1799 {
+        self.next_entity = if entity_number == 1699 {
             first
         } else {
             entity_number + 1
         };
         let impact = ImpactSnapshot {
+            event,
             entity_number,
             origin: hit.origin,
             normal_byte,
@@ -97,7 +125,7 @@ mod tests {
     #[test]
     fn clock_wrap_and_entity_wrap_keep_events_bounded_and_sorted() {
         let mut events = ImpactEvents {
-            next_entity: 1799,
+            next_entity: 1699,
             ..ImpactEvents::default()
         };
         let now = u32::MAX - 20;
@@ -106,7 +134,7 @@ mod tests {
         let frame = events.snapshot(now.wrapping_add(199));
         assert_eq!(
             frame.iter().map(|e| e.entity_number).collect::<Vec<_>>(),
-            [54, 1799]
+            [54, 1699]
         );
         assert!(events.snapshot(now.wrapping_add(210)).is_empty());
         for i in 0..100 {

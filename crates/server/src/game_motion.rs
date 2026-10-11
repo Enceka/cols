@@ -368,7 +368,17 @@ impl Collision {
         let expanded = add(half, [SKIN; 3]);
         let bounds = Bounds::center_half(start, expanded).union(Bounds::center_half(end, expanded));
         let mut result = Trace::default();
-        self.trace_node(0, bounds, start, end, capsule, &mut result);
+        self.trace_node(
+            0,
+            bounds,
+            start,
+            end,
+            Sweep {
+                capsule,
+                mask: PLAYER_MASK,
+            },
+            &mut result,
+        );
         result
     }
     /// Cast a zero-width segment through exported world geometry. Unlike the
@@ -377,6 +387,27 @@ impl Collision {
     /// its endpoint escapes, so a shot cannot originate through that brush.
     pub fn raycast(&self, start: V3, end: V3) -> Trace {
         self.raycast_mask(start, end, SHOT_MASK)
+    }
+    pub(crate) fn projectile_trace(&self, start: V3, end: V3, radius: f32) -> Trace {
+        let capsule = Capsule {
+            radius,
+            segment_half: 0.0,
+        };
+        let half = [radius; 3];
+        let bounds = Bounds::center_half(start, half).union(Bounds::center_half(end, half));
+        let mut trace = Trace::default();
+        self.trace_node(
+            0,
+            bounds,
+            start,
+            end,
+            Sweep {
+                capsule,
+                mask: SHOT_MASK,
+            },
+            &mut trace,
+        );
+        trace
     }
     #[cfg(test)]
     pub fn movement_surface(&self, start: V3, end: V3) -> Trace {
@@ -446,7 +477,7 @@ impl Collision {
         bounds: Bounds,
         start: V3,
         end: V3,
-        capsule: Capsule,
+        sweep: Sweep,
         result: &mut Trace,
     ) {
         if !self.nodes[index].bounds().intersects(bounds) {
@@ -454,21 +485,21 @@ impl Collision {
         }
         match self.nodes[index] {
             Node::Branch { left, right, .. } => {
-                self.trace_node(left, bounds, start, end, capsule, result);
-                self.trace_node(right, bounds, start, end, capsule, result);
+                self.trace_node(left, bounds, start, end, sweep, result);
+                self.trace_node(right, bounds, start, end, sweep, result);
             }
             Node::Leaf { first, count, .. } => {
                 for &i in &self.indices[first..first + count] {
                     let p = &self.primitives[i];
-                    if p.contents & PLAYER_MASK == 0 || !p.bounds.intersects(bounds) {
+                    if p.contents & sweep.mask == 0 || !p.bounds.intersects(bounds) {
                         continue;
                     }
                     let hit = match &p.shape {
                         Shape::Brush { planes, surfaces } => {
-                            sweep_brush(planes, surfaces, start, end, capsule)
+                            sweep_brush(planes, surfaces, start, end, sweep.capsule)
                         }
                         Shape::Triangle { vertices } => {
-                            sweep_triangle(*vertices, start, end, capsule)
+                            sweep_triangle(*vertices, start, end, sweep.capsule)
                         }
                     };
                     result.start_solid |= hit.start_solid;
@@ -636,6 +667,11 @@ fn ray_triangle(vertices: [V3; 3], start: V3, end: V3) -> Option<Trace> {
 struct Capsule {
     radius: f32,
     segment_half: f32,
+}
+#[derive(Clone, Copy)]
+struct Sweep {
+    capsule: Capsule,
+    mask: u32,
 }
 impl Capsule {
     fn new(height: f32) -> Self {

@@ -457,11 +457,12 @@ impl TdmMatch {
         }
         self.rows[usize::from(victim.client_index)].deaths += 1;
         let row = &mut self.rows[usize::from(attacker)];
-        row.kills += 1;
-        row.score += 100;
+        let suicide = attacker == victim.client_index;
+        row.kills += u32::from(!suicide);
+        row.score += if suicide { -100 } else { 100 };
         row.headshots += u32::from(headshot);
         let team = usize::from(self.config.teams[usize::from(attacker)]);
-        self.scores[team] += 100;
+        self.scores[team] += if suicide { -100 } else { 100 };
         if self.scores[team] >= self.config.score_limit as i32 {
             self.finish(now);
         }
@@ -486,6 +487,44 @@ impl TdmMatch {
     }
     pub fn player_killed(&mut self, now: u32, victim: EnemySnapshot, hit: PlayerHit) {
         self.credit(now, victim, hit.attacker, hit.weapon, hit.headshot, false);
+    }
+    pub fn player_explosion(
+        &mut self,
+        now: u32,
+        explosion: &crate::game_grenade::Explosion,
+        local: EnemySnapshot,
+        collision: &Collision,
+    ) -> (Option<codol_protocol::game_hit_feedback::HitKind>, u16) {
+        if self.finished {
+            return (None, 0);
+        }
+        let hits = self
+            .bots
+            .iter()
+            .filter(|bot| bot.health != 0 && bot.snapshot.team != local.team)
+            .map(|bot| {
+                (
+                    bot.snapshot.client_index,
+                    crate::game_grenade::radius_damage(
+                        explosion,
+                        bot.snapshot.origin,
+                        80.0,
+                        collision,
+                    ),
+                    false,
+                )
+            })
+            .filter(|hit| hit.1 != 0)
+            .collect::<Vec<_>>();
+        let self_damage = if local.alive {
+            crate::game_grenade::radius_damage(explosion, local.origin, 70.0, collision)
+        } else {
+            0
+        };
+        (
+            self.damage_bots(now, 0, explosion.definition.index, &hits, false),
+            self_damage,
+        )
     }
     fn damage_bots(
         &mut self,
@@ -1008,6 +1047,9 @@ mod tests {
             codol_protocol::game_snapshot::Equipment {
                 perks: Default::default(),
                 abilities: Default::default(),
+                offhands: [None, None],
+                offhand_weapon: 0,
+                grenade_time: 0,
                 move_multiplier: 1.0,
                 weapon: 352,
                 inventory_weapon: None,
@@ -1114,6 +1156,60 @@ mod tests {
             ..front
         };
         assert!(visible_enemy([0.0; 3], 0, 2, &[underground], &collision).is_none());
+    }
+    #[test]
+    fn grenade_blast_excludes_allies_and_suicide_never_awards_a_kill() {
+        let collision = world();
+        let mut game = TdmMatch::new(config(), template(), 190.0, &collision).unwrap();
+        for bot in &mut game.bots {
+            bot.snapshot.origin = [2000.0, 0.0, 0.0];
+            bot.birth = 1000;
+        }
+        let enemy = game
+            .bots
+            .iter()
+            .position(|b| b.snapshot.team != template().team)
+            .unwrap();
+        let ally = game
+            .bots
+            .iter()
+            .position(|b| b.snapshot.team == template().team)
+            .unwrap();
+        game.bots[enemy].snapshot.origin = [64.0, 0.0, 0.0];
+        game.bots[ally].snapshot.origin = [64.0, 0.0, 0.0];
+        let explosion = crate::game_grenade::Explosion {
+            origin: [64.0, 0.0, 40.0],
+            normal: [0.0, 0.0, 1.0],
+            definition: crate::game_grenade::captured("frag_grenade_mp"),
+        };
+        let (feedback, damage) = game.player_explosion(3000, &explosion, template(), &collision);
+        assert_eq!(
+            feedback,
+            Some(codol_protocol::game_hit_feedback::HitKind::Kill)
+        );
+        assert_eq!(game.bots[enemy].health, 0);
+        assert_eq!(game.bots[ally].health, 100);
+        assert!(damage >= 100);
+        assert_eq!(game.rows[0].kills, 1);
+        game.player_killed(
+            3000,
+            template(),
+            PlayerHit {
+                damage,
+                attacker: 0,
+                weapon: 95,
+                headshot: false,
+            },
+        );
+        assert_eq!(
+            (game.rows[0].kills, game.rows[0].deaths, game.rows[0].score),
+            (1, 1, 0)
+        );
+        assert!(
+            game.take_kills()
+                .iter()
+                .all(|k| k.weapon == 95 && !k.headshot && !k.melee)
+        );
     }
     #[test]
     fn native_room_teams_control_spawns_scoring_and_winner() {

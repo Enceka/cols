@@ -64,6 +64,7 @@ impl View {
 }
 #[derive(Clone)]
 pub(crate) struct Frame {
+    pub missiles: Vec<codol_protocol::game_missile::MissileSnapshot>,
     pub time: u32,
     pub views: Vec<View>,
     pub local: Option<EnemySnapshot>,
@@ -288,6 +289,9 @@ mod tests {
         let equipment = Equipment {
             perks: Default::default(),
             abilities: Default::default(),
+            offhands: [None, None],
+            offhand_weapon: 0,
+            grenade_time: 0,
             move_multiplier: 1.0,
             weapon: 352,
             inventory_weapon: None,
@@ -314,6 +318,7 @@ mod tests {
             events: None,
         };
         Frame {
+            missiles: vec![],
             time,
             views: vec![View {
                 client: 7,

@@ -11,6 +11,9 @@ pub struct Ammo {
 }
 #[derive(Debug, Clone, Copy)]
 pub struct Equipment {
+    pub offhands: [Option<OffhandWeapon>; 2],
+    pub offhand_weapon: u16,
+    pub grenade_time: u16,
     /// PS+0x258, multiplied after the weapon/stance movement scales.
     pub move_multiplier: f32,
     pub perks: [u32; 3],
@@ -39,7 +42,11 @@ pub struct Equipment {
 impl Equipment {
     /// Native0x5a18e0: primary, paired presentation, then offhand.
     pub fn input_weapons(self) -> [u16; 3] {
-        [self.weapon, self.alternate_weapon.unwrap_or(0), 0]
+        [
+            self.weapon,
+            self.alternate_weapon.unwrap_or(0),
+            self.offhand_weapon,
+        ]
     }
 }
 #[derive(Debug, Clone, Copy)]
@@ -47,6 +54,12 @@ pub struct EquippedWeapon {
     pub weapon: u16,
     pub ammo: Option<Ammo>,
     pub needs_rechamber: bool,
+}
+#[derive(Debug, Clone, Copy)]
+pub struct OffhandWeapon {
+    pub weapon: u16,
+    pub clip_key: u16,
+    pub count: u16,
 }
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Aim {
@@ -208,6 +221,8 @@ pub fn player_frame_with_motion(
         angles,
         WorldSnapshot {
             local_abilities: None,
+            missiles: &[],
+            missile_baselines: &[],
             local_abilities_baseline: None,
             delta_distance: 0,
             corpse_baselines: &[],
@@ -238,6 +253,8 @@ pub fn player_frame_with_motion(
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct WorldSnapshot<'a> {
+    pub missiles: &'a [crate::game_missile::MissileSnapshot],
+    pub missile_baselines: &'a [crate::game_missile::MissileSnapshot],
     pub local_abilities: Option<crate::game_abilities::Abilities>,
     pub local_abilities_baseline: Option<crate::game_abilities::Abilities>,
     pub delta_distance: u8,
@@ -297,6 +314,25 @@ pub fn player_frame_with_world(
     let weapon = equipment.map(|e| e.weapon);
     if let Some(equipment) = equipment {
         equipment.abilities.validate()?;
+        if equipment
+            .offhands
+            .iter()
+            .flatten()
+            .any(|g| !(1..900).contains(&g.weapon) || g.clip_key != g.weapon || g.count > 511)
+            || (equipment.offhand_weapon != 0
+                && !equipment
+                    .offhands
+                    .iter()
+                    .flatten()
+                    .any(|g| g.weapon == equipment.offhand_weapon))
+            || equipment.grenade_time > 15000
+            || (motion.is_none()
+                && (equipment.offhands.iter().any(Option::is_some) || equipment.perks != [0; 3]))
+        {
+            return Err(LobbyError(
+                "offhand and passive skill equipment requires authoritative movement",
+            ));
+        }
         if !equipment.move_multiplier.is_finite()
             || !(0.0..=10.0).contains(&equipment.move_multiplier)
             || equipment.perks.iter().any(|id| *id > 255)
@@ -353,6 +389,17 @@ pub fn player_frame_with_world(
     let ammunition: Vec<Ammo> = ammo
         .into_iter()
         .chain(secondary.and_then(|other| other.ammo))
+        .chain(
+            equipment
+                .into_iter()
+                .flat_map(|e| e.offhands.into_iter().flatten())
+                .map(|g| Ammo {
+                    clip_key: g.clip_key,
+                    reserve_key: g.weapon,
+                    clip: g.count,
+                    reserve: 0,
+                }),
+        )
         .collect();
     let mut clips = Vec::<Ammo>::new();
     let mut reserves = Vec::<Ammo>::new();
@@ -514,13 +561,31 @@ pub fn player_frame_with_world(
             }
         }
         if let Some(weapon) = weapon {
+            let e = equipment.unwrap();
+            if e.offhand_weapon != 0 {
+                fields.push((53, u32::from(e.offhand_weapon), 10));
+            }
+            if e.grenade_time != 0 {
+                fields.push((79, u32::from(e.grenade_time), 16));
+            }
+            for (slot, grenade) in e.offhands.into_iter().enumerate() {
+                if let Some(g) = grenade {
+                    fields.push((109 + slot as u32, u32::from(g.weapon), 32));
+                }
+            }
             for (slot, id) in equipment.unwrap().perks.into_iter().enumerate() {
                 if id != 0 {
                     fields.push((123 + slot as u32, id, 32));
                 }
             }
-            if equipment.unwrap().barrel_flags != 0 {
-                fields.push((77, u32::from(equipment.unwrap().barrel_flags) << 8, 22));
+            let flags = u32::from(e.barrel_flags) << 8
+                | if firing.is_some_and(|f| (17..=20).contains(&f.state)) {
+                    2
+                } else {
+                    0
+                };
+            if flags != 0 {
+                fields.push((77, flags, 22));
             }
             if equipment.unwrap().queued_burst {
                 fields.push((121, 1, 1));
@@ -651,14 +716,24 @@ pub fn player_frame_with_world(
         out.bits(1, 1); // weapon ID present
         out.bits(u32::from(inventory_weapon.unwrap()), 10);
         out.bits(u32::from(equipment.unwrap().needs_rechamber) << 3, 5);
-        if let Some(other) = secondary {
-            out.bits(1, 1); // slot1 changed
-            out.bits(1, 1); // weapon ID present
-            out.bits(u32::from(other.weapon), 10);
-            out.bits(u32::from(other.needs_rechamber) << 3, 5);
-            out.bits(0, 13); // slots2..14 unchanged
-        } else {
-            out.bits(0, 14); // slots1..14 unchanged
+        for slot in 1..15 {
+            let other = if slot == 1 {
+                secondary
+            } else if slot <= 3 {
+                equipment.unwrap().offhands[slot - 2].map(|g| EquippedWeapon {
+                    weapon: g.weapon,
+                    ammo: None,
+                    needs_rechamber: false,
+                })
+            } else {
+                None
+            };
+            out.bits(u32::from(other.is_some()), 1);
+            if let Some(other) = other {
+                out.bits(1, 1);
+                out.bits(u32::from(other.weapon), 10);
+                out.bits(u32::from(other.needs_rechamber) << 3, 5);
+            }
         }
         for (slot, ammo) in reserves.iter().enumerate() {
             out.bits(1, 1);
@@ -839,6 +914,15 @@ pub fn player_frame_with_world(
     }
     if world.delta_distance == 0 {
         crate::game_impact::write_impacts(&mut out, world.impacts, establish_baseline)?;
+        crate::game_missile::write(
+            &mut out,
+            world.missiles,
+            if establish_baseline {
+                &[]
+            } else {
+                world.missile_baselines
+            },
+        )?;
         crate::game_obituary::write_obituaries(&mut out, world.obituaries, establish_baseline)?;
     } else {
         crate::game_impact::write_impacts_with_baselines(
@@ -847,6 +931,7 @@ pub fn player_frame_with_world(
             world.impact_baselines,
             establish_baseline,
         )?;
+        crate::game_missile::write(&mut out, world.missiles, world.missile_baselines)?;
         crate::game_obituary::write_obituaries_with_baselines(
             &mut out,
             world.obituaries,
@@ -1029,6 +1114,9 @@ mod tests {
         let equipment = Equipment {
             perks: Default::default(),
             abilities: Default::default(),
+            offhands: [None, None],
+            offhand_weapon: 0,
+            grenade_time: 0,
             move_multiplier: 1.0,
             weapon: 352,
             inventory_weapon: None,
@@ -1071,6 +1159,8 @@ mod tests {
                 Some(equipment),
                 [0; 3],
                 WorldSnapshot {
+                    missiles: &[],
+                    missile_baselines: &[],
                     motion: Some(motion),
                     vitals: Some(PlayerVitals::default()),
                     replay,
@@ -1143,6 +1233,9 @@ mod tests {
         let equipment = Equipment {
             perks: Default::default(),
             abilities: Default::default(),
+            offhands: [None, None],
+            offhand_weapon: 0,
+            grenade_time: 0,
             move_multiplier: 1.0,
             inventory_weapon: None,
             alternate_weapon: Some(180),
@@ -1363,6 +1456,9 @@ mod tests {
         let equipment = Equipment {
             perks: Default::default(),
             abilities: Default::default(),
+            offhands: [None, None],
+            offhand_weapon: 0,
+            grenade_time: 0,
             move_multiplier: 1.0,
             inventory_weapon: None,
             alternate_weapon: Some(180),
@@ -1506,6 +1602,9 @@ mod tests {
         let bad = Equipment {
             perks: Default::default(),
             abilities: Default::default(),
+            offhands: [None, None],
+            offhand_weapon: 0,
+            grenade_time: 0,
             move_multiplier: 1.0,
             inventory_weapon: None,
             alternate_weapon: None,

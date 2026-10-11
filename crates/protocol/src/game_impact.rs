@@ -30,11 +30,18 @@ pub fn normal_byte(normal: [f32; 3]) -> Result<u8, LobbyError> {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ImpactSnapshot {
+    pub event: ImpactEvent,
     pub entity_number: u16,
     pub origin: [f32; 3],
     pub normal_byte: u8,
     pub surface: u8,
     pub weapon: u16,
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ImpactEvent {
+    #[default]
+    Bullet,
+    GrenadeExplosion,
 }
 
 impl ImpactSnapshot {
@@ -105,7 +112,10 @@ pub(crate) fn write_impacts_with_baselines(
         out.bits(1, 1); // zero position base
         out.bits(22, 6); // last changed field
         gap(out, 1);
-        out.bytes.push(96); // field0: eType, rawbyte codec -77
+        out.bytes.push(match impact.event {
+            ImpactEvent::Bullet => 96,
+            ImpactEvent::GrenadeExplosion => 105,
+        });
         let mut previous = 0;
         for (index, value) in [
             (2, impact.origin[0]),
@@ -227,6 +237,7 @@ mod tests {
 
     fn impact() -> ImpactSnapshot {
         ImpactSnapshot {
+            event: Default::default(),
             entity_number: 20,
             origin: [-312.5, -800.5, -115.0],
             normal_byte: 0,

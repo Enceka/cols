@@ -212,6 +212,9 @@ mod tests {
             Equipment {
                 perks: Default::default(),
                 abilities: Default::default(),
+                offhands: [None, None],
+                offhand_weapon: 0,
+                grenade_time: 0,
                 move_multiplier: 1.0,
                 weapon: 352,
                 inventory_weapon: None,

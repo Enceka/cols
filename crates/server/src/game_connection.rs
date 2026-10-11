@@ -23,6 +23,7 @@ pub(crate) struct Connection {
     server_commands: ReliableCommands,
     game_state: Option<Arc<crate::game_state::PreparedGameState>>,
     player: Option<crate::game_player::Player>,
+    grenades: crate::game_grenade::Grenades,
     motion: Option<crate::game_motion::Motion>,
     combat: Option<crate::game_combat::CombatWorld>,
     impacts: crate::game_impact::ImpactEvents,
@@ -84,6 +85,7 @@ pub(crate) struct Connection {
 
 #[derive(Clone)]
 struct WorldHistory {
+    missiles: Vec<codol_protocol::game_missile::MissileSnapshot>,
     local_abilities: Option<codol_protocol::game_abilities::Abilities>,
     replay_epoch: u32,
     top_players_scene: bool,
@@ -399,6 +401,7 @@ impl Connection {
         }
         if self.tdm.is_some() {
             self.advance_match(server_time)?;
+            self.advance_grenades(server_time)?;
         } else {
             self.advance_bot(server_time)?;
         }
@@ -519,8 +522,17 @@ impl Connection {
             .min(server_time);
         let mut equipment = self.player.as_ref().map(|p| p.equipment());
         let mut impacts = self.impacts.snapshot(server_time);
+        let mut missiles = self.grenades.snapshots();
         if self.tdm.is_some() {
+            impacts.sort_by_key(|i| {
+                if i.event == codol_protocol::game_impact::ImpactEvent::GrenadeExplosion {
+                    0
+                } else {
+                    1
+                }
+            });
             impacts.truncate(8);
+            impacts.sort_by_key(|i| i.entity_number);
         }
         self.obituaries
             .retain(|(time, _)| server_time.wrapping_sub(*time) < 200);
@@ -622,6 +634,7 @@ impl Connection {
                 }
             }
             self.replay.record(crate::game_replay::Frame {
+                missiles: missiles.clone(),
                 time: server_time,
                 views,
                 local: local_player,
@@ -683,6 +696,7 @@ impl Connection {
             match_players = playback.frame.players;
             corpses = playback.frame.corpses;
             impacts = playback.frame.impacts;
+            missiles = playback.frame.missiles;
             obituaries = playback.frame.obituaries;
             hit_feedback = state.feedback_resources().map(|resources| {
                 let mut feedback = crate::game_feedback::Feedback::default();
@@ -757,6 +771,8 @@ impl Connection {
             angles,
             equipment,
             crate::game_state::SnapshotWorld {
+                missiles: &missiles,
+                missile_baselines: previous.as_ref().map_or(&[], |h| h.missiles.as_slice()),
                 local_abilities: self.player.as_ref().map(|p| p.equipment().abilities),
                 local_abilities_baseline: previous.as_ref().and_then(|h| h.local_abilities),
                 delta_distance,
@@ -835,6 +851,7 @@ impl Connection {
         }
         if self.tdm.is_some() {
             self.world_history.push_back(WorldHistory {
+                missiles,
                 local_abilities: self.player.as_ref().map(|p| p.equipment().abilities),
                 replay_epoch,
                 top_players_scene,
@@ -1531,6 +1548,10 @@ impl Connection {
                 self.player_death = Some(now);
                 self.hit_feedback.clear();
                 self.tdm.as_mut().unwrap().player_killed(now, local, hit);
+                self.player
+                    .as_mut()
+                    .unwrap()
+                    .drop_offhand_on_death(now, local.angles);
                 if let Some(motion) = &mut self.motion {
                     motion.cancel_melee_charge();
                     motion.velocity = [0.0; 3];
@@ -1552,6 +1573,79 @@ impl Connection {
                 "TDM simulation exceeded frame budget"
             );
         }
+        Ok(())
+    }
+
+    fn advance_grenades(&mut self, now: u32) -> Result<()> {
+        if self.tdm.as_ref().is_none_or(|m| m.finished) {
+            self.grenades.clear();
+            return Ok(());
+        }
+        let state = self.game_state.as_ref().unwrap().clone();
+        let collision = state.collision.as_ref().unwrap();
+        let Some(motion) = self.motion.as_ref() else {
+            return Ok(());
+        };
+        let origin = motion.origin;
+        let eye = [origin[0], origin[1], origin[2] + motion.view_height];
+        if let Some(player) = &mut self.player {
+            for request in player.take_throws() {
+                self.grenades
+                    .launch(request, eye, motion.velocity, collision);
+            }
+        }
+        let mut local = state.local_player_snapshot(self.vitals.health > 0).unwrap();
+        local.origin = origin;
+        local.angles = self.view_angles();
+        local.weapon = self.player.as_ref().unwrap().equipment().weapon;
+        for explosion in self.grenades.advance(now, collision) {
+            self.impacts.explosion(
+                now,
+                explosion.definition.index,
+                explosion.origin,
+                explosion.normal,
+            );
+            let (feedback, damage) = self
+                .tdm
+                .as_mut()
+                .unwrap()
+                .player_explosion(now, &explosion, local, collision);
+            if let Some(feedback) = feedback {
+                self.hit_feedback.record(now, feedback);
+            }
+            let damage = self.player.as_ref().unwrap().explosive_damage(damage);
+            tracing::info!(now, weapon=explosion.definition.index, origin=?explosion.origin, damage, feedback=?feedback, "grenade exploded");
+            if damage != 0 && self.vitals.health > 0 {
+                self.vitals.health = self.vitals.health.saturating_sub(damage);
+                self.vitals.damage_event = self.vitals.damage_event.wrapping_add(1);
+                self.vitals.damage_count = damage.min(127) as u8;
+                self.health_recovery.damaged(now, self.vitals.health);
+                if self.vitals.health == 0 {
+                    self.player_death = Some(now);
+                    self.hit_feedback.clear();
+                    local.alive = false;
+                    self.tdm.as_mut().unwrap().player_killed(
+                        now,
+                        local,
+                        crate::game_match::PlayerHit {
+                            damage,
+                            attacker: 0,
+                            weapon: explosion.definition.index,
+                            headshot: false,
+                        },
+                    );
+                    self.player
+                        .as_mut()
+                        .unwrap()
+                        .drop_offhand_on_death(now, local.angles);
+                    if let Some(motion) = &mut self.motion {
+                        motion.cancel_melee_charge();
+                        motion.velocity = [0.0; 3];
+                    }
+                }
+            }
+        }
+        self.drain_match_kills(now);
         Ok(())
     }
 
@@ -1670,6 +1764,7 @@ impl Connection {
             if let Some(player) = &mut self.player {
                 let shots = player.take_shots();
                 let melee_strikes = player.take_melee_strikes();
+                let throws = player.take_throws();
                 if let (Some(motion), Some(collision)) = (
                     &self.motion,
                     self.game_state
@@ -1683,6 +1778,10 @@ impl Connection {
                         motion.origin[2] + motion.view_height,
                     ];
                     let origin = motion.origin;
+                    for request in throws {
+                        self.grenades
+                            .launch(request, eye, motion.velocity, &collision);
+                    }
                     for strike in melee_strikes {
                         if let Some(tdm) = &mut self.tdm {
                             let state = self.game_state.as_ref().unwrap();
@@ -2007,6 +2106,9 @@ mod tests {
             codol_protocol::game_snapshot::Equipment {
                 perks: Default::default(),
                 abilities: Default::default(),
+                offhands: [None, None],
+                offhand_weapon: 0,
+                grenade_time: 0,
                 move_multiplier: 1.0,
                 inventory_weapon: None,
                 alternate_weapon: None,

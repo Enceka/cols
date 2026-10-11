@@ -172,6 +172,7 @@ impl SpreadTiming {
 
 #[derive(Debug, Clone)]
 struct Weapon {
+    offhand_switch: Option<AlternateTiming>,
     fast_reload: bool,
     equipment: Equipment,
     fire_interval: Option<u16>,
@@ -234,6 +235,12 @@ impl Weapon {
 
 #[derive(Debug, Clone)]
 pub(crate) struct Player {
+    offhands: [Option<crate::game_grenade::Equipped>; 2],
+    selected_offhand: Option<usize>,
+    grenade_time: u16,
+    offhand_held: u32,
+    offhand_pending: bool,
+    throws: Vec<crate::game_grenade::Throw>,
     perks: crate::game_perks::Perks,
     current: Weapon,
     secondary: Option<Weapon>,
@@ -290,8 +297,15 @@ impl Player {
             });
         }
         Self {
+            offhands: [None, None],
+            selected_offhand: None,
+            grenade_time: 0,
+            offhand_held: 0,
+            offhand_pending: false,
+            throws: Vec::new(),
             perks: Default::default(),
             current: Weapon {
+                offhand_switch: None,
                 fast_reload: false,
                 magazine_capacity: equipment.ammo.map_or(0, |a| a.clip),
                 equipment,
@@ -338,6 +352,18 @@ impl Player {
     }
     pub fn set_fast_reload(&mut self, allowed: bool) {
         self.current.fast_reload = allowed;
+    }
+    pub fn set_offhand_switch(&mut self, timing: Option<AlternateTiming>) {
+        self.current.offhand_switch = timing;
+    }
+    pub fn set_offhands(&mut self, offhands: [Option<crate::game_grenade::Equipped>; 2]) {
+        self.offhands = offhands;
+    }
+    pub fn take_throws(&mut self) -> Vec<crate::game_grenade::Throw> {
+        std::mem::take(&mut self.throws)
+    }
+    pub fn explosive_damage(&self, damage: u16) -> u16 {
+        (f32::from(damage) * self.perks.value("modArmorExplosiveDamageScale", 1.0)).ceil() as u16
     }
     pub fn hides_victim_death_icon(&self) -> bool {
         self.perks.has("modVictimNoDeadIcon")
@@ -489,6 +515,19 @@ impl Player {
         equipment.perks = self.perks.slots;
         equipment.abilities = self.perks.abilities;
         equipment.move_multiplier = self.perks.value("modMoveSpeedScale", 1.0);
+        equipment.offhands = self.offhands.each_ref().map(|g| {
+            g.as_ref()
+                .map(|g| codol_protocol::game_snapshot::OffhandWeapon {
+                    weapon: g.definition.index,
+                    clip_key: g.definition.clip_key,
+                    count: g.count,
+                })
+        });
+        equipment.offhand_weapon = self
+            .selected_offhand
+            .and_then(|slot| self.offhands[slot].as_ref())
+            .map_or(0, |g| g.definition.index);
+        equipment.grenade_time = self.grenade_time;
         equipment.needs_rechamber = self.current.needs_rechamber;
         equipment.spread_scale = self.spread_scale;
         equipment.secondary = self.secondary.as_ref().map(|other| EquippedWeapon {
@@ -528,6 +567,7 @@ impl Player {
         self.apply_aim(cmd, elapsed);
         self.attack_held = cmd.buttons & self.current.attack_mask() != 0;
         self.melee_held = cmd.buttons & 4 != 0;
+        self.offhand_held = cmd.buttons & 0xc000;
         self.last_angles = Some(cmd.angles);
     }
 
@@ -610,6 +650,7 @@ impl Player {
         let switching = firing.is_some_and(|f| (1..=5).contains(&f.state));
         let melee = firing.is_some_and(|f| (13..=15).contains(&f.state));
         aim.button = cmd.buttons & 0x800 != 0
+            && self.selected_offhand.is_none()
             && Self::input_allowed(cmd)
             && !switching
             && !melee
@@ -788,6 +829,9 @@ impl Player {
     }
 
     fn apply_weapon(&mut self, cmd: &UserCommand, elapsed: u32, approach: Option<MeleeApproach>) {
+        if self.apply_offhand(cmd, elapsed) {
+            return;
+        }
         // 0x4249c0 scales the elapsed frame time, not the authored duration.
         let state = self.current.equipment.firing.map_or(0, |f| f.state);
         let scale = if reloading(state) && self.current.fast_reload {
@@ -1223,6 +1267,154 @@ impl Player {
             }
         }
     }
+
+    fn offhand_time(&self, time: u16) -> u16 {
+        (f32::from(time) / self.perks.value("modOffhandSpeedScale", 1.0)).trunc() as u16
+    }
+    fn finish_offhand(&mut self) {
+        self.grenade_time = 0;
+        self.offhand_pending = false;
+        self.selected_offhand = None;
+        let time = self.current.offhand_switch.map_or(0, |t| t.raise_msec);
+        self.current.animate(21, 22, self.offhand_time(time), 0);
+        self.emit(22, 0); // EV_RESET_ADS:0x427c7c
+    }
+    fn throw_offhand(&mut self, cmd: &UserCommand, in_hand: bool, dropped: bool) {
+        let slot = self.selected_offhand.expect("active offhand slot");
+        let equipped = self.offhands[slot].as_mut().unwrap();
+        if equipped.count == 0 {
+            return;
+        }
+        equipped.count -= 1;
+        let definition = equipped.definition.clone();
+        self.throws.push(crate::game_grenade::Throw {
+            time: cmd.time,
+            angles: cmd.angles,
+            definition: definition.clone(),
+            fuse_msec: if in_hand { 0 } else { self.grenade_time },
+            in_hand,
+            dropped,
+        });
+        self.offhand_pending = false;
+        self.emit(if in_hand { 126 } else { 64 }, u32::from(definition.index));
+        tracing::info!(
+            time = cmd.time,
+            weapon = definition.index,
+            count = self.offhands[slot].as_ref().unwrap().count,
+            fuse = self.grenade_time,
+            in_hand,
+            dropped,
+            "native grenade throw committed"
+        );
+    }
+    pub fn drop_offhand_on_death(&mut self, time: u32, angles: [u16; 3]) {
+        if self.selected_offhand.is_some() && self.offhand_pending && self.grenade_time != 0 {
+            self.throw_offhand(
+                &UserCommand {
+                    time,
+                    angles,
+                    ..Default::default()
+                },
+                false,
+                true,
+            );
+        }
+        self.selected_offhand = None;
+        self.grenade_time = 0;
+        self.offhand_pending = false;
+        self.current.ready();
+    }
+    fn apply_offhand(&mut self, cmd: &UserCommand, elapsed: u32) -> bool {
+        let state = self.current.equipment.firing.map_or(0, |f| f.state);
+        if state == 21 {
+            if let Some(f) = self.current.equipment.firing.as_mut() {
+                f.remaining_msec = f.remaining_msec.saturating_sub(elapsed.min(65535) as u16);
+                if f.remaining_msec == 0 {
+                    self.current.ready();
+                }
+            }
+            return true;
+        }
+        if let Some(slot) = self.selected_offhand {
+            let definition = self.offhands[slot].as_ref().unwrap().definition.clone();
+            let f = self.current.equipment.firing.as_mut().unwrap();
+            f.remaining_msec = f.remaining_msec.saturating_sub(elapsed.min(65535) as u16);
+            f.delay_msec = f.delay_msec.saturating_sub(elapsed.min(65535) as u16);
+            let (remaining, delay) = (f.remaining_msec, f.delay_msec);
+            if matches!(state, 18 | 19) && definition.cook && self.offhand_pending {
+                if elapsed >= u32::from(self.grenade_time) {
+                    self.throw_offhand(cmd, true, false);
+                    self.finish_offhand();
+                    return true;
+                }
+                self.grenade_time -= elapsed as u16;
+            }
+            match state {
+                16 if remaining == 0 => {
+                    self.current
+                        .animate(17, 31, self.offhand_time(definition.prepare_msec), 0);
+                    self.emit(63, u32::from(definition.index));
+                }
+                17 if remaining == 0 => {
+                    self.current.equipment.firing.as_mut().unwrap().state = 18;
+                    self.grenade_time = definition.fuse_msec;
+                }
+                18 if cmd.buttons & (if slot == 0 { 0x4000 } else { 0x8000 }) == 0 => {
+                    self.current.animate(
+                        19,
+                        2,
+                        self.offhand_time(definition.throw_msec),
+                        self.offhand_time(definition.throw_delay_msec),
+                    );
+                }
+                19 => {
+                    if delay == 0 && self.offhand_pending {
+                        self.throw_offhand(cmd, false, false);
+                    }
+                    if remaining == 0 {
+                        self.finish_offhand();
+                    }
+                }
+                _ => (),
+            }
+            return true;
+        }
+        if !Self::input_allowed(cmd)
+            || cmd.buttons & 0x10000000 != 0
+            || cmd.buttons & 2 != 0
+            || cmd.weapons[0] != self.current.equipment.weapon
+            || (1..=5).contains(&state)
+            || (13..=15).contains(&state)
+            || self.current.offhand_switch.is_none()
+        {
+            return false;
+        }
+        let slot = if cmd.buttons & 0x4000 != 0 && self.offhand_held & 0x4000 == 0 {
+            0
+        } else if cmd.buttons & 0x8000 != 0 && self.offhand_held & 0x8000 == 0 {
+            1
+        } else {
+            return false;
+        };
+        let Some(definition) = self.offhands[slot]
+            .as_ref()
+            .filter(|g| g.count != 0)
+            .map(|g| g.definition.clone())
+        else {
+            return false;
+        };
+        self.current.cancel_burst();
+        self.current.reload_transfer_pending = false;
+        self.selected_offhand = Some(slot);
+        self.offhand_pending = true;
+        self.grenade_time = 0;
+        self.current.equipment.aim = self.current.ads.map(|_| Aim::default());
+        self.emit(65, u32::from(definition.index)); // EV_SWITCH_OFFHAND
+        self.emit(34, u32::from(definition.index)); // EV_OFFHAND_START
+        let drop = self.current.offhand_switch.unwrap().drop_msec;
+        self.current.animate(16, 21, self.offhand_time(drop), 0);
+        true
+    }
 }
 
 #[cfg(test)]
@@ -1493,6 +1685,9 @@ mod tests {
             Equipment {
                 perks: Default::default(),
                 abilities: Default::default(),
+                offhands: [None, None],
+                offhand_weapon: 0,
+                grenade_time: 0,
                 move_multiplier: 1.0,
                 inventory_weapon: None,
                 alternate_weapon: None,
@@ -1525,6 +1720,80 @@ mod tests {
             buttons,
             weapons: [352, 0, 0],
             ..Default::default()
+        }
+    }
+    fn grenade_player(name: &str) -> Player {
+        let mut p = player();
+        p.set_offhand_switch(Some(AlternateTiming {
+            drop_msec: 80,
+            raise_msec: 300,
+        }));
+        p.set_offhands([
+            Some(crate::game_grenade::Equipped {
+                definition: crate::game_grenade::captured(name),
+                count: 1,
+            }),
+            None,
+        ]);
+        p
+    }
+    #[test]
+    fn offhand_pull_hold_throw_delay_consumes_once_and_restores_the_gun() {
+        let mut p = grenade_player("frag_grenade_mp");
+        let ammo = p.equipment().ammo.unwrap();
+        p.apply(&cmd(1100, 0x4000));
+        assert_eq!(p.equipment().firing.unwrap().state, 16);
+        p.apply(&cmd(1180, 0x4000));
+        assert_eq!(p.equipment().firing.unwrap().state, 17);
+        p.apply(&cmd(1780, 0x4000));
+        assert_eq!(p.equipment().firing.unwrap().state, 18);
+        assert_eq!(p.equipment().grenade_time, 3500);
+        p.apply(&cmd(1880, 0));
+        assert_eq!(p.equipment().firing.unwrap().state, 19);
+        p.apply(&cmd(2008, 0));
+        assert!(p.take_throws().is_empty());
+        p.apply(&cmd(2009, 0));
+        let throws = p.take_throws();
+        assert_eq!(throws.len(), 1);
+        assert_eq!(throws[0].fuse_msec, 3271);
+        assert!(!throws[0].in_hand);
+        p.apply(&cmd(2009, 0));
+        assert!(p.take_throws().is_empty());
+        assert_eq!(p.equipment().offhands[0].unwrap().count, 0);
+        p.apply(&cmd(2240, 0));
+        assert_eq!(p.equipment().firing.unwrap().state, 21);
+        p.apply(&cmd(2540, 0));
+        assert_eq!(p.equipment().firing.unwrap().state, 0);
+        p.apply(&cmd(2600, 0x4000));
+        assert!(p.take_throws().is_empty());
+        assert_eq!(p.equipment().weapon, 352);
+        assert_eq!(p.equipment().ammo.unwrap().clip, ammo.clip);
+    }
+    #[test]
+    fn cooked_expiry_death_drop_and_non_cookable_semtex_keep_distinct_fuses() {
+        for name in ["frag_grenade_mp", "semtex_mp"] {
+            let mut p = grenade_player(name);
+            for t in [1100, 1180, 1780] {
+                p.apply(&cmd(t, 0x4000));
+            }
+            if name == "frag_grenade_mp" {
+                p.apply(&cmd(5280, 0x4000));
+                let request = p.take_throws().pop().unwrap();
+                assert!(request.in_hand);
+                assert_eq!(request.fuse_msec, 0);
+                p.drop_offhand_on_death(5280, [0; 3]);
+                assert!(p.take_throws().is_empty());
+            } else {
+                p.apply(&cmd(7780, 0x4000));
+                assert_eq!(p.equipment().grenade_time, 2000);
+                assert!(p.take_throws().is_empty());
+                p.drop_offhand_on_death(7800, [0; 3]);
+                let request = p.take_throws().pop().unwrap();
+                assert!(request.dropped);
+                assert_eq!(request.fuse_msec, 2000);
+                p.drop_offhand_on_death(7900, [0; 3]);
+                assert!(p.take_throws().is_empty());
+            }
         }
     }
     fn aiming_player() -> Player {

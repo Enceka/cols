@@ -545,6 +545,29 @@ class ClientAssets {
             "gender",Word(ci+0x394),"skin",Word(ci+0x398),
             "model_load_state",Word(ci+0x344),"model_changed",Word(ci+0x230));
     }
+    uint ClipCount(byte[] ps,uint weapon) {
+        if(weapon==0||weapon>=900)return 0;
+        uint def=Word(0x017f5a40+weapon*4);if(def<0x10000)return 0;
+        uint key=Word(def+0x6c0);
+        for(int slot=0;slot<15;slot++)if(U(ps,0x3dc+slot*12)==key)return U(ps,0x3e0+slot*12);
+        return 0;
+    }
+    object MissileStates() {
+        uint slot=Word(0x07817bb0);if(slot>=256)throw new Exception("invalid missile entity slot");
+        uint entities=Word(0x01a19510+slot*4)^0x2168f672;var missiles=new List<object>();
+        for(uint id=1700;id<1708;id++) {
+            uint entity=entities+id*0x238;
+            if((Word(entity+0x204)&1)==0||Word(entity+0xf4)!=4)continue;
+            uint dobjSlot=BitConverter.ToUInt16(Read(0x02ef4858+id*2,2),0);var models=new List<string>();
+            if(dobjSlot!=0&&dobjSlot<2048) {
+                uint dobj=0x02e8e850+dobjSlot*0xcc,list=Word(dobj+0xc0);int count=Count(Read(dobj+9,1)[0],32);
+                for(uint part=0;part<count;part++)models.Add(Name(Word(Word(list+part*4))));
+            }
+            missiles.Add(Obj("entity",id,"weapon",Word(entity+0xf0+0xd0)&65535,
+                "origin",EntityOrigin(entity+0xf0),"models",models));
+        }
+        return missiles;
+    }
     public static void ExportReplay(IntPtr process) {
         var r=new ClientAssets(process);var frames=new List<object>();uint previousActive=uint.MaxValue;
         for(int i=0;i<400;i++) {
@@ -587,10 +610,12 @@ class ClientAssets {
                 "skip_y",BitConverter.ToSingle(r.Read(cg+0xa78+0xa8+8,4),0),
                 "skip_scale",BitConverter.ToSingle(r.Read(cg+0xa78+0xa8+0x14,4),0),
                 "delay",U(ps,0xa68),"client",U(ps,0x144),"target",U(ps,0xa6c),
-                "character",r.CharacterInfo(cg,U(ps,0x144)),"first_person",r.ViewModelNames(),
+                "character",r.CharacterInfo(cg,U(ps,0x144)),"first_person",r.ViewModelNames(),"missiles",r.MissileStates(),
                 "pm_type",U(ps,4),"other_flags",U(ps,0x10),"command_time",U(ps,0),
                 "origin",Floats(ps,0x1c,3),"angles",Floats(ps,0x14c,3),
                 "weapon",U(ps,0x340),"weapon_state",U(ps,0x27c),"clip",U(ps,0x3e0),
+                "offhand_weapon",U(ps,0x32c),"lethal_weapon",U(ps,0x330),"tactical_weapon",U(ps,0x334),
+                "grenade_time",U(ps,0x34),"weapon_flags",U(ps,0x348),"offhand_count",r.ClipCount(ps,U(ps,0x32c)),"lethal_count",r.ClipCount(ps,U(ps,0x330)),
                 "weapon_time",U(ps,0x270),"fire_count",U(ps,0x284),"queued_burst",U(ps,0x280)&1,
                 "weapon_delay",U(ps,0x274),"weapon_animation",U(ps,0x26c),
                 "cmd_melee_yaw",BitConverter.ToSingle(r.Read(input+0x365c+(command&255)*44+28,4),0),

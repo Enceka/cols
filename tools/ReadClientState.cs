@@ -212,6 +212,14 @@ class ReadClientState {
                         Field(process,"predicted_other_flags",checked(cg+0x10),4);
                         Field(process,"predicted_camera_reference_entity",checked(cg+0x200),4);
                         Field(process,"predicted_weapon",checked(cg+0x340),4);
+                        Field(process,"predicted_offhand_weapon",checked(cg+0x32c),4);
+                        Field(process,"predicted_lethal_weapon",checked(cg+0x330),4);
+                        Field(process,"predicted_tactical_weapon",checked(cg+0x334),4);
+                        Field(process,"predicted_grenade_time",checked(cg+0x34),4);
+                        for(uint slot=0;slot<4;slot++) {
+                            Field(process,"predicted_clip_key_"+slot,checked(cg+0x3dc+slot*12),4);
+                            Field(process,"predicted_clip_count_"+slot,checked(cg+0x3e0+slot*12),4);
+                        }
                         Field(process,"predicted_paired_weapon",checked(cg+0x344),4);
                         Field(process,"predicted_weapon_fire_count",checked(cg+0x284),4);
                         for(uint slot=0;slot<3;slot++)
