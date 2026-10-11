@@ -6,7 +6,7 @@
 
 | 功能 | 当前能力与证据边界 | 剩余工作／专题 |
 | --- | --- | --- |
-| 原生房间与选图 | 自建房、原生箭头、12 人名单、冻结房间阵营、编号昵称、连续开局和败局返回已验证；没有另造“人机对战”创建条目 | 更多模式与地图；`MAP_SELECTION_PROGRESS.md` |
+| 原生房间与选图 | 自建房首次广播即补齐已准备地图的 Bot、原生箭头、12 人名单、冻结房间阵营、编号昵称、连续开局和败局返回已验证；没有另造“人机对战”创建条目 | 更多模式与地图；`MAP_SELECTION_PROGRESS.md` |
 | 三图资源 | Afghan／安全屋／坠机之地独立 CRC、碰撞、实体筛选、HUD、小地图和武器资料；跨图验证通过 | 自动按图准备与失败恢复；UI 可见的其它地图不能借用 CRC |
 | 运行生命周期 | `tools/play.py` 默认无诊断期限；日志有界、认证及 UDP 准入续期；35 分钟后再开局有证据 | 小时级稳定性、启动故障恢复与可迁移启动器；`LOCAL_PLAY.md` |
 | STUN 与快照 | 主／备用地址发现超过采集限额仍响应；局内及 gamestate 使用原生压缩保留世界状态，密集尸体／回放连续结算通过 | 更多消息组合、原生分片；`SNAPSHOT_PROGRESS.md` |
@@ -23,6 +23,6 @@
 | 地图动态物件 | 世界碰撞和训练靶支持；MapEnts 变体按精确 map token 筛选 | 完整动态实体、玻璃协议、车辆阶段状态 |
 | 交付工具 | 研究副本、哈希检查、资源采集／准备和本地入口存在 | 可迁移启动器、预检、归档及恢复流程 |
 
-当前近战验证见 `research-output/melee-charge-live-proof.json`；完整代码检查见 `research-output/charge-final-check.log`（354 Rust／50 Python，fmt/Clippy 通过）。这组结果不将上表明确保留的缺项标为完成。
+当前近战验证见 `research-output/melee-charge-live-proof.json`；完整代码检查见 `research-output/room-initial-bots-delivery-check.log`（355 Rust／50 Python，fmt/Clippy 通过）。这组结果不将上表明确保留的缺项标为完成。
 
 接续优先级：恢复完整近战目标选取／判伤几何与独立刀具路径，建立投射物状态和飞行碰撞；同时保留 Bot 加载、足部接触和完整结算演出的独立复核工作。每项实现必须核对本版消费者和实际资源，诊断设置不得覆盖正常游玩准备。

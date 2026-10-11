@@ -13,6 +13,7 @@ struct Channel {
     session_seed: u32,
     expires_at: u32,
     game: Option<GameSession>,
+    room_info: Option<codol_protocol::room_messages::RoomInfo>,
     messages: VecDeque<Vec<u8>>,
     bots_announced: bool,
     roster_requested: bool,
@@ -33,6 +34,22 @@ fn bot_message(client: u8, channel_id: u64, owner: u64, record: &[u8]) -> Result
     Ok(push.0)
 }
 impl Channel {
+    fn bot_map<'a>(&'a self, policy: &'a crate::room_bots::Policy) -> Option<&'a str> {
+        let description = &self.game.as_ref()?.description;
+        if description.build != -688906341 || description.maximum != 12 {
+            return None;
+        }
+        if let Some(info) = &self.room_info {
+            return policy.accepts(info).then_some(info.map.as_str());
+        }
+        // Creation need not broadcast kind15. The authenticated descriptor
+        // already identifies the custom map/mode through their native CRCs.
+        policy
+            .maps
+            .iter()
+            .find(|map| description.matches_custom_map(map, "war"))
+            .map(String::as_str)
+    }
     fn update_members(&mut self, updates: &codol_protocol::room_messages::Updates) -> Result<()> {
         let mut candidate = if updates.full_roster {
             HashMap::new()
@@ -270,6 +287,7 @@ impl Rooms {
                             session_seed: session.iv_seed,
                             expires_at: session.expires_at,
                             game: None,
+                            room_info: None,
                             messages: VecDeque::new(),
                             bots_announced: false,
                             roster_requested: false,
@@ -327,6 +345,7 @@ impl Rooms {
                 let id = if let Some(game) = &channel.game {
                     game.id
                 } else {
+                    channel.room_info = None;
                     let mut id = [0u8; 8];
                     openssl::rand::rand_bytes(&mut id)?;
                     id
@@ -334,7 +353,7 @@ impl Rooms {
                 channel.game = Some(GameSession { id, description });
                 let mut record = Writer::default();
                 record.blob(&id)?;
-                // Wait for the owner's RoomInfo broadcast: creation's RPC
+                // Wait for the owner's first broadcast: creation's RPC
                 // callback has not yet installed the room channel receiver.
                 Ok(TaskResult::success(
                     "local_room_session_created",
@@ -387,6 +406,7 @@ impl Rooms {
                     ));
                 };
                 channel.game = None;
+                channel.room_info = None;
                 if let Some(endpoint) = &self.game_endpoint {
                     endpoint.revoke(session);
                 }
@@ -578,23 +598,21 @@ impl Rooms {
                         )?);
                     }
                 }
+                if let Some(info) = updates.info {
+                    channel.room_info = Some(info);
+                }
                 if !channel.bots_announced
                     && let Some(policy) = self
                         .game_endpoint
                         .as_ref()
                         .and_then(|e| e.bot_rooms.as_ref())
-                    && channel
-                        .game
-                        .as_ref()
-                        .is_some_and(|g| g.description.build == -688906341)
-                    && let Some(info) = updates.info
-                    && policy.accepts(&info)
+                    && let Some(map) = channel.bot_map(policy).map(str::to_owned)
                 {
                     result.pushes.extend(bot_pushes(policy, id, session)?);
                     channel.bots_announced = true;
                     tracing::info!(
-                        map = info.map,
-                        mode = info.mode,
+                        map,
+                        mode = "war",
                         bots = 11,
                         "native room bot participation queued"
                     );
@@ -686,6 +704,104 @@ mod tests {
             .unwrap();
         let id = Reader::new(&reply[0]).u64().unwrap();
         (id, reply[0].clone())
+    }
+    #[tokio::test]
+    async fn supported_creation_joins_bots_after_receiver_ready_without_a_map_change() {
+        let temp = tempfile::tempdir().unwrap();
+        let server = crate::game_server::GameServer::bind(
+            "127.0.0.1:0".parse().unwrap(),
+            temp.path().join("game"),
+        )
+        .await
+        .unwrap();
+        let mut endpoint = server.admissions();
+        drop(server);
+        Arc::get_mut(&mut endpoint).unwrap().bot_rooms = Some(crate::room_bots::Policy {
+            version: 7,
+            maps: ["mp_killhouse_sh".into()].into(),
+        });
+        for (map, mode, playlist, capacity, explicit_unsupported, expected_joins) in [
+            ("mp_killhouse_sh", "war", u32::MAX, 12, false, 33),
+            ("mp_highrise", "war", u32::MAX, 12, false, 0),
+            ("mp_killhouse_sh", "sd", u32::MAX, 12, false, 0),
+            ("mp_killhouse_sh", "war", 0, 12, false, 0),
+            ("mp_killhouse_sh", "war", u32::MAX, 18, false, 0),
+            ("mp_killhouse_sh", "war", u32::MAX, 12, true, 0),
+        ] {
+            let mut rooms = Rooms::with_game_endpoint(endpoint.clone());
+            let owner = session(0x8000000000000001);
+            let (channel_id, _) = create(&mut rooms, &owner);
+            let mut description =
+                include_bytes!("../../../fixtures/protocol/room-create-synthetic.bin").to_vec();
+            let n = description.len();
+            description[n - 19..n - 11].copy_from_slice(&channel_id.to_le_bytes());
+            for (attribute, value) in [
+                (4, crc32fast::hash(map.as_bytes())),
+                (5, playlist),
+                (10, crc32fast::hash(mode.as_bytes())),
+            ] {
+                let offset = n - 74 + attribute * 5;
+                description[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+            }
+            assert_eq!(
+                Description::parse(&description, owner.user_id)
+                    .unwrap()
+                    .matches_custom_map(map, mode),
+                playlist == u32::MAX
+            );
+            let mut create_game = vec![21, 3, 1];
+            create_game.extend(description);
+            let result = rooms
+                .handle(&Request::parse(&create_game).unwrap(), &owner, 1)
+                .unwrap();
+            assert!(result.result.is_ok());
+            assert!(result.pushes.is_empty()); // Receiver is not installed yet.
+            rooms
+                .channels
+                .get_mut(&channel_id)
+                .unwrap()
+                .game
+                .as_mut()
+                .unwrap()
+                .description
+                .maximum = capacity;
+            let broadcast = |batch: &[u8]| {
+                let mut w = Writer(vec![11, 3, 4]);
+                w.u64(channel_id);
+                w.blob(batch).unwrap();
+                w.u32(1);
+                w.0.push(0);
+                w.0
+            };
+            if explicit_unsupported {
+                // A newer kind15 choice overrides a still-old creation CRC.
+                let payload = b"war\0mp_highrise\0\xff\x04\x0c";
+                let mut record = vec![0; payload.len() + 2];
+                record[0] = 15 << 1;
+                for (i, b) in payload.iter().enumerate() {
+                    record[i + 1] |= b << 1;
+                    record[i + 2] |= b >> 7;
+                }
+                let mut batch = (record.len() as u32).to_le_bytes().to_vec();
+                batch.extend(record);
+                let result = rooms
+                    .handle(&Request::parse(&broadcast(&batch)).unwrap(), &owner, 1)
+                    .unwrap();
+                assert_eq!(result.pushes.len(), 1);
+            }
+            let message = broadcast(&[2, 0, 0, 0, 0x20, 0]);
+            let request = Request::parse(&message).unwrap();
+            assert!(
+                rooms
+                    .handle(&request, &session(2), 1)
+                    .unwrap()
+                    .result
+                    .is_err()
+            );
+            let result = rooms.handle(&request, &owner, 1).unwrap();
+            assert_eq!(result.pushes.len(), 1 + expected_joins, "{map}");
+            assert_eq!(rooms.handle(&request, &owner, 1).unwrap().pushes.len(), 1);
+        }
     }
     #[test]
     fn bot_direct_delivery_is_scoped_and_requests_the_authoritative_roster_once() {
