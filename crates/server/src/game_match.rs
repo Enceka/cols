@@ -597,46 +597,28 @@ impl TdmMatch {
             motion.origin[2] + motion.view_height,
         ];
         let actors = self.actors(local, motion.view_height + 10.0);
-        let hit = game_combat::fire_at_actors(
+        let approach = crate::game_player::MeleeApproach {
+            yaw: cmd.melee_yaw,
+            distance: cmd.melee_distance,
+        };
+        let target = game_combat::melee_approach_at_actors(
             eye,
             cmd.angles,
-            cmd.time,
-            game_combat::Ballistics {
-                damage: 1,
-                range: f32::from(cmd.melee_distance) + 15.0,
-                near_range: f32::from(cmd.melee_distance) + 15.0,
-                location_multipliers: None,
-                falloff: None,
-                pellets: 1,
-                spread_degrees: 0.0,
-            },
+            approach,
             (0, self.config.teams[0]),
             game_combat::ActorScene {
                 actors: &actors,
                 regions: None,
                 collision,
             },
-        );
-        let target = actors
-            .iter()
-            .find(|a| Some(a.client) == hit.damage.first().map(|h| h.0))?;
+        )?;
         if cmd.melee_entity != 2047 && cmd.melee_entity != u16::from(target.client) {
             return None;
         }
-        let yaw = f32::from(cmd.melee_yaw as i16) * (std::f32::consts::TAU / 65536.0);
-        let end = [
-            motion.origin[0] + yaw.cos() * f32::from(cmd.melee_distance),
-            motion.origin[1] + yaw.sin() * f32::from(cmd.melee_distance),
-        ];
-        if (end[0] - target.origin[0]).hypot(end[1] - target.origin[1]) > 15.0
-            || (motion.origin[2] - target.origin[2]).abs() > 18.0
-        {
+        if (motion.origin[2] - target.origin[2]).abs() > 18.0 {
             return None;
         }
-        Some(crate::game_player::MeleeApproach {
-            yaw: cmd.melee_yaw,
-            distance: cmd.melee_distance,
-        })
+        Some(approach)
     }
     pub fn take_kills(&mut self) -> Vec<Kill> {
         std::mem::take(&mut self.kills)
@@ -1311,6 +1293,77 @@ mod tests {
         }
     }
     #[test]
+    fn melee_approach_accepts_native_side_hints_and_rejects_range_or_visibility_forgery() {
+        let collision = world();
+        let local = template();
+        let mut game = TdmMatch::new(config(), local, 190.0, &collision).unwrap();
+        for bot in &mut game.bots {
+            bot.snapshot.origin = [500.0, 500.0, 0.0];
+        }
+        game.bots[5].snapshot.origin = [75.0, -24.0, 0.03125];
+        let mut motion = crate::game_motion::Motion::new([0.0, 0.0, 0.03125]);
+        motion.apply(
+            &codol_protocol::game_usercmd::UserCommand {
+                time: 1000,
+                ..Default::default()
+            },
+            1.0,
+            false,
+            &collision,
+        );
+        let input = codol_protocol::game_usercmd::UserCommand {
+            time: 2100,
+            buttons: 4,
+            melee_yaw: 62306,
+            melee_distance: 78,
+            melee_entity: 2047,
+            ..Default::default()
+        };
+        assert!(
+            game.player_melee_approach(&input, &motion, local, &collision)
+                .is_some()
+        );
+        for bad in [
+            codol_protocol::game_usercmd::UserCommand {
+                melee_yaw: 0,
+                ..input.clone()
+            },
+            codol_protocol::game_usercmd::UserCommand {
+                melee_distance: 110,
+                ..input.clone()
+            },
+            codol_protocol::game_usercmd::UserCommand {
+                melee_entity: 7,
+                ..input.clone()
+            },
+            codol_protocol::game_usercmd::UserCommand {
+                angles: [0, 32768, 0],
+                ..input.clone()
+            },
+        ] {
+            assert!(
+                game.player_melee_approach(&bad, &motion, local, &collision)
+                    .is_none()
+            );
+        }
+        game.bots[0].snapshot.origin = [35.0, -11.2, 0.03125];
+        assert!(
+            game.player_melee_approach(&input, &motion, local, &collision)
+                .is_none()
+        );
+        game.bots[0].snapshot.origin = [500.0, 500.0, 0.0];
+        game.bots[5].snapshot.origin = [130.0, 0.0, 0.03125];
+        let far = codol_protocol::game_usercmd::UserCommand {
+            melee_yaw: 0,
+            melee_distance: 130,
+            ..input
+        };
+        assert!(
+            game.player_melee_approach(&far, &motion, local, &collision)
+                .is_none()
+        );
+    }
+    #[test]
     fn melee_approach_validates_the_hint_against_current_enemy_and_view() {
         let collision = world();
         let local = template();
@@ -1318,7 +1371,7 @@ mod tests {
         for bot in &mut game.bots {
             bot.snapshot.origin = [500.0, 500.0, 0.0];
         }
-        game.bots[5].snapshot.origin = [100.0, 0.0, 0.03125];
+        game.bots[5].snapshot.origin = [75.0, 0.0, 0.03125];
         let mut motion = crate::game_motion::Motion::new([0.0, 0.0, 0.03125]);
         motion.apply(
             &codol_protocol::game_usercmd::UserCommand {
@@ -1333,7 +1386,7 @@ mod tests {
             time: 1100,
             buttons: 4,
             melee_yaw: 0,
-            melee_distance: 100,
+            melee_distance: 75,
             melee_entity: 2047,
             ..Default::default()
         };

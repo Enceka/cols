@@ -1840,6 +1840,121 @@ pub(crate) fn synthetic() -> PreparedGameState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn write_captured_sniper_contact(root: &Path, output: &Path, raw: &serde_json::Value) {
+        let staged = output.with_extension("animation-input.json");
+        std::fs::write(&staged, serde_json::to_vec_pretty(raw).unwrap()).unwrap();
+        let rebound = output.with_extension("animation-output.json");
+        if rebound.exists() {
+            std::fs::remove_file(&rebound).unwrap();
+        }
+        let status = std::process::Command::new("python3")
+            .arg(root.join("../tools/prepare_bot_roster.py"))
+            .arg("--rebind-animations")
+            .arg("--game-state")
+            .arg(&staged)
+            .arg("--characters")
+            .arg(root.join("bot-animation-capture-killhouse.json"))
+            .arg("--output")
+            .arg(&rebound)
+            .status()
+            .unwrap();
+        assert!(
+            status.success(),
+            "captured sniper animation rebinding failed"
+        );
+        PreparedGameState::load(&rebound).unwrap();
+        std::fs::rename(&rebound, output).unwrap();
+    }
+    #[test]
+    #[ignore = "prepares a side-offset native melee scene from captured Killhouse"]
+    fn captured_wide_melee_scene_has_a_visible_target_outside_the_center_ray() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../research-output");
+        let mut raw: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(root.join("tdm-killhouse-hud-state.json")).unwrap(),
+        )
+        .unwrap();
+        let collision = crate::game_motion::Collision::load(
+            &root.join(raw["collision_file"].as_str().unwrap()),
+        )
+        .unwrap();
+        let starts: [Vec<[f32; 3]>; 2] =
+            serde_json::from_value(raw["match_config"]["spawns"].clone()).unwrap();
+        let mut contact = None;
+        'search: for seed in &starts[1] {
+            for lateral in [-24.0, 24.0, -32.0, 32.0] {
+                let ground = |dx, dy| {
+                    crate::game_bot::grounded_spawn(
+                        [seed[0] + dx, seed[1] + dy, seed[2]],
+                        &collision,
+                    )
+                    .ok()
+                };
+                let (Some(player), Some(target), Some(bait)) = (
+                    ground(0.0, 0.0),
+                    ground(75.0, lateral),
+                    ground(300.0, lateral),
+                ) else {
+                    continue;
+                };
+                if (target[2] - player[2]).abs() > 1.0 {
+                    continue;
+                }
+                let eye = [player[0], player[1], player[2] + 60.0];
+                let target_eye = [target[0], target[1], target[2] + 60.0];
+                let sight = collision.raycast(eye, target_eye);
+                if sight.start_solid || sight.fraction < 1.0 {
+                    continue;
+                }
+                if collision.trace(player, target, 70.0).fraction < 1.0 {
+                    continue;
+                }
+                let actors = [crate::game_combat::Actor {
+                    client: 1,
+                    team: 1,
+                    origin: target,
+                    height: 70.0,
+                    yaw: 0.0,
+                }];
+                let straight = crate::game_combat::fire_at_actors(
+                    eye,
+                    [0; 3],
+                    1000,
+                    crate::game_combat::Ballistics {
+                        damage: 1,
+                        range: 96.0,
+                        near_range: 96.0,
+                        location_multipliers: None,
+                        falloff: None,
+                        pellets: 1,
+                        spread_degrees: 0.0,
+                    },
+                    (0, 2),
+                    crate::game_combat::ActorScene {
+                        actors: &actors,
+                        regions: None,
+                        collision: &collision,
+                    },
+                );
+                assert!(straight.damage.is_empty());
+                contact = Some((player, target, bait));
+                break 'search;
+            }
+        }
+        let (player, target, bait) = contact.expect("no clear side-offset native contact");
+        let mut friends = vec![player, bait];
+        friends.extend_from_slice(&starts[0][..4]);
+        let mut enemies = vec![target];
+        enemies.extend_from_slice(&starts[0][5..10]);
+        raw["spawn_origin"] = serde_json::json!(player);
+        raw["match_config"]["spawns"] = serde_json::json!([friends, enemies]);
+        raw["match_config"]["time_limit_msec"] = 60000.into();
+        for bot in raw["match_config"]["roster"].as_array_mut().unwrap() {
+            bot["weapon_name"] = "cheytac_mp".into();
+        }
+        let output = root.join("tdm-killhouse-wide-melee-test.json");
+        write_captured_sniper_contact(&root, &output, &raw);
+        eprintln!("wide melee player={player:?} target={target:?} bait={bait:?}");
+    }
     #[test]
     #[ignore = "prepares a local captured-map charge diagnostic"]
     fn captured_charge_contact_scene_has_an_unobstructed_approach() {
@@ -1931,8 +2046,7 @@ mod tests {
             bot["weapon_name"] = "cheytac_mp".into();
         }
         let output = root.join("tdm-killhouse-charge-contact-test.json");
-        std::fs::write(&output, serde_json::to_vec_pretty(&raw).unwrap()).unwrap();
-        PreparedGameState::load(&output).unwrap();
+        write_captured_sniper_contact(&root, &output, &raw);
         eprintln!("charge contact player={player:?} target={target:?} bait={bait:?}");
     }
     #[test]
@@ -2403,6 +2517,7 @@ mod tests {
                         motion: Some(&scene.camera),
                         local_player: Some(scene.actors[0]),
                         players: &scene.actors[1..],
+                        corpses: &scene.poses,
                         vitals: Some(codol_protocol::game_snapshot::PlayerVitals {
                             intermission: true,
                             ..Default::default()
@@ -2415,10 +2530,7 @@ mod tests {
                 "{}: camera={:?}, actors={:?}, bytes={}",
                 state.map,
                 scene.camera.origin,
-                scene.actors[12..]
-                    .iter()
-                    .map(|a| a.origin)
-                    .collect::<Vec<_>>(),
+                scene.poses.iter().map(|a| a.origin).collect::<Vec<_>>(),
                 snapshot.len()
             );
             assert!(snapshot.len() <= codol_protocol::game_wire::FRAGMENT_SIZE - 5);

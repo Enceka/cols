@@ -133,10 +133,11 @@ impl ShotOutcome {
     }
 }
 
-/// Ordinary close-range held-gun melee.64 is the native normal/charge
-/// boundary at0x426692; charge movement and a wider assisted sweep are not
-/// implemented here. Recheck the current authoritative bodies and world,
-/// never accept the client's predicted melee entity as proof of a hit.
+/// Default held-gun knife geometry:0x4b42f0 uses a64-unit forward endpoint
+/// and the ordered center/four-corner offsets at0xc66a54,10 units on each
+/// view axis (0x42da50/0x42da80). Actor bounds remain the server's coarse
+/// bodies; original bone traces and the separate knife-table rows are not
+/// represented by these defaults.
 pub(crate) fn melee_at_actors(
     eye: [f32; 3],
     angles: [u16; 3],
@@ -144,29 +145,137 @@ pub(crate) fn melee_at_actors(
     shooter: (u8, u8),
     scene: ActorScene<'_>,
 ) -> ActorShot {
-    let mut outcome = fire_at_actors(
-        eye,
-        angles,
-        0,
-        Ballistics {
-            damage,
-            range: 64.0,
-            near_range: 64.0,
-            location_multipliers: None,
-            falloff: None,
-            pellets: 1,
-            spread_degrees: 0.0,
-        },
-        shooter,
-        ActorScene {
-            regions: None,
-            ..scene
-        },
-    );
-    // A knife strike must not create bullet holes, ricochets or headshot
-    // multipliers. Hit/kill feedback is committed by the match afterwards.
-    outcome.impacts.clear();
+    let mut outcome = ActorShot::default();
+    if damage == 0 || eye.iter().any(|n| !n.is_finite()) {
+        return outcome;
+    }
+    let [forward, right, up] = view_axes(angles);
+    for [horizontal, vertical] in [
+        [0.0, 0.0],
+        [1.0, 1.0],
+        [-1.0, 1.0],
+        [1.0, -1.0],
+        [-1.0, -1.0],
+    ] {
+        let end = std::array::from_fn(|i| {
+            eye[i] + 64.0 * forward[i] + 10.0 * horizontal * right[i] + 10.0 * vertical * up[i]
+        });
+        let world = scene.collision.raycast(eye, end);
+        if world.start_solid || world.all_solid {
+            return outcome;
+        }
+        let hit = scene
+            .actors
+            .iter()
+            .filter(|a| a.client != shooter.0)
+            .filter_map(|a| actor_fraction(eye, end, a).map(|fraction| (a, fraction)))
+            .filter(|(_, fraction)| world.contents == 0 || *fraction < world.fraction)
+            .min_by(|a, b| a.1.total_cmp(&b.1));
+        if let Some((actor, _)) = hit {
+            if actor.team != shooter.1 {
+                outcome.damage.push((actor.client, damage, false));
+            }
+            return outcome;
+        }
+    }
     outcome
+}
+
+fn actor_fraction(start: [f32; 3], end: [f32; 3], actor: &Actor) -> Option<f32> {
+    ray_aabb(
+        start,
+        end,
+        [
+            actor.origin[0] - 15.0,
+            actor.origin[1] - 15.0,
+            actor.origin[2],
+        ],
+        [
+            actor.origin[0] + 15.0,
+            actor.origin[1] + 15.0,
+            actor.origin[2] + actor.height,
+        ],
+    )
+}
+
+/// Validate a native approach against a real visible body along its hint yaw.
+/// 0x50a640 caps the default knife-less assist at96. The screen region in
+/// 0x50a150 has virtual half-sizes320/240; combining its FOV scaling with
+/// projection gives tangents tan(cg_fov/2)/2 and3*tan(cg_fov/2)/8. Usercmd
+/// does not carry cg_fov, so use the native allowed maximum90 (0x43f390),
+/// retaining endpoint, world and nearest-body checks for every accepted hint.
+pub(crate) fn melee_approach_at_actors(
+    eye: [f32; 3],
+    angles: [u16; 3],
+    approach: crate::game_player::MeleeApproach,
+    shooter: (u8, u8),
+    scene: ActorScene<'_>,
+) -> Option<Actor> {
+    if !(1..=96).contains(&approach.distance) || eye.iter().any(|n| !n.is_finite()) {
+        return None;
+    }
+    let yaw = f32::from(approach.yaw as i16) * (std::f32::consts::TAU / 65536.0);
+    let distance = f32::from(approach.distance);
+    let endpoint = [eye[0] + distance * yaw.cos(), eye[1] + distance * yaw.sin()];
+    let end = [
+        eye[0] + (distance + 15.0) * yaw.cos(),
+        eye[1] + (distance + 15.0) * yaw.sin(),
+        eye[2],
+    ];
+    let world = scene.collision.raycast(eye, end);
+    if world.start_solid || world.all_solid {
+        return None;
+    }
+    let (actor, _) = scene
+        .actors
+        .iter()
+        .filter(|a| a.client != shooter.0)
+        .filter_map(|a| actor_fraction(eye, end, a).map(|fraction| (a, fraction)))
+        .filter(|(_, fraction)| world.contents == 0 || *fraction < world.fraction)
+        .min_by(|a, b| a.1.total_cmp(&b.1))?;
+    if actor.team == shooter.1
+        || (endpoint[0] - actor.origin[0]).hypot(endpoint[1] - actor.origin[1]) > 15.0
+    {
+        return None;
+    }
+    let [forward, right, up] = view_axes(angles);
+    // Native0x50a9d0 projects all eight actor-bound corners. Check overlap
+    // with the largest legal assist frustum in world space, avoiding any
+    // trust in client-provided projected bounds or its predicted position.
+    let center = [
+        actor.origin[0] - eye[0],
+        actor.origin[1] - eye[1],
+        actor.origin[2] + actor.height * 0.5 - eye[2],
+    ];
+    let half = [15.0, 15.0, actor.height * 0.5];
+    for normal in [
+        forward,
+        std::array::from_fn(|i| 0.5 * forward[i] + right[i]),
+        std::array::from_fn(|i| 0.5 * forward[i] - right[i]),
+        std::array::from_fn(|i| 0.375 * forward[i] + up[i]),
+        std::array::from_fn(|i| 0.375 * forward[i] - up[i]),
+    ] {
+        let support: f32 = (0..3)
+            .map(|i| center[i] * normal[i] + half[i] * normal[i].abs())
+            .sum();
+        if support <= 0.0 {
+            return None;
+        }
+    }
+    Some(*actor)
+}
+
+fn view_axes(angles: [u16; 3]) -> [[f32; 3]; 3] {
+    let radians = std::f64::consts::TAU / 65536.0;
+    let (sp, cp) = (f64::from(angles[0]) * radians).sin_cos();
+    let (sy, cy) = (f64::from(angles[1]) * radians).sin_cos();
+    let (sr, cr) = (f64::from(angles[2]) * radians).sin_cos();
+    [
+        [cp * cy, cp * sy, -sp],
+        [-sr * sp * cy + cr * sy, -sr * sp * sy - cr * cy, -sr * cp],
+        [cr * sp * cy + sr * sy, cr * sp * sy - sr * cy, cr * cp],
+    ]
+    .map(|a| a.map(|n| n as f32))
 }
 
 /// A captured body pose placed at the target's current origin and yaw.
@@ -800,6 +909,166 @@ mod tests {
             },
         );
         assert_eq!(hit.damage, vec![(6, 264, false)]);
+    }
+    #[test]
+    fn melee_approach_frustum_has_native_range_angle_and_world_bounds() {
+        let actor = |x, y, z| Actor {
+            client: 1,
+            team: 1,
+            origin: [x, y, z],
+            height: 70.0,
+            yaw: 0.0,
+        };
+        let world = collision(None);
+        let validate = |a: Actor, angles, collision: &Collision| {
+            let yaw = (a.origin[1].atan2(a.origin[0]) * 65536.0 / std::f32::consts::TAU).round()
+                as i32 as u16;
+            let distance = a.origin[0].hypot(a.origin[1]) as u8;
+            melee_approach_at_actors(
+                [0.0, 0.0, 60.0],
+                angles,
+                crate::game_player::MeleeApproach { yaw, distance },
+                (0, 2),
+                ActorScene {
+                    actors: &[a],
+                    regions: None,
+                    collision,
+                },
+            )
+            .is_some()
+        };
+        assert!(validate(actor(75.0, 24.0, 0.0), [0; 3], &world));
+        assert!(validate(actor(75.0, -24.0, 0.0), [0; 3], &world));
+        assert!(!validate(actor(40.0, 60.0, 0.0), [0; 3], &world));
+        assert!(!validate(actor(75.0, 24.0, 0.0), [0, 32768, 0], &world));
+        assert!(!validate(actor(97.0, 0.0, 0.0), [0; 3], &world));
+        assert!(!validate(actor(75.0, 24.0, 0.0), [16384, 0, 0], &world));
+        assert!(!validate(
+            actor(75.0, 24.0, 0.0),
+            [0; 3],
+            &collision(Some((30.0, 1)))
+        ));
+    }
+    #[test]
+    fn melee_fan_reaches_side_bodies_without_extending_forward_range() {
+        let world = collision(None);
+        let actor = |x, y, z, height| Actor {
+            client: 1,
+            team: 1,
+            origin: [x, y, z],
+            height,
+            yaw: 0.0,
+        };
+        for (body, hit) in [
+            (actor(60.0, 20.0, 0.0, 70.0), true),
+            (actor(60.0, -20.0, 0.0, 70.0), true),
+            (actor(60.0, 26.0, 0.0, 70.0), false),
+            (actor(80.0, 0.0, 0.0, 70.0), false),
+            (actor(60.0, 0.0, 64.0, 6.0), true),
+            (actor(60.0, 0.0, 71.0, 6.0), false),
+        ] {
+            let actors = [body];
+            let result = melee_at_actors(
+                [0.0, 0.0, 60.0],
+                [0; 3],
+                135,
+                (0, 2),
+                ActorScene {
+                    actors: &actors,
+                    regions: None,
+                    collision: &world,
+                },
+            );
+            assert_eq!(!result.damage.is_empty(), hit, "{body:?}");
+            assert!(result.impacts.is_empty());
+        }
+    }
+    #[test]
+    fn melee_fan_preserves_center_priority_corner_order_and_teammate_blocking() {
+        let world = collision(None);
+        let mut actors = [
+            Actor {
+                client: 1,
+                team: 1,
+                origin: [60.0, 20.0, 0.0],
+                height: 70.0,
+                yaw: 0.0,
+            },
+            Actor {
+                client: 2,
+                team: 1,
+                origin: [60.0, -20.0, 0.0],
+                height: 70.0,
+                yaw: 0.0,
+            },
+            Actor {
+                client: 3,
+                team: 2,
+                origin: [100.0, 0.0, 0.0],
+                height: 70.0,
+                yaw: 0.0,
+            },
+        ];
+        let attack = |actors: &[Actor]| {
+            melee_at_actors(
+                [0.0, 0.0, 60.0],
+                [0; 3],
+                135,
+                (0, 2),
+                ActorScene {
+                    actors,
+                    regions: None,
+                    collision: &world,
+                },
+            )
+        };
+        assert_eq!(attack(&actors).damage, vec![(2, 135, false)]);
+        actors[2].origin[0] = 40.0;
+        assert!(attack(&actors).damage.is_empty());
+        actors[2].team = 1;
+        assert_eq!(attack(&actors).damage, vec![(3, 135, false)]);
+    }
+    #[test]
+    fn melee_offsets_follow_rotated_pitch_yaw_and_roll() {
+        let world = collision(None);
+        let actors = [Actor {
+            client: 1,
+            team: 1,
+            origin: [-20.0, 60.0, 0.0],
+            height: 70.0,
+            yaw: 0.0,
+        }];
+        let hit = melee_at_actors(
+            [0.0, 0.0, 60.0],
+            [0, 16384, 16384],
+            135,
+            (0, 2),
+            ActorScene {
+                actors: &actors,
+                regions: None,
+                collision: &world,
+            },
+        );
+        assert_eq!(hit.damage, vec![(1, 135, false)]);
+        let low = [Actor {
+            client: 2,
+            team: 1,
+            origin: [-20.0, 45.0, 0.0],
+            height: 15.0,
+            yaw: 0.0,
+        }];
+        let hit = melee_at_actors(
+            [0.0, 0.0, 60.0],
+            [8192, 16384, 0],
+            135,
+            (0, 2),
+            ActorScene {
+                actors: &low,
+                regions: None,
+                collision: &world,
+            },
+        );
+        assert_eq!(hit.damage, vec![(2, 135, false)]);
     }
     #[test]
     fn melee_cannot_hit_through_a_world_face_or_create_a_bullet_impact() {

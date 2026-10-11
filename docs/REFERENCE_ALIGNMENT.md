@@ -14,15 +14,15 @@
 | 玩家外观 | 当前角色包和服饰进入初始模型名单；角色792首个可玩帧第三人称正确；第一人称衣袖／手套已实读 | 更多角色和动作视觉；`PLAYER_APPEARANCE_PROGRESS.md`、`VIEWMODEL_PROGRESS.md` |
 | Bot 外观与持枪 | 阵营职业装配、原生枪械组合、回放衣袖／手套和前三名持枪已接通 | 开局部分 Bot 仍有约1.7..3.0秒备用模型，加载状态0→2→1；尚未找到协议预热，不能认定官方必然如此；`BOT_OUTFITS_PROGRESS.md` |
 | 武器与射击 | 真实武器注册、配件、ADS、切枪、换弹、2／3／4发点射及 Ranger 副扳机／双管 | 独立两手弹匣、完整替代模式、更多冷缓存和视觉／听感；`WEAPON_NATIVE_PROGRESS.md`、`BURST_FIRE_PROGRESS.md`、`RANGER_TRIGGER_PROGRESS.md` |
-| Bot 导航与动作 | 地面支撑约束图边、接入和捷径；坡面避让使用胶囊投影；原生换弹上身动作保留移动腿部 | 复杂物件边缘仍有胶囊支撑但脚下更低的情况，完整足部贴地未解决；`BOT_GROUNDING_PROGRESS.md`、`BOT_RELOAD_PROGRESS.md` |
+| Bot 导航与动作 | 地面支撑约束图边、接入和捷径；坡面避让使用胶囊投影；原生换弹上身动作保留移动腿部；诊断换枪按实际武器重新绑定身体动作，M200实射最短1550ms | 复杂物件边缘仍有胶囊支撑但脚下更低的情况，完整足部贴地未解决；`BOT_GROUNDING_PROGRESS.md`、`BOT_RELOAD_PROGRESS.md` |
 | HUD 与战斗反馈 | 两阵营友敌判伤、记分板、胜负、击杀栏、白命中／红击杀淡出、原生队友死亡标识和提示音资源已接 | 提示音独立听感、字体／描边、逐图视觉 |
 | 死亡与回放 | 尸体、个人／最终历史回放、原生倒计时和名片；个人跳过提示、最终“决胜杀”标题、重生／结算清理有实机证据 | 特殊镜头及更多组合；`KILLCAM_PROGRESS.md` |
-| 前三名 | 原生名片／得分、三个真实本局角色持枪、固定镜头及结算衔接 | 官方入场／庆祝演出、完整逐图视觉；`TOP_PLAYERS_PROGRESS.md`、`HELD_WEAPONS_PROGRESS.md` |
-| 持枪近战 | 真实时间和135伤害、唯一判伤、原生刀杀计分；短／长接近移动、动作8／9、地面碰撞和快照已有实机证据 | 完整宽幅吸附、人物碰撞、独立刀具／盾牌；`MELEE_PROJECTILE_PROGRESS.md` |
+| 前三名 | 原生名片／得分、三个真实本局角色持枪、固定镜头；姿态实体复用真实donor外观，客户端和结算名单保持12人 | 官方入场／庆祝演出、完整逐图视觉；`TOP_PLAYERS_PROGRESS.md`、`HELD_WEAPONS_PROGRESS.md` |
+| 持枪近战 | 真实时间和135伤害、原生刀杀计分；96单位侧向接近、64单位中心／四角判伤、动作8／9和同步已有实机证据 | 骨骼几何、刀具表和特长吸附、人物碰撞、独立刀具／盾牌；`MELEE_PROJECTILE_PROGRESS.md` |
 | 投射物、装备与支援 | 按真实武器类型隔离即时命中，弩／弹道刀不进入子弹伤害路径 | 飞行实体、撞击、爆炸、范围伤害、投掷状态机和连杀支援 |
 | 地图动态物件 | 世界碰撞和训练靶支持；MapEnts 变体按精确 map token 筛选 | 完整动态实体、玻璃协议、车辆阶段状态 |
 | 交付工具 | 研究副本、哈希检查、资源采集／准备和本地入口存在 | 可迁移启动器、预检、归档及恢复流程 |
 
-当前近战验证见 `research-output/melee-charge-live-proof.json`；完整代码检查见 `research-output/room-initial-bots-delivery-check.log`（355 Rust／50 Python，fmt/Clippy 通过）。这组结果不将上表明确保留的缺项标为完成。
+当前近战验证见 `research-output/melee-wide-live-proof.json`，M200验证见 `research-output/bot-sniper-live-proof.json`；完整代码检查见 `research-output/pose-tree-final-check.log`（361 Rust／52 Python，fmt/Clippy 通过）。这组结果不将上表明确保留的缺项标为完成。
 
 接续优先级：恢复完整近战目标选取／判伤几何与独立刀具路径，建立投射物状态和飞行碰撞；同时保留 Bot 加载、足部接触和完整结算演出的独立复核工作。每项实现必须核对本版消费者和实际资源，诊断设置不得覆盖正常游玩准备。
