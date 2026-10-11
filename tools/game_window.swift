@@ -44,7 +44,7 @@ func focusGame(_ app: NSRunningApplication) throws {
     if !app.isActive {
         let bridge=URL(fileURLWithPath:CommandLine.arguments[0]).standardizedFileURL.deletingLastPathComponent().appendingPathComponent("game-window-focus")
         if FileManager.default.isExecutableFile(atPath:bridge.path) {
-            _ = try run(bridge.path,[String(pidNumber)])
+            _ = try run(bridge.path,[String(pidNumber),executable.path])
         } else {
             _ = try run("/usr/bin/osascript", ["-e", "tell application \"System Events\" to set frontmost of first process whose unix id is \(pidNumber) to true"])
         }
