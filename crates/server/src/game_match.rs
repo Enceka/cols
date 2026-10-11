@@ -38,6 +38,25 @@ pub(crate) struct BotLoadout {
     pub animation: crate::game_enemy::EnemyConfig,
     pub attachment_models: [u16; 10],
     pub personality: String,
+    #[serde(default)]
+    pub outfits: Option<[BotOutfit; 2]>,
+}
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct BotOutfit {
+    pub model: u16,
+    pub attachment_models: [u16; 10],
+}
+impl BotLoadout {
+    fn outfit(&self, team: u8) -> BotOutfit {
+        self.outfits.as_ref().map_or(
+            BotOutfit {
+                model: self.animation.model,
+                attachment_models: self.attachment_models,
+            },
+            |a| a[usize::from(team - 1)],
+        )
+    }
 }
 impl MatchConfig {
     pub fn validate(&self, collision: &Collision) -> Result<()> {
@@ -60,6 +79,18 @@ impl MatchConfig {
         );
         for entry in &self.roster {
             entry.animation.validate()?;
+            for outfit in entry.outfits.iter().flatten() {
+                ensure!(
+                    (1..1024).contains(&outfit.model)
+                        && outfit.attachment_models.iter().all(|&i| i < 1024),
+                    "invalid faction-specific Bot outfit"
+                );
+                let mut ended = false;
+                for model in outfit.attachment_models {
+                    ensure!(!ended || model == 0, "sparse Bot outfit attachments");
+                    ended |= model == 0;
+                }
+            }
             ensure!(
                 entry.class.starts_with("botclass") && entry.class.len() <= 32,
                 "invalid native Bot class"
@@ -284,8 +315,9 @@ impl TdmMatch {
         for (i, weapon) in weapons.into_iter().enumerate() {
             let bot = &mut self.bots[i];
             let config = &self.config.roster[i];
-            bot.snapshot.model = config.animation.model;
-            bot.snapshot.attachment_models = config.attachment_models;
+            let outfit = config.outfit(bot.snapshot.team);
+            bot.snapshot.model = outfit.model;
+            bot.snapshot.attachment_models = outfit.attachment_models;
             bot.snapshot.weapon = weapon.equipment().weapon;
             bot.controller.set_match_move_scale(weapon.move_scale());
             bot.initial_weapon = Some(weapon.clone());
@@ -855,6 +887,55 @@ fn distance(a: [f32; 3], b: [f32; 3]) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn room_team_assignment_selects_bot_outfits_and_their_pinned_baselines() {
+        let outfit:BotLoadout=serde_json::from_value(serde_json::json!({
+            "class":"botclass1","weapon_name":"m4_mp","personality":"default",
+            "attachment_models":[3,2,5,6,0,0,0,0,0,0],
+            "animation":{"model":4,"origin":[0,0,0],"bounds_min":[-15,-15,0],"bounds_max":[15,15,70],
+                "idle_animation":395,"walk_animation":243,"fire_animation":616,"death_animation":47,
+                "move_speed":190,"angles":[0,0,0],"weapon":352,"source_sha256":"a".repeat(64)},
+            "outfits":[{"model":201,"attachment_models":[202,203,204,205,0,0,0,0,0,0]},
+                       {"model":301,"attachment_models":[302,303,304,305,0,0,0,0,0,0]}]
+        })).unwrap();
+        let weapon = crate::game_player::Player::new(
+            codol_protocol::game_snapshot::Equipment {
+                weapon: 352,
+                inventory_weapon: None,
+                alternate_weapon: None,
+                fire_count: 0,
+                queued_burst: false,
+                barrel_flags: 0,
+                spread_scale: 0.0,
+                needs_rechamber: false,
+                ammo: None,
+                viewmodel: None,
+                firing: None,
+                aim: None,
+                secondary: None,
+                events: None,
+            },
+            Some(80),
+            None,
+            None,
+        );
+        for swapped in [false, true] {
+            let mut c = config();
+            c.roster = vec![outfit.clone(); 11];
+            if swapped {
+                c.teams = c.teams.map(|t| 3 - t);
+            }
+            let mut game = TdmMatch::new(c, template(), 190.0, &world()).unwrap();
+            game.configure_roster(vec![weapon.clone(); 11]).unwrap();
+            for (actor, baseline) in game.snapshots().iter().zip(game.baselines()) {
+                let expected = if actor.team == 1 { 201 } else { 301 };
+                assert_eq!(actor.model, expected);
+                assert_eq!(actor.attachment_models[0], expected + 1);
+                assert_eq!(baseline.model, actor.model);
+                assert_eq!(baseline.attachment_models, actor.attachment_models);
+            }
+        }
+    }
     fn world() -> Collision {
         let export = serde_json::json!({"schema_version":1,"read_only":true,"client_sha256":codol_protocol::CLIENT_SHA256,
             "map":"maps/mp/test.d3dbsp","ncs_crc":0,"brushes":[{"center":[0,0,-10],"half":[4000,4000,10],"contents":1,"planes":[]}],"triangles":[]});
@@ -1194,6 +1275,73 @@ mod tests {
             .join("../../research-output/tdm-state.json");
         let state = crate::game_state::PreparedGameState::load(&path).unwrap();
         assert!(state.is_match());
+    }
+    #[test]
+    #[ignore = "requires local three-map faction outfits and CODOL_APPEARANCE_PROFILE"]
+    fn captured_room_factions_keep_outfits_and_resource_packets_consistent() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../research-output");
+        let profile =
+            std::path::PathBuf::from(std::env::var_os("CODOL_APPEARANCE_PROFILE").unwrap());
+        let public = std::fs::read(profile.join("public.bin")).unwrap();
+        let inventory: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(profile.join("inventory.json")).unwrap())
+                .unwrap();
+        let owned: Vec<u32> = serde_json::from_value(inventory["items"].clone()).unwrap();
+        for name in [
+            "tdm-afghan-hud-state",
+            "tdm-killhouse-hud-state",
+            "tdm-crash-tropical-state",
+        ] {
+            let state = crate::game_state::PreparedGameState::load(
+                &root.join(format!("{name}-faction-outfits.json")),
+            )
+            .unwrap();
+            for teams in [default_teams(), default_teams().map(|t| 3 - t)] {
+                let resolved = state
+                    .clone()
+                    .with_room_teams(teams)
+                    .unwrap()
+                    .for_profile(&public, &owned)
+                    .unwrap();
+                let game = resolved.tdm_match().unwrap().unwrap();
+                let actors = game.snapshots();
+                for (i, actor) in actors.iter().enumerate() {
+                    let outfit =
+                        game.config.roster[i].outfits.unwrap()[usize::from(teams[i + 1] - 1)];
+                    assert_eq!(actor.model, outfit.model);
+                    assert_eq!(actor.attachment_models, outfit.attachment_models);
+                    assert_eq!(game.baselines()[i].model, actor.model);
+                }
+                let gamestate = resolved.body(1).unwrap();
+                let wire =
+                    codol_protocol::game_wire::compact_server_packet(3, 0, 0, b"", &gamestate)
+                        .unwrap();
+                let snapshot = resolved
+                    .snapshot(
+                        1000,
+                        1000,
+                        true,
+                        [0; 3],
+                        resolved.player().map(|p| p.equipment()),
+                        crate::game_state::SnapshotWorld {
+                            motion: resolved.motion().as_ref(),
+                            local_player: resolved.local_player_snapshot(true),
+                            players: &actors,
+                            vitals: Some(Default::default()),
+                            ..Default::default()
+                        },
+                    )
+                    .unwrap();
+                assert!(snapshot.len() < codol_protocol::game_wire::FRAGMENT_SIZE - 4);
+                eprintln!(
+                    "{name} local_team={} models={} wire={} snapshot={}",
+                    teams[0],
+                    game.config.models.len(),
+                    wire.len(),
+                    snapshot.len()
+                );
+            }
+        }
     }
 
     #[test]

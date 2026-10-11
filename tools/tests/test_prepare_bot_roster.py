@@ -3,11 +3,19 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from prepare_bot_roster import animation_config, rows, variant
+from prepare_bot_roster import animation_config, rows, variant, model_registry
 from test_prepare_bot_locomotion import inputs
 
 
 class BotRosterPreparation(unittest.TestCase):
+    def test_repreparation_reuses_explicit_models_but_not_unlisted_runtime_player_slots(self):
+        state={"match_config":{"models":[[193,"bot_body"]]}}
+        capture={"models":[{"model":4,"name":"inherited_body"},{"model":193,"name":"bot_body"},{"model":243,"name":"old_player"}]}
+        models, registrations=model_registry(state,capture)
+        self.assertEqual(models,{"inherited_body":4,"bot_body":193})
+        self.assertEqual(registrations,[[193,"bot_body"]])
+        state["match_config"]["models"].append([194,"bot_body"])
+        with self.assertRaises(ValueError):model_registry(state,capture)
     def test_outfit_variant_matches_gender_faction_and_shared_parts(self):
         import base64
         values = [["coat", "model", "m sc sss", "coat_sc"],

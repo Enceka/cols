@@ -96,6 +96,22 @@ def animation_config(template, capture, definition):
     return config
 
 
+def model_registry(state, capture):
+    # A later character capture also contains dynamically registered outfits.
+    # Only the inherited prefix plus explicit registrations in this preparation
+    # can be reused in another session; do not inherit a stale player's slot.
+    registered=state.get("match_config",{}).get("models",[])
+    first=min((i for i,_ in registered),default=max(m["model"] for m in capture["models"])+1)
+    models={m["name"].lower():m["model"] for m in capture["models"] if m["model"]<first}
+    ids={i:n for n,i in models.items()}
+    for index,name in registered:
+        name=name.lower()
+        if (index in ids and ids[index]!=name) or (name in models and models[name]!=index):
+            raise ValueError("conflicting explicit Bot model registration")
+        ids[index]=name;models[name]=index
+    return models,list(registered)
+
+
 def prepare(state, capture, arsenal, stream_outfits=False):
     for value in (state, capture, arsenal):
         if value["client_sha256"] != CLIENT_SHA256 or value["ncs_crc"] != state["ncs_crc"]:
@@ -108,9 +124,9 @@ def prepare(state, capture, arsenal, stream_outfits=False):
         raise ValueError("duplicate Bot class field")
     weapons = {w["name"]: w for w in arsenal["weapons"]}
     available = {a["name"].lower() for a in capture["character_assets"] if a["kind"] == 4 and (stream_outfits or a["flags"] & 5)}
-    models = {m["name"].lower(): m["model"] for m in capture["models"]}
+    models,registrations = model_registry(state,capture)
     next_model = max(models.values()) + 1
-    registrations, fallbacks, roster = [], [], []
+    fallbacks, roster = [], []
 
     def model_id(name):
         nonlocal next_model
@@ -151,15 +167,20 @@ def prepare(state, capture, arsenal, stream_outfits=False):
         if len(definition) != 0xe28 or struct.unpack_from("<I", definition, 0x48c)[0] not in range(6):
             raise ValueError("native Bot class weapon firing mode unsupported")
         animation = animation_config(state["training_enemy"], capture, definition)
-        try:
-            parts = outfit(column, 2 if client <= 5 else 1)
-        except ValueError as error:
-            fallbacks.append({"client": client, "class": records["uniqueName"][column], "reason": str(error)})
-            parts = outfit(1, 2 if client <= 5 else 1)
+        outfits=[]
+        for team in [1,2]:
+            try:
+                parts=outfit(column,team)
+            except ValueError as error:
+                fallbacks.append({"client":client,"team":team,"class":records["uniqueName"][column],"reason":str(error)})
+                parts=outfit(1,team)
+            outfits.append(dict(model=parts[0],attachment_models=parts[1:]+[0]*(11-len(parts))))
+        team=state["match_config"].get("teams",[2]*6+[1]*6)[client]
+        parts=[outfits[team-1]["model"]]+[i for i in outfits[team-1]["attachment_models"] if i]
         animation["model"] = parts[0]
         personality = records["botPersonalities"][column].split("|")[0]
         roster.append({"class": records["uniqueName"][column], "weapon_name": name, "animation": animation,
-                       "attachment_models": parts[1:] + [0] * (11 - len(parts)), "personality": personality})
+                       "attachment_models": parts[1:] + [0] * (11 - len(parts)), "personality": personality,"outfits":outfits})
     state["match_config"]["roster"] = roster
     state["match_config"]["models"] = registrations
     return {"classes": [b["class"] for b in roster], "weapons": [b["weapon_name"] for b in roster],

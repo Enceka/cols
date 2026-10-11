@@ -138,3 +138,5 @@
 补齐本版fireType2/3/4及PS排队触发标志，M16等不再因点射类型在入场装配时被拒绝。隔离服务副本M16真实入场和发数推进通过，原账号SHA保持不变；严格单次输入与FAMAS独立视觉仍记录待复核。完整334 Rust/48 Python通过，另追加1项显式换弹回归和Player模块复核；详见 `BURST_FIRE_PROGRESS.md`。
 
 Ranger的fireType5现支持副扳机及同时双管，按实际两发弹匣扣弹并生成两份弹丸射击，PS标志随快照/回放保存。337 Rust/48 Python及真实Ranger资源诊断通过，独立实机动画/听感列为待复核；详见 `RANGER_TRIGGER_PROGRESS.md`。
+
+Bot服装现按房间实际队伍选择两套原生职业装配，换队同时更新实体基线，避免游戏阵营与人物服装不一致。三图×两种分配的真实资源与包预算通过；338 Rust/49 Python及fmt/Clippy通过，详见 `BOT_OUTFITS_PROGRESS.md`。下一项补齐Bot回放中的原生角色组成，当前衣袖/手套信息仅接入玩家自己。
