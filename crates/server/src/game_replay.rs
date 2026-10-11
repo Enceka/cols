@@ -290,6 +290,7 @@ mod tests {
             inventory_weapon: None,
             alternate_weapon: None,
             fire_count: 1,
+            queued_burst: false,
             spread_scale: 0.0,
             needs_rechamber: false,
             ammo: None,

@@ -587,8 +587,8 @@ impl PreparedGameState {
                 "invalid weapon switching/movement parameters"
             );
             ensure!(
-                weapon.fire_type.is_none_or(|v| matches!(v, 0 | 1 | 5)),
-                "unsupported burst firing state machine"
+                weapon.fire_type.is_none_or(|v| v <= 5),
+                "unsupported special firing state machine"
             );
             ensure!(
                 weapon.viewmodel_index.is_none_or(|i| i > 0 && i < 1024),
@@ -1607,6 +1607,7 @@ impl PreparedGameState {
                 inventory_weapon: None,
                 alternate_weapon: None,
                 fire_count: 0,
+                queued_burst: false,
                 spread_scale: 0.0,
                 needs_rechamber: false,
                 secondary: None,

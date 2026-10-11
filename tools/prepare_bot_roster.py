@@ -148,7 +148,7 @@ def prepare(state, capture, arsenal, stream_outfits=False):
             if key.startswith("loadoutPrimaryAttachment") and values[column] not in {"", "none"}:
                 raise ValueError("native Bot class needs explicit attachment binding")
         definition = base64.b64decode(weapon["definition_base64"], validate=True)
-        if len(definition) != 0xe28 or struct.unpack_from("<I", definition, 0x48c)[0] not in (0, 1, 5):
+        if len(definition) != 0xe28 or struct.unpack_from("<I", definition, 0x48c)[0] not in range(6):
             raise ValueError("native Bot class weapon firing mode unsupported")
         animation = animation_config(state["training_enemy"], capture, definition)
         try:

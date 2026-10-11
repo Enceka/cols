@@ -1911,6 +1911,7 @@ mod tests {
                 inventory_weapon: None,
                 alternate_weapon: None,
                 fire_count: 0,
+                queued_burst: false,
                 spread_scale: 0.0,
                 needs_rechamber: false,
                 weapon: 352,

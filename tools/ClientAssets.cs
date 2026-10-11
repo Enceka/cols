@@ -543,6 +543,7 @@ class ClientAssets {
                 "pm_type",U(ps,4),"other_flags",U(ps,0x10),"command_time",U(ps,0),
                 "origin",Floats(ps,0x1c,3),"angles",Floats(ps,0x14c,3),
                 "weapon",U(ps,0x340),"weapon_state",U(ps,0x27c),"clip",U(ps,0x3e0),
+                "weapon_time",U(ps,0x270),"fire_count",U(ps,0x284),"queued_burst",U(ps,0x280)&1,
                 "health",U(ps,0x190),"spawn_count",U(ps,0x19c),"corpse_slot",U(ps,0xe8)));
             System.Threading.Thread.Sleep(25);
         }

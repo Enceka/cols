@@ -18,6 +18,8 @@ pub struct Equipment {
     pub alternate_weapon: Option<u16>,
     /// PS+0x284: native shots in the current trigger press, clamped at4.
     pub fire_count: u8,
+    /// PS+0x280 bit0: a new trigger edge buffered during a burst/recovery.
+    pub queued_burst: bool,
     pub spread_scale: f32,
     /// Inventory slot flag3, PS+0x2e3: bolt still needs rechambering.
     pub needs_rechamber: bool,
@@ -468,6 +470,9 @@ pub fn player_frame_with_world(
             }
         }
         if let Some(weapon) = weapon {
+            if equipment.unwrap().queued_burst {
+                fields.push((121, 1, 1));
+            }
             // 0x422e5c/0x42956f select idle0 with the0x400 restart bit.
             fields.extend([
                 (6, equipment.unwrap().spread_scale.to_bits(), 0),
@@ -952,6 +957,7 @@ mod tests {
             inventory_weapon: None,
             alternate_weapon: None,
             fire_count: 0,
+            queued_burst: false,
             spread_scale: 0.0,
             needs_rechamber: false,
             ammo: None,
@@ -1059,6 +1065,7 @@ mod tests {
             inventory_weapon: None,
             alternate_weapon: Some(180),
             fire_count: 1,
+            queued_burst: false,
             spread_scale: 0.0,
             needs_rechamber: false,
             weapon: 352,
@@ -1108,7 +1115,10 @@ mod tests {
                 950,
                 Some([25.0, 0.0, -113.4]),
                 false,
-                Some(equipment),
+                Some(Equipment {
+                    queued_burst: lerp_down,
+                    ..equipment
+                }),
                 [0, 1234, 0],
                 Some(motion),
             )
@@ -1120,6 +1130,7 @@ mod tests {
             assert_eq!(r.u8().unwrap(), 0);
             assert_eq!(r.bits(2).unwrap(), 2); // Zero PS baseline, authoritative movement.
             let (fields, parameters) = read_fields(&mut r);
+            assert_eq!(fields.get(&121).copied().unwrap_or(0), u32::from(lerp_down));
             for (index, expected) in [
                 (0, 950),
                 (1, 4),
@@ -1199,6 +1210,7 @@ mod tests {
             inventory_weapon: None,
             alternate_weapon: Some(180),
             fire_count: 1,
+            queued_burst: false,
             spread_scale: 0.0,
             needs_rechamber: true,
             secondary: None,
@@ -1337,6 +1349,7 @@ mod tests {
             inventory_weapon: None,
             alternate_weapon: None,
             fire_count: 0,
+            queued_burst: false,
             spread_scale: 0.0,
             needs_rechamber: false,
             secondary: None,

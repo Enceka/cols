@@ -156,6 +156,22 @@ impl Weapon {
     fn empty(&self) -> bool {
         self.equipment.ammo.is_some_and(|ammo| ammo.clip == 0)
     }
+    fn is_burst(&self) -> bool {
+        (2..=4).contains(&self.fire_type)
+    }
+    fn burst_pending(&self) -> bool {
+        self.is_burst()
+            && self.equipment.fire_count > 0
+            && u32::from(self.equipment.fire_count) < self.fire_type
+            && !self.empty()
+            && self.equipment.firing.is_some_and(|f| f.state == 6)
+    }
+    fn cancel_burst(&mut self) {
+        if self.is_burst() {
+            self.equipment.fire_count = 0;
+            self.equipment.queued_burst = false;
+        }
+    }
 
     fn animate(&mut self, state: u8, animation: u16, remaining_msec: u16, delay_msec: u16) {
         let restart = self
@@ -261,12 +277,11 @@ impl Player {
     }
 
     /// WeaponDef +0x48c. Target 0x424830 stops fire types 1/5 after one
-    /// shot per trigger; 0 is automatic. Burst modes require their complete
-    /// burst/pause state machine, not ordinary automatic-fire timing.
+    /// shot per trigger;0 is automatic;2/3/4 fire that many rounds.
     pub fn set_fire_type(&mut self, fire_type: u32) -> anyhow::Result<()> {
         anyhow::ensure!(
-            matches!(fire_type, 0 | 1 | 5),
-            "unsupported weapon fire type {fire_type}: burst/special firing state machine required"
+            fire_type <= 5,
+            "unsupported special weapon fire type {fire_type}"
         );
         self.current.fire_type = fire_type;
         Ok(())
@@ -406,7 +421,10 @@ impl Player {
         let elapsed = cmd.time - self.last_time;
         self.last_time = cmd.time;
         self.update_spread(cmd, elapsed);
-        if cmd.buttons & 1 == 0 {
+        if self.current.is_burst() && cmd.buttons & 1 != 0 && !self.attack_held {
+            self.current.equipment.queued_burst = true;
+        }
+        if cmd.buttons & 1 == 0 && !self.current.is_burst() {
             self.current.equipment.fire_count = 0;
         }
         self.apply_weapon(cmd, elapsed);
@@ -603,6 +621,7 @@ impl Player {
     }
 
     fn begin_drop(&mut self, requested: u16) {
+        self.current.cancel_burst();
         let timing = self.current.switch.expect("switching timings checked");
         if let Some(state) = self
             .current
@@ -631,6 +650,7 @@ impl Player {
     }
 
     fn begin_raise(&mut self) {
+        self.current.cancel_burst();
         self.current.reload_transfer_pending = false;
         if let Some(timing) = self.current.switch {
             let empty = self.current.empty();
@@ -652,6 +672,7 @@ impl Player {
     }
 
     fn begin_alternate_drop(&mut self, requested: u16) {
+        self.current.cancel_burst();
         if let Some(firing) = self.current.equipment.firing
             && reloading(firing.state)
         {
@@ -672,7 +693,7 @@ impl Player {
             firing.delay_msec = firing.delay_msec.saturating_sub(elapsed);
         }
         let state = self.current.equipment.firing.map_or(0, |f| f.state);
-        let remaining = self
+        let mut remaining = self
             .current
             .equipment
             .firing
@@ -770,6 +791,50 @@ impl Player {
         if raising {
             return;
         }
+        if self.current.is_burst()
+            && state == 6
+            && cmd.buttons & 16 != 0
+            && Self::input_allowed(cmd)
+            && cmd.weapons[0] == self.current.equipment.weapon
+            && self.current.reload.is_some()
+            && self
+                .current
+                .equipment
+                .ammo
+                .is_some_and(|a| a.clip < self.current.magazine_capacity && a.reserve > 0)
+        {
+            // 0x424660 ->0x423490 accepts an explicit reload from firing6;
+            // do not force the remaining rounds of this burst first.
+            remaining = 0;
+            self.current
+                .equipment
+                .firing
+                .as_mut()
+                .unwrap()
+                .remaining_msec = 0;
+        }
+        if self.current.is_burst() && state == 6 && remaining == 0 && !self.current.burst_pending()
+        {
+            // 0x424d13..0x424d83: even a clip-truncated burst goes ready with
+            //200ms recovery after its final round's ordinary fire interval.
+            self.current.ready();
+            self.current
+                .equipment
+                .firing
+                .as_mut()
+                .unwrap()
+                .remaining_msec = 200;
+            if cmd.buttons & 16 == 0 {
+                return;
+            }
+        }
+        if self.current.is_burst()
+            && remaining == 0
+            && !self.current.burst_pending()
+            && (cmd.buttons & 1 == 0 || self.current.equipment.queued_burst)
+        {
+            self.current.equipment.fire_count = 0;
+        }
         if state == 7 {
             if self.current.equipment.firing.unwrap().delay_msec == 0
                 && self.current.rechamber_pending
@@ -846,6 +911,7 @@ impl Player {
             // Target 0x424660 reads BUTTON_RELOAD 0x10, not 0x20.
             && (cmd.buttons & 0x10 != 0 || ammo.clip == 0)
         {
+            self.current.cancel_burst();
             let empty = ammo.clip == 0;
             self.emit(events::RESET_ADS, 0);
             self.emit(events::RELOAD_START_NOTIFY, 0);
@@ -883,8 +949,9 @@ impl Player {
             self.current.reload_transfer_pending = true;
             return;
         }
-        let trigger = cmd.buttons & 1 != 0
-            && (self.current.fire_type == 0 || self.current.equipment.fire_count == 0);
+        let trigger = self.current.burst_pending()
+            || (cmd.buttons & 1 != 0
+                && (self.current.fire_type == 0 || self.current.equipment.fire_count == 0));
         if allowed && trigger && ammo.clip > 0 {
             let remaining_clip = ammo.clip - 1;
             if let Some(mut ballistics) = self.current.ballistics {
@@ -907,6 +974,9 @@ impl Player {
                 self.spread_scale = (self.spread_scale + timing.fire_add * 255.0).min(255.0);
             }
             if self.current.fire_type != 0 {
+                if self.current.equipment.fire_count == 0 {
+                    self.current.equipment.queued_burst = false;
+                }
                 self.current.equipment.fire_count = (self.current.equipment.fire_count + 1).min(4);
             }
             self.current.rechamber_pending = self.current.rechamber.is_some();
@@ -1108,6 +1178,7 @@ mod tests {
                 inventory_weapon: None,
                 alternate_weapon: None,
                 fire_count: 0,
+                queued_burst: false,
                 spread_scale: 0.0,
                 needs_rechamber: false,
                 weapon: 352,
@@ -1240,15 +1311,119 @@ mod tests {
     }
 
     #[test]
-    fn burst_and_special_modes_are_explicitly_rejected_without_changing_fire_mode() {
+    fn special_modes_are_explicitly_rejected_without_changing_fire_mode() {
         let mut p = player();
         p.set_fire_type(1).unwrap();
-        for fire_type in [2, 3, 4, 6, 7, u32::MAX] {
+        for fire_type in [6, 7, u32::MAX] {
             assert!(p.set_fire_type(fire_type).is_err());
         }
         p.apply(&cmd(1100, 1));
         p.apply(&cmd(1200, 1));
         assert_eq!(p.equipment().ammo.unwrap().clip, 29);
+    }
+    #[test]
+    fn bursts_complete_after_release_and_recover_before_rearming() {
+        for count in 2..=4 {
+            let mut p = player();
+            p.set_fire_type(count).unwrap();
+            p.set_ballistics(crate::game_combat::Ballistics {
+                damage: 30,
+                range: 8192.0,
+                near_range: 1000.0,
+                location_multipliers: None,
+                falloff: None,
+                pellets: 0,
+                spread_degrees: 0.0,
+            });
+            p.apply(&cmd(1001, 1));
+            for round in 1..count {
+                p.apply(&cmd(1001 + round * 79, 0));
+                assert_eq!(p.equipment().fire_count, round as u8 + 1);
+                let clip = p.equipment().ammo.unwrap().clip;
+                p.apply(&cmd(1001 + round * 79, 0));
+                assert_eq!(p.equipment().ammo.unwrap().clip, clip);
+            }
+            assert_eq!(p.equipment().ammo.unwrap().clip, 30 - count as u16);
+            let shots = p.take_shots();
+            assert_eq!(shots.len(), count as usize);
+            assert_eq!(
+                shots.iter().map(|s| s.time).collect::<Vec<_>>(),
+                (0..count).map(|i| 1001 + i * 79).collect::<Vec<_>>()
+            );
+            assert!(p.take_shots().is_empty());
+            let recovery = 1001 + count * 79;
+            p.apply(&cmd(recovery, 0));
+            assert_eq!(p.equipment().firing.unwrap().remaining_msec, 200);
+            assert_eq!(p.equipment().firing.unwrap().state, 0);
+            p.apply(&cmd(recovery + 199, 0));
+            assert_eq!(p.equipment().ammo.unwrap().clip, 30 - count as u16);
+            p.apply(&cmd(recovery + 200, 0));
+            assert_eq!(p.equipment().ammo.unwrap().clip, 30 - count as u16);
+            p.apply(&cmd(recovery + 201, 0));
+            assert_eq!(p.equipment().fire_count, 0);
+            p.apply(&cmd(recovery + 202, 1));
+            assert_eq!(p.equipment().ammo.unwrap().clip, 29 - count as u16);
+        }
+    }
+    #[test]
+    fn trigger_repress_during_recovery_is_buffered_and_cleared_by_the_next_burst() {
+        let mut p = player();
+        p.set_fire_type(3).unwrap();
+        for time in [1001, 1080, 1159] {
+            p.apply(&cmd(time, 1));
+        }
+        p.apply(&cmd(1200, 0));
+        p.apply(&cmd(1201, 1));
+        assert!(p.equipment().queued_burst);
+        assert_eq!(p.equipment().fire_count, 3);
+        p.apply(&cmd(1238, 1));
+        assert_eq!(p.equipment().firing.unwrap().remaining_msec, 200);
+        p.apply(&cmd(1437, 1));
+        assert_eq!(p.equipment().ammo.unwrap().clip, 27);
+        p.apply(&cmd(1438, 1));
+        assert_eq!(p.equipment().ammo.unwrap().clip, 26);
+        assert_eq!(p.equipment().fire_count, 1);
+        assert!(!p.equipment().queued_burst);
+        p.apply(&cmd(1517, 0));
+        p.apply(&cmd(1596, 0));
+        assert_eq!(p.equipment().ammo.unwrap().clip, 24);
+    }
+    #[test]
+    fn explicit_reload_interrupts_an_unfinished_burst_before_the_next_round() {
+        let mut p = player();
+        p.current.reload = Some(reload_timing());
+        p.set_fire_type(3).unwrap();
+        p.apply(&cmd(1001, 1));
+        p.apply(&cmd(1030, 16));
+        assert_eq!(p.equipment().ammo.unwrap().clip, 29);
+        assert_eq!(p.equipment().fire_count, 0);
+        assert_eq!(p.equipment().firing.unwrap().state, 8);
+        p.apply(&cmd(1100, 0));
+        assert_eq!(p.equipment().ammo.unwrap().clip, 29);
+        assert!(!p.equipment().queued_burst);
+    }
+    #[test]
+    fn held_burst_trigger_does_not_repeat_and_empty_clip_truncates_the_burst() {
+        let mut p = player();
+        p.set_fire_type(3).unwrap();
+        for time in (1001..=3001).step_by(79) {
+            p.apply(&cmd(time, 1));
+        }
+        assert_eq!(p.equipment().ammo.unwrap().clip, 27);
+        assert_eq!(p.equipment().fire_count, 3);
+        assert_eq!(p.equipment().events.unwrap().sequence, 3);
+        let mut p = player();
+        p.set_fire_type(3).unwrap();
+        p.current.equipment.ammo.as_mut().unwrap().clip = 2;
+        p.apply(&cmd(1001, 1));
+        p.apply(&cmd(1080, 0));
+        p.apply(&cmd(1159, 0));
+        assert_eq!(p.equipment().ammo.unwrap().clip, 0);
+        assert_eq!(p.equipment().fire_count, 2);
+        assert_eq!(p.equipment().firing.unwrap().remaining_msec, 200);
+        p.apply(&cmd(1400, 0));
+        assert_eq!(p.equipment().fire_count, 0);
+        assert_eq!(p.equipment().events.unwrap().sequence, 2);
     }
     #[test]
     fn empty_clip_menu_and_weapon_switch_do_not_create_ammo_or_shots() {
@@ -1401,6 +1576,27 @@ mod tests {
         });
         player.set_move_scale(scale);
         player
+    }
+    #[test]
+    fn switching_away_cancels_partial_burst_and_does_not_resume_it_on_return() {
+        let mut p = switchable_player(352, 1.0);
+        p.set_fire_type(3).unwrap();
+        let mut p = p.with_secondary(switchable_player(180, 1.0));
+        p.apply(&select(1001, 352, 1));
+        p.apply(&select(1030, 180, 0));
+        assert_eq!(p.equipment().fire_count, 0);
+        assert!(!p.equipment().queued_burst);
+        p.apply(&select(1330, 180, 0));
+        p.apply(&select(1730, 180, 0));
+        p.apply(&select(1740, 352, 0));
+        p.apply(&select(2040, 352, 0));
+        p.apply(&select(2440, 352, 0));
+        assert_eq!(p.equipment().weapon, 352);
+        assert_eq!(p.equipment().ammo.unwrap().clip, 29);
+        p.apply(&select(2500, 352, 0));
+        assert_eq!(p.equipment().ammo.unwrap().clip, 29);
+        p.apply(&select(2501, 352, 1));
+        assert_eq!(p.equipment().ammo.unwrap().clip, 28);
     }
 
     fn select(time: u32, weapon: u16, buttons: u32) -> UserCommand {
