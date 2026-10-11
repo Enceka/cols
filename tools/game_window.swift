@@ -38,6 +38,20 @@ else { fail("client must be a marked research copy") }
 let actual = try run("/bin/ps", ["-p", String(pidNumber), "-o", "comm="]).trimmingCharacters(in: .whitespacesAndNewlines)
 guard actual == executable.path else { fail("recorded PID no longer belongs to the research client") }
 let pid = pid_t(pidNumber)
+func focusGame(_ app: NSRunningApplication) throws {
+    let deadline = Date().addingTimeInterval(2)
+    while !app.isActive && Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.05)) }
+    if !app.isActive {
+        let bridge=URL(fileURLWithPath:CommandLine.arguments[0]).standardizedFileURL.deletingLastPathComponent().appendingPathComponent("game-window-focus")
+        if FileManager.default.isExecutableFile(atPath:bridge.path) {
+            _ = try run(bridge.path,[String(pidNumber)])
+        } else {
+            _ = try run("/usr/bin/osascript", ["-e", "tell application \"System Events\" to set frontmost of first process whose unix id is \(pidNumber) to true"])
+        }
+        RunLoop.current.run(until:Date().addingTimeInterval(0.15))
+    }
+    guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else {fail("research client did not become active")}
+}
 let windows = CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID) as? [[String: Any]] ?? []
 guard let window = windows.first(where: {
     ($0[kCGWindowOwnerPID as String] as? Int) == pidNumber && ($0[kCGWindowLayer as String] as? Int) == 0
@@ -71,17 +85,7 @@ case "click", "move", "scroll":
     else { fail("unable to activate the research client") }
     // Activation is asynchronous. Pump AppKit's run loop so the CLI observes
     // the focus change instead of reading its cached isActive value.
-    let deadline = Date().addingTimeInterval(2)
-    while !app.isActive && Date() < deadline {
-        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
-    }
-    if !app.isActive {
-        // Wine's unbundled executable may require System Events activation.
-        // Still target only the validated experiment PID; never click globally.
-        _ = try run("/usr/bin/osascript", ["-e", "tell application \"System Events\" to set frontmost of first process whose unix id is \(pidNumber) to true"])
-        RunLoop.current.run(until: Date().addingTimeInterval(0.15))
-    }
-    guard app.isActive else { fail("research client did not become active; no click sent") }
+    try focusGame(app)
     let point = CGPoint(x: x + width * rx, y: y + height * ry)
     // Wine games may poll GetCursorPos instead of using an event's coordinates.
     guard CGPreflightPostEventAccess(), CGWarpMouseCursorPosition(point) == .success
@@ -114,9 +118,7 @@ case "look":
           let app = NSRunningApplication(processIdentifier: pid),
           app.activate(options: [.activateAllWindows]), CGPreflightPostEventAccess()
     else { fail("look requires bounded mouse deltas and an active research window") }
-    let deadline = Date().addingTimeInterval(2)
-    while !app.isActive && Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.05)) }
-    guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else { fail("research client did not become active") }
+    try focusGame(app)
     let point = CGPoint(x: x + width / 2 + dx, y: y + height / 2 + dy)
     guard point.x > x && point.x < x + width && point.y > y && point.y < y + height,
           CGWarpMouseCursorPosition(point) == .success,
@@ -134,13 +136,7 @@ case "hold":
     else { fail("hold requires an allowlisted gameplay key and a bounded duration (sprint chord:8 seconds; grenade:6; others:3)") }
     guard let app = NSRunningApplication(processIdentifier:pid), app.activate(options:[.activateAllWindows]), CGPreflightPostEventAccess()
     else { fail("unable to focus game or post gameplay key") }
-    let deadline=Date().addingTimeInterval(2)
-    while !app.isActive && Date()<deadline {RunLoop.current.run(until:Date().addingTimeInterval(0.05))}
-    if !app.isActive {
-        _ = try run("/usr/bin/osascript", ["-e", "tell application \"System Events\" to set frontmost of first process whose unix id is \(pidNumber) to true"])
-        RunLoop.current.run(until:Date().addingTimeInterval(0.15))
-    }
-    guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else {fail("research client did not become active")}
+    try focusGame(app)
     let pointer = CGEvent(source: nil)?.location ?? CGPoint(x: x + width / 2, y: y + height / 2)
     if ["fire", "ads"].contains(args[3]) {
         guard pointer.x >= x && pointer.x < x + width && pointer.y >= y && pointer.y < y + height

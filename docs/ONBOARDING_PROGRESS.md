@@ -73,7 +73,7 @@ python3 tools/client_state.py --experiment EXPERIMENT_JSON
 新增 macOS 窗口工具只针对实验记录中仍在运行、路径匹配且带研究标记的 PID：
 
 ```sh
-swiftc tools/game_window.swift -o .tools/game-window
+sh tools/build_game_window.sh
 .tools/game-window EXPERIMENT_JSON info
 .tools/game-window EXPERIMENT_JSON capture
 .tools/game-window EXPERIMENT_JSON click X_FRACTION Y_FRACTION
