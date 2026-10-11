@@ -3,6 +3,7 @@
 pub mod auth;
 pub mod bootstrap;
 pub mod game;
+pub mod game_character;
 pub mod game_corpse;
 pub mod game_enemy;
 pub mod game_events;

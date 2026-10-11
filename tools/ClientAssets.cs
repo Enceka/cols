@@ -890,6 +890,11 @@ class ClientAssets {
             "ncs_crc",r.Word(0x02df7d90),"items",items,"variants",variants,
             "variant_items_base64",Convert.ToBase64String(r.Read(0x017db2a8,2560*8)),
             "variant_groups_base64",Convert.ToBase64String(r.Read(0x017cd1bc,11*4)),
+            "packing_fields_base64",Convert.ToBase64String(r.Read(0x017cd0c0,21*12)),
+            "packing_bits_base64",Convert.ToBase64String(r.Read(0x017e02b4,11*4)),
+            "gender_selectors_base64",Convert.ToBase64String(r.Read(0x017e02a8,3*4)),
+            "faction_selectors_base64",Convert.ToBase64String(r.Read(0x017e1758,2*4)),
+            "skin_selectors_base64",Convert.ToBase64String(r.Read(0x017db294,4*4)),
             "selector_hashes_base64",Convert.ToBase64String(r.Read(0x017cd1e8,Count(r.Word(0x017db290),128)*4)))));
     }
     public static void ExportGrounding(IntPtr process) {

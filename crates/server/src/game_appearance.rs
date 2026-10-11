@@ -18,12 +18,16 @@ pub(crate) struct Catalog {
     slot_offsets: [[usize; 9]; 12],
     items: Vec<Item>,
     packages: Vec<Package>,
+    #[serde(default)]
+    packing_bits: Option<[u8; 11]>,
 }
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Item {
     id: u16,
     kind: u8,
+    #[serde(default)]
+    native_index: u16,
     variants: Vec<Variant>,
 }
 #[derive(Clone, Debug, Deserialize)]
@@ -48,6 +52,7 @@ pub(crate) struct Appearance {
     pub models: Vec<String>,
     pub indices: Vec<u16>,
     pub registrations: Vec<(u16, String)>,
+    pub character: Option<codol_protocol::game_character::Character>,
 }
 
 impl Catalog {
@@ -92,6 +97,11 @@ impl Catalog {
             "appearance catalog counts"
         );
         let mut ids = BTreeSet::new();
+        ensure!(
+            self.packing_bits
+                .is_none_or(|bits| bits.iter().all(|&b| b <= 10)),
+            "invalid native appearance bit widths"
+        );
         for item in &self.items {
             ensure!(
                 item.id != 0
@@ -100,6 +110,19 @@ impl Catalog {
                     && item.variants.len() <= 32,
                 "invalid appearance item"
             );
+            if let Some(bits) = self.packing_bits {
+                let group = if item.kind == 11 {
+                    9
+                } else {
+                    usize::from(item.kind - 1)
+                };
+                ensure!(
+                    item.native_index > 0
+                        && bits[group] > 0
+                        && u32::from(item.native_index) <= 1u32 << bits[group],
+                    "appearance item outside native packing range"
+                );
+            }
             for v in &item.variants {
                 ensure!(
                     v.mask != 0
@@ -194,6 +217,7 @@ impl Catalog {
             | (0x8000_0000u32 >> if team == 1 { 3 } else { 2 })
             | (0x8000_0000u32 >> skin);
         let mut models = Vec::new();
+        let mut groups = [0u16; 11];
         for kind in KINDS {
             let id = selected[usize::from(kind)];
             if id == 0 {
@@ -210,18 +234,38 @@ impl Catalog {
                 continue;
             };
             let model = &variant.model;
+            let group = if kind == 11 { 9 } else { usize::from(kind - 1) };
+            groups[group] = item.native_index;
             models.push(model.to_ascii_lowercase());
         }
         ensure!(
             (5..=10).contains(&models.len()) && models[0].starts_with("fpa_"),
             "incomplete character body"
         );
-        Ok(Appearance {
+        let appearance = Appearance {
             package: package.id,
             models,
             indices: Vec::new(),
             registrations: Vec::new(),
-        })
+            character: self
+                .packing_bits
+                .map(|bits| codol_protocol::game_character::Character {
+                    groups,
+                    bits,
+                    gender: package.gender,
+                    faction: u8::from(team == 1),
+                    skin: match package.skin {
+                        0 => 0,
+                        1 => 3,
+                        2 => 1,
+                        _ => 2,
+                    },
+                }),
+        };
+        if let Some(character) = appearance.character {
+            character.fields()?;
+        }
+        Ok(appearance)
     }
 }
 impl Appearance {
@@ -272,9 +316,11 @@ mod tests {
                 defaults: [0, 101, 102, 103, 104, 105, 0, 0, 0, 0, 0, 0],
                 allowed: vec![106],
             }],
+            packing_bits: None,
             items: (101..=106)
                 .map(|id| Item {
                     id,
+                    native_index: 0,
                     kind: if id == 106 { 3 } else { (id - 100) as u8 },
                     variants: vec![
                         Variant {
@@ -338,12 +384,21 @@ mod tests {
     #[ignore = "requires local appearance catalog and captured public profile"]
     fn captured_outfits_compose_without_touching_the_saved_profile() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../research-output");
-        let c = Catalog::load(&root.join("player-appearance-catalog.json")).unwrap();
+        let native = std::env::var_os("CODOL_APPEARANCE_NATIVE").is_some();
+        let c = Catalog::load(&root.join(if native {
+            "player-appearance-native-catalog.json"
+        } else {
+            "player-appearance-catalog.json"
+        }))
+        .unwrap();
         let mut summary = Vec::new();
         for package in &c.packages {
             let p = profile(&c, 0, u32::from(package.id));
             for team in [1, 2] {
                 let a = c.compose(&p, &[u32::from(package.id)], team);
+                if native {
+                    assert!(a.as_ref().unwrap().character.is_some());
+                }
                 summary.push(serde_json::json!({"package":package.id,"team":team,"gender":package.gender,
                     "models":a.as_ref().ok().map(|a|&a.models),"error":a.err().map(|e|e.to_string())}));
             }
@@ -362,9 +417,14 @@ mod tests {
             "tdm-killhouse-hud-state",
             "tdm-crash-tropical-state",
         ] {
-            let state = crate::game_state::PreparedGameState::load(
-                &root.join(format!("{name}-appearance.json")),
-            )
+            let state = crate::game_state::PreparedGameState::load(&root.join(format!(
+                "{name}-{}.json",
+                if native {
+                    "native-character"
+                } else {
+                    "appearance"
+                }
+            )))
             .unwrap();
             let path = std::env::var_os("CODOL_APPEARANCE_PROFILE")
                 .expect("local profile directory required");

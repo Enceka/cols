@@ -1559,6 +1559,7 @@ impl PreparedGameState {
                 death_waypoints: world.death_waypoints,
                 replay: world.replay,
                 local_card: self.player_card,
+                local_character: self.player_appearance.as_ref().and_then(|a| a.character),
                 held_weapon_tag: self
                     .training_enemy
                     .as_ref()

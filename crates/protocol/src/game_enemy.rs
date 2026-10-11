@@ -204,7 +204,7 @@ pub(crate) fn write_player_clients(
     players: &[EnemySnapshot],
     establish_baseline: bool,
 ) -> Result<(), LobbyError> {
-    write_player_clients_with_card(out, players, establish_baseline, None, false)
+    write_player_clients_with_card(out, players, establish_baseline, None, false, None)
 }
 
 pub(crate) fn write_player_clients_with_card(
@@ -213,9 +213,13 @@ pub(crate) fn write_player_clients_with_card(
     establish_baseline: bool,
     local_card: Option<crate::game_player_card::Card>,
     held_weapons: bool,
+    local_character: Option<crate::game_character::Character>,
 ) -> Result<(), LobbyError> {
     if let Some(card) = local_card {
         card.validate()?;
+    }
+    if let Some(character) = local_character {
+        character.fields()?;
     }
     for (i, player) in players.iter().enumerate() {
         player.validate()?;
@@ -235,6 +239,7 @@ pub(crate) fn write_player_clients_with_card(
                 *player,
                 local_card.filter(|_| player.client_index == 0),
                 held_weapons,
+                local_character.filter(|_| player.client_index == 0),
             )?;
         }
     }
@@ -247,6 +252,7 @@ fn write_client_record(
     enemy: EnemySnapshot,
     card: Option<crate::game_player_card::Card>,
     held_weapons: bool,
+    character: Option<crate::game_character::Character>,
 ) -> Result<(), LobbyError> {
     enemy.validate()?;
 
@@ -289,6 +295,11 @@ fn write_client_record(
         .enumerate()
     {
         fields.push((index, u32::from(enemy.attachment_tags[slot]), 6));
+    }
+    if let Some(character) = character {
+        let packed = character.fields()?;
+        fields.retain(|(i, _, _)| !packed.iter().any(|p| p.0 == *i));
+        fields.extend(packed);
     }
     fields.sort_by_key(|field| field.0);
     let mut previous = -1;
@@ -582,6 +593,80 @@ mod tests {
     }
 
     #[test]
+    fn native_character_fields_replace_model_slots_only_for_local_identity() {
+        let character = crate::game_character::Character {
+            groups: [19, 1, 49, 79, 6, 0, 12, 0, 0, 0, 0],
+            bits: [7, 4, 8, 8, 6, 7, 8, 5, 0, 8, 0],
+            gender: 1,
+            faction: 1,
+            skin: 3,
+        };
+        for alignment in 0..8 {
+            let mut local = enemy();
+            local.client_index = 0;
+            local.entity_number = 0;
+            let mut out = Writer::default();
+            out.bits(0, alignment);
+            write_player_clients_with_card(
+                &mut out,
+                &[local, enemy()],
+                true,
+                None,
+                true,
+                Some(character),
+            )
+            .unwrap();
+            out.bytes.push(0xa7);
+            let mut r = Reader::new(&out.bytes);
+            r.bits(alignment).unwrap();
+            for client in [0, 1] {
+                assert_eq!(r.bits(1).unwrap(), 1);
+                assert_eq!(r.bits(1).unwrap(), 0);
+                assert_eq!(r.bits(5).unwrap(), client);
+                assert_eq!(r.bits(1).unwrap(), 0);
+                assert_eq!(r.bits(1).unwrap(), 1);
+                let fields = read_fields(&mut r, &fixture()["client"], 7, true, &BTreeMap::new());
+                assert_eq!(fields[&0x114], 27 + client);
+                if client == 0 {
+                    assert_eq!(fields[&0x124], 6);
+                    assert_eq!(fields[&0x128], 1);
+                    assert_eq!(fields[&0x12c], 1);
+                    assert_eq!(fields[&0x130], 3);
+                    let mut packed = Vec::new();
+                    for row in fixture()["client"]["fields"].as_array().unwrap() {
+                        let offset = row[0].as_u64().unwrap() as u32;
+                        if offset != 0x14 && !(0x18..0x68).contains(&offset) {
+                            continue;
+                        }
+                        for bit in 0..row[1].as_u64().unwrap() {
+                            packed.push((fields[&offset] >> bit) & 1);
+                        }
+                    }
+                    let mut at = 0;
+                    for (&id, width) in character.groups.iter().zip(character.bits) {
+                        let present = packed[at];
+                        at += 1;
+                        let mut decoded = 0;
+                        if present != 0 {
+                            for bit in 0..width {
+                                decoded |= packed[at] << bit;
+                                at += 1;
+                            }
+                            decoded += 1;
+                        }
+                        assert_eq!(decoded, u32::from(id));
+                    }
+                } else {
+                    assert!(!fields.contains_key(&0x124));
+                    assert_eq!(fields[&0x14], u32::from(enemy().model));
+                }
+            }
+            assert_eq!(r.bits(1).unwrap(), 0);
+            assert_eq!(r.u8().unwrap(), 0xa7);
+            r.finish().unwrap();
+        }
+    }
+    #[test]
     fn local_card_decodes_through_the_measured_client_fields() {
         for alignment in 0..8 {
             let mut local = enemy();
@@ -597,7 +682,8 @@ mod tests {
             };
             let mut out = Writer::default();
             out.bits(0, alignment);
-            write_player_clients_with_card(&mut out, &[local], true, Some(card), false).unwrap();
+            write_player_clients_with_card(&mut out, &[local], true, Some(card), false, None)
+                .unwrap();
             let mut reader = Reader::new(&out.bytes);
             reader.bits(alignment).unwrap();
             assert_eq!(reader.bits(1).unwrap(), 1);

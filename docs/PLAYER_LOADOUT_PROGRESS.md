@@ -50,3 +50,5 @@ python3 tools/prepare_player_loadout.py \
 现于认证账号档案读回之后、武器装配与注册之前，先用本版`currentCharacterIndex`和配置里的角色内背包号选择对应的`weaponClasses`记录。默认仍为该角色第一个背包；显式配置其它背包保留其1..5位置，不把角色0的全局记录号当所有角色通用。连接同时保存该角色内背包号，后续500ms档案刷新不会再次退回模板中的固定全局记录。
 
 回归通过实际公共档案信封/CRC和125项投影验证路径，覆盖角色0/1/7/11及背包1/4/5，分别核对主枪、六个附件、副枪和非连续偏移。只在内存构造测试档案，不改现有账号。用户实际切换角色后的画面与首次背包界面列入 `REVIEW_PENDING.md`，不阻塞后续功能。
+
+检查记录：`current-character-backpack-check.log`中326项Rust通过，一项STUN端点集成测试在2秒接收门槛超时，原失败保留；独立重跑 `current-character-backpack-stun-recheck.log` 通过，Python47项另在 `current-character-backpack-python.log` 通过，fmt/Clippy通过。这里的327项为复核后的合计，不声称首轮全绿。未为通过测试修改超时值。

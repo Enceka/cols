@@ -187,6 +187,10 @@ class ReadClientState {
                         Field(process,"predicted_corpse_slot",checked(cg+0xe8),4);
                         Field(process,"predicted_client_number",checked(cg+0x144),4);
                         Field(process,"local_client_rank",checked(cg+0x15dea8+0x9c),4);
+                        Field(process,"local_character_parts",checked(cg+0x15dea8+0x38c),4);
+                        Field(process,"local_character_faction",checked(cg+0x15dea8+0x390),4);
+                        Field(process,"local_character_gender",checked(cg+0x15dea8+0x394),4);
+                        Field(process,"local_character_skin",checked(cg+0x15dea8+0x398),4);
                         Field(process,"local_client_prestige",checked(cg+0x15dea8+0xa0),4);
                         Field(process,"local_client_card_icon",checked(cg+0x15dea8+0x358),4);
                         Field(process,"local_client_card_title",checked(cg+0x15dea8+0x35c),4);

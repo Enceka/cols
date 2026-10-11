@@ -41,6 +41,21 @@ def prepare(capture, assets):
     hashes = list(struct.unpack("<9I", base64.b64decode(capture["selector_hashes_base64"], validate=True)))
     if hashes != [native_hash(n) for n in ["m", "f", "tf", "sc", "zm", "wht", "yel", "blk", "cau"]]:
         raise ValueError("native character selector order differs")
+    packing_bits = None
+    if "packing_bits_base64" in capture:
+        packing_bits = list(struct.unpack("<11I", base64.b64decode(capture["packing_bits_base64"], validate=True)))
+        fields_wire = list(struct.iter_unpack("<iii", base64.b64decode(capture["packing_fields_base64"], validate=True)))
+        expected_offsets = [0x18,0x1c,0x20,0x14,0x24,0x28,0x2c,0x44,0x48,0x4c,0x54,0x40,0x50,0x30,0x34,0x38,0x3c,0x58,0x5c,0x60,0x64]
+        if fields_wire != [(o,10 if o<0x40 else 6,0) for o in expected_offsets] or any(b>10 for b in packing_bits):
+            raise ValueError("native character packing differs from measured client fields")
+        # Historical probe labels follow address order, not semantic argument
+        # names:0x17e02a8 is faction;0x17e1758 is gender in0x40c980.
+        for key, expected in [("gender_selectors_base64", (2,3,4)),
+                              ("faction_selectors_base64", (0,1)),
+                              ("skin_selectors_base64", (5,6,7,8))]:
+            values=tuple(v[0] for v in struct.iter_unpack("<I",base64.b64decode(capture[key],validate=True)))
+            if values!=expected:
+                raise ValueError("native character selector mapping differs")
     records = list(struct.iter_unpack("<HHI", base64.b64decode(capture["variant_items_base64"], validate=True)))
     groups = list(struct.iter_unpack("<HH", base64.b64decode(capture["variant_groups_base64"], validate=True)))
     if len(groups) != 11 or any(start + count > len(records) for start, count in groups):
@@ -74,10 +89,10 @@ def prepare(capture, assets):
                 variants.append(dict(mask=struct.unpack_from("<I", selector_bytes, 2)[0], model=v["model"]))
         # Some catalog wearables have no model variant in this build. Keep
         # their identity; runtime must reject selecting them, not invent art.
-        items.append(dict(id=item["item_id"], kind=kind, variants=variants))
+        items.append(dict(id=item["item_id"], kind=kind, native_index=matches[0][0], variants=variants))
     return dict(schema_version=1, client_sha256=CLIENT_SHA256,
                 current_character_offset=selector["offset"], slot_offsets=offsets,
-                items=items, packages=packages)
+                items=items, packages=packages, packing_bits=packing_bits)
 
 
 def main():

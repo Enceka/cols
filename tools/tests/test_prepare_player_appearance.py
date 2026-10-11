@@ -40,6 +40,20 @@ def inputs():
 
 
 class PlayerAppearancePreparation(unittest.TestCase):
+    def test_native_hand_composition_keeps_group_indices_and_checks_selector_mapping(self):
+        c,a,f=inputs()
+        offsets=[0x18,0x1c,0x20,0x14,0x24,0x28,0x2c,0x44,0x48,0x4c,0x54,0x40,0x50,0x30,0x34,0x38,0x3c,0x58,0x5c,0x60,0x64]
+        enc=lambda v:base64.b64encode(struct.pack('<'+'I'*len(v),*v)).decode()
+        c['packing_bits_base64']=enc([7,4,8,8,6,7,8,5,0,8,0])
+        c['packing_fields_base64']=enc([v for o in offsets for v in (o,10 if o<0x40 else 6,0)])
+        c['gender_selectors_base64']=enc([2,3,4]);c['faction_selectors_base64']=enc([0,1]);c['skin_selectors_base64']=enc([5,6,7,8])
+        with patch('prepare_player_appearance.flatten',return_value=f):
+            result=prepare(c,a)
+            self.assertEqual(result['items'][0]['native_index'],1)
+            self.assertEqual(result['packing_bits'][:3],[7,4,8])
+            c['faction_selectors_base64']=enc([1,0])
+            with self.assertRaises(ValueError):prepare(c,a)
+
     def test_package_and_variant_index_are_separate_and_profile_slot_order_is_preserved(self):
         capture,assets,fields=inputs()
         with patch("prepare_player_appearance.flatten", return_value=fields):
