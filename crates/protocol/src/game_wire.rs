@@ -486,6 +486,92 @@ mod tests {
         assert!(compact_server_packet(3, 0x80000000, 0, b"", &body).is_err());
     }
     #[test]
+    fn crowded_live_snapshot_survives_compression_with_all_corpses_and_obituaries() {
+        use crate::{
+            game_corpse::{CorpsePhase, CorpseSnapshot},
+            game_enemy::EnemySnapshot,
+            game_obituary::ObituarySnapshot,
+            game_snapshot::{WorldSnapshot, player_frame_with_world},
+        };
+        use std::io::Read;
+        let actors: Vec<_> = (0..12)
+            .map(|i| EnemySnapshot {
+                entity_number: i,
+                client_index: i as u8,
+                team: if i < 6 { 2 } else { 1 },
+                model: 4,
+                attachment_models: [3, 2, 5, 6, 0, 0, 0, 0, 0, 0],
+                attachment_tags: [0; 10],
+                origin: [f32::from(i) * 43.0, 40.0, 0.0],
+                angles: [0, 1000 * i, 0],
+                legs_animation: 395,
+                torso_animation: 0,
+                weapon: 352 + i,
+                events: Default::default(),
+                alive: true,
+            })
+            .collect();
+        let corpses: Vec<_> = (0..8)
+            .map(|i| CorpseSnapshot {
+                entity_number: 19 + i,
+                donor_client: i as u8,
+                origin: [f32::from(i) * 40.0, -70.0, 0.0],
+                angles: [0; 3],
+                legs_animation: 47,
+                torso_animation: 47,
+                weapon: 352 + i,
+                present: true,
+                phase: CorpsePhase::Playing,
+                death_sequence: 1,
+            })
+            .collect();
+        let obituaries: Vec<_> = (0..32)
+            .map(|i| ObituarySnapshot {
+                entity_number: 1800 + i,
+                weapon: 352,
+                headshot: false,
+                melee: i % 2 == 0,
+                victim: (i % 12) as u8,
+                attacker: ((i + 1) % 12) as u8,
+            })
+            .collect();
+        let body = player_frame_with_world(
+            12000,
+            12000,
+            Some([0.0; 3]),
+            false,
+            None,
+            [0; 3],
+            WorldSnapshot {
+                local_player: Some(actors[0]),
+                players: &actors[1..],
+                corpses: &corpses,
+                obituaries: &obituaries,
+                held_weapon_tag: Some(1),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(
+            body.len() + 4 >= FRAGMENT_SIZE,
+            "snapshot {} did not exercise compression",
+            body.len()
+        );
+        assert!(server_packet(16, 7, 0x75, b"s", &body).is_err());
+        let packet = compact_server_packet(16, 7, 0x75, b"s", &body).unwrap();
+        assert_eq!(
+            u32::from_le_bytes(packet[4..8].try_into().unwrap()),
+            0x80000007
+        );
+        let mut encoded = packet[8..].to_vec();
+        xor_stream(&mut encoded, 16 ^ 0x75, b"s");
+        let mut decoded = Vec::new();
+        flate2::read::ZlibDecoder::new(&encoded[..])
+            .read_to_end(&mut decoded)
+            .unwrap();
+        assert_eq!(decoded, body);
+    }
+    #[test]
     fn independent_headers_and_xor_vectors() {
         // Hand-calculated: C2S key=0x34^0x09^0x02=0x3f; EOF=3.
         let client = [1, 0, 0, 0, 9, 2, 0, 0, 0, 0, 0, 0, 0, 0x3c];

@@ -786,13 +786,9 @@ impl Connection {
             },
         )?;
         let budget = game_wire::FRAGMENT_SIZE - 5;
-        ensure!(
-            snapshot.len() <= budget,
-            "player snapshot exceeds native message budget"
-        );
         let (mut body, mut sent) = self
             .server_commands
-            .encode_frames_bounded(budget - snapshot.len())?;
+            .encode_frames_bounded(budget.saturating_sub(snapshot.len()))?;
         // First send the local player's PS so the client has a real input
         // baseline. Bot appearances wait for their model commands' ACK.
         let snapshot_included = !(body.is_empty()
@@ -809,7 +805,10 @@ impl Connection {
             body.push(SERVER_EOF);
         }
         let ack = self.client_commands.sequence();
-        let packet = game_wire::server_packet(
+        // The same native XOR/inflate decoder handles gamestates and live
+        // snapshots. Crowded deaths/replay exits can exceed the raw budget;
+        // retain the complete world and compress only when necessary.
+        let packet = game_wire::compact_server_packet(
             self.native_sent + 1,
             ack,
             self.challenge
@@ -817,6 +816,13 @@ impl Connection {
             self.client_commands.command_for(ack)?,
             &body,
         )?;
+        if snapshot_included && snapshot.len() > budget {
+            tracing::info!(
+                raw_bytes = snapshot.len(),
+                wire_bytes = packet.len(),
+                "compressed gameplay snapshot"
+            );
+        }
         self.native_sent += 1;
         self.server_commands.mark_sent(sent)?;
         if !snapshot_included {
