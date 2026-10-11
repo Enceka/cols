@@ -382,6 +382,28 @@ class ClientAssets {
                 "definition_base64",Convert.ToBase64String(r.Read(def,0xe28)),
                 "explosion_effect",r.EffectDefinition(r.Word(def+0x918))));
         }
+        var supply=new List<object>();var modelHeaders=new HashSet<uint>();var soundHeaders=new HashSet<uint>();byte[] supplyEntries=r.Read(0x01fc4e28,100000*28);
+        for(int entry=1;entry<100000;entry++) {
+            if(U(supplyEntries,entry*28)==4)modelHeaders.Add(U(supplyEntries,entry*28+8));
+            if(U(supplyEntries,entry*28)==11)soundHeaders.Add(U(supplyEntries,entry*28+8));
+        }
+        for(uint i=1;i<=count;i++) {
+            uint def=r.Word(0x017f5a40+i*4);string name=r.Name(r.Word(def));
+            if(name!="scavenger_bag_mp")continue;
+            var models=new List<object>();
+            // 0x501320 uses WeaponDef[slot+6], i.e. the world model at+0x18.
+            for(uint slot=0;slot<8;slot++) {
+                uint model=r.Word(def+0x18+slot*4);if(model!=0&&modelHeaders.Contains(model))
+                    models.Add(Obj("slot",slot,"name",r.Name(r.Word(model)),"header_base64",Convert.ToBase64String(r.Read(model,0x16c))));
+            }
+            var sounds=new List<object>();
+            foreach(uint offset in new uint[]{0x4a4,0x4a8,0x4ac,0x4b0}) {
+                uint sound=r.Word(def+offset);if(sound!=0&&soundHeaders.Contains(sound))
+                    sounds.Add(Obj("offset",offset,"name",r.Name(r.Word(sound)),"header_base64",Convert.ToBase64String(r.Read(sound,12))));
+            }
+            supply.Add(Obj("index",i,"name",name,"definition_base64",Convert.ToBase64String(r.Read(def,0xe28)),"world_models",models,"pickup_sounds",sounds,
+                "touch_constants",new double[]{BitConverter.ToDouble(r.Read(0xc85f68,8),0),BitConverter.ToDouble(r.Read(0xc85f70,8),0),BitConverter.ToDouble(r.Read(0xc85f60,8),0),BitConverter.ToDouble(r.Read(0xc85a68,8),0)}));
+        }
         var sources=new List<object>();
         foreach(string name in new string[]{"csg12ss_mp","ak104_mp","m4_mp","m9_mp"}) {
             try {
@@ -391,9 +413,20 @@ class ClientAssets {
                     "secondary_name",r.Name(r.Word(def+0xd34))));
             } catch(Exception e) {sources.Add(Obj("name",name,"error",e.Message));}
         }
+        var playerDefinitions=new List<object>();
+        if(r.Word(0x01a2e7ec)==10) {
+            uint bank=r.Word(0x07817ba8);if(bank>=256)throw new Exception("invalid player bank");
+            uint cg=r.Word(0x01a19510+bank*4)^0xfbb2c97a;byte[] ps=r.Read(cg,0xa78);
+            var ids=new SortedSet<uint>();for(int at=0x2a4;at<0x2a4+15*4;at+=4)ids.Add(U(ps,at));
+            ids.Add(U(ps,0x340));ids.Add(U(ps,0x344));
+            foreach(uint id in ids)if(id>0&&id<=count) {
+                uint def=r.Word(0x017f5a40+id*4);
+                playerDefinitions.Add(Obj("index",id,"name",r.Name(r.Word(def)),"definition_base64",Convert.ToBase64String(r.Read(def,0xe28))));
+            }
+        }
         Console.WriteLine(new JavaScriptSerializer().Serialize(Obj("schema_version",1,"read_only",true,
             "client_sha256","e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b",
-            "connection_state",r.Word(0x01a2e7ec),"weapons",weapons,"sources",sources,"offhand_definitions",offhands)));
+            "connection_state",r.Word(0x01a2e7ec),"weapons",weapons,"sources",sources,"offhand_definitions",offhands,"supply_definitions",supply,"player_definitions",playerDefinitions)));
     }
     object EffectDefinition(uint pointer) {
         return EffectDefinition(pointer,0,new HashSet<uint>());
@@ -644,6 +677,23 @@ class ClientAssets {
         }
         return missiles;
     }
+    object BagStates() {
+        uint slot=Word(0x07817bb0);if(slot>=256)throw new Exception("invalid item entity slot");
+        uint entities=Word(0x01a19510+slot*4)^0x2168f672;var bags=new List<object>();
+        for(uint id=1740;id<1800;id++) {
+            uint entity=entities+id*0x238;
+            if((Word(entity+0x204)&1)==0||Word(entity+0xf4)!=3)continue;
+            uint handle=BitConverter.ToUInt16(Read(0x02ef4858+id*2,2),0);var models=new List<string>();
+            if(handle!=0&&handle<2048) {
+                uint obj=0x02e8e850+handle*0xcc,list=Word(obj+0xc0);int count=Count(Read(obj+9,1)[0],32);
+                for(uint part=0;part<count;part++)models.Add(Name(Word(Word(list+part*4))));
+            }
+            bags.Add(Obj("entity",id,"item",Word(entity+0x188),"flags",Word(entity+0xf8),"owner",Word(entity+0x170),
+                "origin",EntityOrigin(entity+0xf0),"scale",BitConverter.ToSingle(Read(entity+0x144,4),0),
+                "dobj_slot",handle,"models",models,"hidden_until",Word(entity+0x210),"raw_base64",Convert.ToBase64String(Read(entity,0x238))));
+        }
+        return bags;
+    }
     object SmokeStates() {
         uint slot=Word(0x07817bb0);if(slot>=256)throw new Exception("invalid smoke entity slot");
         uint entities=Word(0x01a19510+slot*4)^0x2168f672;var smokes=new List<object>();
@@ -728,7 +778,14 @@ class ClientAssets {
                 "skip_y",BitConverter.ToSingle(r.Read(cg+0xa78+0xa8+8,4),0),
                 "skip_scale",BitConverter.ToSingle(r.Read(cg+0xa78+0xa8+0x14,4),0),
                 "delay",U(ps,0xa68),"client",U(ps,0x144),"target",U(ps,0xa6c),
-                "character",r.CharacterInfo(cg,U(ps,0x144)),"first_person",r.ViewModelNames(),"missiles",r.MissileStates(),"smokes",r.SmokeStates(),"effects",r.EffectStates(),"effect_visibility",r.EffectVisibility(),
+                "character",r.CharacterInfo(cg,U(ps,0x144)),"first_person",r.ViewModelNames(),"missiles",r.MissileStates(),"smokes",r.SmokeStates(),"bags",r.BagStates(),"effects",r.EffectStates(),"effect_visibility",r.EffectVisibility(),
+                "event_sequence",U(ps,0xf4),"events_base64",Convert.ToBase64String(ps,0xf8,32),
+                "external_event_sequence",U(ps,0x11c),"external_events_base64",Convert.ToBase64String(ps,0x124,32),
+                "feedback_type",r.Word(cg+0x1ed0),"feedback_material",r.Word(cg+0x1ed0+0x4c),
+                "feedback_begin",r.Word(cg+0x1ed0+0x38),"feedback_duration",r.Word(cg+0x1ed0+0x3c),
+                "feedback_x",BitConverter.ToSingle(r.Read(cg+0x1ed0+4,4),0),"feedback_y",BitConverter.ToSingle(r.Read(cg+0x1ed0+8,4),0),
+                "feedback_width",r.Word(cg+0x1ed0+0x44),"feedback_height",r.Word(cg+0x1ed0+0x48),
+                "inventory_base64",Convert.ToBase64String(ps,0x2a4,60),"stocks_base64",Convert.ToBase64String(ps,0x364,120),"clips_base64",Convert.ToBase64String(ps,0x3dc,180),
                 "pm_type",U(ps,4),"other_flags",U(ps,0x10),"command_time",U(ps,0),
                 "shellshock_index",U(ps,0x5ac),"shellshock_begin",U(ps,0x5b0),"shellshock_duration",U(ps,0x5b4),"shellshock_adjacent",U(ps,0x5a8),
                 "shellshock_cache_base64",Convert.ToBase64String(r.Read(cg+0xbdb68,0x30)),

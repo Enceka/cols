@@ -70,6 +70,7 @@ impl View {
 }
 #[derive(Clone)]
 pub(crate) struct Frame {
+    pub bags: Vec<codol_protocol::game_scavenger::BagSnapshot>,
     pub smokes: Vec<codol_protocol::game_smoke::SmokeSnapshot>,
     pub missiles: Vec<codol_protocol::game_missile::MissileSnapshot>,
     pub time: u32,
@@ -339,6 +340,7 @@ mod tests {
             events: None,
         };
         Frame {
+            bags: vec![],
             smokes: vec![],
             missiles: vec![],
             time,
@@ -394,6 +396,12 @@ mod tests {
         let mut replay = Replay::default();
         for time in (1000..=4500).step_by(50) {
             let mut f = frame(time, 1);
+            f.bags.push(codol_protocol::game_scavenger::BagSnapshot {
+                entity_number: 1740,
+                origin: [20.0, 30.0, 40.0],
+                weapon: 229,
+                generation: 1,
+            });
             f.smokes.push(codol_protocol::game_smoke::SmokeSnapshot {
                 entity_number: 1708,
                 origin: [10.0, 20.0, 2.0],
@@ -428,6 +436,7 @@ mod tests {
         assert!(replay.start(Kind::Death, 4000, 4000, 7));
         let first = replay.sample(5000).unwrap();
         let smoke = first.frame.smokes[0];
+        assert_eq!(first.frame.bags, replay.frames.front().unwrap().bags);
         assert_eq!((smoke.start_time, smoke.end_time), (5000, 65001));
         assert_eq!(
             first.frame.impacts[0].event,

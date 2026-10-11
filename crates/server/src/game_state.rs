@@ -10,6 +10,8 @@ mod loadout;
 
 #[derive(Default)]
 pub(crate) struct SnapshotWorld<'a> {
+    pub bags: &'a [codol_protocol::game_scavenger::BagSnapshot],
+    pub bag_baselines: &'a [codol_protocol::game_scavenger::BagSnapshot],
     pub shellshock: Option<codol_protocol::game_shellshock::ShellShockSnapshot>,
     pub smokes: &'a [codol_protocol::game_smoke::SmokeSnapshot],
     pub smoke_baselines: &'a [codol_protocol::game_smoke::SmokeSnapshot],
@@ -86,6 +88,8 @@ struct BootstrapWeapon {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct BootstrapAmmo {
+    #[serde(default)]
+    limits: Option<crate::game_player::AmmoLimits>,
     clip_key: u16,
     reserve_key: u16,
     clip: u16,
@@ -1191,6 +1195,23 @@ impl PreparedGameState {
             "delayed-fire weapon needs its firing state machine"
         );
         let ammo = BootstrapAmmo {
+            limits: Some(crate::game_player::AmmoLimits {
+                contribution: word(0x6c4).saturating_mul(if w.definition[0xdac] != 0 {
+                    word(0xd08)
+                } else {
+                    1
+                }),
+                shared: if word(0x6d0) as i32 >= 0 {
+                    Some([word(0x6d0), word(0x6d4)])
+                } else {
+                    None
+                },
+                clip_only: w.definition[0xd7b] != 0,
+                scavenger_allowed: w.definition[0x8c8] == 0
+                    && w.definition[0xd7c] == 0
+                    && word(0x480) != 12
+                    && word(0x47c) != 3,
+            }),
             clip_key: w.index,
             reserve_key: word(0x6b8) as u16,
             clip: word(0xd08) as u16,
@@ -1622,6 +1643,8 @@ impl PreparedGameState {
             equipment,
             angles,
             codol_protocol::game_snapshot::WorldSnapshot {
+                bags: world.bags,
+                bag_baselines: world.bag_baselines,
                 shellshock: world.shellshock,
                 smokes: world.smokes,
                 smoke_baselines: world.smoke_baselines,
@@ -1742,6 +1765,9 @@ impl PreparedGameState {
             player.set_switch_timing(timing);
         }
         player.set_fast_reload(w.fast_reload);
+        if let Some(limits) = w.ammo.as_ref().and_then(|a| a.limits) {
+            player.set_ammo_limits(limits);
+        }
         player.set_offhand_switch(w.offhand_switch);
         if let Some(timing) = w.rechamber {
             player.set_rechamber_timing(timing);

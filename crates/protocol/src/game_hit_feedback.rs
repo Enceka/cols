@@ -11,17 +11,19 @@ pub enum HitKind {
     #[default]
     Hit,
     Kill,
+    Scavenger,
 }
 impl HitKind {
     pub fn duration_msec(self) -> u32 {
         match self {
             Self::Hit => 1000,
             Self::Kill => 600,
+            Self::Scavenger => 2500,
         }
     }
     pub fn rgb(self) -> [u8; 3] {
         match self {
-            Self::Hit => [255; 3],
+            Self::Hit | Self::Scavenger => [255; 3],
             Self::Kill => [255, 41, 20],
         }
     }
@@ -174,12 +176,33 @@ fn write_hit(out: &mut Writer, feedback: HitFeedbackSnapshot) {
                 // Offsets and 24x48 dimensions follow the existing resource's
                 // damage-feedback script usage; placement is runtime checked.
                 out.bits(0, 1);
-                out.bits(52, 7); // -12 +64.
+                let coordinate = if feedback.kind == HitKind::Scavenger {
+                    if index == 1 { 32 } else { -36 }
+                } else {
+                    -12
+                };
+                out.bits((coordinate + 64) as u32, 7);
             }
             3 => unsigned(out, 4, 4), // HE_TYPE_MATERIAL.
             4 => unsigned(out, u32::from(feedback.material), 10),
-            5 => unsigned(out, 48, 10),   // Height.
-            6 => unsigned(out, 24, 10),   // Width.
+            5 => unsigned(
+                out,
+                if feedback.kind == HitKind::Scavenger {
+                    32
+                } else {
+                    48
+                },
+                10,
+            ),
+            6 => unsigned(
+                out,
+                if feedback.kind == HitKind::Scavenger {
+                    64
+                } else {
+                    24
+                },
+                10,
+            ),
             7 => unsigned(out, 2047, 11), // No target entity attachment.
             10 => {
                 // -97: direct 32-bit time path, avoiding a relative-time base.
@@ -418,6 +441,7 @@ mod tests {
             [
                 (a, HitKind::Hit, 0x00ff_ffff, 1000),
                 (a, HitKind::Kill, 0x0014_29ff, 600),
+                (a, HitKind::Scavenger, 0x00ff_ffff, 2500),
             ]
         }) {
             let feedback = HitFeedbackSnapshot {
@@ -442,16 +466,32 @@ mod tests {
             assert_eq!(current.len(), 1);
             let hud = &current[0];
             assert_eq!(hud[&0], 4);
-            assert_eq!(hud[&4], (-12.0f32).to_bits());
-            assert_eq!(hud[&8], (-12.0f32).to_bits());
+            assert_eq!(
+                hud[&4],
+                (if kind == HitKind::Scavenger {
+                    -36.0f32
+                } else {
+                    -12.0f32
+                })
+                .to_bits()
+            );
+            assert_eq!(
+                hud[&8],
+                (if kind == HitKind::Scavenger {
+                    32.0f32
+                } else {
+                    -12.0f32
+                })
+                .to_bits()
+            );
             assert_eq!(hud[&0x10], 2047);
             assert_eq!(hud[&0x2c], 0x22);
             assert_eq!(hud[&0x30], color);
             assert_eq!(hud[&0x34], color | 0xff00_0000);
             assert_eq!(hud[&0x38], 12_345);
             assert_eq!(hud[&0x3c], duration);
-            assert_eq!(hud[&0x44], 24);
-            assert_eq!(hud[&0x48], 48);
+            assert_eq!(hud[&0x44], if kind == HitKind::Scavenger { 64 } else { 24 });
+            assert_eq!(hud[&0x48], if kind == HitKind::Scavenger { 32 } else { 48 });
             assert_eq!(hud[&0x4c], 125);
             assert_eq!(hud[&0xa4], 1);
             assert!(!hud.contains_key(&0x28)); // Zero baseline top-left origin.

@@ -146,6 +146,10 @@ def compute(capture, weapon_name=None, compose=False, viewhands=False,
             if materials.count(b"waypoint_dead") != 1 or materials.index(b"waypoint_dead") + 1 >= 1024:
                 raise ValueError("death waypoint material absent or ambiguous")
             result["feedback_resources"]["death_material"] = materials.index(b"waypoint_dead") + 1
+        if b"scavenger_pickup" in materials:
+            if materials.count(b"scavenger_pickup") != 1 or materials.index(b"scavenger_pickup") + 1 >= 1024:
+                raise ValueError("scavenger material ambiguous or outside domain")
+            result["feedback_resources"]["scavenger_material"] = materials.index(b"scavenger_pickup") + 1
     if weapon_name is not None:
         if weapon_name != "m4_mp" or weapons.count(weapon_name.encode("ascii")) != 1:
             raise ValueError("expected one basic M4 in target weapon constants")

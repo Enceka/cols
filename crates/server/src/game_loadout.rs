@@ -356,6 +356,7 @@ mod tests {
         state.spawn_origin = Some([0.0; 3]);
         state.map_entities_sha256 = Some("a".repeat(64));
         let ammo = BootstrapAmmo {
+            limits: None,
             clip_key: 352,
             reserve_key: 163,
             clip: 30,

@@ -11,6 +11,8 @@ pub(crate) struct Resources {
     pub kill_material: u16,
     #[serde(default)]
     pub death_material: Option<u16>,
+    #[serde(default)]
+    pub scavenger_material: Option<u16>,
     pub sound_index: u16,
     pub register_sound: bool,
 }
@@ -36,6 +38,13 @@ impl Resources {
                 && m != self.kill_material),
             "invalid death waypoint material"
         );
+        ensure!(
+            self.scavenger_material
+                .is_none_or(|m| (1..1024).contains(&m)
+                    && m != self.hit_material
+                    && m != self.kill_material),
+            "invalid scavenger material slot"
+        );
         Ok(())
     }
     pub fn sound_configstring(&self) -> Option<(u16, String)> {
@@ -60,7 +69,9 @@ impl Feedback {
     }
     pub fn record(&mut self, time: u32, kind: HitKind) {
         self.last = Some((time, kind));
-        self.pending_sounds = self.pending_sounds.saturating_add(1);
+        if kind != HitKind::Scavenger {
+            self.pending_sounds = self.pending_sounds.saturating_add(1);
+        }
     }
     pub fn clear(&mut self) {
         *self = Self::default();
@@ -76,9 +87,11 @@ impl Feedback {
             material: match kind {
                 HitKind::Hit => resources.hit_material,
                 HitKind::Kill => resources.kill_material,
+                HitKind::Scavenger => resources.scavenger_material.unwrap_or(0),
             },
             event_time,
-            visible: now.wrapping_sub(event_time) < kind.duration_msec(),
+            visible: now.wrapping_sub(event_time) < kind.duration_msec()
+                && (kind != HitKind::Scavenger || resources.scavenger_material.is_some()),
             kind,
         }
     }
@@ -93,6 +106,7 @@ mod tests {
             hit_material: 125,
             kill_material: 144,
             death_material: Some(169),
+            scavenger_material: Some(161),
             sound_index: 9,
             register_sound: true,
         }
@@ -135,5 +149,19 @@ mod tests {
             r.sound_index = invalid;
             assert!(r.validate(123).is_err());
         }
+    }
+    #[test]
+    fn scavenger_hud_fades_without_queuing_a_second_pickup_sound() {
+        let mut feedback = Feedback::default();
+        feedback.record(1000, HitKind::Scavenger);
+        assert_eq!(feedback.take_sounds(), 0);
+        let r = resources();
+        let snapshot = feedback.snapshot(1000, &r);
+        assert_eq!(snapshot.material, 161);
+        assert!(snapshot.visible);
+        assert!(!feedback.snapshot(3500, &r).visible);
+        let mut absent = r;
+        absent.scavenger_material = None;
+        assert!(!feedback.snapshot(1000, &absent).visible);
     }
 }

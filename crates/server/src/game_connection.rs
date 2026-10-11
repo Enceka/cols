@@ -25,6 +25,7 @@ pub(crate) struct Connection {
     player: Option<crate::game_player::Player>,
     grenades: crate::game_grenade::Grenades,
     smoke: crate::game_smoke::Smoke,
+    scavenger: crate::game_scavenger::Bags,
     tactical: crate::game_tactical::State,
     motion: Option<crate::game_motion::Motion>,
     combat: Option<crate::game_combat::CombatWorld>,
@@ -87,6 +88,7 @@ pub(crate) struct Connection {
 
 #[derive(Clone)]
 struct WorldHistory {
+    bags: Vec<codol_protocol::game_scavenger::BagSnapshot>,
     smokes: Vec<codol_protocol::game_smoke::SmokeSnapshot>,
     missiles: Vec<codol_protocol::game_missile::MissileSnapshot>,
     local_abilities: Option<codol_protocol::game_abilities::Abilities>,
@@ -533,6 +535,7 @@ impl Connection {
         let mut impacts = self.impacts.snapshot(server_time);
         let mut missiles = self.grenades.snapshots();
         let mut smokes = self.smoke.snapshots(server_time);
+        let mut bags = self.scavenger.snapshots();
         let mut shellshock = self.tactical.snapshot(server_time);
         if self.tdm.is_some() {
             impacts.sort_by_key(|i| {
@@ -646,6 +649,7 @@ impl Connection {
                 }
             }
             self.replay.record(crate::game_replay::Frame {
+                bags: bags.clone(),
                 smokes: smokes.clone(),
                 missiles: missiles.clone(),
                 time: server_time,
@@ -674,6 +678,7 @@ impl Connection {
             corpses = scene.poses.clone();
             impacts.clear();
             obituaries.clear();
+            bags.clear();
             hit_feedback = None;
         }
         let playback = self.replay.sample(server_time);
@@ -712,6 +717,7 @@ impl Connection {
             impacts = playback.frame.impacts;
             missiles = playback.frame.missiles;
             smokes = playback.frame.smokes;
+            bags = playback.frame.bags;
             obituaries = playback.frame.obituaries;
             hit_feedback = state.feedback_resources().map(|resources| {
                 let mut feedback = crate::game_feedback::Feedback::default();
@@ -786,6 +792,8 @@ impl Connection {
             angles,
             equipment,
             crate::game_state::SnapshotWorld {
+                bags: &bags,
+                bag_baselines: previous.as_ref().map_or(&[], |h| h.bags.as_slice()),
                 shellshock,
                 smokes: &smokes,
                 smoke_baselines: previous.as_ref().map_or(&[], |h| h.smokes.as_slice()),
@@ -869,6 +877,7 @@ impl Connection {
         }
         if self.tdm.is_some() {
             self.world_history.push_back(WorldHistory {
+                bags,
                 smokes,
                 missiles,
                 local_abilities: self.player.as_ref().map(|p| p.equipment().abilities),
@@ -1353,6 +1362,17 @@ impl Connection {
     fn drain_match_kills(&mut self, now: u32) {
         let kills = self.tdm.as_mut().unwrap().take_kills();
         for kill in kills {
+            if let Some(bag) = self.scavenger.drop_for_kill(
+                kill,
+                self.game_state
+                    .as_ref()
+                    .unwrap()
+                    .collision
+                    .as_ref()
+                    .unwrap(),
+            ) {
+                tracing::info!(time = kill.time, entity = bag.entity_number, victim = kill.victim.client_index, origin = ?bag.origin, "scavenger bag dropped");
+            }
             self.last_kill = Some(kill);
             if kill.victim.client_index == 0
                 && kill.attacker != 0
@@ -1609,6 +1629,7 @@ impl Connection {
 
     fn advance_grenades(&mut self, now: u32) -> Result<()> {
         if self.tdm.as_ref().is_none_or(|m| m.finished) {
+            self.scavenger.clear();
             self.grenades.clear();
             self.smoke.clear();
             self.tactical.clear();
@@ -1621,6 +1642,20 @@ impl Connection {
             return Ok(());
         };
         let origin = motion.origin;
+        if let Some(player) = &mut self.player
+            && let Some(bag) = self.scavenger.collect(
+                now,
+                origin,
+                self.vitals.health > 0 && self.replay.kind().is_none(),
+                player,
+            )
+        {
+            tracing::info!(time = now, entity = bag.entity_number, origin = ?origin,
+                primary_ammo = ?player.equipment().ammo, secondary_ammo = ?player.equipment().secondary,
+                "scavenger bag collected");
+            self.hit_feedback
+                .record(now, codol_protocol::game_hit_feedback::HitKind::Scavenger);
+        }
         let eye = [origin[0], origin[1], origin[2] + motion.view_height];
         if let Some(player) = &mut self.player {
             for request in player.take_throws() {

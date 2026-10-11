@@ -56,6 +56,9 @@ static CATALOG: LazyLock<Catalog> = LazyLock::new(|| {
     c
 });
 impl Definition {
+    pub fn capacity(&self) -> u16 {
+        self.capacity
+    }
     fn supported(&self) -> bool {
         self.weapon_type == 1
             && self.weapon_class == 6

@@ -409,7 +409,6 @@ impl Collision {
         );
         trace
     }
-    #[cfg(test)]
     pub fn movement_surface(&self, start: V3, end: V3) -> Trace {
         self.raycast_mask(start, end, PLAYER_MASK)
     }

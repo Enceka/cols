@@ -6,6 +6,7 @@
 //! numbers differ from the Alpha C1 reference.
 use crate::{game_state::Writer, lobby::LobbyError};
 
+pub const ITEM_PICKUP: u8 = 16;
 pub const NO_AMMO: u8 = 18;
 pub const RESET_ADS: u8 = 23;
 pub const RELOAD: u8 = 24;

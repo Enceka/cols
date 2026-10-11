@@ -170,8 +170,18 @@ impl SpreadTiming {
     }
 }
 
+/// 0x429d20/0x429e50/0x429f20: contribution and shared-group ceiling.
+#[derive(Debug, Clone, Copy, serde::Deserialize)]
+pub(crate) struct AmmoLimits {
+    pub contribution: u32,
+    pub shared: Option<[u32; 2]>,
+    pub clip_only: bool,
+    pub scavenger_allowed: bool,
+}
+
 #[derive(Debug, Clone)]
 struct Weapon {
+    ammo_limits: Option<AmmoLimits>,
     offhand_switch: Option<AlternateTiming>,
     fast_reload: bool,
     equipment: Equipment,
@@ -307,6 +317,7 @@ impl Player {
             current: Weapon {
                 offhand_switch: None,
                 fast_reload: false,
+                ammo_limits: None,
                 magazine_capacity: equipment.ammo.map_or(0, |a| a.clip),
                 equipment,
                 fire_interval,
@@ -352,6 +363,131 @@ impl Player {
     }
     pub fn set_fast_reload(&mut self, allowed: bool) {
         self.current.fast_reload = allowed;
+    }
+    pub fn set_ammo_limits(&mut self, limits: AmmoLimits) {
+        self.current.ammo_limits = Some(limits);
+    }
+
+    fn weapons(&self) -> impl Iterator<Item = &Weapon> {
+        std::iter::once(&self.current)
+            .chain(&self.secondary)
+            .chain(&self.alternate)
+            .chain(&self.secondary_alternate)
+    }
+    fn inventory(&self) -> impl Iterator<Item = &Weapon> {
+        self.weapons().filter(|w| {
+            w.equipment
+                .inventory_weapon
+                .is_none_or(|parent| parent == w.equipment.weapon)
+        })
+    }
+    fn ammo_space(&self, weapon: &Weapon) -> u32 {
+        let (Some(ammo), Some(limits)) = (weapon.equipment.ammo, weapon.ammo_limits) else {
+            return 0;
+        };
+        if limits.clip_only {
+            return 0;
+        }
+        if let Some([group, cap]) = limits.shared {
+            let mut pools = std::collections::BTreeSet::new();
+            let used: u32 = self
+                .inventory()
+                .filter_map(|w| {
+                    let a = w.equipment.ammo?;
+                    let l = w.ammo_limits?;
+                    if l.shared.map(|g| g[0]) != Some(group) {
+                        return None;
+                    }
+                    if l.clip_only {
+                        Some(u32::from(a.clip))
+                    } else if pools.insert(a.reserve_key) {
+                        Some(u32::from(a.reserve))
+                    } else {
+                        None
+                    }
+                })
+                .sum();
+            cap.saturating_sub(used).min(2047 - u32::from(ammo.reserve))
+        } else {
+            let mut cap: u32 = 0;
+            for w in self.inventory() {
+                if w.equipment
+                    .ammo
+                    .is_some_and(|a| a.reserve_key == ammo.reserve_key)
+                    && let Some(l) = w.ammo_limits
+                {
+                    if let Some([_, shared_cap]) = l.shared {
+                        cap = shared_cap;
+                        break;
+                    }
+                    cap = cap.saturating_add(l.contribution);
+                }
+            }
+            cap.min(2047).saturating_sub(u32::from(ammo.reserve))
+        }
+    }
+    pub fn can_scavenge(&self) -> bool {
+        self.perks.has("modScavenger")
+            && self
+                .current
+                .ammo_limits
+                .is_some_and(|l| l.scavenger_allowed && !l.clip_only)
+            && self.ammo_space(&self.current) > 0
+    }
+    pub fn scavenge(&mut self, bag_weapon: u16) -> bool {
+        if !self.can_scavenge() {
+            return false;
+        }
+        let mut pools: Vec<(u16, u16)> = Vec::new();
+        for w in self.weapons().filter(|w| {
+            w.ammo_limits
+                .is_some_and(|l| l.scavenger_allowed && !l.clip_only)
+        }) {
+            if let Some(a) = w.equipment.ammo {
+                if let Some((_, amount)) = pools.iter_mut().find(|(key, _)| *key == a.reserve_key) {
+                    *amount = (*amount).max(w.magazine_capacity);
+                } else {
+                    pools.push((a.reserve_key, w.magazine_capacity));
+                }
+            }
+        }
+        for (key, amount) in pools {
+            let weapon = self
+                .weapons()
+                .find(|w| w.equipment.ammo.is_some_and(|a| a.reserve_key == key))
+                .unwrap();
+            let space = self.ammo_space(weapon);
+            let stock = weapon
+                .equipment
+                .ammo
+                .unwrap()
+                .reserve
+                .saturating_add(amount.min(space as u16));
+            for w in std::iter::once(&mut self.current)
+                .chain(&mut self.secondary)
+                .chain(&mut self.alternate)
+                .chain(&mut self.secondary_alternate)
+            {
+                if let Some(a) = &mut w.equipment.ammo
+                    && a.reserve_key == key
+                {
+                    a.reserve = stock;
+                }
+            }
+        }
+        for offhand in self.offhands.iter_mut().flatten() {
+            if !matches!(
+                offhand.definition.name.as_str(),
+                "frag_grenade_mp" | "fragshort_grenade_mp" | "semtex_mp"
+            ) {
+                offhand.count = offhand
+                    .count
+                    .saturating_add(1)
+                    .min(offhand.definition.capacity());
+            }
+        }
+        self.emit(events::ITEM_PICKUP, u32::from(bag_weapon));
+        true
     }
     pub fn set_offhand_switch(&mut self, timing: Option<AlternateTiming>) {
         self.current.offhand_switch = timing;
@@ -1430,7 +1566,7 @@ impl Player {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     fn melee_player() -> Player {
         let mut p = aiming_player();
@@ -1733,6 +1869,128 @@ mod tests {
             weapons: [352, 0, 0],
             ..Default::default()
         }
+    }
+    pub(crate) fn scavenger_player(stock: u16, cap: u32) -> Player {
+        let mut p = player();
+        p.set_perks(crate::game_perks::Perks::selected([0, 60040, 0], &[60040]).unwrap());
+        p.set_ammo_limits(AmmoLimits {
+            contribution: cap,
+            shared: None,
+            clip_only: false,
+            scavenger_allowed: true,
+        });
+        p.current.equipment.ammo.as_mut().unwrap().reserve = stock;
+        p
+    }
+    #[test]
+    fn scavenger_requires_the_flag_and_current_guns_native_remaining_capacity() {
+        let mut p = scavenger_player(90, 100);
+        p.set_perks(Default::default());
+        let before = p.equipment().ammo;
+        assert!(!p.scavenge(229));
+        assert_eq!(p.equipment().ammo.unwrap().reserve, before.unwrap().reserve);
+        p.set_perks(crate::game_perks::Perks::selected([0, 60040, 0], &[60040]).unwrap());
+        assert!(p.scavenge(229));
+        assert_eq!(p.equipment().ammo.unwrap().reserve, 100);
+        assert_eq!(p.events.sequence, 1);
+        assert_eq!(
+            p.events.slots[0],
+            codol_protocol::game_events::Event {
+                id: 16,
+                parameter: 229
+            }
+        );
+        assert!(!p.scavenge(229));
+        assert_eq!(p.events.sequence, 1);
+        let mut other = scavenger_player(0, 100);
+        other.current.equipment.weapon = 354;
+        other.current.equipment.ammo.as_mut().unwrap().reserve_key = 164;
+        p = p.with_secondary(other);
+        assert!(!p.can_scavenge());
+    }
+    #[test]
+    fn scavenger_shared_reserve_aliases_receive_one_clip_and_remain_synchronized() {
+        let mut other = scavenger_player(80, 100);
+        other.current.equipment.weapon = 354;
+        let mut p = scavenger_player(80, 100).with_secondary(other);
+        // Distinct carried guns add native cap contributions to the same pool.
+        p.secondary.as_mut().unwrap().equipment.weapon = 354;
+        p.secondary
+            .as_mut()
+            .unwrap()
+            .equipment
+            .ammo
+            .as_mut()
+            .unwrap()
+            .clip_key = 354;
+        let mut alt = scavenger_player(80, 100);
+        alt.current.equipment.weapon = 353;
+        p = p.with_alternate(
+            alt,
+            AlternateTiming {
+                drop_msec: 100,
+                raise_msec: 100,
+            },
+        );
+        assert_eq!(p.ammo_space(&p.current), 120);
+        assert!(p.scavenge(229));
+        assert!(
+            p.weapons()
+                .all(|w| w.equipment.ammo.unwrap().reserve == 110)
+        );
+        assert!(p.weapons().all(|w| w.equipment.ammo.unwrap().clip == 30));
+        p.sync_ammunition();
+        assert!(
+            p.weapons()
+                .all(|w| w.equipment.ammo.unwrap().reserve == 110)
+        );
+    }
+    #[test]
+    fn scavenger_group_margin_counts_distinct_reserve_pools_and_clamps_the_combined_total() {
+        let mut p = scavenger_player(40, 100);
+        p.current.equipment.ammo.as_mut().unwrap().reserve_key = 200;
+        let mut other = scavenger_player(10, 100);
+        other.current.equipment.weapon = 354;
+        other.current.equipment.ammo.as_mut().unwrap().reserve_key = 164;
+        for w in [&mut p.current, &mut other.current] {
+            w.ammo_limits.as_mut().unwrap().shared = Some([7, 60]);
+        }
+        p = p.with_secondary(other);
+        assert_eq!(p.ammo_space(&p.current), 10);
+        assert!(p.scavenge(229));
+        assert_eq!(p.equipment().ammo.unwrap().reserve, 50);
+        assert_eq!(
+            p.secondary
+                .as_ref()
+                .unwrap()
+                .equipment
+                .ammo
+                .unwrap()
+                .reserve,
+            10
+        );
+        assert!(!p.can_scavenge());
+    }
+    #[test]
+    fn scavenger_restores_tactical_counts_with_native_cap_but_keeps_excluded_recipes_empty() {
+        let mut p = scavenger_player(0, 100);
+        p.set_offhands([
+            Some(crate::game_grenade::Equipped {
+                definition: crate::game_grenade::captured("frag_grenade_mp"),
+                count: 0,
+            }),
+            Some(crate::game_grenade::Equipped {
+                definition: crate::game_grenade::captured("concussion_grenade_mp"),
+                count: 0,
+            }),
+        ]);
+        assert!(p.scavenge(229));
+        assert_eq!(p.equipment().offhands[0].unwrap().count, 0);
+        assert_eq!(p.equipment().offhands[1].unwrap().count, 1);
+        assert!(p.scavenge(229));
+        assert!(p.scavenge(229));
+        assert_eq!(p.equipment().offhands[1].unwrap().count, 2);
+        assert_eq!(p.equipment().offhand_weapon, 0);
     }
     fn grenade_player(name: &str) -> Player {
         let mut p = player();

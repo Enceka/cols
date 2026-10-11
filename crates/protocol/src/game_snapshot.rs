@@ -224,6 +224,8 @@ pub fn player_frame_with_motion(
         angles,
         WorldSnapshot {
             local_abilities: None,
+            bags: &[],
+            bag_baselines: &[],
             smokes: &[],
             smoke_baselines: &[],
             missiles: &[],
@@ -259,6 +261,8 @@ pub fn player_frame_with_motion(
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct WorldSnapshot<'a> {
+    pub bags: &'a [crate::game_scavenger::BagSnapshot],
+    pub bag_baselines: &'a [crate::game_scavenger::BagSnapshot],
     pub smokes: &'a [crate::game_smoke::SmokeSnapshot],
     pub smoke_baselines: &'a [crate::game_smoke::SmokeSnapshot],
     pub missiles: &'a [crate::game_missile::MissileSnapshot],
@@ -956,6 +960,15 @@ pub fn player_frame_with_world(
             &[]
         } else {
             world.smoke_baselines
+        },
+    )?;
+    crate::game_scavenger::write(
+        &mut out,
+        world.bags,
+        if establish_baseline {
+            &[]
+        } else {
+            world.bag_baselines
         },
     )?;
     if world.delta_distance == 0 {
@@ -1704,6 +1717,8 @@ mod tests {
                 Some(equipment),
                 [0; 3],
                 WorldSnapshot {
+                    bags: &[],
+                    bag_baselines: &[],
                     smokes: &[],
                     smoke_baselines: &[],
                     missiles: &[],
