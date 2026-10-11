@@ -75,6 +75,7 @@ pub struct Aim {
 /// remains the frame's `origin` argument so it has a single source of truth.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct MotionSnapshot {
+    pub sprint: SprintState,
     pub melee_charge: Option<MeleeCharge>,
     pub velocity: [f32; 3],
     pub flags: u32,
@@ -89,6 +90,15 @@ pub struct MotionSnapshot {
     pub view_height_lerp_down: bool,
     pub jump_time: u32,
     pub jump_origin_z: f32,
+}
+/// Native PS+0x23c..0x24c; the two bools are hint-2 fields.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SprintState {
+    pub button_up_required: bool,
+    pub delay: bool,
+    pub last_start: u32,
+    pub last_end: u32,
+    pub start_max_length: u16,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MeleeCharge {
@@ -408,6 +418,8 @@ pub fn player_frame_with_world(
             || m.ground_entity > 2047
             || m.view_height_lerp_time > command_time
             || m.jump_time > command_time
+            || m.sprint.last_start > command_time
+            || m.sprint.last_end > command_time
     }) {
         return Err(LobbyError("invalid authoritative movement"));
     }
@@ -517,6 +529,9 @@ pub fn player_frame_with_world(
                 (13, motion.velocity[1].to_bits(), 0),
                 (14, motion.velocity[0].to_bits(), 0),
                 (16, motion.velocity[2].to_bits(), 0),
+                (35, motion.sprint.last_start, 97),
+                (36, motion.sprint.last_end, 97),
+                (43, u32::from(motion.sprint.start_max_length), 16),
                 (
                     58,
                     equipment.map_or(1.0, |e| e.move_multiplier).to_bits(),
@@ -696,7 +711,7 @@ pub fn player_frame_with_world(
             // an absolute network angle via0x5a17d0.
             out.bits(0, 2);
             out.bytes.extend_from_slice(&(value as u16).to_le_bytes());
-        } else if index == 105 && value == 0 {
+        } else if (index == 43 || index == 105) && value == 0 {
             out.bits(0, 1); // scalar zero gate, including an explicit clear
         } else {
             // 0x5a27f0 nonzero gate -> 0x5a2510 -> 0x5a2470:
@@ -1047,9 +1062,9 @@ fn write_hint2_tail(
     for (index, value, width) in [
         (82, 0, 0),
         (89, u32::from(motion.view_height_lerp_down), 1),
-        (93, 0, 1),
+        (93, u32::from(motion.sprint.delay), 1),
         (98, 0, 1),
-        (101, 0, 1),
+        (101, u32::from(motion.sprint.button_up_required), 1),
         (
             104,
             shellshock.map_or(0, |s| u32::from(s.duration_msec)),
@@ -1217,6 +1232,104 @@ mod tests {
             gravity: 800,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn sprint_meter_decodes_all_five_fields_in_full_delta_replay_and_reset_frames() {
+        let active = SprintState {
+            button_up_required: true,
+            delay: true,
+            last_start: 1200,
+            last_end: 5200,
+            start_max_length: 4000,
+        };
+        for baseline in [false, true] {
+            for replay in [
+                None,
+                Some(ReplayView {
+                    client: 7,
+                    delay_msec: 4000,
+                    end_time: 11000,
+                    skip_text: None,
+                }),
+            ] {
+                for sprint in [active, SprintState::default()] {
+                    let mut motion = authoritative_motion();
+                    motion.sprint = sprint;
+                    let body = player_frame_with_world(
+                        10000,
+                        9950,
+                        Some([0.0; 3]),
+                        baseline,
+                        Some(Equipment {
+                            weapon: 352,
+                            inventory_weapon: None,
+                            alternate_weapon: None,
+                            fire_count: 0,
+                            queued_burst: false,
+                            barrel_flags: 0,
+                            spread_scale: 0.0,
+                            needs_rechamber: false,
+                            ammo: None,
+                            viewmodel: None,
+                            firing: None,
+                            aim: None,
+                            secondary: None,
+                            events: None,
+                            offhands: [None, None],
+                            offhand_weapon: 0,
+                            grenade_time: 0,
+                            move_multiplier: 1.0,
+                            perks: [0; 3],
+                            abilities: Default::default(),
+                        }),
+                        [0; 3],
+                        WorldSnapshot {
+                            motion: Some(motion),
+                            replay,
+                            vitals: Some(PlayerVitals::default()),
+                            delta_distance: 1,
+                            ..Default::default()
+                        },
+                    )
+                    .unwrap();
+                    let mut r = Reader::new(&body);
+                    assert_eq!(r.u8().unwrap(), 0);
+                    assert_eq!(r.u32().unwrap(), 10000);
+                    r.u8().unwrap();
+                    r.u8().unwrap();
+                    assert_eq!(r.bits(1).unwrap(), 0);
+                    assert_eq!(r.bits(1).unwrap(), 1);
+                    let (fields, _) = read_fields(&mut r);
+                    assert_eq!(fields[&35], sprint.last_start);
+                    assert_eq!(fields[&36], sprint.last_end);
+                    assert_eq!(fields[&43], u32::from(sprint.start_max_length));
+                    assert_eq!(fields[&93], u32::from(sprint.delay));
+                    assert_eq!(fields[&101], u32::from(sprint.button_up_required));
+                    // Stats must still start at the correct pool/byte boundary.
+                    assert_eq!(r.bits(1).unwrap(), 1);
+                    assert_eq!(r.bits(4).unwrap(), 13);
+                    assert_eq!(r.u16().unwrap(), 100);
+                }
+            }
+        }
+        let mut motion = authoritative_motion();
+        motion.sprint.last_start = 9951;
+        assert!(
+            player_frame_with_world(
+                10000,
+                9950,
+                Some([0.0; 3]),
+                true,
+                None,
+                [0; 3],
+                WorldSnapshot {
+                    motion: Some(motion),
+                    ..Default::default()
+                }
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -1881,6 +1994,7 @@ mod tests {
         };
         for lerp_down in [false, true] {
             let motion = MotionSnapshot {
+                sprint: SprintState::default(),
                 melee_charge: None,
                 velocity: [127.25, -52.5, 190.0],
                 flags: 0x400002,
@@ -2006,6 +2120,7 @@ mod tests {
             None,
         ] {
             let motion = MotionSnapshot {
+                sprint: SprintState::default(),
                 melee_charge: charge,
                 velocity: [0.0; 3],
                 flags: if charge.is_some() { 0x10000 } else { 0 },

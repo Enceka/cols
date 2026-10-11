@@ -28,6 +28,7 @@ mod game_replay;
 mod game_scavenger;
 pub mod game_server;
 mod game_smoke;
+pub mod game_sprint;
 pub mod game_state;
 mod game_tactical;
 mod game_top_players;

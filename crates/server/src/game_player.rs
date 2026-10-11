@@ -193,6 +193,7 @@ struct Weapon {
     ads: Option<AdsTiming>,
     switch: Option<SwitchTiming>,
     move_scale: f32,
+    sprint_duration_scale: f32,
     ballistics: Option<crate::game_combat::Ballistics>,
     rechamber: Option<RechamberTiming>,
     rechamber_pending: bool,
@@ -327,6 +328,7 @@ impl Player {
                 ads,
                 switch: None,
                 move_scale: 1.0,
+                sprint_duration_scale: 1.0,
                 ballistics: None,
                 rechamber: None,
                 rechamber_pending: false,
@@ -518,6 +520,21 @@ impl Player {
 
     pub fn set_move_scale(&mut self, scale: f32) {
         self.current.move_scale = scale;
+    }
+    pub fn set_sprint_duration_scale(&mut self, scale: f32) {
+        self.current.sprint_duration_scale = scale;
+    }
+    pub fn sprint_rules(&self) -> crate::game_sprint::Rules {
+        crate::game_sprint::Rules {
+            duration_seconds: self.perks.value("modSprintTime", 4.0),
+            weapon_duration_scale: self.current.sprint_duration_scale,
+            force_recover_seconds: self
+                .perks
+                .has("modSprintForceRecoverTime")
+                .then(|| self.perks.value("modSprintForceRecoverTime", 1.0)),
+            always: self.perks.has("modAlwaysSprint"),
+            weapon_state: self.current.equipment.firing.map_or(0, |f| f.state),
+        }
     }
 
     pub fn set_rechamber_timing(&mut self, timing: RechamberTiming) {
@@ -2563,6 +2580,17 @@ pub(crate) mod tests {
         });
         player.set_move_scale(scale);
         player
+    }
+    #[test]
+    fn captured_marathon_changes_the_current_weapons_sprint_rules() {
+        let mut p = switchable_player(352, 1.0);
+        p.set_sprint_duration_scale(0.5);
+        assert_eq!(p.sprint_rules().maximum(), 2000);
+        p.set_perks(crate::game_perks::Perks::selected([0, 0, 60038], &[60038]).unwrap());
+        assert_eq!(p.sprint_rules().duration_seconds, -1.0);
+        assert_eq!(p.sprint_rules().maximum(), 0);
+        p.set_perks(Default::default());
+        assert_eq!(p.sprint_rules().maximum(), 2000);
     }
     #[test]
     fn switching_away_cancels_partial_burst_and_does_not_resume_it_on_return() {

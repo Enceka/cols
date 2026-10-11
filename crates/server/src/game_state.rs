@@ -70,6 +70,8 @@ struct BootstrapWeapon {
     #[serde(default)]
     move_scale: Option<f32>,
     #[serde(default)]
+    sprint_duration_scale: Option<f32>,
+    #[serde(default)]
     fire_type: Option<u32>,
     #[serde(default)]
     alternate_base: Option<u16>,
@@ -606,7 +608,10 @@ impl PreparedGameState {
                     && weapon.spread.is_none_or(|s| s.valid())
                     && weapon
                         .move_scale
-                        .is_none_or(|s| s.is_finite() && s > 0.0 && s <= 4.0),
+                        .is_none_or(|s| s.is_finite() && s > 0.0 && s <= 4.0)
+                    && weapon
+                        .sprint_duration_scale
+                        .is_none_or(|s| { s.is_finite() && (0.0..=16.0).contains(&s) }),
                 "invalid weapon switching/movement parameters"
             );
             ensure!(
@@ -1363,6 +1368,11 @@ impl PreparedGameState {
             ads: f32::from_bits(word(0xac0)),
         };
         ensure!(spread.valid(), "invalid weapon spread parameters");
+        let sprint_duration_scale = f32::from_bits(word(0x7d0));
+        ensure!(
+            sprint_duration_scale.is_finite() && (0.0..=16.0).contains(&sprint_duration_scale),
+            "invalid native weapon sprint duration scale"
+        );
         tracing::info!(weapon = %w.name, ads_in_msec = word(0xad0), ads_out_msec = word(0xad4),
             fire_msec = word(0xd10), rechamber_msec = rechamber.map_or(0, |t| t.duration_msec),
             hip_min = ?spread.minimum, hip_max = ?spread.maximum, "resolved weapon gameplay attributes");
@@ -1387,6 +1397,7 @@ impl PreparedGameState {
             camo: Some(0),
             switch: Some(switch),
             move_scale: Some(scale),
+            sprint_duration_scale: Some(sprint_duration_scale),
             fire_type: Some(fire_type),
             alternate_base,
             alternate: None,
@@ -1680,6 +1691,7 @@ impl PreparedGameState {
                 corpses: world.corpses,
                 obituaries: world.obituaries,
                 motion: motion.map(|m| codol_protocol::game_snapshot::MotionSnapshot {
+                    sprint: m.sprint,
                     velocity: m.velocity,
                     flags: m.flags,
                     ground_entity: m.ground_entity,
@@ -1782,6 +1794,9 @@ impl PreparedGameState {
         }
         if let Some(scale) = w.move_scale {
             player.set_move_scale(scale);
+        }
+        if let Some(scale) = w.sprint_duration_scale {
+            player.set_sprint_duration_scale(scale);
         }
         if let Some(kind) = w.fire_type {
             player.set_fire_type(kind).expect("validated fire type");

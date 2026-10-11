@@ -52,6 +52,8 @@ impl View {
         for time in [
             &mut self.motion.jump_time,
             &mut self.motion.view_height_lerp_time,
+            &mut self.motion.sprint.last_start,
+            &mut self.motion.sprint.last_end,
         ] {
             if *time != 0 {
                 *time = time.wrapping_add(delay);
@@ -282,6 +284,20 @@ impl Replay {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn replay_shifts_sprint_clocks_but_preserves_meter_and_unset_end() {
+        let mut view = frame(2000, 1).views.remove(0);
+        view.motion.sprint = codol_protocol::game_snapshot::SprintState {
+            last_start: 1200,
+            start_max_length: 4000,
+            ..Default::default()
+        };
+        let shifted = view.clone().rebased(4000);
+        assert_eq!(shifted.motion.sprint.last_start, 5200);
+        assert_eq!(shifted.motion.sprint.last_end, 0);
+        assert_eq!(shifted.motion.sprint.start_max_length, 4000);
+        assert_eq!(view.motion.sprint.last_start, 1200);
+    }
     use codol_protocol::game_snapshot::{Aim, Firing};
     #[test]
     fn skip_prompt_requires_this_maps_resource_and_a_personal_replay() {

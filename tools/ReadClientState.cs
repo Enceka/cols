@@ -213,6 +213,11 @@ class ReadClientState {
                         for(uint axis=0;axis<3;axis++)
                             Field(process,"predicted_death_hud_origin_"+axis+"_bits",checked(cg+0xa78+4+axis*4),4);
                         Field(process,"predicted_pm_flags",checked(cg+0xc),4);
+                        Field(process,"predicted_sprint_button_up_required",checked(cg+0x23c),4);
+                        Field(process,"predicted_sprint_delay",checked(cg+0x240),4);
+                        Field(process,"predicted_sprint_last_start",checked(cg+0x244),4);
+                        Field(process,"predicted_sprint_last_end",checked(cg+0x248),4);
+                        Field(process,"predicted_sprint_start_max_length",checked(cg+0x24c),4);
                         Field(process,"predicted_other_flags",checked(cg+0x10),4);
                         Field(process,"predicted_camera_reference_entity",checked(cg+0x200),4);
                         Field(process,"predicted_weapon",checked(cg+0x340),4);

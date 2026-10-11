@@ -989,6 +989,8 @@ impl Stance {
 
 #[derive(Debug, Clone)]
 pub struct Motion {
+    pub sprint: codol_protocol::game_snapshot::SprintState,
+    sprint_rules: crate::game_sprint::Rules,
     pub origin: V3,
     pub velocity: V3,
     pub command_time: u32,
@@ -1014,6 +1016,8 @@ pub struct Motion {
 impl Motion {
     pub fn new(origin: V3) -> Self {
         Self {
+            sprint: Default::default(),
+            sprint_rules: Default::default(),
             origin,
             velocity: [0.0; 3],
             command_time: 0,
@@ -1040,6 +1044,19 @@ impl Motion {
     pub fn grounded(&self) -> bool {
         self.ground_entity != NONE
     }
+    pub(crate) fn set_sprint_rules(&mut self, rules: crate::game_sprint::Rules) {
+        self.sprint_rules = rules;
+    }
+    pub(crate) fn cancel_sprint(&mut self) {
+        if self.flags & 0x4000 != 0 {
+            crate::game_sprint::stop(
+                &mut self.sprint,
+                self.command_time,
+                self.previous_buttons & 2 != 0,
+            );
+            self.flags &= !0x4000;
+        }
+    }
     pub fn melee_charge(&self) -> Option<codol_protocol::game_snapshot::MeleeCharge> {
         self.melee_charge.map(|(state, _)| state)
     }
@@ -1060,6 +1077,7 @@ impl Motion {
             },
             duration,
         ));
+        self.cancel_sprint();
         self.flags |= 0x10000;
     }
     pub fn cancel_melee_charge(&mut self) {
@@ -1204,7 +1222,18 @@ impl Motion {
         } else {
             0.0
         };
-        let sprint = cmd.buttons & 2 != 0 && f > 0.0 && !ads && self.stance == Stance::Stand;
+        let sprint = crate::game_sprint::update(
+            &mut self.sprint,
+            self.command_time,
+            cmd.buttons,
+            self.previous_buttons,
+            self.flags & 0x4000 != 0,
+            f <= 105.0
+                || ads
+                || self.stance != Stance::Stand
+                || self.flags & (0x8000 | 0x20000) != 0,
+            self.sprint_rules,
+        );
         self.flags = self.stance.flags()
             | (self.flags & 0x8000)
             | if sprint { 0x4000 } else { 0 }
@@ -1540,6 +1569,38 @@ mod tests {
         for _ in 0..n {
             m.apply(&cmd(m.command_time + 16, direction, buttons), 1.0, false, c);
         }
+    }
+    #[test]
+    fn marathon_changes_real_movement_after_the_normal_meter_runs_out() {
+        let c = world(vec![floor()], vec![]);
+        let mut normal = Motion::new([0.0, 0.0, 0.03125]);
+        normal.apply(&cmd(1000, 0, 0), 1.0, false, &c);
+        let mut marathon = normal.clone();
+        marathon.set_sprint_rules(crate::game_sprint::Rules {
+            duration_seconds: -1.0,
+            ..Default::default()
+        });
+        for time in (1016..=6616).step_by(16) {
+            let input = cmd(time, 1, 2);
+            normal.apply(&input, 1.0, false, &c);
+            marathon.apply(&input, 1.0, false, &c);
+        }
+        assert_eq!(normal.flags & 0x4000, 0);
+        assert!(normal.sprint.button_up_required && normal.sprint.delay);
+        assert_ne!(marathon.flags & 0x4000, 0);
+        assert!(marathon.origin[0] > normal.origin[0] + 100.0);
+        let before = normal.sprint;
+        normal.apply(&cmd(normal.command_time, 1, 0), 1.0, false, &c);
+        assert_eq!(normal.sprint, before);
+        normal.apply(&cmd(6632, 1, 0), 1.0, false, &c);
+        normal.apply(&cmd(6648, 1, 2), 1.0, false, &c);
+        assert_ne!(normal.flags & 0x4000, 0);
+        normal.cancel_sprint();
+        assert_eq!(normal.flags & 0x4000, 0);
+        assert_eq!(normal.sprint.last_end, normal.command_time);
+        let stopped = normal.sprint;
+        normal.cancel_sprint();
+        assert_eq!(normal.sprint, stopped);
     }
     #[test]
     fn separation_respects_walls_and_preserves_airborne_velocity_and_time() {

@@ -419,6 +419,7 @@ impl Connection {
         if self.vitals.health == 0 || self.tdm.as_ref().is_some_and(|m| m.finished) {
             self.tactical.clear();
             if let Some(motion) = &mut self.motion {
+                motion.cancel_sprint();
                 motion.flags &= !0x8000;
             }
         }
@@ -1889,6 +1890,9 @@ impl Connection {
                 let old_bob = motion.bob_cycle;
                 let was_ground = motion.ground_entity != 2047;
                 let was_approaching = motion.melee_charge().is_some();
+                if let Some(player) = &self.player {
+                    motion.set_sprint_rules(player.sprint_rules());
+                }
                 motion.apply(&input, scale, ads, collision);
                 if was_approaching {
                     tracing::debug!(command_time=input.time,origin=?motion.origin,velocity=?motion.velocity,
@@ -1917,7 +1921,7 @@ impl Connection {
                             crate::game_motion::Stance::Prone => {
                                 codol_protocol::game_events::FOOTSTEP_PRONE
                             }
-                            _ if input.buttons & 2 != 0 => {
+                            _ if motion.flags & 0x4000 != 0 => {
                                 codol_protocol::game_events::FOOTSTEP_SPRINT
                             }
                             _ if ads => codol_protocol::game_events::FOOTSTEP_WALK,

@@ -392,6 +392,7 @@ mod tests {
             camo: Some(0),
             switch: None,
             move_scale: None,
+            sprint_duration_scale: None,
             fire_type: None,
             alternate_base: None,
             alternate: None,
