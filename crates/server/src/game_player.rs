@@ -1277,7 +1277,7 @@ impl Player {
         self.selected_offhand = None;
         let time = self.current.offhand_switch.map_or(0, |t| t.raise_msec);
         self.current.animate(21, 22, self.offhand_time(time), 0);
-        self.emit(22, 0); // EV_RESET_ADS:0x427c7c
+        self.emit(22, 0); // EV_OFFHAND_END_NOTIFY:0x427c7c
     }
     fn throw_offhand(&mut self, cmd: &UserCommand, in_hand: bool, dropped: bool) {
         let slot = self.selected_offhand.expect("active offhand slot");
@@ -1410,7 +1410,7 @@ impl Player {
         self.grenade_time = 0;
         self.current.equipment.aim = self.current.ads.map(|_| Aim::default());
         self.emit(65, u32::from(definition.index)); // EV_SWITCH_OFFHAND
-        self.emit(34, u32::from(definition.index)); // EV_OFFHAND_START
+        self.emit(34, u32::from(definition.index)); // EV_WEAPON_SWITCH_STARTED
         let drop = self.current.offhand_switch.unwrap().drop_msec;
         self.current.animate(16, 21, self.offhand_time(drop), 0);
         true

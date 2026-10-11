@@ -16,7 +16,7 @@ python3 tools/play.py
 
 - `research-output/native-three-map-catalog.json`：Afghan、杀戮小屋/安全屋、坠机之地的独立地图准备。
 - `research-output/tdm-afghan-hud-state.json`：快速人机入口的默认准备。
-- `client-work/wine10-minimap-20261010`：已验证的游戏环境。
+- `client-work/wine10-throwables-20261011`：已验证的当前游戏环境；其它研究prefix保留。
 
 可分别用`--map-catalog`、`--game-state`、`--prefix-name`指定替代路径。这些准备含本机实际资源引用，不是可直接带到其它机器的便携包。缺失时需先按本版资源采集/准备流程生成，不能复制其它地图CRC。
 

@@ -61,6 +61,40 @@ impl ImpactSnapshot {
     }
 }
 
+#[cfg(test)]
+#[test]
+fn grenade_effect_event_matches_the_target_event_name_table() {
+    let names: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../fixtures/protocol/native-event-names-3.3.3.3.json"
+    ))
+    .unwrap();
+    assert_eq!(names["client_sha256"], crate::CLIENT_SHA256);
+    assert_eq!(names["table_va"], 0xce4390);
+    assert_eq!(names["names"][87], "EV_GRENADE_EXPLODE");
+    assert_eq!(names["names"][83], "EV_GRENADE_BOUNCE");
+    let mut out = Writer::default();
+    write_impacts(
+        &mut out,
+        &[ImpactSnapshot {
+            event: ImpactEvent::GrenadeExplosion,
+            entity_number: 100,
+            origin: [0.0; 3],
+            normal_byte: 0,
+            surface: 0,
+            weapon: 95,
+        }],
+        false,
+    )
+    .unwrap();
+    let mut r = crate::game_wire::Reader::new(&out.bytes);
+    assert_eq!(r.bits(2).unwrap(), 2);
+    assert_eq!(r.bits(11).unwrap(), 100);
+    assert_eq!(r.bits(3).unwrap(), 6);
+    assert_eq!(r.bits(6).unwrap(), 22);
+    assert_eq!(r.bits(1).unwrap(), 1);
+    assert_eq!(r.u8().unwrap(), 22 + 87);
+}
+
 /// Impacts never enter the pinned full baseline. Omitting expired events from
 /// later frames therefore removes them, allowing eventual entity-ID reuse.
 pub(crate) fn write_impacts(
@@ -114,7 +148,7 @@ pub(crate) fn write_impacts_with_baselines(
         gap(out, 1);
         out.bytes.push(match impact.event {
             ImpactEvent::Bullet => 96,
-            ImpactEvent::GrenadeExplosion => 105,
+            ImpactEvent::GrenadeExplosion => 109,
         });
         let mut previous = 0;
         for (index, value) in [

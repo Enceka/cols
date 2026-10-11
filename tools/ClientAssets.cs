@@ -332,7 +332,8 @@ class ClientAssets {
             uint def=r.Word(0x017f5a40+i*4);
             if(r.Word(def+0x47c)!=1)continue;
             offhands.Add(Obj("index",i,"name",r.Name(r.Word(def)),
-                "definition_base64",Convert.ToBase64String(r.Read(def,0xe28))));
+                "definition_base64",Convert.ToBase64String(r.Read(def,0xe28)),
+                "explosion_effect",r.EffectDefinition(r.Word(def+0x918))));
         }
         var sources=new List<object>();
         foreach(string name in new string[]{"csg12ss_mp","ak104_mp","m4_mp","m9_mp"}) {
@@ -346,6 +347,13 @@ class ClientAssets {
         Console.WriteLine(new JavaScriptSerializer().Serialize(Obj("schema_version",1,"read_only",true,
             "client_sha256","e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b",
             "connection_state",r.Word(0x01a2e7ec),"weapons",weapons,"sources",sources,"offhand_definitions",offhands)));
+    }
+    object EffectDefinition(uint pointer) {
+        if(pointer==0)return null;
+        byte[] header=Read(pointer,32);
+        return Obj("name",Name(U(header,0)),"flags",U(header,4),"total_size",U(header,8),
+            "looping_life_msec",U(header,12),"looping_count",U(header,16),
+            "one_shot_count",U(header,20),"emission_count",U(header,24));
     }
     object WeaponRuntimeFields(uint at) {
         // 0x4253e0 writes def+0x6f0 to PS.weaponDelay and def+0xd10 to
