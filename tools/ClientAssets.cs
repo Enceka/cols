@@ -184,6 +184,70 @@ class ClientAssets {
         var serializer=new JavaScriptSerializer();serializer.MaxJsonLength=32*1024*1024;
         Console.WriteLine(serializer.Serialize(output));
     }
+    public static void ExportHudAssets(IntPtr process) {
+        var r=new ClientAssets(process);var menus=new List<object>();
+        byte[] entries=r.Read(0x01fc4e28,100000*28),heads=r.Read(0x01bc9f20,80000*4);var seen=new HashSet<uint>();
+        for(int bucket=0;bucket<80000;bucket++) {
+            uint index=U(heads,bucket*4);int chain=0;
+            while(index!=0) {
+                if(index>=100000||!seen.Add(index)||++chain>128)throw new Exception("invalid HUD asset chain");
+                int at=(int)index*28;uint kind=U(entries,at),header=U(entries,at+8);
+                if(kind==25||kind==26) {
+                    if(menus.Count>=4096)throw new Exception("HUD menu budget");
+                    string name=r.Name(r.Word(header));
+                    bool selected=kind==26&&(name=="perk_sidebar_hud"||name=="perk_gained"||name=="hud_fullscreen"||name=="loadsprite"||name=="splash"||name=="extra_info"||name=="announcer_line"||name=="weaponbar_hd"||name=="weaponbar_hd_extend"||name=="kd_rate_bar"||name=="combat_performance"||name=="scorebar_hd"||name=="exp_bar");
+                    menus.Add(Obj("type",kind,"name",name,"header_base64",Convert.ToBase64String(r.Read(header,64)),
+                        "layout",selected?r.Layout(header,0x194,0):null,
+                        "visible_expression",selected?r.HudExpression(r.Word(header+0xe8)):null,
+                        "items",selected?r.HudItems(header):null));
+                }
+                index=U(entries,at+20);
+            }
+        }
+        var rawfiles=new Dictionary<string,object>();
+        foreach(string name in new string[]{"ui_mp/hud.menu","ui_mp/hud_fullscreen.menu","ui_mp/perks.menu","ui_mp/perk_display.menu"})
+            rawfiles[name]=r.AnimationRules(name);
+        object perkCache=null;
+        if(r.Word(0x01a2e7ec)==10) {
+            uint bank=r.Word(0x07817ba8);if(bank>=256)throw new Exception("invalid HUD bank");
+            uint cg=r.Word(0x01a19510+bank*4)^0xfbb2c97a;
+            perkCache=Obj("native_masks",new uint[]{r.Word(cg+0x4c0),r.Word(cg+0x4c4),r.Word(cg+0x4c8)},
+                "seen_masks",new uint[]{r.Word(cg+0x16be0c),r.Word(cg+0x16be10),r.Word(cg+0x16be14)},
+                "ids_base64",Convert.ToBase64String(r.Read(cg+0x16be18,128)),"times_base64",Convert.ToBase64String(r.Read(cg+0x16be98,128)),
+                "sidebar_gate",r.Word(cg+0x4bc),"other_mode_gate",r.Word(cg+0x3508));
+        }
+        var serializer=new JavaScriptSerializer();serializer.MaxJsonLength=32*1024*1024;
+        Console.WriteLine(serializer.Serialize(Obj("schema_version",1,"read_only",true,
+            "client_sha256","e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b",
+            "connection_state",r.Word(0x01a2e7ec),"menus",menus,"rawfiles",rawfiles,"perk_cache",perkCache,
+            "perk_display_dvar",r.Name(r.Word(r.Word(0x01a2e834))),"perk_display_dvar_value",r.Word(r.Word(0x01a2e834)+12),
+            "perk_popup_dvar",r.Name(r.Word(r.Word(0x01a202f0))),"perk_popup_dvar_value",r.Word(r.Word(0x01a202f0)+12))));
+    }
+    object HudExpression(uint pointer) { return HudExpression(pointer,0); }
+    object HudExpression(uint pointer,int depth) {
+        if(pointer==0)return null;
+        try {
+        if(depth>8)throw new Exception("HUD expression depth");
+        byte[] header=Read(pointer,8);int count=Count(U(header,0),1024);
+        byte[] data=count==0?new byte[0]:Read(U(header,4),count*12);var entries=new List<object>();
+        for(int i=0;i<count;i++) {
+            uint type=U(data,i*12),kind=U(data,i*12+4),value=U(data,i*12+8);
+            entries.Add(Obj("type",type,"kind",kind,"value",value,"string",type==1&&kind==2?Name(value):null,
+                "expression",type==1&&kind==3?HudExpression(value,depth+1):null));
+        }
+        return Obj("entries",entries,"entries_base64",Convert.ToBase64String(data));
+        } catch(Exception error) { return Obj("error",error.Message,"pointer",pointer,"layout",Layout(pointer,32,0)); }
+    }
+    object HudItems(uint menu) {
+        int count=Count(Word(menu+0xb4),512);byte[] pointers=Read(Word(menu+0x120),count*4);var items=new List<object>();
+        for(int i=0;i<count;i++) {
+            uint pointer=U(pointers,i*4);
+            items.Add(Obj("index",i,"header_base64",Convert.ToBase64String(Read(pointer,0x188)),"layout",Layout(pointer,0x188,0),
+                "visible_expression",HudExpression(Word(pointer+0x144)),"alpha_expression",HudExpression(Word(pointer+0x148)),
+                "text_expression",HudExpression(Word(pointer+0x150)),"material_expression",HudExpression(Word(pointer+0x158))));
+        }
+        return items;
+    }
     public static void ExportProfiles(IntPtr process) {
         // Current player singleton returned by VA 0x6da140. Consumer paths
         // address public/private data at +0x90/+0x91b8, following their CRCs.

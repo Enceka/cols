@@ -50,6 +50,16 @@ impl Perks {
     pub fn has(&self, name: &str) -> bool {
         self.active.contains(name)
     }
+    /// 0x508d59/0x508da2: PS+0x4c0 has 96 LSB-first perk-ID bits.
+    /// This is separate from the 160 MSB-first ability bits at PS+0x4cc.
+    pub fn native_masks(&self) -> [u32; 3] {
+        let mut masks = [0; 3];
+        for id in self.slots.into_iter().filter(|id| *id != 0) {
+            assert!(id < 96, "captured native perk mask budget");
+            masks[id as usize / 32] |= 1 << (id % 32);
+        }
+        masks
+    }
     pub fn from_profile(snapshot: &[u8], class: u8, owned: &[u32]) -> Result<Self> {
         let offsets = CATALOG
             .class_offsets
@@ -160,6 +170,7 @@ mod tests {
         }
         let perks = Perks::from_profile(&profile, 59, &[60043, 60040, 60137]).unwrap();
         assert_eq!(perks.slots, [9, 2, 58]);
+        assert_eq!(perks.native_masks(), [0x204, 0x04000000, 0]);
         assert_eq!(
             perks.abilities.masks[0],
             (0x80000000 >> 20) | (0x80000000 >> 2)
@@ -181,7 +192,13 @@ mod tests {
         for skill in &CATALOG.skills {
             let mut ids = [0; 3];
             ids[skill.slot] = skill.item_id;
-            Perks::selected(ids, &[skill.item_id]).unwrap();
+            let perks = Perks::selected(ids, &[skill.item_id]).unwrap();
+            let mask = perks.native_masks();
+            assert_eq!(mask.iter().map(|word| word.count_ones()).sum::<u32>(), 1);
+            assert_eq!(
+                mask[skill.native_id as usize / 32],
+                1 << (skill.native_id % 32)
+            );
         }
     }
 }

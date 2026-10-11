@@ -26,4 +26,4 @@
 
 当前近战验证见 `research-output/melee-wide-live-proof.json`，M200验证见 `research-output/bot-sniper-live-proof.json`，拾荒验证见 `research-output/scavenger-live-proof.json`；完整代码检查见 `research-output/scavenger-final-check.log`。这组结果不将上表明确保留的缺项标为完成。
 
-接续优先级：被动技能与投掷物，先接手雷状态、飞行碰撞和爆炸／状态效果，再继续近战目标几何、独立刀具及其它投射物。保留 Bot 加载、足部接触和完整结算演出的独立复核工作。每项实现必须核对本版消费者和实际资源，诊断设置不得覆盖正常游玩准备。
+接续优先级：先完成被动技能及其原生显示，再准备全地图，随后实现连杀技能。投掷物的剩余效果、近战目标几何、独立刀具及其它投射物继续保留；Bot 加载、足部接触和完整结算演出独立复核。每项实现必须核对本版消费者和实际资源，诊断设置不得覆盖正常游玩准备。

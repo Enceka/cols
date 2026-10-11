@@ -660,7 +660,7 @@ impl Player {
     }
     pub fn equipment(&self) -> Equipment {
         let mut equipment = self.current.equipment;
-        equipment.perks = self.perks.slots;
+        equipment.perks = self.perks.native_masks();
         equipment.abilities = self.perks.abilities;
         equipment.move_multiplier = self.perks.value("modMoveSpeedScale", 1.0);
         equipment.offhands = self.offhands.each_ref().map(|g| {
@@ -1890,6 +1890,7 @@ pub(crate) mod tests {
         assert!(!p.scavenge(229));
         assert_eq!(p.equipment().ammo.unwrap().reserve, before.unwrap().reserve);
         p.set_perks(crate::game_perks::Perks::selected([0, 60040, 0], &[60040]).unwrap());
+        assert_eq!(p.equipment().perks, [4, 0, 0]);
         assert!(p.scavenge(229));
         assert_eq!(p.equipment().ammo.unwrap().reserve, 100);
         assert_eq!(p.events.sequence, 1);
@@ -2118,7 +2119,7 @@ pub(crate) mod tests {
         p.apply(&cmd(1100, 0x800));
         assert!((p.equipment().aim.unwrap().fraction - 0.54).abs() < 1e-6);
         assert_eq!(p.current.ads.unwrap().in_rate, rates.in_rate);
-        assert_eq!(p.equipment().perks, [3, 10, 0]);
+        assert_eq!(p.equipment().perks, [0x408, 0, 0]);
         assert_eq!(p.equipment().move_multiplier, 1.07);
         assert_eq!(p.move_scale(), 1.07);
         let timing = SwitchTiming {

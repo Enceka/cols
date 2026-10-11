@@ -19,6 +19,7 @@ pub struct Equipment {
     pub grenade_time: u16,
     /// PS+0x258, multiplied after the weapon/stance movement scales.
     pub move_multiplier: f32,
+    /// PS+0x4c0..0x4c8: 96 LSB-first native perk-ID bits, not slot IDs.
     pub perks: [u32; 3],
     pub abilities: crate::game_abilities::Abilities,
     pub weapon: u16,
@@ -357,7 +358,6 @@ pub fn player_frame_with_world(
         }
         if !equipment.move_multiplier.is_finite()
             || !(0.0..=10.0).contains(&equipment.move_multiplier)
-            || equipment.perks.iter().any(|id| *id > 255)
         {
             return Err(LobbyError("invalid passive skill state"));
         }
@@ -1457,7 +1457,7 @@ mod tests {
     #[test]
     fn shellshock_replay_uses_caller_delay_and_preserves_named_reset() {
         let equipment = Equipment {
-            perks: Default::default(),
+            perks: [0x80000204, 0x04000000, 0x80000000],
             abilities: Default::default(),
             offhands: [None, None],
             offhand_weapon: 0,
@@ -1529,6 +1529,7 @@ mod tests {
                 r.u8().unwrap();
                 assert_eq!(r.bits(2).unwrap(), 2);
                 let (fields, _) = read_fields(&mut r);
+                assert_eq!([fields[&123], fields[&124], fields[&125]], equipment.perks);
                 assert_eq!(
                     shellshock_from_fields(&fields),
                     shellshock.unwrap_or_default()

@@ -13,6 +13,7 @@ pub(crate) struct Connection {
     owner_id: u64,
     scoreboard_sent: bool,
     hud_rules_sent: bool,
+    hud_rules_sequence: u32,
     model_rules_sent: bool,
     model_rules_sequence: u32,
     connected: bool,
@@ -356,11 +357,16 @@ impl Connection {
                 .map_or(7500, |m| m.scoreboard(self.owner_id).score_limit);
             self.server_commands
                 .push(format!("s ui_scorelimit \"{limit}\"").as_bytes())?;
+            // Gamestate0x46e285 sets native3059=1. The perk-cache consumer
+            // 0x508bf8 suppresses new-perk display timestamps while it is1.
+            // Publish the HUD bitmask after the client ACKs this live setting.
+            self.server_commands.push(b"s 3059 \"0\"")?;
             if self.tdm.is_some() {
                 self.server_commands
                     .push(b"s scr_gameended \"0\" ui_match_complete \"0\" ui_eog_show \"0\" ui_hide_playercards \"0\"")?;
             }
             self.hud_rules_sent = true;
+            self.hud_rules_sequence = self.server_commands.sequence();
         }
         if self.combat.is_some()
             && !self.marks_command_sent
@@ -531,7 +537,10 @@ impl Connection {
             .as_ref()
             .map_or(1000, |cmd| cmd.time)
             .min(server_time);
-        let mut equipment = self.player.as_ref().map(|p| p.equipment());
+        let mut equipment = self
+            .player
+            .as_ref()
+            .map(|p| self.hud_equipment(p.equipment()));
         let mut impacts = self.impacts.snapshot(server_time);
         let mut missiles = self.grenades.snapshots();
         let mut smokes = self.smoke.snapshots(server_time);
@@ -1170,6 +1179,16 @@ impl Connection {
         }
         self.pending_inputs.entry(input.time).or_insert(input);
     }
+    fn hud_equipment(
+        &self,
+        mut equipment: codol_protocol::game_snapshot::Equipment,
+    ) -> codol_protocol::game_snapshot::Equipment {
+        if !self.hud_rules_sent || self.server_commands.acknowledged() < self.hud_rules_sequence {
+            equipment.perks = [0; 3];
+        }
+        equipment
+    }
+
     fn queue_obituary(
         &mut self,
         now: u32,
@@ -2200,6 +2219,22 @@ fn decode_connect_name(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn native_perk_display_waits_for_the_live_setting_ack_without_delaying_abilities() {
+        let player = crate::game_player::tests::scavenger_player(90, 180);
+        let actual = player.equipment();
+        let mut c = Connection::default();
+        assert_eq!(c.hud_equipment(actual).perks, [0; 3]);
+        assert_eq!(c.hud_equipment(actual).abilities, actual.abilities);
+        let sequence = c.server_commands.push(b"s 3059 \"0\"").unwrap();
+        c.hud_rules_sent = true;
+        c.hud_rules_sequence = sequence;
+        c.server_commands.mark_sent(sequence).unwrap();
+        assert_eq!(c.hud_equipment(actual).perks, [0; 3]);
+        c.server_commands.acknowledge(sequence).unwrap();
+        assert_eq!(c.hud_equipment(actual).perks, [4, 0, 0]);
+        assert_eq!(player.equipment().perks, [4, 0, 0]);
+    }
     #[test]
     fn a_stalled_ack_keeps_its_input_base_while_new_snapshot_history_stays_bounded() {
         let mut c = Connection {
