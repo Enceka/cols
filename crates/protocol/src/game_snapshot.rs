@@ -739,8 +739,12 @@ pub fn player_frame_with_world(
     if let Some(target) = world.target {
         crate::game_target::write_target(&mut out, target, establish_baseline)?;
     }
-    if !establish_baseline {
-        for corpse in world.corpses {
+    {
+        for corpse in world
+            .corpses
+            .iter()
+            .filter(|c| !establish_baseline || c.phase == crate::game_corpse::CorpsePhase::Posed)
+        {
             if world.delta_distance != 0
                 && (world.corpse_baselines.iter().any(|b| b == corpse)
                     || (!corpse.present
@@ -754,12 +758,16 @@ pub fn player_frame_with_world(
             crate::game_corpse::write_corpse(
                 &mut out,
                 *corpse,
-                world
-                    .corpse_baselines
-                    .iter()
-                    .find(|b| b.present && b.entity_number == corpse.entity_number)
-                    .copied(),
-                false,
+                (!establish_baseline)
+                    .then(|| {
+                        world
+                            .corpse_baselines
+                            .iter()
+                            .find(|b| b.present && b.entity_number == corpse.entity_number)
+                            .copied()
+                    })
+                    .flatten(),
+                establish_baseline,
             )?;
         }
     }

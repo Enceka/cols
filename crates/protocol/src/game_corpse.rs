@@ -6,6 +6,9 @@ use crate::{game_state::Writer, lobby::LobbyError};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CorpsePhase {
     Playing,
+    /// A stationary presentation using a fresh donor tree and explicit idle
+    /// animations, without introducing another clientInfo identity.
+    Posed,
     /// Special captured death nodes (metadata flag 0x40) freeze at time 1 when
     /// the copy-pose flag clears and their animation toggle changes.
     Frozen,
@@ -37,7 +40,8 @@ impl CorpseSnapshot {
                 .iter()
                 .any(|n| !n.is_finite() || !(-32768.0..=32767.0).contains(n))
             || !animation(self.legs_animation)
-            || !animation(self.torso_animation)
+            || !(animation(self.torso_animation)
+                || (self.phase == CorpsePhase::Posed && self.torso_animation == 0))
             || !(1..900).contains(&self.weapon)
             || (self.present && self.death_sequence == 0)
         {
@@ -48,7 +52,7 @@ impl CorpseSnapshot {
 
     fn flags(self) -> u32 {
         ((self.death_sequence & 1) * 2)
-            | if self.phase == CorpsePhase::Playing {
+            | if matches!(self.phase, CorpsePhase::Playing | CorpsePhase::Posed) {
                 0x80000
             } else {
                 0
@@ -57,7 +61,7 @@ impl CorpseSnapshot {
 
     fn animation(self, value: u16) -> u32 {
         u32::from(value & 0x3ff)
-            | if self.phase == CorpsePhase::Playing {
+            | if matches!(self.phase, CorpsePhase::Playing | CorpsePhase::Posed) && value != 0 {
                 0x400
             } else {
                 0
@@ -313,6 +317,32 @@ mod tests {
         }
     }
 
+    #[test]
+    fn standing_presentation_uses_real_donor_without_a_death_pose_or_extra_client() {
+        for align in 0..8 {
+            let state = CorpseSnapshot {
+                donor_client: 0,
+                legs_animation: 395,
+                torso_animation: 0,
+                phase: CorpsePhase::Posed,
+                ..corpse()
+            };
+            let mut out = Writer::default();
+            out.bits(0, align);
+            write_corpse(&mut out, state, None, true).unwrap();
+            let mut r = Reader::new(&out.bytes);
+            r.bits(align).unwrap();
+            let (entity, fields) = decode(&mut r, &BTreeMap::new());
+            let fields = fields.unwrap();
+            assert_eq!(entity, 19);
+            assert_eq!(fields[&0x9c], 0);
+            assert_eq!(fields[&0xd4], 395 | 0x400);
+            assert_eq!(fields[&0xd8], 0);
+            assert_eq!(fields[&8] & 0x80000, 0x80000);
+            assert_eq!(fields[&0x60], 352);
+            r.finish().unwrap();
+        }
+    }
     #[test]
     fn two_corpse_slots_decode_copy_pose_death_animation_and_unit_scale_at_every_alignment() {
         for (number, donor) in [(19, 1), (20, 0)] {

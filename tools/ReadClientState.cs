@@ -114,6 +114,7 @@ class ReadClientState {
                 Console.WriteLine("{");
                 Field(process,"connection_state",0x01a2e7ec,4);
                 Field(process,"player_card_visible",0x0b5f3024,1);
+                Field(process,"ui_scoreboard_row_count",0x02f25368,4);
                 uint noBotTop3=Read(process,0x017e5454,4);
                 if(noBotTop3>=0x10000)Field(process,"native_no_bot_top3",checked(noBotTop3+12),4);
                 Console.WriteLine("\"top_player_cards\":"+new System.Web.Script.Serialization.JavaScriptSerializer().Serialize(ClientAssets.TopPlayerCards(process))+",");
@@ -260,7 +261,22 @@ class ReadClientState {
                         Field(process,"aar_map_id",aarRecord+51,4);
                         Field(process,"aar_mode_id",aarRecord+55,4);
                         for(uint team=1;team<=2;team++)Field(process,"aar_team_score_"+team,aarRecord+9778+team*4,4);
-                        for(uint client=0;client<12;client++)Field(process,"aar_client_team_"+client,aarRecord+260+client*198,1);
+                        for(uint client=0;client<19;client++)Field(process,"aar_client_team_"+client,aarRecord+260+client*198,1);
+                        Console.Write("\"aar_rows\":[");
+                        for(uint client=0;client<19;client++) {
+                            byte[] name=ReadBytes(process,aarRecord+166+client*198,65);
+                            int end=Array.IndexOf(name,(byte)0);if(end<0)end=name.Length;
+                            if(client>0)Console.Write(",");
+                            Console.Write(new System.Web.Script.Serialization.JavaScriptSerializer().Serialize(new {
+                                slot=client,name=Encoding.UTF8.GetString(name,0,end),
+                                team=Read(process,aarRecord+260+client*198,1),
+                                is_local=Read(process,aarRecord+157+client*198,1),
+                                score=(int)Read(process,aarRecord+244+client*198,4),
+                                kills=Read(process,aarRecord+158+client*198,4),
+                                deaths=Read(process,aarRecord+137+client*198,4)
+                            }));
+                        }
+                        Console.WriteLine("],");
                         uint bg=Read(process,0x07817b80,4);
                         if(bg>=0x10000 && Read(process,0x01a2e7ec,4)==10) {
                             for(uint client=0;client<12;client++) {

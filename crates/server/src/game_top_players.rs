@@ -11,6 +11,7 @@ pub(crate) struct Scene {
     pub camera: Motion,
     pub angles: [u16; 3],
     pub actors: Vec<EnemySnapshot>,
+    pub poses: Vec<codol_protocol::game_corpse::CorpseSnapshot>,
 }
 impl Scene {
     pub fn build(
@@ -59,17 +60,16 @@ impl Scene {
                     continue;
                 }
                 let mut shown = actors.to_vec();
-                // Keep original CI identities for the cards, while suppressing
-                // battlefield actors. Three presentation-only copies allow
-                // client0's complete body to render with the spectator camera.
+                // Keep only the real roster's CI identities. Native corpse
+                // entities can render a donor's complete standing appearance
+                // without introducing extra participants into result caches.
                 for actor in &mut shown {
                     actor.alive = false;
                     actor.events = Default::default();
                 }
+                let mut poses = Vec::new();
                 for (rank, client) in leaders.into_iter().enumerate() {
                     let mut actor = *actors.iter().find(|a| a.client_index == client).unwrap();
-                    actor.entity_number = 12 + rank as u16;
-                    actor.client_index = 12 + rank as u8;
                     actor.origin = positions[rank];
                     actor.angles = [
                         0,
@@ -78,10 +78,18 @@ impl Scene {
                             * 65536.0) as i32) as u16,
                         0,
                     ];
-                    actor.alive = true;
-                    actor.events = Default::default();
-                    actor.torso_animation = 0;
-                    shown.push(actor);
+                    poses.push(codol_protocol::game_corpse::CorpseSnapshot {
+                        entity_number: 19 + rank as u16,
+                        donor_client: client,
+                        origin: actor.origin,
+                        angles: actor.angles,
+                        legs_animation: actor.legs_animation,
+                        torso_animation: 0,
+                        weapon: actor.weapon,
+                        present: true,
+                        phase: codol_protocol::game_corpse::CorpsePhase::Posed,
+                        death_sequence: 1,
+                    });
                 }
                 shown.sort_by_key(|a| a.client_index);
                 let mut camera = Motion::new(eye);
@@ -100,6 +108,7 @@ impl Scene {
                     camera,
                     angles: [0, turn * 4096, 0],
                     actors: shown,
+                    poses,
                 });
             }
         }
@@ -237,13 +246,17 @@ mod tests {
         let original = actors.clone();
         let scene = Scene::build(&rows(), &actors, &[[0.0; 3]], &collision).unwrap();
         assert_eq!(actors, original);
-        assert!(scene.actors[..12].iter().all(|a| !a.alive));
-        for (rank, actor) in scene.actors[12..].iter().enumerate() {
+        assert_eq!(scene.actors.len(), 12);
+        assert_eq!(scene.poses.len(), 3);
+        assert!(scene.actors.iter().all(|a| !a.alive));
+        for (rank, actor) in scene.poses.iter().enumerate() {
             let donor = &original[11 - rank];
-            assert_eq!(actor.model, donor.model);
             assert_eq!(actor.weapon, donor.weapon);
-            assert_eq!(actor.client_index, 12 + rank as u8);
-            assert!(actor.alive);
+            assert_eq!(actor.donor_client, donor.client_index);
+            assert_eq!(actor.entity_number, 19 + rank as u16);
+            assert_eq!(actor.legs_animation, donor.legs_animation);
+            assert_eq!(actor.phase, codol_protocol::game_corpse::CorpsePhase::Posed);
+            assert!(actor.present);
             assert!(
                 !collision
                     .trace(actor.origin, actor.origin, 70.0)

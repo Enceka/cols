@@ -644,7 +644,7 @@ impl Connection {
             });
             local_player = scene.actors.first().copied();
             match_players = scene.actors[1..].to_vec();
-            corpses.clear();
+            corpses = scene.poses.clone();
             impacts.clear();
             obituaries.clear();
             hit_feedback = None;
@@ -839,7 +839,16 @@ impl Connection {
                 local: local_player,
                 players: match_players,
                 impacts: if full { Vec::new() } else { impacts },
-                corpses: if full { Vec::new() } else { corpses },
+                // Standing presentation entities are encoded even in a full
+                // frame. Retain those exact scalar bases for the next delta.
+                corpses: if full {
+                    corpses
+                        .into_iter()
+                        .filter(|c| c.phase == codol_protocol::game_corpse::CorpsePhase::Posed)
+                        .collect()
+                } else {
+                    corpses
+                },
                 obituaries: if full { Vec::new() } else { obituaries },
             });
             while self.world_history.len() > 32 {
@@ -1367,10 +1376,18 @@ impl Connection {
                 let mut local = state.local_player_snapshot(true).unwrap();
                 local.weapon = self.player.as_ref().unwrap().equipment().weapon;
                 actors.push(local);
-                self.top_players.scene = Some(state.top_players_scene(
+                let mut scene = state.top_players_scene(
                     &self.tdm.as_ref().unwrap().scoreboard(self.owner_id).rows,
                     actors,
-                )?);
+                )?;
+                for pose in &mut scene.poses {
+                    if let Some((_, previous)) = self.corpses.get(&pose.entity_number) {
+                        // Native ResetEntity compares the teleport low bit;
+                        // reusing a corpse slot must initialize a fresh tree.
+                        pose.death_sequence = previous.death_sequence.wrapping_add(1).max(1);
+                    }
+                }
+                self.top_players.scene = Some(scene);
                 return Ok(());
             }
             // Wait until the client has applied a live snapshot in the new
