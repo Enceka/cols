@@ -1006,6 +1006,9 @@ mod tests {
         })).unwrap();
         let weapon = crate::game_player::Player::new(
             codol_protocol::game_snapshot::Equipment {
+                perks: Default::default(),
+                abilities: Default::default(),
+                move_multiplier: 1.0,
                 weapon: 352,
                 inventory_weapon: None,
                 alternate_weapon: None,

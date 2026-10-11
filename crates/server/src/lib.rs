@@ -21,6 +21,7 @@ mod game_match;
 mod game_minimap;
 pub mod game_motion;
 mod game_navigation;
+mod game_perks;
 mod game_player;
 mod game_replay;
 pub mod game_server;

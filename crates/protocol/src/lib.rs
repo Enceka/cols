@@ -31,3 +31,4 @@ pub mod ticket;
 pub mod tls;
 
 pub const CLIENT_SHA256: &str = "e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b";
+pub mod game_abilities;

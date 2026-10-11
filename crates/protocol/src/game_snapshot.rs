@@ -11,6 +11,10 @@ pub struct Ammo {
 }
 #[derive(Debug, Clone, Copy)]
 pub struct Equipment {
+    /// PS+0x258, multiplied after the weapon/stance movement scales.
+    pub move_multiplier: f32,
+    pub perks: [u32; 3],
+    pub abilities: crate::game_abilities::Abilities,
     pub weapon: u16,
     /// Owned inventory slot for a held alternate mode; the parent owns it.
     pub inventory_weapon: Option<u16>,
@@ -203,6 +207,8 @@ pub fn player_frame_with_motion(
         equipment,
         angles,
         WorldSnapshot {
+            local_abilities: None,
+            local_abilities_baseline: None,
             delta_distance: 0,
             corpse_baselines: &[],
             impact_baselines: &[],
@@ -232,6 +238,8 @@ pub fn player_frame_with_motion(
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct WorldSnapshot<'a> {
+    pub local_abilities: Option<crate::game_abilities::Abilities>,
+    pub local_abilities_baseline: Option<crate::game_abilities::Abilities>,
     pub delta_distance: u8,
     pub motion: Option<MotionSnapshot>,
     pub target: Option<crate::game_target::TargetSnapshot>,
@@ -287,6 +295,15 @@ pub fn player_frame_with_world(
         return Err(LobbyError("invalid archived replay view"));
     }
     let weapon = equipment.map(|e| e.weapon);
+    if let Some(equipment) = equipment {
+        equipment.abilities.validate()?;
+        if !equipment.move_multiplier.is_finite()
+            || !(0.0..=10.0).contains(&equipment.move_multiplier)
+            || equipment.perks.iter().any(|id| *id > 255)
+        {
+            return Err(LobbyError("invalid passive skill state"));
+        }
+    }
     let inventory_weapon = equipment.and_then(|e| e.inventory_weapon).or(weapon);
     let alternate_weapon = equipment.and_then(|e| e.alternate_weapon);
     if alternate_weapon.is_some_and(|w| w == 0 || w >= 900)
@@ -449,7 +466,11 @@ pub fn player_frame_with_world(
                 (13, motion.velocity[1].to_bits(), 0),
                 (14, motion.velocity[0].to_bits(), 0),
                 (16, motion.velocity[2].to_bits(), 0),
-                (58, 1f32.to_bits(), 100),
+                (
+                    58,
+                    equipment.map_or(1.0, |e| e.move_multiplier).to_bits(),
+                    100,
+                ),
                 (60, u32::from(motion.speed), 16),
                 (63, u32::from(motion.gravity), 16),
                 (81, u32::from(motion.view_height_lerp_target), 8),
@@ -493,6 +514,11 @@ pub fn player_frame_with_world(
             }
         }
         if let Some(weapon) = weapon {
+            for (slot, id) in equipment.unwrap().perks.into_iter().enumerate() {
+                if id != 0 {
+                    fields.push((123 + slot as u32, id, 32));
+                }
+            }
             if equipment.unwrap().barrel_flags != 0 {
                 fields.push((77, u32::from(equipment.unwrap().barrel_flags) << 8, 22));
             }
@@ -845,6 +871,10 @@ pub fn player_frame_with_world(
             world.local_card,
             world.held_weapon_tag.is_some(),
             world.characters,
+            crate::game_abilities::ClientAbilities {
+                current: world.local_abilities,
+                baseline: world.local_abilities_baseline,
+            },
         )?;
     } else if let Some(enemy) = world.enemy {
         if world.held_weapon_tag.is_some() {
@@ -855,6 +885,7 @@ pub fn player_frame_with_world(
                 None,
                 true,
                 world.characters,
+                Default::default(),
             )?;
         } else {
             crate::game_enemy::write_enemy_client(&mut out, enemy, establish_baseline)?;
@@ -996,6 +1027,9 @@ mod tests {
     #[test]
     fn killcam_fields_select_the_archived_player_and_clear_on_return() {
         let equipment = Equipment {
+            perks: Default::default(),
+            abilities: Default::default(),
+            move_multiplier: 1.0,
             weapon: 352,
             inventory_weapon: None,
             alternate_weapon: None,
@@ -1107,6 +1141,9 @@ mod tests {
         events.push(game_events::RAISE_WEAPON, 0).unwrap();
         events.push(game_events::FIRE_WEAPON_LAST_SHOT, 0).unwrap();
         let equipment = Equipment {
+            perks: Default::default(),
+            abilities: Default::default(),
+            move_multiplier: 1.0,
             inventory_weapon: None,
             alternate_weapon: Some(180),
             fire_count: 1,
@@ -1324,6 +1361,9 @@ mod tests {
         ))
         .unwrap();
         let equipment = Equipment {
+            perks: Default::default(),
+            abilities: Default::default(),
+            move_multiplier: 1.0,
             inventory_weapon: None,
             alternate_weapon: Some(180),
             fire_count: 1,
@@ -1464,6 +1504,9 @@ mod tests {
             r.finish().unwrap();
         }
         let bad = Equipment {
+            perks: Default::default(),
+            abilities: Default::default(),
+            move_multiplier: 1.0,
             inventory_weapon: None,
             alternate_weapon: None,
             fire_count: 0,

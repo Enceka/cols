@@ -286,6 +286,9 @@ mod tests {
         motion.command_time = time;
         motion.jump_time = if time > 1500 { 1500 } else { 0 };
         let equipment = Equipment {
+            perks: Default::default(),
+            abilities: Default::default(),
+            move_multiplier: 1.0,
             weapon: 352,
             inventory_weapon: None,
             alternate_weapon: None,

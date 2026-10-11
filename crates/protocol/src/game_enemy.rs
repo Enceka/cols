@@ -204,7 +204,15 @@ pub(crate) fn write_player_clients(
     players: &[EnemySnapshot],
     establish_baseline: bool,
 ) -> Result<(), LobbyError> {
-    write_player_clients_with_card(out, players, establish_baseline, None, false, &[])
+    write_player_clients_with_card(
+        out,
+        players,
+        establish_baseline,
+        None,
+        false,
+        &[],
+        Default::default(),
+    )
 }
 
 pub(crate) fn write_player_clients_with_card(
@@ -214,7 +222,16 @@ pub(crate) fn write_player_clients_with_card(
     local_card: Option<crate::game_player_card::Card>,
     held_weapons: bool,
     characters: &[Option<crate::game_character::Character>],
+    abilities: crate::game_abilities::ClientAbilities,
 ) -> Result<(), LobbyError> {
+    let local_abilities = abilities.current;
+    let local_abilities_baseline = abilities.baseline;
+    if let Some(abilities) = local_abilities {
+        abilities.validate()?;
+    }
+    if let Some(abilities) = local_abilities_baseline {
+        abilities.validate()?;
+    }
     if let Some(card) = local_card {
         card.validate()?;
     }
@@ -246,7 +263,33 @@ pub(crate) fn write_player_clients_with_card(
                     .get(usize::from(player.client_index))
                     .copied()
                     .flatten(),
+                local_abilities.filter(|_| player.client_index == 0),
             )?;
+        }
+    } else if let Some(abilities) = local_abilities {
+        let base = local_abilities_baseline.unwrap_or_default();
+        let fields = abilities
+            .fields()
+            .into_iter()
+            .zip(base.fields())
+            .filter(|(value, base)| value.1 != base.1)
+            .collect::<Vec<_>>();
+        if let Some((last, _)) = fields.last() {
+            out.bits(1, 1);
+            out.bits(0, 1);
+            out.bits(0, 5);
+            out.bits(0, 1);
+            out.bits(1, 1);
+            out.bits(last.0 as u32, 7);
+            let mut previous = -1;
+            for ((index, value, width), (_, base, _)) in fields {
+                for _ in 1..index - previous {
+                    out.bits(0, 1);
+                }
+                out.bits(1, 1);
+                previous = index;
+                client_scalar(out, value, base, width);
+            }
         }
     }
     out.bits(0, 1);
@@ -259,6 +302,7 @@ fn write_client_record(
     card: Option<crate::game_player_card::Card>,
     held_weapons: bool,
     character: Option<crate::game_character::Character>,
+    abilities: Option<crate::game_abilities::Abilities>,
 ) -> Result<(), LobbyError> {
     enemy.validate()?;
 
@@ -267,7 +311,6 @@ fn write_client_record(
     out.bits(u32::from(enemy.client_index), 5);
     out.bits(0, 1); // retained
     out.bits(1, 1); // generic field section changed
-    out.bits(53, 7); // last changed client field index
     let mut fields = vec![
         (23, u32::from(enemy.team), 3),
         (27, u32::from(enemy.model), 10),
@@ -307,7 +350,11 @@ fn write_client_record(
         fields.retain(|(i, _, _)| !packed.iter().any(|p| p.0 == *i));
         fields.extend(packed);
     }
+    if let Some(abilities) = abilities {
+        fields.extend(abilities.fields());
+    }
     fields.sort_by_key(|field| field.0);
+    out.bits(fields.last().unwrap().0 as u32, 7);
     let mut previous = -1;
     for (index, value, width) in fields {
         // Client gaps use parameter1 at0x5a3250: unary distance-1 zeros,1.
@@ -316,9 +363,21 @@ fn write_client_record(
         }
         out.bits(1, 1);
         previous = index;
-        scalar(out, value, 0, width);
+        client_scalar(out, value, 0, width);
     }
     Ok(())
+}
+
+fn client_scalar(out: &mut Writer, value: u32, base: u32, width: usize) {
+    if width == 0 {
+        out.bits(u32::from(value != 0), 1);
+        out.bits(u32::from(value != 0), 1);
+        if value != 0 {
+            out.bytes.extend_from_slice(&(value ^ base).to_le_bytes());
+        }
+    } else {
+        scalar(out, value, base, width);
+    }
 }
 
 fn scalar(out: &mut Writer, value: u32, base: u32, width: usize) {
@@ -427,8 +486,13 @@ mod tests {
                     u32::from(reader.u16().unwrap())
                 }
                 0 => {
-                    assert_eq!(reader.bits(2).unwrap(), 3);
-                    reader.u32().unwrap() ^ baseline
+                    let mode = reader.bits(2).unwrap();
+                    if mode == 0 {
+                        0
+                    } else {
+                        assert_eq!(mode, 3);
+                        reader.u32().unwrap() ^ baseline
+                    }
                 }
                 width if width > 0 => {
                     if reader.bits(1).unwrap() == 0 {
@@ -467,6 +531,74 @@ mod tests {
             false,
             base,
         ))
+    }
+
+    #[test]
+    fn abilities_use_target_client_fields_and_delta_clears_previous_modifiers() {
+        use crate::game_abilities::{Abilities, ClientAbilities};
+        let local = EnemySnapshot {
+            client_index: 0,
+            entity_number: 0,
+            ..enemy()
+        };
+        let mut abilities = Abilities {
+            masks: [0x20000000, 0x400, 0, 0, 0x10000000],
+            ..Default::default()
+        };
+        abilities.values[11] = 1.55;
+        abilities.values[29] = 6.0;
+        for alignment in 0..8 {
+            let mut out = Writer::default();
+            out.bits(0x55, alignment);
+            write_player_clients_with_card(
+                &mut out,
+                &[local],
+                true,
+                None,
+                false,
+                &[],
+                ClientAbilities {
+                    current: Some(abilities),
+                    baseline: None,
+                },
+            )
+            .unwrap();
+            out.bytes.push(0xee);
+            let mut reader = Reader::new(&out.bytes);
+            reader.bits(alignment).unwrap();
+            assert_eq!(reader.bits(9).unwrap(), 0x101);
+            let base = read_fields(&mut reader, &fixture()["client"], 7, true, &BTreeMap::new());
+            assert_eq!(base[&0x88], 0x20000000);
+            assert_eq!(base[&0x98], 0x10000000);
+            assert_eq!(base[&(0x9c + 11 * 4)], 1.55f32.to_bits());
+            assert_eq!(base[&0x110], 6.0f32.to_bits());
+            assert_eq!(reader.bits(1).unwrap(), 0);
+            assert_eq!(reader.u8().unwrap(), 0xee);
+            let mut delta = Writer::default();
+            write_player_clients_with_card(
+                &mut delta,
+                &[local],
+                false,
+                None,
+                false,
+                &[],
+                ClientAbilities {
+                    current: Some(Abilities::default()),
+                    baseline: Some(abilities),
+                },
+            )
+            .unwrap();
+            delta.bytes.push(0xee);
+            let mut reader = Reader::new(&delta.bytes);
+            assert_eq!(reader.bits(9).unwrap(), 0x101);
+            let cleared = read_fields(&mut reader, &fixture()["client"], 7, true, &base);
+            assert_eq!(cleared[&0x88], 0);
+            assert_eq!(cleared[&0x98], 0);
+            assert_eq!(cleared[&(0x9c + 11 * 4)], 0);
+            assert_eq!(cleared[&0x110], 0);
+            assert_eq!(reader.bits(1).unwrap(), 0);
+            assert_eq!(reader.u8().unwrap(), 0xee);
+        }
     }
 
     fn enemy() -> EnemySnapshot {
@@ -632,6 +764,7 @@ mod tests {
                 None,
                 true,
                 &[Some(character), Some(remote_character)],
+                Default::default(),
             )
             .unwrap();
             out.bytes.push(0xa7);
@@ -705,8 +838,16 @@ mod tests {
             };
             let mut out = Writer::default();
             out.bits(0, alignment);
-            write_player_clients_with_card(&mut out, &[local], true, Some(card), false, &[])
-                .unwrap();
+            write_player_clients_with_card(
+                &mut out,
+                &[local],
+                true,
+                Some(card),
+                false,
+                &[],
+                Default::default(),
+            )
+            .unwrap();
             let mut reader = Reader::new(&out.bytes);
             reader.bits(alignment).unwrap();
             assert_eq!(reader.bits(1).unwrap(), 1);

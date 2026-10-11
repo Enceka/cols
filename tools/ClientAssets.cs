@@ -172,6 +172,7 @@ class ClientAssets {
             try{schemas[name]=reader.Schema(name);}catch(Exception e){schemas[name]=Obj("error",e.Message);}
         }
         foreach(string name in new string[]{"mp/coGameTypesTable.csv","mp/coMapList.csv","mp/coMarketplaceItems.csv","mp/coCharacterDefTable.csv","mp/cogroupdefs.csv","mp/coWeapSlotDefs.csv","mp/coCharItemStatsTable.csv","mp/coCharItems/cha.csv","mp/coKnifeStatsTable.csv","mp/uiNotifications.csv","mp/functionalUnlockTable.csv","mp/unlockFlags.csv","mp/rankTable.csv",
+            "mp/coPerkStatsTable.csv","mp/coAbilityModifiersTable.csv",
             "mp/coWeapItems/ast.csv","mp/coWeapItems/pst.csv","mp/coWeapItems/cam.csv","mp/coWeapItems/oth.csv","mp/coWeapItems/ret.csv","mp/coItemDependency.csv",
             "mp/coWeaponPrimaryRankTable.csv","mp/coWeaponSecondaryRankTable.csv",
             "mp/callsignTitle.csv","mp/callsignIcon.csv","mp/callsignBackground.csv","mp/callsignNameplate.csv"}) {
@@ -326,6 +327,13 @@ class ClientAssets {
                 "type",r.Word(def+0x488),"alternate_index",r.Word(def+0xd24),
                 "clip_key",r.Word(def+0x6c0),"model_name",r.Name(r.Word(def+0xc))));
         }
+        var offhands=new List<object>();
+        for(uint i=1;i<=count;i++) {
+            uint def=r.Word(0x017f5a40+i*4);
+            if(r.Word(def+0x47c)!=1)continue;
+            offhands.Add(Obj("index",i,"name",r.Name(r.Word(def)),
+                "definition_base64",Convert.ToBase64String(r.Read(def,0xe28))));
+        }
         var sources=new List<object>();
         foreach(string name in new string[]{"csg12ss_mp","ak104_mp","m4_mp","m9_mp"}) {
             try {
@@ -337,7 +345,7 @@ class ClientAssets {
         }
         Console.WriteLine(new JavaScriptSerializer().Serialize(Obj("schema_version",1,"read_only",true,
             "client_sha256","e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b",
-            "connection_state",r.Word(0x01a2e7ec),"weapons",weapons,"sources",sources)));
+            "connection_state",r.Word(0x01a2e7ec),"weapons",weapons,"sources",sources,"offhand_definitions",offhands)));
     }
     object WeaponRuntimeFields(uint at) {
         // 0x4253e0 writes def+0x6f0 to PS.weaponDelay and def+0xd10 to

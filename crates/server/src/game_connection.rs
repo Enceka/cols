@@ -84,6 +84,7 @@ pub(crate) struct Connection {
 
 #[derive(Clone)]
 struct WorldHistory {
+    local_abilities: Option<codol_protocol::game_abilities::Abilities>,
     replay_epoch: u32,
     top_players_scene: bool,
     held_weapons: bool,
@@ -756,6 +757,8 @@ impl Connection {
             angles,
             equipment,
             crate::game_state::SnapshotWorld {
+                local_abilities: self.player.as_ref().map(|p| p.equipment().abilities),
+                local_abilities_baseline: previous.as_ref().and_then(|h| h.local_abilities),
                 delta_distance,
                 corpse_baselines: previous.as_ref().map_or(&[], |h| h.corpses.as_slice()),
                 impact_baselines: previous.as_ref().map_or(&[], |h| h.impacts.as_slice()),
@@ -832,6 +835,7 @@ impl Connection {
         }
         if self.tdm.is_some() {
             self.world_history.push_back(WorldHistory {
+                local_abilities: self.player.as_ref().map(|p| p.equipment().abilities),
                 replay_epoch,
                 top_players_scene,
                 held_weapons: !full,
@@ -1325,8 +1329,18 @@ impl Connection {
                     kill.attacker,
                 );
             }
-            self.death_waypoints
-                .record(now, self.tdm.as_ref().unwrap().teams()[0], kill.victim);
+            if kill.attacker != 0
+                || self
+                    .player
+                    .as_ref()
+                    .is_none_or(|p| !p.hides_victim_death_icon())
+            {
+                self.death_waypoints.record(
+                    now,
+                    self.tdm.as_ref().unwrap().teams()[0],
+                    kill.victim,
+                );
+            }
             let mut corpse = self
                 .game_state
                 .as_ref()
@@ -1991,6 +2005,9 @@ mod tests {
         c.bot = Some(crate::game_bot::BotController::new([0.0; 3], [0; 3], 190.0).unwrap());
         c.player = Some(crate::game_player::Player::new(
             codol_protocol::game_snapshot::Equipment {
+                perks: Default::default(),
+                abilities: Default::default(),
+                move_multiplier: 1.0,
                 inventory_weapon: None,
                 alternate_weapon: None,
                 fire_count: 0,

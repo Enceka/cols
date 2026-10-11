@@ -210,6 +210,9 @@ mod tests {
     fn player(segmented: bool) -> crate::game_player::Player {
         crate::game_player::Player::new(
             Equipment {
+                perks: Default::default(),
+                abilities: Default::default(),
+                move_multiplier: 1.0,
                 weapon: 352,
                 inventory_weapon: None,
                 alternate_weapon: None,

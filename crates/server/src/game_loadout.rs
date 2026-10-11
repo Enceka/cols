@@ -378,6 +378,7 @@ mod tests {
             }),
         };
         state.bootstrap_weapon = Some(BootstrapWeapon {
+            fast_reload: true,
             name: "m4_mp".into(),
             index: 352,
             ammo: Some(ammo.clone()),

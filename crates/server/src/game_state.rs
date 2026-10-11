@@ -10,6 +10,8 @@ mod loadout;
 
 #[derive(Default)]
 pub(crate) struct SnapshotWorld<'a> {
+    pub local_abilities: Option<codol_protocol::game_abilities::Abilities>,
+    pub local_abilities_baseline: Option<codol_protocol::game_abilities::Abilities>,
     pub delta_distance: u8,
     pub corpse_baselines: &'a [codol_protocol::game_corpse::CorpseSnapshot],
     pub impact_baselines: &'a [codol_protocol::game_impact::ImpactSnapshot],
@@ -35,6 +37,8 @@ pub(crate) struct SnapshotWorld<'a> {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct BootstrapWeapon {
+    #[serde(default)]
+    fast_reload: bool,
     name: String,
     index: u16,
     #[serde(default)]
@@ -153,6 +157,8 @@ pub struct PreparedGameState {
     pub(crate) profile_hash: Option<[u8; 32]>,
     #[serde(skip)]
     pub(crate) player_card: Option<codol_protocol::game_player_card::Card>,
+    #[serde(skip)]
+    player_perks: crate::game_perks::Perks,
     #[serde(skip)]
     registry_strings: Vec<(u16, String)>,
     #[serde(skip)]
@@ -1049,6 +1055,13 @@ impl PreparedGameState {
             .ok_or_else(|| anyhow::anyhow!("missing loadout catalogue"))?;
         let mut state = self.clone();
         state.player_card = Some(loadout.card(public)?);
+        state.player_perks = crate::game_perks::Perks::from_profile(
+            &loadout.profile_snapshot(public)?,
+            loadout.class_index(),
+            owned,
+        )?;
+        tracing::info!(slots=?state.player_perks.slots, masks=?state.player_perks.abilities.masks,
+            "resolved saved passive skills");
         if let Some(catalog) = &self.appearance_catalog
             && self.player_appearance.is_none()
         {
@@ -1318,6 +1331,7 @@ impl PreparedGameState {
             fire_msec = word(0xd10), rechamber_msec = rechamber.map_or(0, |t| t.duration_msec),
             hip_min = ?spread.minimum, hip_max = ?spread.maximum, "resolved weapon gameplay attributes");
         Ok(BootstrapWeapon {
+            fast_reload: w.definition[0xd70] != 0,
             name: w.name,
             index: w.index,
             ammo: Some(ammo),
@@ -1590,6 +1604,8 @@ impl PreparedGameState {
             equipment,
             angles,
             codol_protocol::game_snapshot::WorldSnapshot {
+                local_abilities: world.local_abilities,
+                local_abilities_baseline: world.local_abilities_baseline,
                 delta_distance: world.delta_distance,
                 corpse_baselines: world.corpse_baselines,
                 impact_baselines: world.impact_baselines,
@@ -1653,6 +1669,7 @@ impl PreparedGameState {
     }
     fn playable_weapon(&self, weapon: &BootstrapWeapon) -> crate::game_player::Player {
         let mut player = Self::make_player(weapon);
+        player.set_perks(self.player_perks.clone());
         // The ordinary melee damage path currently belongs to TDM. Legacy
         // prop/pose diagnostics must not emit an animation with no resolver.
         if !self.is_match() {
@@ -1663,6 +1680,9 @@ impl PreparedGameState {
     fn make_player(w: &BootstrapWeapon) -> crate::game_player::Player {
         let mut player = crate::game_player::Player::new(
             codol_protocol::game_snapshot::Equipment {
+                perks: Default::default(),
+                abilities: Default::default(),
+                move_multiplier: 1.0,
                 inventory_weapon: None,
                 alternate_weapon: None,
                 fire_count: 0,
@@ -1693,6 +1713,7 @@ impl PreparedGameState {
         if let Some(timing) = w.switch {
             player.set_switch_timing(timing);
         }
+        player.set_fast_reload(w.fast_reload);
         if let Some(timing) = w.rechamber {
             player.set_rechamber_timing(timing);
         }
@@ -1831,6 +1852,7 @@ pub(crate) fn synthetic() -> PreparedGameState {
         collision: None,
         profile_hash: None,
         player_card: None,
+        player_perks: Default::default(),
         registry_strings: Vec::new(),
         snapshot_probe: false,
         snapshot_frames: 0,

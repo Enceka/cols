@@ -172,6 +172,7 @@ impl SpreadTiming {
 
 #[derive(Debug, Clone)]
 struct Weapon {
+    fast_reload: bool,
     equipment: Equipment,
     fire_interval: Option<u16>,
     fire_type: u32,
@@ -233,6 +234,7 @@ impl Weapon {
 
 #[derive(Debug, Clone)]
 pub(crate) struct Player {
+    perks: crate::game_perks::Perks,
     current: Weapon,
     secondary: Option<Weapon>,
     alternate: Option<Weapon>,
@@ -288,7 +290,9 @@ impl Player {
             });
         }
         Self {
+            perks: Default::default(),
             current: Weapon {
+                fast_reload: false,
                 magazine_capacity: equipment.ammo.map_or(0, |a| a.clip),
                 equipment,
                 fire_interval,
@@ -328,6 +332,15 @@ impl Player {
 
     pub fn set_switch_timing(&mut self, timing: SwitchTiming) {
         self.current.switch = Some(timing);
+    }
+    pub fn set_perks(&mut self, perks: crate::game_perks::Perks) {
+        self.perks = perks;
+    }
+    pub fn set_fast_reload(&mut self, allowed: bool) {
+        self.current.fast_reload = allowed;
+    }
+    pub fn hides_victim_death_icon(&self) -> bool {
+        self.perks.has("modVictimNoDeadIcon")
     }
 
     /// WeaponDef +0x48c. Target 0x424830 stops fire types 1/5 after one
@@ -382,7 +395,7 @@ impl Player {
     }
 
     pub fn move_scale(&self) -> f32 {
-        self.current.move_scale
+        self.current.move_scale * self.perks.value("modMoveSpeedScale", 1.0)
     }
     pub fn set_ballistics(&mut self, stats: crate::game_combat::Ballistics) {
         assert!(stats.valid());
@@ -473,6 +486,9 @@ impl Player {
 
     pub fn equipment(&self) -> Equipment {
         let mut equipment = self.current.equipment;
+        equipment.perks = self.perks.slots;
+        equipment.abilities = self.perks.abilities;
+        equipment.move_multiplier = self.perks.value("modMoveSpeedScale", 1.0);
         equipment.needs_rechamber = self.current.needs_rechamber;
         equipment.spread_scale = self.spread_scale;
         equipment.secondary = self.secondary.as_ref().map(|other| EquippedWeapon {
@@ -554,8 +570,9 @@ impl Player {
             return self.current.ballistics.map_or(0.0, |b| b.spread_degrees);
         };
         let scale = self.spread_scale / 255.0;
-        let min = timing.minimum[self.spread_stance];
-        let max = timing.maximum[self.spread_stance];
+        let multiplier = self.perks.value("modBulletSpreadScale", 1.0);
+        let min = timing.minimum[self.spread_stance] * multiplier;
+        let max = timing.maximum[self.spread_stance] * multiplier;
         if self
             .current
             .equipment
@@ -603,10 +620,11 @@ impl Player {
             && (timing.reload_interruptible
                 || firing.is_some_and(|f| f.remaining_msec > timing.reload_end_msec));
         // Target 0x4224e0: elapsed msec times the registered per-msec rate.
+        let elapsed = elapsed as f32 * self.perks.value("modADSSpeedScale", 1.0);
         aim.fraction = if aim.button && !reload_blocks {
-            (aim.fraction + elapsed as f32 * timing.in_rate).min(1.0)
+            (aim.fraction + elapsed * timing.in_rate).min(1.0)
         } else {
-            (aim.fraction - elapsed as f32 * timing.out_rate).max(0.0)
+            (aim.fraction - elapsed * timing.out_rate).max(0.0)
         };
     }
 
@@ -770,6 +788,18 @@ impl Player {
     }
 
     fn apply_weapon(&mut self, cmd: &UserCommand, elapsed: u32, approach: Option<MeleeApproach>) {
+        // 0x4249c0 scales the elapsed frame time, not the authored duration.
+        let state = self.current.equipment.firing.map_or(0, |f| f.state);
+        let scale = if reloading(state) && self.current.fast_reload {
+            self.perks.value("modReloadSpeedScale", 1.0)
+        } else if (1..=5).contains(&state) {
+            self.perks.value("modWeaponSwitchSpeedScale", 1.0)
+        } else if matches!(state, 6 | 7) {
+            self.perks.value("modRateOfFire", 1.0)
+        } else {
+            1.0
+        };
+        let elapsed = (elapsed as f32 * scale).round_ties_even() as u32;
         let elapsed = elapsed.min(u32::from(u16::MAX)) as u16;
         if let Some(firing) = self.current.equipment.firing.as_mut() {
             firing.remaining_msec = firing.remaining_msec.saturating_sub(elapsed);
@@ -1461,6 +1491,9 @@ mod tests {
     fn player() -> Player {
         Player::new(
             Equipment {
+                perks: Default::default(),
+                abilities: Default::default(),
+                move_multiplier: 1.0,
                 inventory_weapon: None,
                 alternate_weapon: None,
                 fire_count: 0,
@@ -1506,6 +1539,44 @@ mod tests {
         p.current.equipment.aim = Some(Aim::default());
         p.current.reload = Some(reload_timing());
         p
+    }
+
+    #[test]
+    fn captured_quickdraw_speeds_ads_and_switch_without_changing_weapon_data() {
+        let mut p = aiming_player();
+        p.set_perks(
+            crate::game_perks::Perks::selected([60041, 60066, 0], &[60041, 60066]).unwrap(),
+        );
+        let rates = p.current.ads.unwrap();
+        p.apply(&cmd(1100, 0x800));
+        assert!((p.equipment().aim.unwrap().fraction - 0.54).abs() < 1e-6);
+        assert_eq!(p.current.ads.unwrap().in_rate, rates.in_rate);
+        assert_eq!(p.equipment().perks, [3, 10, 0]);
+        assert_eq!(p.equipment().move_multiplier, 1.07);
+        assert_eq!(p.move_scale(), 1.07);
+        let timing = SwitchTiming {
+            drop_msec: 300,
+            raise_msec: 300,
+            empty_drop_msec: 300,
+            empty_raise_msec: 300,
+        };
+        p.set_switch_timing(timing);
+        let mut secondary = player();
+        secondary.current.equipment.weapon = 353;
+        secondary.set_switch_timing(timing);
+        p = p.with_secondary(secondary);
+        p.begin_drop(353);
+        let request = UserCommand {
+            weapons: [353, 0, 0],
+            ..cmd(1200, 0)
+        };
+        p.apply(&request);
+        assert_eq!(p.equipment().firing.unwrap().remaining_msec, 145);
+        p.apply(&request);
+        assert_eq!(p.equipment().firing.unwrap().remaining_msec, 145);
+        p.set_perks(Default::default());
+        assert_eq!(p.equipment().perks, [0; 3]);
+        assert_eq!(p.move_scale(), 1.0);
     }
     #[test]
     fn ads_progress_survives_frames_reverses_smoothly_and_reaches_exact_endpoints() {
