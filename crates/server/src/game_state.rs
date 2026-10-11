@@ -2726,6 +2726,7 @@ mod tests {
         let mut motion = crate::game_motion::Motion::new([0.0; 3]);
         motion.velocity = [94.0, 0.0, 0.0];
         let mut frame = crate::game_bot::BotFrame {
+            landings: Vec::new(),
             motion,
             angles: [0; 3],
             phase: crate::game_bot::BotPhase::Chase,

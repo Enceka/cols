@@ -500,7 +500,7 @@ impl TdmMatch {
     pub fn player_killed(&mut self, now: u32, victim: EnemySnapshot, hit: PlayerHit) {
         self.credit(now, victim, hit.attacker, hit.weapon, hit.headshot, false);
     }
-    pub fn player_fell(&mut self, now: u32, victim: EnemySnapshot) {
+    pub fn actor_fell(&mut self, now: u32, victim: EnemySnapshot) {
         if self.finished {
             return;
         }
@@ -806,6 +806,7 @@ impl TdmMatch {
             }
         }
         let mut shots = Vec::new();
+        let mut falling_deaths = Vec::new();
         let actors = self.actors(local, local_height);
         let peers: Vec<_> = actors.iter().map(|a| (a.client, a.origin)).collect();
         let report = now >= self.next_diagnostics;
@@ -933,6 +934,49 @@ impl TdmMatch {
             let mut frame =
                 bot.controller
                     .step_navigated(now, target, bot.steering, active_weapon, collision);
+            for landing in &frame.landings {
+                if let Some(event) = landing.event {
+                    if let Some(held) = &mut bot.weapon {
+                        held.movement_event(event.id, event.parameter);
+                    } else {
+                        bot.snapshot.events.push(event.id, event.parameter)?;
+                    }
+                }
+                let damage = bot
+                    .weapon
+                    .as_ref()
+                    .map_or(landing.damage, |w| w.fall_damage(landing.damage));
+                if damage == 0 {
+                    continue;
+                }
+                bot.health = bot.health.saturating_sub(damage);
+                bot.damage_event = bot.damage_event.wrapping_add(1);
+                bot.damage_count = damage.min(127) as u8;
+                tracing::info!(
+                    client = bot.snapshot.client_index,
+                    time = landing.time,
+                    raw_damage = landing.damage,
+                    damage,
+                    health = bot.health,
+                    "Bot landing damage"
+                );
+                if bot.health == 0 {
+                    bot.snapshot.origin = frame.motion.origin;
+                    bot.snapshot.angles = frame.angles;
+                    bot.snapshot.alive = false;
+                    bot.snapshot.weapon = active_weapon.weapon;
+                    bot.view_motion = frame.motion.clone();
+                    bot.death = Some(landing.time);
+                    bot.controller.kill(now);
+                    bot.tactical.clear();
+                    falling_deaths.push((landing.time, bot.snapshot));
+                    break;
+                }
+            }
+            if bot.health == 0 {
+                movement += move_started.elapsed();
+                continue;
+            }
             if let Some(held) = &mut bot.weapon {
                 let previous_weapon_state = held.equipment().firing.map(|f| f.state);
                 let ammo = held.equipment().ammo;
@@ -1039,6 +1083,9 @@ impl TdmMatch {
             }
         }
         self.next_route_client = (self.next_route_client + 1) % self.bots.len();
+        for (time, victim) in falling_deaths {
+            self.actor_fell(time, victim);
+        }
         let routing = started.elapsed().saturating_sub(movement);
         let damage_started = std::time::Instant::now();
         let mut player_health = local_health;
@@ -1155,6 +1202,81 @@ fn distance(a: [f32; 3], b: [f32; 3]) -> f32 {
 mod tests {
     use super::*;
     #[test]
+    #[ignore = "uses the locally captured Killhouse ledge to verify Bot falling authority"]
+    fn captured_bot_fall_uses_real_map_collision_and_preserves_team_scores() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../research-output");
+        let template =
+            crate::game_state::PreparedGameState::load(&root.join("tdm-killhouse-hud-state.json"))
+                .unwrap();
+        let profiles = root.join("../client-work/server-data/profiles/1002");
+        let profiles: Vec<_> = std::fs::read_dir(profiles)
+            .unwrap()
+            .map(|x| x.unwrap().path())
+            .filter(|p| p.join("public.bin").is_file() && p.join("inventory.json").is_file())
+            .collect();
+        assert_eq!(
+            profiles.len(),
+            1,
+            "this local capture fixture requires one account"
+        );
+        let public = std::fs::read(profiles[0].join("public.bin")).unwrap();
+        let inventory: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(profiles[0].join("inventory.json")).unwrap())
+                .unwrap();
+        let owned: Vec<u32> = serde_json::from_value(inventory["items"].clone()).unwrap();
+        let state = template
+            .for_initial_backpack(&public)
+            .unwrap()
+            .for_profile(&public, &owned)
+            .unwrap();
+        let route: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(root.join("landing-diagnostic-route.json")).unwrap(),
+        )
+        .unwrap();
+        let origin: [f32; 3] = serde_json::from_value(route["origin"].clone()).unwrap();
+        let end: [f32; 3] = serde_json::from_value(route["end"].clone()).unwrap();
+        let collision = state.collision.as_ref().unwrap();
+        let mut game = state.tdm_match().unwrap().unwrap();
+        for b in &mut game.bots {
+            b.health = 0;
+            b.snapshot.alive = false;
+        }
+        let bot = &mut game.bots[0];
+        bot.health = 100;
+        bot.snapshot.alive = true;
+        bot.snapshot.origin = origin;
+        bot.controller.respawn(1000, origin, [0; 3]).unwrap();
+        let mut local = state.local_player_snapshot(false).unwrap();
+        local.alive = false;
+        let weapon = state.match_bot_weapon().unwrap();
+        for now in (1050..=4000).step_by(50) {
+            // This fixture guides the actor over the captured ledge; it does
+            // not validate navigation's preferred route or native visuals.
+            game.next_route_client = 1;
+            game.bots[0].steering = Some(end);
+            game.bots[0].steering_time = now;
+            game.step(
+                now,
+                (local, 70.0, 0),
+                weapon,
+                collision,
+                |s, f, fire, toggle| state.animate_enemy(s, f, fire, toggle),
+            )
+            .unwrap();
+        }
+        let kills = game.take_kills();
+        assert_eq!(kills.len(), 1);
+        assert!(kills[0].falling);
+        assert_eq!(game.bots[0].health, 0);
+        assert_eq!(game.scoreboard(1).team_scores, [0; 4]);
+        let proof = serde_json::json!({"client_sha256":codol_protocol::CLIENT_SHA256,"read_only_captured_resources":true,"native_visual_verified":false,"map":state.map(),"ncs_crc":state.ncs_crc(),"source_route":route,"victim":kills[0].victim.client_index,"fall_time":kills[0].time,"death_origin":kills[0].victim.origin,"held_weapon":kills[0].weapon,"deaths":game.scoreboard(1).rows[1].deaths,"personal_score":game.scoreboard(1).rows[1].score,"team_scores":game.scoreboard(1).team_scores});
+        std::fs::write(
+            root.join("bot-landing-captured-proof.json"),
+            serde_json::to_vec_pretty(&proof).unwrap(),
+        )
+        .unwrap();
+    }
+    #[test]
     fn room_team_assignment_selects_bot_outfits_and_their_pinned_baselines() {
         let outfit:BotLoadout=serde_json::from_value(serde_json::json!({
             "class":"botclass1","weapon_name":"m4_mp","personality":"default",
@@ -1249,7 +1371,7 @@ mod tests {
     #[test]
     fn fatal_fall_scores_once_as_an_environmental_death_without_awarding_a_kill() {
         let mut game = TdmMatch::new(config(), template(), 190.0, &world()).unwrap();
-        game.player_fell(2000, template());
+        game.actor_fell(2000, template());
         let board = game.scoreboard(1);
         assert_eq!(
             (
@@ -1266,8 +1388,88 @@ mod tests {
         assert_eq!(kills[0].weapon, 352);
         assert_eq!(kills[0].attacker, kills[0].victim.client_index);
         game.finished = true;
-        game.player_fell(2100, template());
+        game.actor_fell(2100, template());
         assert!(game.take_kills().is_empty());
+    }
+    #[test]
+    fn bot_fall_applies_its_perk_and_runs_the_normal_death_respawn_lifecycle() {
+        let c = world();
+        for lightweight in [false, true] {
+            let mut game = TdmMatch::new(config(), template(), 190.0, &c).unwrap();
+            // Isolate one actor's physical fall from gunfire by retaining no
+            // other living targets in this simulation fixture.
+            for b in &mut game.bots {
+                b.health = 0;
+                b.snapshot.alive = false;
+            }
+            let bot = &mut game.bots[0];
+            bot.health = 100;
+            bot.snapshot.alive = true;
+            bot.snapshot.origin = [0.0, 0.0, 350.0];
+            bot.controller
+                .respawn(1000, bot.snapshot.origin, [0; 3])
+                .unwrap();
+            let mut held = crate::game_player::tests::scavenger_player(90, 180);
+            if lightweight {
+                held.set_perks(
+                    crate::game_perks::Perks::selected([60041, 0, 0], &[60041]).unwrap(),
+                );
+            }
+            bot.weapon = Some(held.clone());
+            bot.initial_weapon = Some(held);
+            let mut local = template();
+            local.alive = false;
+            let fallback = BotWeapon {
+                weapon: 352,
+                fire_interval_msec: 80,
+                ballistics: game_combat::Ballistics {
+                    damage: 33,
+                    range: 8192.0,
+                    near_range: 500.0,
+                    location_multipliers: None,
+                    falloff: None,
+                    pellets: 1,
+                    spread_degrees: 0.0,
+                },
+            };
+            let animate = |mut s: EnemySnapshot, f: &crate::game_bot::BotFrame, _, _| {
+                s.origin = f.motion.origin;
+                s.angles = f.angles;
+                s
+            };
+            for now in (1050..=3000).step_by(50) {
+                game.step(now, (local, 70.0, 0), fallback, &c, animate)
+                    .unwrap();
+            }
+            let board = game.scoreboard(1);
+            if lightweight {
+                assert_eq!(game.bots[0].health, 100);
+                assert!(game.bots[0].snapshot.alive);
+                assert_eq!(board.rows[1].deaths, 0);
+                assert!(game.take_kills().is_empty());
+            } else {
+                assert_eq!(game.bots[0].health, 0);
+                assert!(!game.bots[0].snapshot.alive);
+                assert_eq!(
+                    (
+                        board.rows[1].kills,
+                        board.rows[1].deaths,
+                        board.rows[1].score
+                    ),
+                    (0, 1, 0)
+                );
+                assert_eq!(board.team_scores, [0; 4]);
+                let kills = game.take_kills();
+                assert_eq!(kills.len(), 1);
+                assert!(kills[0].falling);
+                game.step(6500, (local, 70.0, 0), fallback, &c, animate)
+                    .unwrap();
+                assert_eq!(game.bots[0].health, 100);
+                assert!(game.bots[0].snapshot.alive);
+                assert_eq!(game.scoreboard(1).rows[1].deaths, 1);
+                assert!(game.take_kills().is_empty());
+            }
+        }
     }
     #[test]
     fn perception_obeys_team_field_of_view_close_awareness_and_walls() {

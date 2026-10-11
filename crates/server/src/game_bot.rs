@@ -104,6 +104,7 @@ pub struct BotShot {
 
 #[derive(Clone, Debug)]
 pub struct BotFrame {
+    pub(crate) landings: Vec<crate::game_landing::Landing>,
     pub motion: Motion,
     pub angles: [u16; 3],
     pub phase: BotPhase,
@@ -127,6 +128,7 @@ pub(crate) enum Locomotion {
 
 #[derive(Debug)]
 pub struct BotController {
+    landings: Vec<crate::game_landing::Landing>,
     motion: Motion,
     angles: [u16; 3],
     phase: BotPhase,
@@ -157,6 +159,7 @@ impl BotController {
         let mut motion = Motion::new(origin);
         motion.speed = move_speed.round() as u16;
         Ok(Self {
+            landings: Vec::new(),
             motion,
             angles,
             phase: BotPhase::Idle,
@@ -178,13 +181,29 @@ impl BotController {
         })
     }
 
-    fn frame(&self, now: u32, shot: Option<BotShot>) -> BotFrame {
+    fn frame(&mut self, now: u32, shot: Option<BotShot>) -> BotFrame {
+        let physics_time = self.motion.command_time;
+        let mut landings = std::mem::take(&mut self.landings);
+        for landing in &mut landings {
+            landing.time = now.wrapping_sub(physics_time.wrapping_sub(landing.time));
+        }
         let mut motion = self.motion.clone();
         // The public frame belongs to the authority clock. The private motion
         // uses a small monotonic physics clock because Motion::apply currently
         // compares ordinary u32 input times and cannot cross a clock wrap.
         motion.command_time = now;
+        for time in [
+            &mut motion.sprint.last_start,
+            &mut motion.sprint.last_end,
+            &mut motion.jump_time,
+            &mut motion.view_height_lerp_time,
+        ] {
+            if *time != 0 {
+                *time = time.wrapping_add(now.wrapping_sub(physics_time));
+            }
+        }
         BotFrame {
+            landings,
             motion,
             angles: self.angles,
             phase: self.phase,
@@ -467,6 +486,9 @@ impl BotController {
                 self.engagement.is_some() && mode == Locomotion::Walk,
                 collision,
             );
+            // A controller tick can contain several physics commands. Retain
+            // a landing from any substep until the single public frame drains it.
+            self.landings.extend(self.motion.take_landings());
         }
     }
 
@@ -488,6 +510,7 @@ impl BotController {
         };
         self.last_tick = Some(effective);
         self.phase = BotPhase::Dead;
+        self.landings.clear();
         self.motion.velocity = [0.0; 3];
         self.reset_engagement();
         self.generation = self.generation.wrapping_add(1);
@@ -502,6 +525,7 @@ impl BotController {
             "bot respawn time goes backwards"
         );
         self.motion = Motion::new(origin);
+        self.landings.clear();
         self.motion.speed = if self.engagement.is_some() {
             crate::game_motion::SPEED
         } else {
@@ -602,6 +626,28 @@ fn turn_toward(from: [u16; 3], to: [u16; 3], delta: u32) -> [u16; 3] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn landing_events_use_authority_time_once_even_at_clock_wrap() {
+        let world = collision(false);
+        let start = u32::MAX - 500;
+        let mut bot = BotController::new([0.0, 0.0, 350.0], [0; 3], 190.0).unwrap();
+        let mut seen = Vec::new();
+        for i in 0..45 {
+            let now = start.wrapping_add(i * 50);
+            let frame = bot.step_navigated(now, None, Some([1000.0, 0.0, 0.0]), weapon(), &world);
+            for landing in frame.landings {
+                assert!(now.wrapping_sub(landing.time) <= 50);
+                seen.push(landing);
+            }
+            assert!(
+                bot.step_navigated(now, None, Some([1000.0, 0.0, 0.0]), weapon(), &world)
+                    .landings
+                    .is_empty()
+            );
+        }
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].damage, 100);
+    }
     use serde_json::json;
 
     fn collision(wall: bool) -> Collision {

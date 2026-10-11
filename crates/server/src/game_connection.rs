@@ -1890,7 +1890,7 @@ impl Connection {
             .unwrap()
             .drop_offhand_on_death(now, angles);
         if let Some(tdm) = &mut self.tdm {
-            tdm.player_fell(now, local);
+            tdm.actor_fell(now, local);
             self.drain_match_kills(now);
         } else {
             self.death_sequence[0] = self.death_sequence[0].wrapping_add(1).max(1);
