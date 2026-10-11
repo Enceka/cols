@@ -15,6 +15,7 @@ pub(crate) struct Connection {
     hud_rules_sent: bool,
     hud_rules_sequence: u32,
     perk_hud_life: Option<(u8, u32)>,
+    profile_ready_sent: bool,
     model_rules_sent: bool,
     model_rules_sequence: u32,
     connected: bool,
@@ -311,6 +312,33 @@ impl Connection {
 
     pub fn gamestate_progress(&self) -> Option<u8> {
         self.gamestate_update
+    }
+
+    pub fn poll_profile_ready(&mut self) -> Option<&'static [u8]> {
+        if self.profile_ready_sent
+            || !self.connected
+            || self.player.is_none()
+            || self.gamestate_update != Some(6)
+            || self
+                .game_state
+                .as_ref()
+                .is_none_or(|s| s.profile_hash.is_none())
+            || !self.hud_rules_sent
+            || self.server_commands.acknowledged() < self.hud_rules_sequence
+            || self
+                .snapshot_first_sequence
+                .is_none_or(|first| self.native_ack < first)
+            || self.match_leave_sequence.is_some()
+        {
+            return None;
+        }
+        // Native0x4671b0 ->0x466790 ->0x62d340 dispatches this registered
+        // connectionless notification.0xb49760 registers type1;0x5fa580
+        // selects server profile persistence and makes the XP HUD ready.
+        // It must use the authenticated DATA connection, not svc_serverCommand
+        // (whose first-character dispatcher interprets 's' as dvar settings).
+        self.profile_ready_sent = true;
+        Some(b"\xff\xff\xff\xffserverWillWriteProfile\0")
     }
 
     /// An explicitly bounded stream at 20 Hz. The probe has no physics/input
@@ -2240,6 +2268,37 @@ fn decode_connect_name(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn profile_notice_waits_for_loaded_profile_hud_and_first_snapshot_ack() {
+        let mut state = crate::game_state::synthetic();
+        state.profile_hash = Some([1; 32]);
+        let mut c = Connection {
+            connected: true,
+            game_state: Some(Arc::new(state)),
+            player: Some(crate::game_player::tests::scavenger_player(90, 180)),
+            gamestate_update: Some(6),
+            snapshot_first_sequence: Some(4),
+            native_ack: 3,
+            ..Default::default()
+        };
+        assert!(c.poll_profile_ready().is_none());
+        let seq = c.server_commands.push(b"s scr_gameended \"0\"").unwrap();
+        c.hud_rules_sent = true;
+        c.hud_rules_sequence = seq;
+        c.server_commands.mark_sent(seq).unwrap();
+        c.server_commands.acknowledge(seq).unwrap();
+        assert!(c.poll_profile_ready().is_none());
+        c.native_ack = 4;
+        assert_eq!(
+            c.poll_profile_ready(),
+            Some(b"\xff\xff\xff\xffserverWillWriteProfile\0".as_slice())
+        );
+        assert!(c.poll_profile_ready().is_none());
+        assert_eq!(c.server_commands.sequence(), seq);
+        c.profile_ready_sent = false;
+        Arc::make_mut(c.game_state.as_mut().unwrap()).profile_hash = None;
+        assert!(c.poll_profile_ready().is_none());
+    }
     #[test]
     fn native_perk_display_waits_for_live_hud_rules_without_delaying_abilities() {
         let player = crate::game_player::tests::scavenger_player(90, 180);

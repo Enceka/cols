@@ -498,6 +498,11 @@ impl GameServer {
                 for (address,bound) in &mut peers {
                     let p=&mut bound.transport;
                     let Some(records)=p.records.as_mut() else { continue };
+                    if let Some(notice)=p.connection.poll_profile_ready() {
+                        let wire=records.seal(notice,p.remote_tag)?;
+                        self.socket.send_to(&wire,*address).await?;
+                        tracing::info!("native profile persistence ready notice sent");
+                    }
                     if let Some(plain)=p.connection.poll_snapshot(std::time::Instant::now())? {
                         let wire=records.seal(&plain,p.remote_tag)?;
                         self.socket.send_to(&wire,*address).await?;

@@ -22,6 +22,10 @@
 
 旁栏的HUD operator239读取PS+0x4bc，并回退`cl_isHostAsSpectator`。该bool是字段122／codec-57／hint2，按原生尾部独立编码。每条命开始发布技能后显示5000ms，死亡、回放、前三名和结算隐藏；五秒策略参考规则，不声称恢复本版生产脚本。安全屋正常账号实验`client-1791736921354`截图确认三枚静态图标位于右下枪械栏旁，没有中央获得技能通知；只读样本确认显示位1→0，缓存9／2／58。证据见`research-output/passive-hud-live-proof.json`。`perk-sidebar-final-check.log`确认409项Rust、52项Python及fmt／Clippy通过。
 
+右上角持续“…”是原生`exp_bar`的等待动画，HUD operator263读取byte0x0318b16b。后端在真实档案加载、gamestate完成、首次快照及HUD规则ACK后，通过经过认证的游戏DATA连接发送固定通知`serverWillWriteProfile`。原生连接外通知入口`0x4671b0`经`0x466790`／`0x62d340`调用已注册的type1处理器`0x5fa580`，切换档案持久化归属并使经验HUD就绪；通知不走按首字符分派的svc_serverCommand，也不直接写客户端标志或调用原生函数。
+
+正常账号安全屋`client-1791740234895`确认就绪位0→1，截图同时显示原生70级经验条、没有循环点号，以及枪械旁三枚技能图标。证据见`profile-ready-live-proof.json`；真实账号／库存／钱包一致，只有客户端自然上传的设置文件变化，见`profile-ready-account-proof.json`。`profile-ready-check.log`确认420项Rust、52项Python及fmt／Clippy通过。该通知完成显示就绪，不增加经验；对局经验奖励、等级进度结算及更新协议仍需实现。
+
 战术面具的闪光／震撼倍率已按参考脚本接入，实际聚合0.1来自本版表；原生字段、Shader和控制预设来自本版捕获，官方生产公式尚未恢复。闪光的无面具3824ms／面具385ms及真实CG缓存、Named清除已有隔离实采；见 `TACTICAL_STATUS_PROGRESS.md`。
 
 拾荒者已接原生ITEM补给包、自动拾取、真实储备池／共享组上限、战术数量补充和原生提示。隔离安全屋两次原生120／60备弹、材质161及2500ms淡出已有实采；补给语义参考Alpha/LAN，生产掉落物理／寿命尚未恢复。见 `SCAVENGER_PROGRESS.md`。
