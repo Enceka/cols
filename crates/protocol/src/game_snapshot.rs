@@ -20,6 +20,8 @@ pub struct Equipment {
     pub fire_count: u8,
     /// PS+0x280 bit0: a new trigger edge buffered during a burst/recovery.
     pub queued_burst: bool,
+    /// Ranger:bit0 last secondary trigger, bit1 simultaneous barrels; PS+0x348 bits8/9.
+    pub barrel_flags: u8,
     pub spread_scale: f32,
     /// Inventory slot flag3, PS+0x2e3: bolt still needs rechambering.
     pub needs_rechamber: bool,
@@ -280,6 +282,7 @@ pub fn player_frame_with_world(
     if alternate_weapon.is_some_and(|w| w == 0 || w >= 900)
         || equipment.is_some_and(|e| {
             e.fire_count > 4
+                || e.barrel_flags > 3
                 || !e.spread_scale.is_finite()
                 || !(0.0..=255.0).contains(&e.spread_scale)
         })
@@ -470,6 +473,9 @@ pub fn player_frame_with_world(
             }
         }
         if let Some(weapon) = weapon {
+            if equipment.unwrap().barrel_flags != 0 {
+                fields.push((77, u32::from(equipment.unwrap().barrel_flags) << 8, 22));
+            }
             if equipment.unwrap().queued_burst {
                 fields.push((121, 1, 1));
             }
@@ -958,6 +964,7 @@ mod tests {
             alternate_weapon: None,
             fire_count: 0,
             queued_burst: false,
+            barrel_flags: 0,
             spread_scale: 0.0,
             needs_rechamber: false,
             ammo: None,
@@ -1066,6 +1073,7 @@ mod tests {
             alternate_weapon: Some(180),
             fire_count: 1,
             queued_burst: false,
+            barrel_flags: 0,
             spread_scale: 0.0,
             needs_rechamber: false,
             weapon: 352,
@@ -1117,6 +1125,7 @@ mod tests {
                 false,
                 Some(Equipment {
                     queued_burst: lerp_down,
+                    barrel_flags: if lerp_down { 3 } else { 0 },
                     ..equipment
                 }),
                 [0, 1234, 0],
@@ -1131,6 +1140,10 @@ mod tests {
             assert_eq!(r.bits(2).unwrap(), 2); // Zero PS baseline, authoritative movement.
             let (fields, parameters) = read_fields(&mut r);
             assert_eq!(fields.get(&121).copied().unwrap_or(0), u32::from(lerp_down));
+            assert_eq!(
+                fields.get(&77).copied().unwrap_or(0),
+                if lerp_down { 0x300 } else { 0 }
+            );
             for (index, expected) in [
                 (0, 950),
                 (1, 4),
@@ -1211,6 +1224,7 @@ mod tests {
             alternate_weapon: Some(180),
             fire_count: 1,
             queued_burst: false,
+            barrel_flags: 0,
             spread_scale: 0.0,
             needs_rechamber: true,
             secondary: None,
@@ -1350,6 +1364,7 @@ mod tests {
             alternate_weapon: None,
             fire_count: 0,
             queued_burst: false,
+            barrel_flags: 0,
             spread_scale: 0.0,
             needs_rechamber: false,
             secondary: None,
@@ -1366,6 +1381,19 @@ mod tests {
             }),
         };
         assert!(equipped_frame(1000, Some([0.0; 3]), true, Some(bad)).is_err());
+        assert!(
+            equipped_frame(
+                1000,
+                Some([0.0; 3]),
+                true,
+                Some(Equipment {
+                    ammo: None,
+                    barrel_flags: 4,
+                    ..bad
+                })
+            )
+            .is_err()
+        );
         assert!(player_frame(1000, 1001, None, true, None, [0; 3]).is_err());
     }
     #[test]

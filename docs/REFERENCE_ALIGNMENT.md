@@ -136,3 +136,5 @@
 ## 点射武器
 
 补齐本版fireType2/3/4及PS排队触发标志，M16等不再因点射类型在入场装配时被拒绝。隔离服务副本M16真实入场和发数推进通过，原账号SHA保持不变；严格单次输入与FAMAS独立视觉仍记录待复核。完整334 Rust/48 Python通过，另追加1项显式换弹回归和Player模块复核；详见 `BURST_FIRE_PROGRESS.md`。
+
+Ranger的fireType5现支持副扳机及同时双管，按实际两发弹匣扣弹并生成两份弹丸射击，PS标志随快照/回放保存。337 Rust/48 Python及真实Ranger资源诊断通过，独立实机动画/听感列为待复核；详见 `RANGER_TRIGGER_PROGRESS.md`。

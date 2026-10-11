@@ -1608,6 +1608,7 @@ impl PreparedGameState {
                 alternate_weapon: None,
                 fire_count: 0,
                 queued_burst: false,
+                barrel_flags: 0,
                 spread_scale: 0.0,
                 needs_rechamber: false,
                 secondary: None,
@@ -1777,6 +1778,56 @@ pub(crate) fn synthetic() -> PreparedGameState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    #[ignore = "requires local captured Afghan arsenal"]
+    fn captured_ranger_triggers_use_the_composed_two_shell_magazine() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../research-output");
+        let state = PreparedGameState::load(&root.join("tdm-afghan-hud-state.json")).unwrap();
+        let arsenal = state.arsenal.as_ref().unwrap();
+        let weapon = PreparedGameState::resolved_weapon(
+            arsenal.bot_weapon("ranger_mp", 352).unwrap(),
+            &arsenal.source_sha256,
+            Some(54),
+        )
+        .unwrap();
+        assert_eq!(weapon.fire_type, Some(5));
+        assert_eq!(weapon.ammo.as_ref().unwrap().clip, 2);
+        let command = |time, buttons| codol_protocol::game_usercmd::UserCommand {
+            time,
+            buttons,
+            weapons: [352, 0, 0],
+            ..Default::default()
+        };
+        let mut p = PreparedGameState::make_player(&weapon);
+        p.apply(&command(1001, 0x100000));
+        assert_eq!(p.equipment().ammo.unwrap().clip, 1);
+        p.apply(&command(1010, 1));
+        assert_eq!(p.equipment().ammo.unwrap().clip, 0);
+        assert_eq!(p.take_shots().len(), 2);
+        let mut p = PreparedGameState::make_player(&weapon);
+        p.apply(&command(1001, 0x100001));
+        let shots = p.take_shots();
+        assert_eq!(shots.len(), 2);
+        assert_eq!(p.equipment().barrel_flags, 3);
+        assert!(shots.iter().all(|s| s.ballistics.pellets > 1));
+        let body = codol_protocol::game_snapshot::player_frame(
+            1001,
+            1001,
+            Some([0.0; 3]),
+            true,
+            Some(p.equipment()),
+            [0; 3],
+        )
+        .unwrap();
+        codol_protocol::game_wire::server_packet(4, 0, 0, b"", &body).unwrap();
+        eprintln!(
+            "Ranger: interval={}ms pellets={}+{} snapshot={} bytes",
+            weapon.ammo.unwrap().fire_interval_msec.unwrap(),
+            shots[0].ballistics.pellets,
+            shots[1].ballistics.pellets,
+            body.len()
+        );
+    }
     #[test]
     #[ignore = "requires independently captured map states in CODOL_PRESENTATION_STATES"]
     fn captured_maps_have_grounded_podiums_within_snapshot_budget() {

@@ -153,6 +153,9 @@ struct Weapon {
     spread: Option<SpreadTiming>,
 }
 impl Weapon {
+    fn attack_mask(&self) -> u32 {
+        if self.fire_type == 5 { 0x100001 } else { 1 }
+    }
     fn empty(&self) -> bool {
         self.equipment.ammo.is_some_and(|ammo| ammo.clip == 0)
     }
@@ -424,13 +427,13 @@ impl Player {
         if self.current.is_burst() && cmd.buttons & 1 != 0 && !self.attack_held {
             self.current.equipment.queued_burst = true;
         }
-        if cmd.buttons & 1 == 0 && !self.current.is_burst() {
+        if cmd.buttons & self.current.attack_mask() == 0 && !self.current.is_burst() {
             self.current.equipment.fire_count = 0;
         }
         self.apply_weapon(cmd, elapsed);
         self.sync_ammunition();
         self.apply_aim(cmd, elapsed);
-        self.attack_held = cmd.buttons & 1 != 0;
+        self.attack_held = cmd.buttons & self.current.attack_mask() != 0;
         self.last_angles = Some(cmd.angles);
     }
 
@@ -912,6 +915,9 @@ impl Player {
             && (cmd.buttons & 0x10 != 0 || ammo.clip == 0)
         {
             self.current.cancel_burst();
+            if self.current.fire_type == 5 {
+                self.current.equipment.fire_count = 0;
+            }
             let empty = ammo.clip == 0;
             self.emit(events::RESET_ADS, 0);
             self.emit(events::RELOAD_START_NOTIFY, 0);
@@ -949,62 +955,88 @@ impl Player {
             self.current.reload_transfer_pending = true;
             return;
         }
+        if self.current.fire_type == 5 {
+            self.current.equipment.barrel_flags &= 1;
+        }
+        let attack = cmd.buttons & self.current.attack_mask();
+        let other_barrel = self.current.fire_type == 5
+            && if self.current.equipment.barrel_flags & 1 != 0 {
+                attack & 1 != 0
+            } else {
+                attack & 0x100000 != 0
+            };
         let trigger = self.current.burst_pending()
-            || (cmd.buttons & 1 != 0
-                && (self.current.fire_type == 0 || self.current.equipment.fire_count == 0));
+            || (attack != 0
+                && (self.current.fire_type == 0
+                    || self.current.equipment.fire_count == 0
+                    || other_barrel));
         if allowed && trigger && ammo.clip > 0 {
-            let remaining_clip = ammo.clip - 1;
-            if let Some(mut ballistics) = self.current.ballistics {
-                ballistics.spread_degrees = self.shot_spread();
-                self.shots.push(Shot {
-                    time: cmd.time,
-                    angles: cmd.angles,
-                    weapon: self.current.equipment.weapon,
-                    ballistics,
-                });
+            let barrels = if self.current.fire_type == 5 && attack == 0x100001 {
+                ammo.clip.min(2)
+            } else {
+                1
+            };
+            if self.current.fire_type == 5 {
+                // 0x425b20 fires the secondary first, then the ordinary path
+                // can fire the primary in the same command. Both spend ammo.
+                self.current.equipment.barrel_flags =
+                    u8::from(attack & 0x100000 != 0) | if barrels == 2 { 2 } else { 0 };
             }
-            self.current.equipment.ammo.as_mut().unwrap().clip = remaining_clip;
-            if !self
-                .current
-                .equipment
-                .aim
-                .is_some_and(|a| a.fraction == 1.0)
-                && let Some(timing) = self.current.spread
-            {
-                self.spread_scale = (self.spread_scale + timing.fire_add * 255.0).min(255.0);
-            }
-            if self.current.fire_type != 0 {
-                if self.current.equipment.fire_count == 0 {
-                    self.current.equipment.queued_burst = false;
+            for _ in 0..barrels {
+                let remaining_clip = self.current.equipment.ammo.unwrap().clip - 1;
+                if let Some(mut ballistics) = self.current.ballistics {
+                    ballistics.spread_degrees = self.shot_spread();
+                    self.shots.push(Shot {
+                        time: cmd.time,
+                        angles: cmd.angles,
+                        weapon: self.current.equipment.weapon,
+                        ballistics,
+                    });
                 }
-                self.current.equipment.fire_count = (self.current.equipment.fire_count + 1).min(4);
+                self.current.equipment.ammo.as_mut().unwrap().clip = remaining_clip;
+                if !self
+                    .current
+                    .equipment
+                    .aim
+                    .is_some_and(|a| a.fraction == 1.0)
+                    && let Some(timing) = self.current.spread
+                {
+                    self.spread_scale = (self.spread_scale + timing.fire_add * 255.0).min(255.0);
+                }
+                if self.current.fire_type != 0 {
+                    if self.current.equipment.fire_count == 0 {
+                        self.current.equipment.queued_burst = false;
+                    }
+                    self.current.equipment.fire_count =
+                        (self.current.equipment.fire_count + 1).min(4);
+                }
+                self.current.rechamber_pending = self.current.rechamber.is_some();
+                self.current.needs_rechamber = self.current.rechamber_pending;
+                let ads = self
+                    .current
+                    .equipment
+                    .aim
+                    .is_some_and(|a| a.fraction > 0.75);
+                self.current.animate(
+                    6,
+                    match (ads, remaining_clip == 0) {
+                        (false, false) => 2,
+                        (false, true) => 3,
+                        (true, false) => 5,
+                        (true, true) => 6,
+                    },
+                    interval,
+                    0,
+                );
+                self.emit(
+                    if remaining_clip == 0 {
+                        events::FIRE_WEAPON_LAST_SHOT
+                    } else {
+                        events::FIRE_WEAPON
+                    },
+                    0,
+                );
             }
-            self.current.rechamber_pending = self.current.rechamber.is_some();
-            self.current.needs_rechamber = self.current.rechamber_pending;
-            let ads = self
-                .current
-                .equipment
-                .aim
-                .is_some_and(|a| a.fraction > 0.75);
-            self.current.animate(
-                6,
-                match (ads, remaining_clip == 0) {
-                    (false, false) => 2,
-                    (false, true) => 3,
-                    (true, false) => 5,
-                    (true, true) => 6,
-                },
-                interval,
-                0,
-            );
-            self.emit(
-                if remaining_clip == 0 {
-                    events::FIRE_WEAPON_LAST_SHOT
-                } else {
-                    events::FIRE_WEAPON
-                },
-                0,
-            );
         } else {
             if state != 0 {
                 self.current.ready();
@@ -1013,14 +1045,14 @@ impl Player {
             // trigger has exhausted its shot count. Preserve that in the
             // authority snapshot so prediction cannot begin another shot.
             if allowed
-                && cmd.buttons & 1 != 0
+                && attack != 0
                 && self.current.fire_type != 0
                 && self.current.equipment.fire_count != 0
                 && let Some(firing) = &mut self.current.equipment.firing
             {
                 firing.remaining_msec = 1;
             }
-            if allowed && cmd.buttons & 1 != 0 && ammo.clip == 0 && !self.attack_held {
+            if allowed && attack != 0 && ammo.clip == 0 && !self.attack_held {
                 self.emit(events::NO_AMMO, 0);
             }
         }
@@ -1179,6 +1211,7 @@ mod tests {
                 alternate_weapon: None,
                 fire_count: 0,
                 queued_burst: false,
+                barrel_flags: 0,
                 spread_scale: 0.0,
                 needs_rechamber: false,
                 weapon: 352,
@@ -1308,6 +1341,67 @@ mod tests {
             p.apply(&cmd(1480, 1));
             assert_eq!(p.equipment().ammo.unwrap().clip, 26);
         }
+    }
+    fn ranger() -> Player {
+        let mut p = player();
+        p.set_fire_type(5).unwrap();
+        p.current.fire_interval = Some(9);
+        p.current.equipment.ammo.as_mut().unwrap().clip = 2;
+        p.set_ballistics(crate::game_combat::Ballistics {
+            damage: 30,
+            range: 1200.0,
+            near_range: 100.0,
+            location_multipliers: None,
+            falloff: None,
+            pellets: 8,
+            spread_degrees: 5.0,
+        });
+        p
+    }
+    #[test]
+    fn ranger_secondary_trigger_is_semi_automatic_and_switches_barrels_without_release() {
+        for first in [1, 0x100000] {
+            let mut p = ranger();
+            p.apply(&cmd(1001, first));
+            assert_eq!(p.equipment().ammo.unwrap().clip, 1);
+            assert_eq!(p.equipment().barrel_flags, u8::from(first != 1));
+            p.apply(&cmd(1020, first));
+            p.apply(&cmd(1030, first));
+            assert_eq!(p.equipment().ammo.unwrap().clip, 1);
+            let second = if first == 1 { 0x100000 } else { 1 };
+            p.apply(&cmd(1040, second));
+            assert_eq!(p.equipment().ammo.unwrap().clip, 0);
+            assert_eq!(p.equipment().barrel_flags, u8::from(second != 1));
+            let shots = p.take_shots();
+            assert_eq!(shots.len(), 2);
+            assert_eq!(shots[1].time, 1040);
+        }
+    }
+    #[test]
+    fn ranger_both_triggers_spend_two_shells_but_never_create_an_absent_shell() {
+        for clip in [1, 2] {
+            let mut p = ranger();
+            p.current.equipment.ammo.as_mut().unwrap().clip = clip;
+            p.apply(&cmd(1001, 0x100001));
+            assert_eq!(p.equipment().ammo.unwrap().clip, 0);
+            assert_eq!(p.equipment().barrel_flags, if clip == 2 { 3 } else { 1 });
+            assert_eq!(p.equipment().events.unwrap().sequence, clip as u8);
+            assert_eq!(p.equipment().fire_count, clip as u8);
+            let shots = p.take_shots();
+            assert_eq!(shots.len(), usize::from(clip));
+            assert!(
+                shots
+                    .iter()
+                    .all(|s| s.time == 1001 && s.ballistics.pellets == 8)
+            );
+            p.apply(&cmd(1001, 0x100001));
+            assert!(p.take_shots().is_empty());
+            p.apply(&cmd(1020, 0));
+            assert_eq!(p.equipment().barrel_flags, 1);
+        }
+        let mut p = player();
+        p.apply(&cmd(1001, 0x100000));
+        assert_eq!(p.equipment().ammo.unwrap().clip, 30);
     }
 
     #[test]

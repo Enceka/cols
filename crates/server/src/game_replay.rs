@@ -291,6 +291,7 @@ mod tests {
             alternate_weapon: None,
             fire_count: 1,
             queued_burst: false,
+            barrel_flags: 0,
             spread_scale: 0.0,
             needs_rechamber: false,
             ammo: None,
