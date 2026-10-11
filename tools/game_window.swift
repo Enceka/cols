@@ -39,15 +39,21 @@ let actual = try run("/bin/ps", ["-p", String(pidNumber), "-o", "comm="]).trimmi
 guard actual == executable.path else { fail("recorded PID no longer belongs to the research client") }
 let pid = pid_t(pidNumber)
 func focusGame(_ app: NSRunningApplication) throws {
+    if NSWorkspace.shared.frontmostApplication?.processIdentifier == pid { return }
+    let bridge=URL(fileURLWithPath:CommandLine.arguments[0]).standardizedFileURL.deletingLastPathComponent().appendingPathComponent("game-window-focus")
+    if FileManager.default.isExecutableFile(atPath:bridge.path) {
+        _ = try run(bridge.path,[String(pidNumber),executable.path])
+        let ready=Date().addingTimeInterval(0.75)
+        while NSWorkspace.shared.frontmostApplication?.processIdentifier != pid && Date()<ready {
+            RunLoop.current.run(until:Date().addingTimeInterval(0.05))
+        }
+        guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else {fail("research client did not become active")}
+        return
+    }
     let deadline = Date().addingTimeInterval(2)
     while !app.isActive && Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.05)) }
     if !app.isActive {
-        let bridge=URL(fileURLWithPath:CommandLine.arguments[0]).standardizedFileURL.deletingLastPathComponent().appendingPathComponent("game-window-focus")
-        if FileManager.default.isExecutableFile(atPath:bridge.path) {
-            _ = try run(bridge.path,[String(pidNumber),executable.path])
-        } else {
-            _ = try run("/usr/bin/osascript", ["-e", "tell application \"System Events\" to set frontmost of first process whose unix id is \(pidNumber) to true"])
-        }
+        _ = try run("/usr/bin/osascript", ["-e", "tell application \"System Events\" to set frontmost of first process whose unix id is \(pidNumber) to true"])
         RunLoop.current.run(until:Date().addingTimeInterval(0.15))
     }
     guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else {fail("research client did not become active")}
