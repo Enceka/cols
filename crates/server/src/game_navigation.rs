@@ -134,10 +134,30 @@ impl Navigation {
     }
     fn clear(a: V3, b: V3, collision: &Collision) -> bool {
         // Lift by the recovered movement step height for stair/slope travel.
-        let a = [a[0], a[1], a[2] + 18.0];
-        let b = [b[0], b[1], b[2] + 18.0];
-        let trace = collision.trace(a, b, HEIGHT);
-        !trace.start_solid && !trace.all_solid && trace.fraction >= 1.0
+        let raised_a = [a[0], a[1], a[2] + 18.0];
+        let raised_b = [b[0], b[1], b[2] + 18.0];
+        let trace = collision.trace(raised_a, raised_b, HEIGHT);
+        if trace.start_solid || trace.all_solid || trace.fraction < 1.0 {
+            return false;
+        }
+        // A clear airborne sweep does not establish a walking route. Sample
+        // more closely than the capsule radius, allowing ordinary stairs and
+        // slopes but not bridges across deep gaps. Apply this to graph links,
+        // entry/exit links and steering shortcuts alike.
+        let samples = (distance(a, b) / 12.0).ceil().max(1.0) as usize;
+        (0..=samples).all(|i| {
+            let t = i as f32 / samples as f32;
+            let point: V3 = std::array::from_fn(|axis| a[axis] + (b[axis] - a[axis]) * t);
+            let support = collision.trace(
+                [point[0], point[1], point[2] + 18.0],
+                [point[0], point[1], point[2] - 18.0],
+                HEIGHT,
+            );
+            !support.start_solid
+                && !support.all_solid
+                && support.fraction < 1.0
+                && support.normal[2] >= 0.7
+        })
     }
     fn closest(&self, position: V3, collision: &Collision) -> Option<usize> {
         let x = (position[0] / CELL).round() as i32;
@@ -232,6 +252,98 @@ fn distance(a: V3, b: V3) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn walking_routes_and_shortcuts_keep_support_over_a_deep_gap() {
+        // The old elevated sweep saw no wall and cut straight across this
+        // trench. Bots then fell into a pit they cannot walk back out of.
+        let export = serde_json::json!({"schema_version":1,"read_only":true,"client_sha256":codol_protocol::CLIENT_SHA256,
+            "map":"maps/mp/test.d3dbsp","ncs_crc":0,"brushes":[
+                {"center":[0,0,-210],"half":[600,600,10],"contents":1,"planes":[]},
+                {"center":[-324,0,-100],"half":[276,600,100],"contents":1,"planes":[]},
+                {"center":[324,0,-100],"half":[276,600,100],"contents":1,"planes":[]},
+                {"center":[0,-350,-100],"half":[48,250,100],"contents":1,"planes":[]},
+                {"center":[0,350,-100],"half":[48,250,100],"contents":1,"planes":[]}],"triangles":[]});
+        let f = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(f.path(), serde_json::to_vec(&export).unwrap()).unwrap();
+        let collision = Collision::load(f.path()).unwrap();
+        let a = [-96.0, 0.0, 0.03125];
+        let b = [96.0, 0.0, 0.03125];
+        assert!(!Navigation::clear(a, b, &collision));
+        let nav = Navigation::build([a, b].into_iter(), &collision);
+        let path = nav.route(a, b, &collision);
+        assert!(path.len() > 2);
+        assert!(path.iter().all(|p| p[2] > -1.0));
+        assert!(path.iter().any(|p| p[1].abs() >= 96.0));
+        let mut queue = path.into();
+        let steering = nav.steering(a, &mut queue, &collision).unwrap();
+        assert!(Navigation::clear(a, steering, &collision));
+        assert_ne!(steering, b);
+    }
+    #[test]
+    fn walking_support_checks_preserve_stairs_and_sloping_terrain() {
+        let worlds = [
+            serde_json::json!({"brushes":[
+                {"center":[0,0,-10],"half":[1000,1000,10],"contents":1,"planes":[]},
+                {"center":[0,0,6],"half":[48,500,6],"contents":1,"planes":[]},
+                {"center":[96,0,12],"half":[48,500,12],"contents":1,"planes":[]}],"triangles":[]}),
+            serde_json::json!({"brushes":[],"triangles":[
+                {"vertices":[[-1000,-1000,-250],[1000,-1000,250],[1000,1000,250]],"contents":1,"surface_flags":0},
+                {"vertices":[[-1000,-1000,-250],[1000,1000,250],[-1000,1000,-250]],"contents":1,"surface_flags":0}]}),
+        ];
+        for mut export in worlds {
+            export["schema_version"] = 1.into();
+            export["read_only"] = true.into();
+            export["client_sha256"] = codol_protocol::CLIENT_SHA256.into();
+            export["map"] = "maps/mp/test.d3dbsp".into();
+            export["ncs_crc"] = 0.into();
+            let f = tempfile::NamedTempFile::new().unwrap();
+            std::fs::write(f.path(), serde_json::to_vec(&export).unwrap()).unwrap();
+            let collision = Collision::load(f.path()).unwrap();
+            let a = crate::game_bot::grounded_spawn([-96.0, 0.0, 100.0], &collision).unwrap();
+            let b = crate::game_bot::grounded_spawn([96.0, 0.0, 100.0], &collision).unwrap();
+            assert!(Navigation::clear(a, b, &collision), "{a:?} -> {b:?}");
+            assert!(Navigation::clear(b, a, &collision), "{b:?} -> {a:?}");
+        }
+    }
+    #[test]
+    #[ignore = "requires local three-map collision preparations"]
+    fn captured_three_maps_keep_opposing_spawns_connected() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../research-output");
+        for name in [
+            "tdm-afghan-hud-state",
+            "tdm-killhouse-hud-state",
+            "tdm-crash-tropical-state",
+        ] {
+            let data: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(root.join(format!("{name}.json"))).unwrap())
+                    .unwrap();
+            let starts: [Vec<V3>; 2] =
+                serde_json::from_value(data["match_config"]["spawns"].clone()).unwrap();
+            let collision =
+                Collision::load(&root.join(data["collision_file"].as_str().unwrap())).unwrap();
+            let before = std::time::Instant::now();
+            let nav = Navigation::build(starts.iter().flatten().copied(), &collision);
+            let build = before.elapsed();
+            for (team, spawns) in starts.iter().enumerate() {
+                let goal =
+                    crate::game_bot::grounded_spawn(starts[1 - team][0], &collision).unwrap();
+                for &spawn in spawns {
+                    let start = crate::game_bot::grounded_spawn(spawn, &collision).unwrap();
+                    assert!(
+                        !nav.route(start, goal, &collision).is_empty(),
+                        "{name} team {team}: {start:?} -> {goal:?}"
+                    );
+                }
+            }
+            eprintln!(
+                "{name}: nodes={} edges={} spawns={} build_ms={}",
+                nav.positions.len(),
+                nav.links.iter().map(Vec::len).sum::<usize>(),
+                starts.iter().map(Vec::len).sum::<usize>(),
+                build.as_millis()
+            );
+        }
+    }
     #[test]
     #[ignore = "requires captured local map collision"]
     fn captured_afghan_teams_have_a_connected_route() {
