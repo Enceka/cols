@@ -41,7 +41,7 @@ def main():
     extract.add_argument("--replay", action="store_true", help="sample native killcam/player state read-only for ten seconds")
     extract.add_argument("--grounding", action="store_true", help="sample current calculated Bot feet read-only for ten seconds")
     extract.add_argument("--outfits", action="store_true", help="read retained character item and variant caches")
-    extract.add_argument("--appearance-load", action="store_true", help="sample native actor models across map startup for eighteen seconds")
+    extract.add_argument("--appearance-load", action="store_true", help="sample native actor models and loader state across map startup for twenty-five seconds")
     args = parser.parse_args()
     if args.prefix_name and (not args.build or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", args.prefix_name)):
         parser.error("prefix-name requires build and a simple project directory name")
@@ -96,7 +96,7 @@ def main():
         hashes = json.loads(stamp.read_text())
         if hashes != {"sources_sha256": source_hashes, "binary_sha256": sha256(binary)}:
             parser.error("probe changed; rebuild it")
-        result = subprocess.run([wine, str(binary)] + (["--appearance-load"] if args.appearance_load else ["--outfits"] if args.outfits else ["--grounding"] if args.grounding else ["--replay"] if args.replay else ["--feedback"] if args.feedback else ["--assets"] if args.assets else ["--profiles"] if args.profiles else ["--net-constants"] if args.net_constants else ["--map-entities"] if args.map_entities else ["--bootstrap-weapon"] if args.bootstrap_weapon else ["--weapon-models"] if args.weapon_models else ["--arsenal"] if args.arsenal else ["--collision"] if args.collision else ["--weapon-registry"] if args.weapon_registry else ["--training-target"] if args.training_target else ["--bullet-impacts"] if args.bullet_impacts else ["--characters"] if args.characters else ["--hit-regions"] if args.hit_regions else []), env=env, capture_output=True, text=True, timeout=30)
+        result = subprocess.run([wine, str(binary)] + (["--appearance-load"] if args.appearance_load else ["--outfits"] if args.outfits else ["--grounding"] if args.grounding else ["--replay"] if args.replay else ["--feedback"] if args.feedback else ["--assets"] if args.assets else ["--profiles"] if args.profiles else ["--net-constants"] if args.net_constants else ["--map-entities"] if args.map_entities else ["--bootstrap-weapon"] if args.bootstrap_weapon else ["--weapon-models"] if args.weapon_models else ["--arsenal"] if args.arsenal else ["--collision"] if args.collision else ["--weapon-registry"] if args.weapon_registry else ["--training-target"] if args.training_target else ["--bullet-impacts"] if args.bullet_impacts else ["--characters"] if args.characters else ["--hit-regions"] if args.hit_regions else []), env=env, capture_output=True, text=True, timeout=40 if args.appearance_load else 30)
         if result.returncode:
             raise RuntimeError((result.stdout + result.stderr)[-2000:])
         decoded = json.loads(result.stdout)

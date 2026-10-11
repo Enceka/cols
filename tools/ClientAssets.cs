@@ -532,7 +532,8 @@ class ClientAssets {
         if(client>=19)return null;
         uint ci=cg+0x15dea8+client*0x3b8;
         return Obj("client",client,"parts",Word(ci+0x38c),"faction",Word(ci+0x390),
-            "gender",Word(ci+0x394),"skin",Word(ci+0x398));
+            "gender",Word(ci+0x394),"skin",Word(ci+0x398),
+            "model_load_state",Word(ci+0x344),"model_changed",Word(ci+0x230));
     }
     public static void ExportReplay(IntPtr process) {
         var r=new ClientAssets(process);var frames=new List<object>();uint previousActive=uint.MaxValue;
@@ -740,7 +741,7 @@ class ClientAssets {
         foreach(string name in new string[]{"mp/playeranim.script","mp/playeranimtypes.txt","waypoints/mp_afghan_wp.csv","waypoints/mp_killhouse_sh_wp.csv","waypoints/mp_crash_tropical_wp.csv"}) {
             try {animationRules[name]=r.AnimationRules(name);}catch(Exception error){animationRules[name]=Obj("error",error.Message);}
         }
-        uint bg=r.Word(0x07817b80);var clients=new List<object>();
+        var clients=new List<object>();
         var animations=new List<object>();var animationContexts=new List<object>();var seenContexts=new HashSet<uint>();
         foreach(uint address in new uint[]{0x07817b80,0x07817b84}) {
             uint context=r.Word(address);if(context<0x10000||!seenContexts.Add(context))continue;
@@ -753,8 +754,13 @@ class ClientAssets {
                     "move_speed_bits",U(records,begin+0x44),"flags",U(records,begin+0x50)));
             }
         }
-        if(bg>=0x10000)for(uint id=0;id<12;id++) {
-            uint ci=bg+0x96e20+id*0x3b8;var parts=new List<object>();
+        // The animation preparation BG context may be released once loading
+        // completes. The renderer's current CG owns the live client infos.
+        uint currentCgSlot=r.Word(0x07817ba8);
+        if(currentCgSlot>=256)throw new Exception("invalid current character context");
+        uint currentCg=r.Word(0x01a19510+currentCgSlot*4)^0xfbb2c97a;
+        for(uint id=0;id<12;id++) {
+            uint ci=currentCg+0x15dea8+id*0x3b8;var parts=new List<object>();
             for(uint part=0;part<10;part++) {
                 uint modelName=r.Word(ci+0x20+part*4),tagName=r.Word(ci+0x48+part*4);
                 parts.Add(Obj("part",part,"model",modelName>=0x10000?r.Name(modelName):null,"tag",tagName>=0x10000?r.Name(tagName):null));
@@ -838,7 +844,7 @@ class ClientAssets {
     }
     public static void ExportAppearanceLoad(IntPtr process) {
         var r=new ClientAssets(process);var frames=new List<object>();var clock=System.Diagnostics.Stopwatch.StartNew();
-        while(clock.ElapsedMilliseconds<18000) {
+        while(clock.ElapsedMilliseconds<25000) {
             uint state=r.Word(0x01a2e7ec);var actors=new List<object>();
             uint time=0;
             if(state==10) {
@@ -856,7 +862,9 @@ class ClientAssets {
                         int count=Count(r.Read(dobj+9,1)[0],32);
                         for(uint part=0;part<count;part++)models.Add(r.Name(r.Word(r.Word(list+part*4))));
                     }
-                    actors.Add(Obj("entity",id,"type",type,"client",r.Word(entity+0xf0+0x9c),"models",models));
+                    uint client=r.Word(entity+0xf0+0x9c);
+                    actors.Add(Obj("entity",id,"type",type,"client",client,"models",models,
+                        "character",r.CharacterInfo(cg,client)));
                 }
             }
             frames.Add(Obj("elapsed",clock.ElapsedMilliseconds,"time",time,"connection_state",state,"actors",actors));
