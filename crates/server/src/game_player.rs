@@ -109,6 +109,19 @@ pub(crate) struct MeleeTiming {
     pub hit_msec: u16,
     pub recover_msec: u16,
     pub damage: u16,
+    #[serde(default)]
+    pub charge: Option<MeleeChargeTiming>,
+}
+#[derive(Debug, Clone, Copy, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct MeleeChargeTiming {
+    pub duration_msec: u16,
+    pub hit_msec: u16,
+}
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct MeleeApproach {
+    pub yaw: u16,
+    pub distance: u8,
 }
 impl MeleeTiming {
     pub fn valid(self) -> bool {
@@ -116,6 +129,10 @@ impl MeleeTiming {
             && self.hit_msec <= self.duration_msec
             && self.recover_msec <= 15000
             && self.damage > 0
+            && self.charge.is_none_or(|c| {
+                (1..=15000).contains(&c.duration_msec)
+                    && (1..=c.duration_msec).contains(&c.hit_msec)
+            })
     }
 }
 
@@ -229,6 +246,7 @@ pub(crate) struct Player {
     melee_held: bool,
     shots: Vec<Shot>,
     melee_strikes: Vec<MeleeStrike>,
+    melee_approach: Option<(MeleeApproach, u16)>,
     spread_scale: f32,
     spread_stance: usize,
     spread_speed: f32,
@@ -299,6 +317,7 @@ impl Player {
             melee_held: false,
             shots: Vec::new(),
             melee_strikes: Vec::new(),
+            melee_approach: None,
             spread_scale: 0.0,
             spread_stance: 0,
             spread_speed: 0.0,
@@ -335,6 +354,9 @@ impl Player {
     }
     pub fn take_melee_strikes(&mut self) -> Vec<MeleeStrike> {
         std::mem::take(&mut self.melee_strikes)
+    }
+    pub fn take_melee_approach(&mut self) -> Option<(MeleeApproach, u16)> {
+        self.melee_approach.take()
     }
     pub fn disable_melee(&mut self) {
         for weapon in std::iter::once(&mut self.current)
@@ -466,6 +488,13 @@ impl Player {
     }
 
     pub fn apply(&mut self, cmd: &UserCommand) {
+        self.apply_with_melee_approach(cmd, None);
+    }
+    pub fn apply_with_melee_approach(
+        &mut self,
+        cmd: &UserCommand,
+        approach: Option<MeleeApproach>,
+    ) {
         if cmd.time <= self.last_time {
             return;
         }
@@ -478,7 +507,7 @@ impl Player {
         if cmd.buttons & self.current.attack_mask() == 0 && !self.current.is_burst() {
             self.current.equipment.fire_count = 0;
         }
-        self.apply_weapon(cmd, elapsed);
+        self.apply_weapon(cmd, elapsed, approach);
         self.sync_ammunition();
         self.apply_aim(cmd, elapsed);
         self.attack_held = cmd.buttons & self.current.attack_mask() != 0;
@@ -740,7 +769,7 @@ impl Player {
             .animate(5, 19, self.alternate_timing.unwrap().drop_msec, 0);
     }
 
-    fn apply_weapon(&mut self, cmd: &UserCommand, elapsed: u32) {
+    fn apply_weapon(&mut self, cmd: &UserCommand, elapsed: u32, approach: Option<MeleeApproach>) {
         let elapsed = elapsed.min(u32::from(u16::MAX)) as u16;
         if let Some(firing) = self.current.equipment.firing.as_mut() {
             firing.remaining_msec = firing.remaining_msec.saturating_sub(elapsed);
@@ -793,8 +822,16 @@ impl Player {
                     self.emit(2, u32::from(state));
                 }
                 self.current.equipment.aim = self.current.ads.map(|_| Aim::default());
+                let charge = approach.filter(|a| a.distance > 64).and(timing.charge);
+                let duration = charge.map_or(timing.duration_msec, |c| c.duration_msec);
+                let delay = charge.map_or(timing.hit_msec, |c| c.hit_msec);
+                self.melee_approach = approach
+                    .filter(|a| {
+                        a.distance > 0 && (a.distance <= 64 || charge.is_some()) && delay > 0
+                    })
+                    .map(|a| (a, delay));
                 self.current
-                    .animate(13, 8, timing.duration_msec, timing.hit_msec);
+                    .animate(13, if charge.is_some() { 9 } else { 8 }, duration, delay);
                 self.emit(events::MELEE_SWIPE, 0);
                 self.emit(events::MELEE_INIT, 0);
                 return;
@@ -1168,6 +1205,7 @@ mod tests {
             hit_msec: 250,
             recover_msec: 400,
             damage: 135,
+            charge: None,
         });
         p
     }
@@ -1245,6 +1283,38 @@ mod tests {
         p.apply(&cmd(1900, 4));
         assert_eq!(p.equipment().firing.unwrap().state, 0);
         assert!(p.take_melee_strikes().is_empty());
+    }
+    #[test]
+    fn validated_charge_selects_native_animation_and_queues_only_one_approach() {
+        let mut p = melee_player();
+        p.current.melee.as_mut().unwrap().charge = Some(MeleeChargeTiming {
+            duration_msec: 1159,
+            hit_msec: 100,
+        });
+        let hint = MeleeApproach {
+            yaw: 1234,
+            distance: 100,
+        };
+        p.apply_with_melee_approach(&cmd(1100, 4), Some(hint));
+        let f = p.equipment().firing.unwrap();
+        assert_eq!(
+            (f.state, f.animation & 0x3ff, f.remaining_msec, f.delay_msec),
+            (13, 9, 1159, 100)
+        );
+        let (approach, duration) = p.take_melee_approach().unwrap();
+        assert_eq!(
+            (approach.yaw, approach.distance, duration),
+            (1234, 100, 100)
+        );
+        p.apply_with_melee_approach(&cmd(1150, 4), Some(hint));
+        assert!(p.take_melee_approach().is_none());
+        assert!(p.take_melee_strikes().is_empty());
+        p.apply(&cmd(1200, 0));
+        assert_eq!(p.take_melee_strikes().len(), 1);
+        let mut unknown = melee_player();
+        unknown.apply_with_melee_approach(&cmd(1100, 4), Some(hint));
+        assert_eq!(unknown.equipment().firing.unwrap().animation & 0x3ff, 8);
+        assert!(unknown.take_melee_approach().is_none());
     }
     #[test]
     fn single_bullets_use_stance_spread_and_ads_and_movement_changes() {

@@ -54,6 +54,7 @@ pub struct Aim {
 /// remains the frame's `origin` argument so it has a single source of truth.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct MotionSnapshot {
+    pub melee_charge: Option<MeleeCharge>,
     pub velocity: [f32; 3],
     pub flags: u32,
     pub ground_entity: u16,
@@ -67,6 +68,13 @@ pub struct MotionSnapshot {
     pub view_height_lerp_down: bool,
     pub jump_time: u32,
     pub jump_origin_z: f32,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MeleeCharge {
+    /// Native angle bits;0x5a17d0 sign-extends before converting to degrees.
+    pub yaw: u16,
+    pub distance: u8,
+    pub remaining_msec: u16,
 }
 #[derive(Debug, Clone, Copy)]
 pub struct Firing {
@@ -307,6 +315,9 @@ pub fn player_frame_with_world(
     }
     if motion.is_some_and(|m| {
         origin.is_none()
+            || ((m.flags & 0x10000 != 0) != m.melee_charge.is_some())
+            || m.melee_charge
+                .is_some_and(|c| c.distance == 0 || c.remaining_msec > 15000)
             || m.velocity
                 .iter()
                 .any(|n| !n.is_finite() || n.abs() > 1_000_000.0)
@@ -426,6 +437,13 @@ pub fn player_frame_with_world(
             (68, 2047, 11),
         ];
         if let Some(motion) = motion {
+            if let Some(charge) = motion.melee_charge {
+                fields.extend([
+                    (148, u32::from(charge.remaining_msec), 32),
+                    (149, u32::from(charge.yaw), 101),
+                    (150, u32::from(charge.distance), 8),
+                ]);
+            }
             fields.extend([
                 (12, u32::from(motion.bob_cycle), 8),
                 (13, motion.velocity[1].to_bits(), 0),
@@ -551,6 +569,11 @@ pub fn player_frame_with_world(
                 out.bits(1, 1);
                 out.bits(1, 1);
                 out.bytes.extend_from_slice(&value.to_le_bytes());
+            } else if width == 101 {
+                // -100 at0x5a25c0: skip both short-delta branches and read
+                // an absolute network angle via0x5a17d0.
+                out.bits(0, 2);
+                out.bytes.extend_from_slice(&(value as u16).to_le_bytes());
             } else {
                 // 0x5a27f0 nonzero gate -> 0x5a2510 -> 0x5a2470:
                 // remainder bits first, then whole bytes (not all pool bits).
@@ -903,6 +926,10 @@ mod tests {
                 }
                 -88 => r.u32().unwrap(),
                 -87 => u32::from(r.u16().unwrap()),
+                -100 => {
+                    assert_eq!(r.bits(2).unwrap(), 0);
+                    (f32::from(r.u16().unwrap() as i16) * (360.0 / 65536.0)).to_bits()
+                }
                 -75 => {
                     assert_eq!(r.bits(1).unwrap(), 0);
                     u32::from(r.u8().unwrap())
@@ -977,6 +1004,7 @@ mod tests {
             events: None,
         };
         let motion = MotionSnapshot {
+            melee_charge: None,
             view_height: 60.0,
             view_height_target: 60,
             ground_entity: 2047,
@@ -1106,6 +1134,7 @@ mod tests {
         };
         for lerp_down in [false, true] {
             let motion = MotionSnapshot {
+                melee_charge: None,
                 velocity: [127.25, -52.5, 190.0],
                 flags: 0x400002,
                 ground_entity: 2046,
@@ -1212,6 +1241,71 @@ mod tests {
             assert_eq!(r.bits(2).unwrap(), 0);
             assert_eq!(r.u8().unwrap(), SERVER_EOF);
             r.finish().unwrap();
+        }
+    }
+    #[test]
+    fn melee_charge_fields_match_native_angle_time_and_distance_codecs() {
+        for charge in [
+            Some(MeleeCharge {
+                yaw: 0,
+                distance: 50,
+                remaining_msec: 0,
+            }),
+            Some(MeleeCharge {
+                yaw: 49152,
+                distance: 180,
+                remaining_msec: 80,
+            }),
+            None,
+        ] {
+            let motion = MotionSnapshot {
+                melee_charge: charge,
+                velocity: [0.0; 3],
+                flags: if charge.is_some() { 0x10000 } else { 0 },
+                ground_entity: 2046,
+                view_height: 60.0,
+                view_height_target: 60,
+                speed: 190,
+                gravity: 800,
+                bob_cycle: 0,
+                view_height_lerp_time: 0,
+                view_height_lerp_target: 60,
+                view_height_lerp_down: false,
+                jump_time: 0,
+                jump_origin_z: 0.0,
+            };
+            let body = player_frame_with_motion(
+                1000,
+                1000,
+                Some([0.0; 3]),
+                true,
+                None,
+                [0; 3],
+                Some(motion),
+            )
+            .unwrap();
+            let mut r = Reader::new(&body);
+            r.u8().unwrap();
+            r.u32().unwrap();
+            r.u8().unwrap();
+            r.u8().unwrap();
+            r.bits(2).unwrap();
+            let (fields, _) = read_fields(&mut r);
+            assert_eq!(
+                fields.get(&20).copied().unwrap_or(0) & 0x10000,
+                motion.flags
+            );
+            for index in [148, 149, 150] {
+                assert_eq!(fields.contains_key(&index), charge.is_some());
+            }
+            if let Some(c) = charge {
+                assert_eq!(fields[&148], u32::from(c.remaining_msec));
+                assert_eq!(
+                    fields[&149],
+                    (f32::from(c.yaw as i16) * (360.0 / 65536.0)).to_bits()
+                );
+                assert_eq!(fields[&150], u32::from(c.distance));
+            }
         }
     }
     #[test]

@@ -971,6 +971,7 @@ pub struct Motion {
     pub view_height_lerp_down: bool,
     pub bob_cycle: u8,
     pub surface_flags: u32,
+    melee_charge: Option<(codol_protocol::game_snapshot::MeleeCharge, u16)>,
     previous_buttons: u32,
     ground_normal: V3,
     view_start: f32,
@@ -995,6 +996,7 @@ impl Motion {
             view_height_lerp_down: false,
             bob_cycle: 0,
             surface_flags: 0,
+            melee_charge: None,
             previous_buttons: 0,
             ground_normal: [0.0, 0.0, 1.0],
             view_start: 60.0,
@@ -1002,6 +1004,67 @@ impl Motion {
     }
     pub fn grounded(&self) -> bool {
         self.ground_entity != NONE
+    }
+    pub fn melee_charge(&self) -> Option<codol_protocol::game_snapshot::MeleeCharge> {
+        self.melee_charge.map(|(state, _)| state)
+    }
+    pub(crate) fn start_melee_charge(
+        &mut self,
+        approach: crate::game_player::MeleeApproach,
+        duration: u16,
+    ) {
+        if approach.distance == 0 || !(1..=15000).contains(&duration) || self.melee_charge.is_some()
+        {
+            return;
+        }
+        self.melee_charge = Some((
+            codol_protocol::game_snapshot::MeleeCharge {
+                yaw: approach.yaw,
+                distance: approach.distance,
+                remaining_msec: 0,
+            },
+            duration,
+        ));
+        self.flags |= 0x10000;
+    }
+    pub fn cancel_melee_charge(&mut self) {
+        self.melee_charge = None;
+        self.flags &= !0x10000;
+    }
+    fn step_melee_charge(&mut self, dt_ms: u32, c: &Collision) {
+        let (mut state, duration) = self.melee_charge.unwrap();
+        if state.remaining_msec == 0 {
+            let seconds = (f64::from(duration) * 0.001) as f32;
+            let speed = 2.0 * f32::from(state.distance) / seconds;
+            let yaw = f32::from(state.yaw as i16) * (std::f32::consts::TAU / 65536.0);
+            self.velocity[0] = speed * yaw.cos();
+            self.velocity[1] = speed * yaw.sin();
+            // 0x41cbaa stores seconds as binary32, multiplies by the double
+            //1000 constant and truncates when initializing the timer.
+            state.remaining_msec = (f64::from(seconds) * 1000.0) as u16;
+        }
+        let speed = length(self.velocity);
+        let direction = normalized(self.velocity);
+        let dt = (f64::from(dt_ms) * 0.001) as f32;
+        let next = (speed - speed / (f32::from(state.remaining_msec) * 0.001) * dt).max(0.0);
+        self.velocity = mul(direction, (speed + next) * 0.5);
+        if self.grounded() {
+            self.velocity = project_ground(self.velocity, self.ground_normal);
+        }
+        if self.velocity[0] != 0.0 || self.velocity[1] != 0.0 {
+            self.step_slide(c, dt, false);
+        }
+        self.velocity = mul(direction, next);
+        state.remaining_msec = state.remaining_msec.saturating_sub(dt_ms as u16);
+        self.flags = self.stance.flags() | 0x10000;
+        if state.remaining_msec == 0 {
+            self.velocity[0] = 0.0;
+            self.velocity[1] = 0.0;
+            self.cancel_melee_charge();
+        } else {
+            self.melee_charge = Some((state, duration));
+        }
+        self.ground(c, 0.25);
     }
     /// Apply a small crowd-avoidance displacement through the same capsule
     /// solver as walking. This is not elapsed movement time: preserve the
@@ -1072,6 +1135,10 @@ impl Motion {
         }
         self.update_view_height();
         self.ground(c, 0.25);
+        if self.melee_charge.is_some() {
+            self.step_melee_charge(dt_ms, c);
+            return;
+        }
         let jumping = self.grounded()
             && self.stance == Stance::Stand
             && cmd.buttons & 0x400 != 0
@@ -1463,6 +1530,75 @@ mod tests {
             assert_eq!(air.command_time, 0);
             assert!(!air.grounded());
         }
+    }
+    #[test]
+    fn melee_charge_uses_native_midpoint_deceleration_and_clears_at_expiry() {
+        let c = world(vec![floor()], vec![]);
+        let mut m = Motion::new([0.0, 0.0, 0.03125]);
+        m.apply(&cmd(1000, 0, 0), 1.0, false, &c);
+        m.start_melee_charge(
+            crate::game_player::MeleeApproach {
+                yaw: 0,
+                distance: 50,
+            },
+            250,
+        );
+        assert_eq!(m.origin[0], 0.0);
+        assert_eq!(m.melee_charge().unwrap().remaining_msec, 0);
+        for (i, x) in [18.0, 32.0, 42.0, 48.0, 50.0].into_iter().enumerate() {
+            let input = cmd(1050 + i as u32 * 50, 0, 0);
+            m.apply(&input, 1.0, false, &c);
+            assert!((m.origin[0] - x).abs() < 0.002, "{:?}", m.origin);
+            let before = m.origin;
+            m.apply(&input, 1.0, false, &c);
+            assert_eq!(m.origin, before);
+        }
+        assert!(m.melee_charge().is_none());
+        assert_eq!(m.flags & 0x10000, 0);
+        assert_eq!(m.velocity, [0.0; 3]);
+    }
+    #[test]
+    fn melee_charge_matches_native_expiry_during_a_long_command() {
+        let c = world(vec![floor()], vec![]);
+        let mut m = Motion::new([0.0, 0.0, 0.03125]);
+        m.apply(&cmd(1509, 0, 0), 1.0, false, &c);
+        m.start_melee_charge(
+            crate::game_player::MeleeApproach {
+                yaw: 466,
+                distance: 75,
+            },
+            100,
+        );
+        m.apply(&cmd(1739, 0, 0), 1.0, false, &c);
+        // Native command1509->1739, client-1791694333310: the last
+        //66ms subdivision spans timer expiry and still integrates its full dt.
+        assert!((m.origin[0] - 83.07715).abs() < 0.002, "{:?}", m.origin);
+        assert!((m.origin[1] - 3.7141).abs() < 0.002, "{:?}", m.origin);
+        assert!(m.melee_charge().is_none());
+        assert_eq!(m.velocity, [0.0; 3]);
+    }
+    #[test]
+    fn melee_charge_sweeps_the_capsule_and_cannot_cross_a_wall() {
+        let c = world(
+            vec![floor(), brush([60.0, 0.0, 100.0], [5.0, 1000.0, 100.0])],
+            vec![],
+        );
+        let mut m = Motion::new([0.0, 0.0, 0.03125]);
+        m.apply(&cmd(1000, 0, 0), 1.0, false, &c);
+        m.start_melee_charge(
+            crate::game_player::MeleeApproach {
+                yaw: 0,
+                distance: 200,
+            },
+            100,
+        );
+        for time in (1010..=1100).step_by(10) {
+            m.apply(&cmd(time, 0, 0), 1.0, false, &c);
+        }
+        assert!(m.origin[0] > 39.0 && m.origin[0] < 40.0, "{:?}", m.origin);
+        assert!(!c.trace(m.origin, m.origin, 70.0).start_solid);
+        assert!(m.melee_charge().is_none());
+        assert_eq!(m.velocity, [0.0; 3]);
     }
     #[test]
     fn separation_leaves_a_ledge_without_snapping_to_a_distant_floor() {

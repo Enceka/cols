@@ -27,12 +27,14 @@ pub(crate) struct ResolvedWeapon {
     pub(crate) attachments: Vec<u16>,
     pub(crate) composed_name: String,
     pub(crate) definition: Vec<u8>,
+    pub(crate) melee_charge_animation: bool,
 }
 
 #[derive(Clone, Debug)]
 struct Weapon {
     name: String,
     definition: Vec<u8>,
+    melee_charge_animation: bool,
     defaults: BTreeMap<u8, Part>,
     items: BTreeMap<u32, Part>,
     attributes: BTreeMap<u16, Vec<[u8; 12]>>,
@@ -79,6 +81,8 @@ struct CapturedWeapon {
     #[serde(default)]
     item_ids: Vec<u32>,
     definition_base64: String,
+    #[serde(default)]
+    melee_charge_animation: Option<String>,
     defaults: Option<Defaults>,
     compatible: Vec<Compatible>,
 }
@@ -202,6 +206,17 @@ impl Arsenal {
         let mut weapon_names = BTreeSet::new();
         let mut registry_names = BTreeMap::new();
         for captured in capture.weapons {
+            ensure!(
+                captured
+                    .melee_charge_animation
+                    .as_ref()
+                    .is_none_or(|name| name.is_empty() || identifier(name)),
+                "invalid captured melee charge animation"
+            );
+            let melee_charge_animation = captured
+                .melee_charge_animation
+                .as_ref()
+                .is_some_and(|name| !name.is_empty());
             let captured_defaults = match captured.defaults {
                 Some(defaults) if !captured.alternate_only => defaults,
                 None if captured.alternate_only => Defaults {
@@ -344,6 +359,7 @@ impl Arsenal {
                         Weapon {
                             name: captured.name,
                             definition,
+                            melee_charge_animation,
                             defaults,
                             items,
                             attributes
@@ -411,6 +427,7 @@ impl Arsenal {
                 &parent.attachments,
             )?,
             definition: crate::weapon_attributes::compose(&weapon.definition, &records)?,
+            melee_charge_animation: weapon.melee_charge_animation,
         }))
     }
 
@@ -486,6 +503,7 @@ impl Arsenal {
             attachments,
             composed_name,
             definition,
+            melee_charge_animation: weapon.melee_charge_animation,
         })
     }
 }
@@ -615,6 +633,25 @@ mod tests {
         assert_eq!(word(&mag_only, 0xd08), 45);
         let pistol = arsenal.resolve(10010, &[], &[10010], 353).unwrap();
         assert_eq!(pistol.composed_name, "** 150 0 0");
+    }
+    #[test]
+    fn captured_charge_animation_belongs_to_the_selected_weapon() {
+        let mut data = capture();
+        data["weapons"][0]["melee_charge_animation"] = json!("viewmodel_knife_melee_stab");
+        data["weapons"][1]["melee_charge_animation"] = json!("");
+        let a = load(&data);
+        assert!(
+            a.resolve(10001, &[], &[10001], 352)
+                .unwrap()
+                .melee_charge_animation
+        );
+        assert!(
+            !a.resolve(10010, &[], &[10010], 353)
+                .unwrap()
+                .melee_charge_animation
+        );
+        data["weapons"][0]["melee_charge_animation"] = json!("bad\nname");
+        assert!(Arsenal::from_bytes(&serde_json::to_vec(&data).unwrap(), 123).is_err());
     }
 
     #[test]

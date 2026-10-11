@@ -1284,6 +1284,14 @@ impl PreparedGameState {
                 hit_msec: time(0x6f4)?,
                 recover_msec: time(0x75c)?,
                 damage: u16::try_from(word(0x6e0))?,
+                charge: if w.melee_charge_animation && word(0x718) > 0 && word(0x6f8) > 0 {
+                    Some(crate::game_player::MeleeChargeTiming {
+                        duration_msec: time(0x718)?,
+                        hit_msec: time(0x6f8)?,
+                    })
+                } else {
+                    None
+                },
             };
             ensure!(timing.valid(), "invalid held-gun melee parameters");
             Some(timing)
@@ -1620,6 +1628,7 @@ impl PreparedGameState {
                     view_height_lerp_down: m.view_height_lerp_down,
                     jump_time: m.jump_time,
                     jump_origin_z: m.jump_origin_z,
+                    melee_charge: m.melee_charge(),
                 }),
             },
         )?)
@@ -1831,6 +1840,171 @@ pub(crate) fn synthetic() -> PreparedGameState {
 mod tests {
     use super::*;
     #[test]
+    #[ignore = "prepares a local captured-map charge diagnostic"]
+    fn captured_charge_contact_scene_has_an_unobstructed_approach() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../research-output");
+        let mut raw: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(root.join("tdm-killhouse-hud-state-charge.json")).unwrap(),
+        )
+        .unwrap();
+        let collision = crate::game_motion::Collision::load(
+            &root.join(raw["collision_file"].as_str().unwrap()),
+        )
+        .unwrap();
+        let starts: [Vec<[f32; 3]>; 2] =
+            serde_json::from_value(raw["match_config"]["spawns"].clone()).unwrap();
+        let (player, target, bait) = starts[1]
+            .iter()
+            .find_map(|&seed| {
+                let ground = |dx| {
+                    crate::game_bot::grounded_spawn([seed[0] + dx, seed[1], seed[2]], &collision)
+                        .ok()
+                };
+                let a = ground(0.0)?;
+                let b = ground(75.0)?;
+                let c = ground(300.0)?;
+                if (b[2] - a[2]).abs() > 18.0 {
+                    return None;
+                }
+                let sight = collision.raycast([b[0], b[1], b[2] + 60.0], [c[0], c[1], c[2] + 60.0]);
+                if sight.start_solid || sight.fraction < 1.0 {
+                    return None;
+                }
+                let mut motion = crate::game_motion::Motion::new(a);
+                motion.apply(
+                    &codol_protocol::game_usercmd::UserCommand {
+                        time: 1000,
+                        ..Default::default()
+                    },
+                    1.0,
+                    false,
+                    &collision,
+                );
+                motion.start_melee_charge(
+                    crate::game_player::MeleeApproach {
+                        yaw: 0,
+                        distance: 75,
+                    },
+                    100,
+                );
+                for time in (1010..=1100).step_by(10) {
+                    motion.apply(
+                        &codol_protocol::game_usercmd::UserCommand {
+                            time,
+                            ..Default::default()
+                        },
+                        1.0,
+                        false,
+                        &collision,
+                    );
+                }
+                let actors = [crate::game_combat::Actor {
+                    client: 6,
+                    team: 1,
+                    origin: b,
+                    height: 80.0,
+                    yaw: 0.0,
+                }];
+                let hit = crate::game_combat::melee_at_actors(
+                    [motion.origin[0], motion.origin[1], motion.origin[2] + 60.0],
+                    [0; 3],
+                    135,
+                    (0, 2),
+                    crate::game_combat::ActorScene {
+                        actors: &actors,
+                        regions: None,
+                        collision: &collision,
+                    },
+                );
+                (!hit.damage.is_empty()).then_some((a, b, c))
+            })
+            .expect("no clear captured charge contact");
+        let mut friends = vec![player, bait];
+        friends.extend_from_slice(&starts[0][..4]);
+        let mut enemies = vec![target];
+        enemies.extend_from_slice(&starts[0][5..10]);
+        raw["spawn_origin"] = serde_json::json!(player);
+        raw["match_config"]["spawns"] = serde_json::json!([enemies, friends]);
+        raw["match_config"]["time_limit_msec"] = 60000.into();
+        for bot in raw["match_config"]["roster"].as_array_mut().unwrap() {
+            bot["weapon_name"] = "cheytac_mp".into();
+        }
+        let output = root.join("tdm-killhouse-charge-contact-test.json");
+        std::fs::write(&output, serde_json::to_vec_pretty(&raw).unwrap()).unwrap();
+        PreparedGameState::load(&output).unwrap();
+        eprintln!("charge contact player={player:?} target={target:?} bait={bait:?}");
+    }
+    #[test]
+    #[ignore = "requires captured three-map charge preparations and CODOL_APPEARANCE_PROFILE"]
+    fn captured_three_maps_encode_saved_player_charge_and_roster_without_collisions() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../research-output");
+        let profile =
+            std::path::PathBuf::from(std::env::var_os("CODOL_APPEARANCE_PROFILE").unwrap());
+        let public = std::fs::read(profile.join("public.bin")).unwrap();
+        let inventory: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(profile.join("inventory.json")).unwrap())
+                .unwrap();
+        let owned: Vec<u32> = serde_json::from_value(inventory["items"].clone()).unwrap();
+        for name in [
+            "tdm-afghan-hud-state",
+            "tdm-killhouse-hud-state",
+            "tdm-crash-tropical-state",
+        ] {
+            let s = PreparedGameState::load(&root.join(format!("{name}-charge.json")))
+                .unwrap()
+                .for_profile(&public, &owned)
+                .unwrap();
+            let mut player = s.player().unwrap();
+            let mut motion = s.motion().unwrap();
+            let input = codol_protocol::game_usercmd::UserCommand {
+                time: 1100,
+                buttons: 4,
+                weapons: player.equipment().input_weapons(),
+                ..Default::default()
+            };
+            motion.apply(&input, 1.0, false, s.collision.as_ref().unwrap());
+            player.apply_with_melee_approach(
+                &input,
+                Some(crate::game_player::MeleeApproach {
+                    yaw: 0,
+                    distance: 100,
+                }),
+            );
+            let (approach, duration) = player
+                .take_melee_approach()
+                .expect("saved gun needs a captured native charge animation");
+            assert_eq!(player.equipment().firing.unwrap().animation & 0x3ff, 9);
+            motion.start_melee_charge(approach, duration);
+            let actors = s.tdm_match().unwrap().unwrap().snapshots();
+            let snapshot = s
+                .snapshot(
+                    1100,
+                    1100,
+                    true,
+                    [0; 3],
+                    Some(player.equipment()),
+                    SnapshotWorld {
+                        motion: Some(&motion),
+                        local_player: s.local_player_snapshot(true),
+                        players: &actors,
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+            let wire =
+                codol_protocol::game_wire::compact_server_packet(4, 0, 0, b"", &snapshot).unwrap();
+            let initial =
+                codol_protocol::game_wire::compact_server_packet(3, 0, 0, b"", &s.body(1).unwrap())
+                    .unwrap();
+            eprintln!(
+                "{name} charge_delay={duration} snapshot={} wire={} gamestate={}",
+                snapshot.len(),
+                wire.len(),
+                initial.len()
+            );
+        }
+    }
+    #[test]
     #[ignore = "prepares a local captured-map melee contact diagnostic"]
     fn captured_melee_contact_scene_has_a_clear_close_target() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../research-output");
@@ -1997,6 +2171,7 @@ mod tests {
                     attachments: vec![],
                     composed_name: "** 1 0 0".into(),
                     definition,
+                    melee_charge_animation: false,
                 },
                 &"a".repeat(64),
                 Some(54),

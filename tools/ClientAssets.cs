@@ -453,11 +453,13 @@ class ClientAssets {
             }
             if(alternateOnly) {
                 weapons.Add(Obj("name",name,"base_index",i,"alternate_only",true,
-                    "definition_base64",Convert.ToBase64String(r.Read(def,0xe28)),"compatible",compatible));
+                    "definition_base64",Convert.ToBase64String(r.Read(def,0xe28)),
+                    "melee_charge_animation",r.Name(r.Word(def+0x98)),"compatible",compatible));
                 continue;
             }
             weapons.Add(Obj("name",name,"base_index",i,"item_ids",items[name],
                 "definition_base64",Convert.ToBase64String(r.Read(def,0xe28)),
+                "melee_charge_animation",r.Name(r.Word(def+0x98)),
                 "defaults",r.WeaponDefaultParts(name,names),"compatible",compatible));
         }
         var serializer=new JavaScriptSerializer();serializer.MaxJsonLength=16*1024*1024;
@@ -569,10 +571,13 @@ class ClientAssets {
                 "weapon",U(ps,0x340),"weapon_state",U(ps,0x27c),"clip",U(ps,0x3e0),
                 "weapon_time",U(ps,0x270),"fire_count",U(ps,0x284),"queued_burst",U(ps,0x280)&1,
                 "weapon_delay",U(ps,0x274),"weapon_animation",U(ps,0x26c),
-                "cmd_melee_yaw",r.Word(input+0x365c+(command&255)*44+32),
-                "cmd_melee_distance",r.Read(input+0x365c+(command&255)*44+36,1)[0],
-                "cmd_melee_entity",BitConverter.ToUInt16(r.Read(input+0x365c+(command&255)*44+38,2),0),
-                "health",U(ps,0x190),"spawn_count",U(ps,0x19c),"corpse_slot",U(ps,0xe8)));
+                "cmd_melee_yaw",BitConverter.ToSingle(r.Read(input+0x365c+(command&255)*44+28,4),0),
+                "cmd_melee_distance",r.Read(input+0x365c+(command&255)*44+32,1)[0],
+                "cmd_melee_entity",BitConverter.ToUInt16(r.Read(input+0x365c+(command&255)*44+34,2),0),
+                "pm_flags",U(ps,12),"melee_yaw",BitConverter.ToSingle(ps,0x4a8),
+                "melee_distance",U(ps,0x4ac),"melee_time",U(ps,0x4b0),
+                "health",U(ps,0x190),"spawn_count",U(ps,0x19c),"corpse_slot",U(ps,0xe8),
+                "stable_command",r.Word(cg)==U(ps,0)));
             System.Threading.Thread.Sleep(25);
         }
         var serializer=new JavaScriptSerializer();serializer.MaxJsonLength=4*1024*1024;

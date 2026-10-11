@@ -616,6 +616,7 @@ impl Connection {
                     {
                         view.vitals.corpse_slot = (corpse.entity_number - 19) as u8;
                     }
+                    view.motion.cancel_melee_charge();
                     view.motion.velocity = [0.0; 3];
                 }
             }
@@ -919,6 +920,7 @@ impl Connection {
                 // Its origin must already be the eye, rather than the actor's feet.
                 // Keep the actor and collision origin unchanged.
                 camera.origin[2] += camera.view_height;
+                camera.cancel_melee_charge();
                 camera.velocity = [0.0; 3];
                 camera.view_height = 0.0;
                 camera.view_height_target = 0;
@@ -1355,6 +1357,7 @@ impl Connection {
         }
         self.vitals.intermission = true;
         if let Some(motion) = &mut self.motion {
+            motion.cancel_melee_charge();
             motion.velocity = [0.0; 3];
         }
         if let Some(menu) = self.game_state.as_ref().and_then(|s| s.top_players()) {
@@ -1498,6 +1501,7 @@ impl Connection {
                 self.hit_feedback.clear();
                 self.tdm.as_mut().unwrap().player_killed(now, local, hit);
                 if let Some(motion) = &mut self.motion {
+                    motion.cancel_melee_charge();
                     motion.velocity = [0.0; 3];
                 }
             }
@@ -1547,6 +1551,13 @@ impl Connection {
                 input.buttons = 0;
                 input.direction = 0;
             }
+            let melee_approach = self.tdm.as_ref().and_then(|tdm| {
+                let motion = self.motion.as_ref()?;
+                let state = self.game_state.as_ref()?;
+                let mut local = state.local_player_snapshot(self.vitals.health > 0)?;
+                local.origin = motion.origin;
+                tdm.player_melee_approach(&input, motion, local, state.collision.as_ref()?)
+            });
             if let Some(player) = &mut self.player {
                 if let Some(motion) = &self.motion {
                     player.spread_environment(motion);
@@ -1566,12 +1577,13 @@ impl Connection {
                         "unowned weapon switch requested"
                     );
                 }
-                player.apply(&input);
+                player.apply_with_melee_approach(&input, melee_approach);
             }
             if let Some(motion) = &mut self.motion
                 && let Some(collision) = self.game_state.as_ref().and_then(|s| s.collision.as_ref())
             {
                 if self.tdm.as_ref().is_some_and(|m| m.finished) {
+                    motion.cancel_melee_charge();
                     motion.velocity = [0.0; 3];
                     motion.command_time = input.time;
                     self.last_input = Some(input);
@@ -1585,7 +1597,21 @@ impl Connection {
                     .is_some_and(|a| a.movement_slow);
                 let old_bob = motion.bob_cycle;
                 let was_ground = motion.ground_entity != 2047;
+                let was_approaching = motion.melee_charge().is_some();
                 motion.apply(&input, scale, ads, collision);
+                if was_approaching {
+                    tracing::debug!(command_time=input.time,origin=?motion.origin,velocity=?motion.velocity,
+                        active=motion.melee_charge().is_some(),"melee approach motion");
+                }
+                if let Some((approach, duration)) =
+                    self.player.as_mut().and_then(|p| p.take_melee_approach())
+                {
+                    // 0x41e525/0x429320: movement precedes starting the melee
+                    // action, so the first displacement belongs to the next command.
+                    motion.start_melee_charge(approach, duration);
+                    tracing::info!(distance=approach.distance,yaw=approach.yaw,duration,
+                        origin=?motion.origin,"native melee approach started");
+                }
                 if let Some(player) = &mut self.player {
                     let surface = (motion.surface_flags >> 20) & 31;
                     if was_ground
