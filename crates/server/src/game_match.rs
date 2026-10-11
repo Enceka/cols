@@ -662,11 +662,30 @@ impl TdmMatch {
     pub fn take_kills(&mut self) -> Vec<Kill> {
         std::mem::take(&mut self.kills)
     }
+    #[cfg(test)]
     pub fn step(
         &mut self,
         now: u32,
         player: (EnemySnapshot, f32, u16),
         weapon: BotWeapon,
+        collision: &Collision,
+        animate: impl Fn(EnemySnapshot, &crate::game_bot::BotFrame, bool, bool) -> EnemySnapshot,
+    ) -> Result<Tick> {
+        self.step_with_smoke(
+            now,
+            player,
+            weapon,
+            &crate::game_smoke::Smoke::default(),
+            collision,
+            animate,
+        )
+    }
+    pub fn step_with_smoke(
+        &mut self,
+        now: u32,
+        player: (EnemySnapshot, f32, u16),
+        weapon: BotWeapon,
+        smoke: &crate::game_smoke::Smoke,
         collision: &Collision,
         animate: impl Fn(EnemySnapshot, &crate::game_bot::BotFrame, bool, bool) -> EnemySnapshot,
     ) -> Result<Tick> {
@@ -733,7 +752,15 @@ impl TdmMatch {
             // radius. Occluded actors never update last-known coordinates.
             if now.wrapping_sub(bot.perception_time) >= 150 {
                 bot.perception_time = now;
-                let found = visible_enemy(origin, bot.snapshot.angles[1], team, &actors, collision);
+                let found = visible_enemy(
+                    origin,
+                    bot.snapshot.angles[1],
+                    team,
+                    &actors,
+                    now,
+                    smoke,
+                    collision,
+                );
                 bot.visible_target = found.map(|(_, t)| t);
                 if let Some((client, target)) = found {
                     bot.memory = Some((client, target, now));
@@ -745,7 +772,9 @@ impl TdmMatch {
                 bot.memory = None;
                 bot.visible_target = None;
             }
-            let target = bot.visible_target;
+            let target = bot
+                .visible_target
+                .filter(|t| smoke.visible(now, bot.controller.eye(), t.eye));
             let remembered = bot.memory.map(|(_, t, _)| t.origin);
             if i == self.next_route_client {
                 let stuck = now.wrapping_sub(bot.progress_time) >= 2500
@@ -992,6 +1021,8 @@ fn visible_enemy(
     yaw: u16,
     team: u8,
     actors: &[Actor],
+    now: u32,
+    smoke: &crate::game_smoke::Smoke,
     collision: &Collision,
 ) -> Option<(u8, BotTarget)> {
     let eye = [origin[0], origin[1], origin[2] + 60.0];
@@ -1011,7 +1042,14 @@ fn visible_enemy(
                 eye,
                 [a.origin[0], a.origin[1], a.origin[2] + a.height * 0.8],
             );
-            !trace.start_solid && !trace.all_solid && trace.contents == 0
+            !trace.start_solid
+                && !trace.all_solid
+                && trace.contents == 0
+                && smoke.visible(
+                    now,
+                    eye,
+                    [a.origin[0], a.origin[1], a.origin[2] + a.height * 0.8],
+                )
         })
         .min_by(|a, b| distance(origin, a.origin).total_cmp(&distance(origin, b.origin)))
         .map(|a| {
@@ -1138,16 +1176,43 @@ mod tests {
         let behind = actor(2, 1, -500.0, 0.0);
         let front = actor(3, 1, 700.0, 0.0);
         assert_eq!(
-            visible_enemy([0.0; 3], 0, 2, &[allies, behind, front], &collision)
-                .unwrap()
-                .0,
+            visible_enemy(
+                [0.0; 3],
+                0,
+                2,
+                &[allies, behind, front],
+                1000,
+                &crate::game_smoke::Smoke::default(),
+                &collision
+            )
+            .unwrap()
+            .0,
             3
         );
-        assert!(visible_enemy([0.0; 3], 0, 2, &[allies, behind], &collision).is_none());
+        assert!(
+            visible_enemy(
+                [0.0; 3],
+                0,
+                2,
+                &[allies, behind],
+                1000,
+                &crate::game_smoke::Smoke::default(),
+                &collision
+            )
+            .is_none()
+        );
         assert_eq!(
-            visible_enemy([0.0; 3], 0, 2, &[actor(4, 1, -100.0, 0.0)], &collision)
-                .unwrap()
-                .0,
+            visible_enemy(
+                [0.0; 3],
+                0,
+                2,
+                &[actor(4, 1, -100.0, 0.0)],
+                1000,
+                &crate::game_smoke::Smoke::default(),
+                &collision
+            )
+            .unwrap()
+            .0,
             4
         );
         // An enemy under the solid floor cannot be acquired even at close range.
@@ -1155,7 +1220,56 @@ mod tests {
             origin: [0.0, 0.0, -100.0],
             ..front
         };
-        assert!(visible_enemy([0.0; 3], 0, 2, &[underground], &collision).is_none());
+        assert!(
+            visible_enemy(
+                [0.0; 3],
+                0,
+                2,
+                &[underground],
+                1000,
+                &crate::game_smoke::Smoke::default(),
+                &collision
+            )
+            .is_none()
+        );
+    }
+    #[test]
+    fn perception_loses_smoke_occluded_opponents_and_recovers_after_optical_fade() {
+        let collision = world();
+        let opponent = Actor {
+            client: 1,
+            team: 1,
+            origin: [300.0, 0.0, 0.0],
+            height: 70.0,
+            yaw: 0.0,
+        };
+        let mut smoke = crate::game_smoke::Smoke::default();
+        smoke.spawn(&crate::game_grenade::Explosion {
+            time: 1000,
+            origin: [150.0, 0.0, 2.0],
+            normal: [0.0, 0.0, 1.0],
+            definition: crate::game_grenade::captured("smoke_grenade_mp"),
+        });
+        assert!(visible_enemy([0.0; 3], 0, 2, &[opponent], 1000, &smoke, &collision).is_some());
+        assert!(visible_enemy([0.0; 3], 0, 2, &[opponent], 5000, &smoke, &collision).is_none());
+        assert!(visible_enemy([0.0; 3], 0, 2, &[opponent], 14000, &smoke, &collision).is_some());
+        assert!(!smoke.snapshots(14000).is_empty());
+        let outside = Actor {
+            origin: [300.0, 400.0, 0.0],
+            ..opponent
+        };
+        assert!(
+            visible_enemy(
+                [-500.0, 400.0, 0.0],
+                0,
+                2,
+                &[outside],
+                5000,
+                &smoke,
+                &collision
+            )
+            .is_some()
+        );
     }
     #[test]
     fn grenade_blast_excludes_allies_and_suicide_never_awards_a_kill() {
@@ -1178,6 +1292,7 @@ mod tests {
         game.bots[enemy].snapshot.origin = [64.0, 0.0, 0.0];
         game.bots[ally].snapshot.origin = [64.0, 0.0, 0.0];
         let explosion = crate::game_grenade::Explosion {
+            time: 1000,
             origin: [64.0, 0.0, 40.0],
             normal: [0.0, 0.0, 1.0],
             definition: crate::game_grenade::captured("frag_grenade_mp"),

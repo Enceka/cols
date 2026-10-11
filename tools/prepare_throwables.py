@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Derive supported 3.3.3.3 grenade scalars from fixed read-only captures."""
+"""Derive 3.3.3.3 offhand definitions and smoke optical curves from read-only captures."""
 import argparse
 import base64
 import hashlib
@@ -11,7 +11,52 @@ from clientlib import manifest
 from schema_fields import flatten
 
 SUPPORTED = {"frag_grenade_mp", "fragholiday_grenade_mp", "fragshort_grenade_mp",
-             "fragtech_grenade_mp", "semtex_mp", "stielhandgranate_mp"}
+             "fragtech_grenade_mp", "semtex_mp", "stielhandgranate_mp", "smoke_grenade_mp"}
+
+
+def smoke_effect(effect):
+    if effect["name"] != "props/american_smoke_grenade_mp" or effect["element_stride"] != 260:
+        raise ValueError("unexpected native smoke effect")
+    raw = base64.b64decode(effect["elements_base64"], validate=True)
+    word = lambda b, o: struct.unpack_from("<I", b, o)[0]
+    elements = [raw[i:i + 260] for i in range(0, len(raw), 260)]
+    model = [b for b in elements if b[0xb0] == 9]
+    if len(model) != 1 or effect["looping_count"] != 0:
+        raise ValueError("smoke model lifetime is not established")
+    lifetime = sum(word(model[0], o) for o in (0x28, 0x2c, 0x30, 0x34))
+    emitters = []
+    for index, runner in enumerate(elements):
+        if runner[0xb0] != 14:
+            continue
+        if word(runner, 0x2c) != 0:
+            raise ValueError("randomized smoke runner delay needs separate recovery")
+        delay = word(runner, 0x28)
+        for child in effect["elements"][index]["children"]:
+            if child["name"] != "smoke/smoke_grenade_11sec_mp":
+                continue
+            data = base64.b64decode(child["elements_base64"], validate=True)
+            for entry in child["elements"]:
+                i = entry["index"]
+                b = data[i * 260:(i + 1) * 260]
+                if not word(b, 0) & 0x2000:
+                    continue
+                if i < child["looping_count"] or i >= child["looping_count"] + child["one_shot_count"]:
+                    raise ValueError("looped optical smoke needs separate recovery")
+                visual = base64.b64decode(entry["visual_samples_base64"], validate=True)
+                if len(visual) != (b[0xb3] + 1) * 64:
+                    raise ValueError("incomplete smoke visual samples")
+                samples = []
+                for at in range(0, len(visual), 64):
+                    if visual[at + 3] != visual[at + 0x23]:
+                        raise ValueError("randomized alpha needs native color-range recovery")
+                    samples.append([struct.unpack_from("<f", visual, at + 12)[0],
+                                    struct.unpack_from("<f", visual, at + 44)[0], visual[at + 3] / 255.0])
+                emitters.append({"count": [word(b, 4), word(b, 8)],
+                                 "delay_msec": [delay + word(b, 0x28), word(b, 0x2c)],
+                                 "life_msec": [word(b, 0x30), word(b, 0x34)], "samples": samples})
+    if len(emitters) != 2 or lifetime != 60001:
+        raise ValueError("captured smoke graph differs from the recovered consumers")
+    return {"effect": effect["name"], "lifetime_msec": lifetime, "emitters": emitters}
 
 
 def prepare(assets_path, registry_path):
@@ -61,6 +106,8 @@ def prepare(assets_path, registry_path):
                        "speed": word(0x8f4), "speed_up": word(0x8f8), "speed_forward": word(0x8fc),
                        "stickiness": word(0x928), "parallel": [number(0x934 + 4 * i) for i in range(31)],
                        "perpendicular": [number(0x9b0 + 4 * i) for i in range(31)]})
+        if name == "smoke_grenade_mp":
+            result[-1]["smoke"] = smoke_effect(weapon["explosion_effect"])
     if {r["name"] for r in result} != SUPPORTED:
         raise ValueError("supported grenade set is incomplete")
     return {"schema_version": 1, "client_sha256": client, "capture_sha256": hashlib.sha256(raw).hexdigest(),

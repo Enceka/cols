@@ -24,6 +24,7 @@ pub(crate) struct Connection {
     game_state: Option<Arc<crate::game_state::PreparedGameState>>,
     player: Option<crate::game_player::Player>,
     grenades: crate::game_grenade::Grenades,
+    smoke: crate::game_smoke::Smoke,
     motion: Option<crate::game_motion::Motion>,
     combat: Option<crate::game_combat::CombatWorld>,
     impacts: crate::game_impact::ImpactEvents,
@@ -85,6 +86,7 @@ pub(crate) struct Connection {
 
 #[derive(Clone)]
 struct WorldHistory {
+    smokes: Vec<codol_protocol::game_smoke::SmokeSnapshot>,
     missiles: Vec<codol_protocol::game_missile::MissileSnapshot>,
     local_abilities: Option<codol_protocol::game_abilities::Abilities>,
     replay_epoch: u32,
@@ -523,9 +525,10 @@ impl Connection {
         let mut equipment = self.player.as_ref().map(|p| p.equipment());
         let mut impacts = self.impacts.snapshot(server_time);
         let mut missiles = self.grenades.snapshots();
+        let mut smokes = self.smoke.snapshots(server_time);
         if self.tdm.is_some() {
             impacts.sort_by_key(|i| {
-                if i.event == codol_protocol::game_impact::ImpactEvent::GrenadeExplosion {
+                if i.event != codol_protocol::game_impact::ImpactEvent::Bullet {
                     0
                 } else {
                     1
@@ -634,6 +637,7 @@ impl Connection {
                 }
             }
             self.replay.record(crate::game_replay::Frame {
+                smokes: smokes.clone(),
                 missiles: missiles.clone(),
                 time: server_time,
                 views,
@@ -697,6 +701,7 @@ impl Connection {
             corpses = playback.frame.corpses;
             impacts = playback.frame.impacts;
             missiles = playback.frame.missiles;
+            smokes = playback.frame.smokes;
             obituaries = playback.frame.obituaries;
             hit_feedback = state.feedback_resources().map(|resources| {
                 let mut feedback = crate::game_feedback::Feedback::default();
@@ -771,6 +776,8 @@ impl Connection {
             angles,
             equipment,
             crate::game_state::SnapshotWorld {
+                smokes: &smokes,
+                smoke_baselines: previous.as_ref().map_or(&[], |h| h.smokes.as_slice()),
                 missiles: &missiles,
                 missile_baselines: previous.as_ref().map_or(&[], |h| h.missiles.as_slice()),
                 local_abilities: self.player.as_ref().map(|p| p.equipment().abilities),
@@ -851,6 +858,7 @@ impl Connection {
         }
         if self.tdm.is_some() {
             self.world_history.push_back(WorldHistory {
+                smokes,
                 missiles,
                 local_abilities: self.player.as_ref().map(|p| p.equipment().abilities),
                 replay_epoch,
@@ -1525,7 +1533,7 @@ impl Connection {
         let active = self.vitals.health > 0 && now.wrapping_sub(self.player_birth) >= 1000;
         local.alive = active;
         let collision = state.collision.as_ref().unwrap();
-        let tick = self.tdm.as_mut().unwrap().step(
+        let tick = self.tdm.as_mut().unwrap().step_with_smoke(
             now,
             (
                 local,
@@ -1533,6 +1541,7 @@ impl Connection {
                 if active { self.vitals.health } else { 0 },
             ),
             state.match_bot_weapon().unwrap(),
+            &self.smoke,
             collision,
             |snapshot, frame, firing, toggle| state.animate_enemy(snapshot, frame, firing, toggle),
         )?;
@@ -1579,10 +1588,12 @@ impl Connection {
     fn advance_grenades(&mut self, now: u32) -> Result<()> {
         if self.tdm.as_ref().is_none_or(|m| m.finished) {
             self.grenades.clear();
+            self.smoke.clear();
             return Ok(());
         }
         let state = self.game_state.as_ref().unwrap().clone();
         let collision = state.collision.as_ref().unwrap();
+        self.smoke.expire(now);
         let Some(motion) = self.motion.as_ref() else {
             return Ok(());
         };
@@ -1599,6 +1610,19 @@ impl Connection {
         local.angles = self.view_angles();
         local.weapon = self.player.as_ref().unwrap().equipment().weapon;
         for explosion in self.grenades.advance(now, collision) {
+            if explosion.definition.smoke.is_some() {
+                self.smoke.spawn(&explosion);
+                self.impacts.smoke(
+                    now,
+                    explosion.time,
+                    explosion.definition.index,
+                    explosion.origin,
+                    explosion.normal,
+                );
+                tracing::info!(now, start=explosion.time, weapon=explosion.definition.index,
+                    origin=?explosion.origin, "smoke grenade deployed");
+                continue;
+            }
             self.impacts.explosion(
                 now,
                 explosion.definition.index,

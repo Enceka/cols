@@ -221,6 +221,8 @@ pub fn player_frame_with_motion(
         angles,
         WorldSnapshot {
             local_abilities: None,
+            smokes: &[],
+            smoke_baselines: &[],
             missiles: &[],
             missile_baselines: &[],
             local_abilities_baseline: None,
@@ -253,6 +255,8 @@ pub fn player_frame_with_motion(
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct WorldSnapshot<'a> {
+    pub smokes: &'a [crate::game_smoke::SmokeSnapshot],
+    pub smoke_baselines: &'a [crate::game_smoke::SmokeSnapshot],
     pub missiles: &'a [crate::game_missile::MissileSnapshot],
     pub missile_baselines: &'a [crate::game_missile::MissileSnapshot],
     pub local_abilities: Option<crate::game_abilities::Abilities>,
@@ -570,7 +574,10 @@ pub fn player_frame_with_world(
             }
             for (slot, grenade) in e.offhands.into_iter().enumerate() {
                 if let Some(g) = grenade {
-                    fields.push((109 + slot as u32, u32::from(g.weapon), 32));
+                    // The saved tactical item belongs to the default Q button's
+                    // selected slot (+0x338 / field111 / button0x10000).
+                    // +0x334 is the separate middle offhand button0x8000.
+                    fields.push((if slot == 0 { 109 } else { 111 }, u32::from(g.weapon), 32));
                 }
             }
             for (slot, id) in equipment.unwrap().perks.into_iter().enumerate() {
@@ -923,7 +930,6 @@ pub fn player_frame_with_world(
                 world.missile_baselines
             },
         )?;
-        crate::game_obituary::write_obituaries(&mut out, world.obituaries, establish_baseline)?;
     } else {
         crate::game_impact::write_impacts_with_baselines(
             &mut out,
@@ -932,6 +938,19 @@ pub fn player_frame_with_world(
             establish_baseline,
         )?;
         crate::game_missile::write(&mut out, world.missiles, world.missile_baselines)?;
+    }
+    crate::game_smoke::write(
+        &mut out,
+        world.smokes,
+        if establish_baseline {
+            &[]
+        } else {
+            world.smoke_baselines
+        },
+    )?;
+    if world.delta_distance == 0 {
+        crate::game_obituary::write_obituaries(&mut out, world.obituaries, establish_baseline)?;
+    } else {
         crate::game_obituary::write_obituaries_with_baselines(
             &mut out,
             world.obituaries,
@@ -1108,6 +1127,127 @@ mod tests {
         }
         (fields, parameters)
     }
+    #[test]
+    fn saved_tactical_smoke_is_published_in_the_default_q_selected_slot() {
+        let equipment = Equipment {
+            weapon: 352,
+            inventory_weapon: None,
+            alternate_weapon: None,
+            fire_count: 0,
+            queued_burst: false,
+            barrel_flags: 0,
+            spread_scale: 0.0,
+            needs_rechamber: false,
+            ammo: None,
+            viewmodel: None,
+            firing: None,
+            aim: None,
+            secondary: None,
+            events: None,
+            perks: [0; 3],
+            abilities: Default::default(),
+            move_multiplier: 1.0,
+            offhands: [
+                Some(OffhandWeapon {
+                    weapon: 95,
+                    clip_key: 95,
+                    count: 1,
+                }),
+                Some(OffhandWeapon {
+                    weapon: 236,
+                    clip_key: 236,
+                    count: 1,
+                }),
+            ],
+            offhand_weapon: 236,
+            grenade_time: 1000,
+        };
+        let body = player_frame_with_motion(
+            1000,
+            925,
+            Some([0.0; 3]),
+            true,
+            Some(equipment),
+            [0; 3],
+            Some(MotionSnapshot {
+                ground_entity: 2046,
+                speed: 190,
+                gravity: 800,
+                view_height: 60.0,
+                view_height_target: 60,
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+        let mut r = Reader::new(&body);
+        assert_eq!(r.u8().unwrap(), 0);
+        assert_eq!(r.u32().unwrap(), 1000);
+        r.u8().unwrap();
+        r.u8().unwrap();
+        assert_eq!(r.bits(1).unwrap(), 0);
+        assert_eq!(r.bits(1).unwrap(), 1);
+        let (fields, _) = read_fields(&mut r);
+        assert_eq!(fields[&109], 95);
+        assert_eq!(fields[&111], 236);
+        assert_eq!(fields.get(&110).copied().unwrap_or(0), 0);
+        assert_eq!(fields[&53], 236);
+    }
+    #[test]
+    fn smoke_removal_precedes_new_obituary_for_pinned_and_acknowledged_frames() {
+        let old = crate::game_smoke::SmokeSnapshot {
+            entity_number: 1708,
+            origin: [0.0; 3],
+            weapon: 236,
+            start_time: 1000,
+            end_time: 61001,
+            present: true,
+            generation: 1,
+        };
+        let kill = crate::game_obituary::ObituarySnapshot {
+            entity_number: 1800,
+            weapon: 352,
+            headshot: false,
+            melee: false,
+            victim: 1,
+            attacker: 2,
+        };
+        for delta_distance in [0, 1] {
+            let body = player_frame_with_world(
+                62000,
+                61900,
+                None,
+                false,
+                None,
+                [0; 3],
+                WorldSnapshot {
+                    delta_distance,
+                    smoke_baselines: &[old],
+                    obituaries: &[kill],
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let mut r = Reader::new(&body);
+            assert_eq!(r.u8().unwrap(), 0);
+            assert_eq!(r.u32().unwrap(), 62000);
+            assert_eq!(r.u8().unwrap(), delta_distance);
+            r.u8().unwrap();
+            assert_eq!(r.bits(2).unwrap(), 2);
+            read_fields(&mut r);
+            assert_eq!(r.bits(1).unwrap(), 1);
+            assert_eq!(r.bits(4).unwrap(), 1);
+            assert_eq!(r.u16().unwrap(), 100);
+            assert_eq!(r.bits(15).unwrap(), 0); // empty arrays, HUD, animation and actors
+            // The native sorted merge must see this deletion BEFORE it can
+            // inherit lower baseline IDs while consuming the new kill event.
+            assert_eq!(r.bits(2).unwrap(), 2);
+            assert_eq!(r.bits(11).unwrap(), 1708);
+            assert_eq!(r.bits(1).unwrap(), 1);
+            assert_eq!(r.bits(2).unwrap(), 2);
+            assert_eq!(r.bits(11).unwrap(), 1800);
+            assert_eq!(r.bits(3).unwrap(), 6);
+        }
+    }
 
     #[test]
     fn killcam_fields_select_the_archived_player_and_clear_on_return() {
@@ -1159,6 +1299,8 @@ mod tests {
                 Some(equipment),
                 [0; 3],
                 WorldSnapshot {
+                    smokes: &[],
+                    smoke_baselines: &[],
                     missiles: &[],
                     missile_baselines: &[],
                     motion: Some(motion),

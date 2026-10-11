@@ -349,11 +349,32 @@ class ClientAssets {
             "connection_state",r.Word(0x01a2e7ec),"weapons",weapons,"sources",sources,"offhand_definitions",offhands)));
     }
     object EffectDefinition(uint pointer) {
+        return EffectDefinition(pointer,0,new HashSet<uint>());
+    }
+    object EffectDefinition(uint pointer,int depth,HashSet<uint> seen) {
         if(pointer==0)return null;
+        if(depth>8||seen.Count>=128)throw new Exception("FX graph exceeds capture bounds");
+        if(!seen.Add(pointer))return Obj("name",Name(Word(pointer)),"already_captured",true);
         byte[] header=Read(pointer,32);
+        int count=Count(U(header,16)+U(header,20)+U(header,24),128);
+        byte[] raw=Read(U(header,28),count*0x104);var elements=new List<object>();
+        for(int i=0;i<count;i++) {
+            int at=i*0x104;var children=new List<object>();uint visuals=raw[at+0xb1],visual=U(raw,at+0xbc);
+            if(raw[at+0xb0]==14) {
+                if(visuals>32)throw new Exception("FX runner count exceeds capture bounds");
+                for(uint v=0;v<visuals;v++)children.Add(EffectDefinition(visuals==1?visual:Word(visual+v*4),depth+1,seen));
+            }
+            foreach(int offset in new int[]{0xd8,0xdc,0xe0})if(U(raw,at+offset)!=0)
+                children.Add(EffectDefinition(U(raw,at+offset),depth+1,seen));
+            uint vis=U(raw,at+0xb8),vel=U(raw,at+0xb4);
+            elements.Add(Obj("index",i,"type",raw[at+0xb0],"children",children,
+                "visual_samples_base64",vis==0?null:Convert.ToBase64String(Read(vis,(raw[at+0xb3]+1)*0x40)),
+                "velocity_samples_base64",vel==0?null:Convert.ToBase64String(Read(vel,(raw[at+0xb2]+1)*0x60))));
+        }
         return Obj("name",Name(U(header,0)),"flags",U(header,4),"total_size",U(header,8),
             "looping_life_msec",U(header,12),"looping_count",U(header,16),
-            "one_shot_count",U(header,20),"emission_count",U(header,24));
+            "one_shot_count",U(header,20),"emission_count",U(header,24),
+            "element_stride",0x104,"elements_base64",Convert.ToBase64String(raw),"elements",elements);
     }
     object WeaponRuntimeFields(uint at) {
         // 0x4253e0 writes def+0x6f0 to PS.weaponDelay and def+0xd10 to
@@ -576,6 +597,48 @@ class ClientAssets {
         }
         return missiles;
     }
+    object SmokeStates() {
+        uint slot=Word(0x07817bb0);if(slot>=256)throw new Exception("invalid smoke entity slot");
+        uint entities=Word(0x01a19510+slot*4)^0x2168f672;var smokes=new List<object>();
+        for(uint id=1708;id<1740;id++) {
+            uint entity=entities+id*0x238;
+            if((Word(entity+0x204)&1)==0||Word(entity+0xf4)!=0||(Word(entity+0xf8)&0x40)==0)continue;
+            smokes.Add(Obj("entity",id,"flags",Word(entity+0xf8),"weapon",Word(entity+0x1c0)&65535,
+                "start_time",Word(entity+0xf0+0x58),"end_time",Word(entity+0xf0+0x7c),"origin",EntityOrigin(entity+0xf0)));
+        }
+        return smokes;
+    }
+    object EffectStates() {
+        try {
+            // 0x4d5480 traverses the live handle ring, not a dense FX array.
+            byte[] system=Read(0x02972874,0x888);
+            uint arena=U(system,0),begin=U(system,0x7c),end=U(system,0x80);
+            uint count=end-begin;if(count>1024||count>U(system,0x84)-begin)throw new Exception("FX ring changed during read");
+            var effects=new List<object>();
+            for(uint i=0;i<count;i++) {
+                uint handle=BitConverter.ToUInt16(system,0x88+(int)(((begin+i)&1023)*2));
+                if(handle==65535||handle%47!=0||handle/47>=1024)throw new Exception("invalid FX handle");
+                uint address=checked(arena+handle*4);byte[] effect=Read(address,0x38);
+                if((U(effect,4)&0x1fff)==0||(U(effect,4)&0xc0000000)!=0)continue;
+                string name=Name(Word(U(effect,0)));
+                if(name.IndexOf("grenade",StringComparison.Ordinal)<0&&!name.StartsWith("explosions/",StringComparison.Ordinal))continue;
+                byte[] checkedState=Read(address,0x94);
+                if(U(checkedState,0)!=U(effect,0)||U(checkedState,0x30)!=U(effect,0x30)
+                    ||(U(checkedState,4)&0x1fff)==0||(U(checkedState,4)&0xc0000000)!=0)continue;
+                effects.Add(Obj("handle",handle,"name",name,"owner",BitConverter.ToUInt16(effect,0x1a),
+                    "flags",BitConverter.ToUInt16(effect,0x24),"start_time",U(effect,0x30),"origin",Floats(checkedState,0x48,3)));
+            }
+            return effects;
+        } catch(Exception error) {return Obj("error",error.Message);}
+    }
+    object EffectVisibility() {
+        try {
+            uint pointer=Word(0x029728e8);byte[] data=Read(pointer,0x1010);
+            uint count=U(data,0x1000);if(count>256||Word(0x029728e8)!=pointer)
+                throw new Exception("FX visibility buffer changed during read");
+            return Obj("count",count,"buffer_base64",Convert.ToBase64String(data));
+        } catch(Exception error) {return Obj("error",error.Message);}
+    }
     public static void ExportReplay(IntPtr process) {
         var r=new ClientAssets(process);var frames=new List<object>();uint previousActive=uint.MaxValue;
         for(int i=0;i<400;i++) {
@@ -618,12 +681,12 @@ class ClientAssets {
                 "skip_y",BitConverter.ToSingle(r.Read(cg+0xa78+0xa8+8,4),0),
                 "skip_scale",BitConverter.ToSingle(r.Read(cg+0xa78+0xa8+0x14,4),0),
                 "delay",U(ps,0xa68),"client",U(ps,0x144),"target",U(ps,0xa6c),
-                "character",r.CharacterInfo(cg,U(ps,0x144)),"first_person",r.ViewModelNames(),"missiles",r.MissileStates(),
+                "character",r.CharacterInfo(cg,U(ps,0x144)),"first_person",r.ViewModelNames(),"missiles",r.MissileStates(),"smokes",r.SmokeStates(),"effects",r.EffectStates(),"effect_visibility",r.EffectVisibility(),
                 "pm_type",U(ps,4),"other_flags",U(ps,0x10),"command_time",U(ps,0),
                 "origin",Floats(ps,0x1c,3),"angles",Floats(ps,0x14c,3),
                 "weapon",U(ps,0x340),"weapon_state",U(ps,0x27c),"clip",U(ps,0x3e0),
-                "offhand_weapon",U(ps,0x32c),"lethal_weapon",U(ps,0x330),"tactical_weapon",U(ps,0x334),
-                "grenade_time",U(ps,0x34),"weapon_flags",U(ps,0x348),"offhand_count",r.ClipCount(ps,U(ps,0x32c)),"lethal_count",r.ClipCount(ps,U(ps,0x330)),
+                "offhand_weapon",U(ps,0x32c),"lethal_weapon",U(ps,0x330),"secondary_offhand_weapon",U(ps,0x334),"tactical_weapon",U(ps,0x338),
+                "grenade_time",U(ps,0x34),"weapon_flags",U(ps,0x348),"offhand_count",r.ClipCount(ps,U(ps,0x32c)),"lethal_count",r.ClipCount(ps,U(ps,0x330)),"tactical_count",r.ClipCount(ps,U(ps,0x338)),
                 "weapon_time",U(ps,0x270),"fire_count",U(ps,0x284),"queued_burst",U(ps,0x280)&1,
                 "weapon_delay",U(ps,0x274),"weapon_animation",U(ps,0x26c),
                 "cmd_melee_yaw",BitConverter.ToSingle(r.Read(input+0x365c+(command&255)*44+28,4),0),
@@ -1086,14 +1149,14 @@ class ClientAssets {
         byte[] states=r.Read(entities,2046*0x238);var impacts=new List<object>();
         for(int id=20;id<2046;id++) {
             int next=id*0x238+0xf0;
-            if(U(states,next+4)!=96)continue;
-            impacts.Add(Obj("entity",id,"type",96,"normal",U(states,next+0xa8),"surface",U(states,next+0x90),
+            uint type=U(states,next+4);if(type!=96&&type!=109)continue;
+            impacts.Add(Obj("entity",id,"type",type,"normal",U(states,next+0xa8),"surface",U(states,next+0x90),
                 "shooter",U(states,next+0x80),"flags",U(states,next+0xdc),"weapon",U(states,next+0xd0),
                 "hit_entity",U(states,next+0x88),"processed",U(states,id*0x238+0x20c),"origin",r.EntityOrigin(entities+(uint)next)));
         }
         // 0x561220 uses the registered WeaponDef's+d0c row, not a fixed M4.
         int weaponCount=Count(r.Word(0x07817b88),899);var weapons=new List<object>();var rows=new HashSet<uint>();
-        foreach(uint id in new uint[]{352,353,354,355})if(id<=weaponCount) {
+        foreach(uint id in new uint[]{95,352,353,354,355})if(id<=weaponCount) {
             uint def=r.Word(0x017f5a40+id*4);uint row=r.Word(def+0xd0c);
             if(row<1||row>9)continue;
             uint selected=new uint[]{0,0,2,8,4,5,7,10,12,13}[row];rows.Add(selected);

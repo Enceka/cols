@@ -26,6 +26,7 @@ mod game_perks;
 mod game_player;
 mod game_replay;
 pub mod game_server;
+mod game_smoke;
 pub mod game_state;
 mod game_top_players;
 mod game_weapon_registry;

@@ -42,6 +42,17 @@ pub enum ImpactEvent {
     #[default]
     Bullet,
     GrenadeExplosion,
+    SmokeExplosion {
+        start_time: u32,
+    },
+}
+impl ImpactEvent {
+    fn smoke_time(self) -> Option<u32> {
+        match self {
+            Self::SmokeExplosion { start_time } => Some(start_time),
+            _ => None,
+        }
+    }
 }
 
 impl ImpactSnapshot {
@@ -54,6 +65,7 @@ impl ImpactSnapshot {
             || self.normal_byte >= 162
             || self.surface > 30
             || !(1..900).contains(&self.weapon)
+            || self.event.smoke_time().is_some_and(|t| t > i32::MAX as u32)
         {
             return Err(LobbyError("invalid world bullet impact"));
         }
@@ -144,11 +156,15 @@ pub(crate) fn write_impacts_with_baselines(
         out.bits(0, 1); // retained
         out.bits(1, 1); // changed
         out.bits(1, 1); // zero position base
-        out.bits(22, 6); // last changed field
+        let smoke = impact.event.smoke_time();
+        let base_smoke = base.and_then(|b| b.event.smoke_time());
+        let smoke_fields = smoke.is_some() || base_smoke.is_some();
+        out.bits(if smoke_fields { 40 } else { 22 }, 6);
         gap(out, 1);
         out.bytes.push(match impact.event {
             ImpactEvent::Bullet => 96,
             ImpactEvent::GrenadeExplosion => 109,
+            ImpactEvent::SmokeExplosion { .. } => 115, // EV_CUSTOM_EXPLODE93
         });
         let mut previous = 0;
         for (index, value) in [
@@ -173,6 +189,16 @@ pub(crate) fn write_impacts_with_baselines(
             }
             previous = 6;
         }
+        if smoke_fields {
+            gap(out, 11 - previous);
+            let time = smoke.unwrap_or(0);
+            out.bits(u32::from(time != 0), 1);
+            if time != 0 {
+                out.bytes
+                    .extend_from_slice(&(time ^ base_smoke.unwrap_or(0)).to_le_bytes());
+            }
+            previous = 11;
+        }
         // shooter(field9)=local0, impact flags(field10)=0 inherit zero.
         gap(out, 16 - previous);
         out.bits(1, 1);
@@ -181,6 +207,11 @@ pub(crate) fn write_impacts_with_baselines(
         );
         gap(out, 22 - 16);
         out.bits(1, 1); // -96 compact world2046; 2047 would suppress FX
+        if smoke_fields {
+            gap(out, 40 - 22);
+            out.bits(1, 1); // ES+8 flags: -98 absolute30, not scalar XOR
+            out.bits(if smoke.is_some() { 0x40 } else { 0 }, 30);
+        }
     }
     Ok(())
 }
@@ -252,8 +283,15 @@ mod tests {
                     assert_eq!(r.bits(1).unwrap(), 1);
                     2046
                 }
-                n if n > 0 => {
+                -98 => {
                     assert_eq!(r.bits(1).unwrap(), 1);
+                    r.bits(30).unwrap()
+                }
+                n if n > 0 => {
+                    if r.bits(1).unwrap() == 0 {
+                        fields.insert(offset, 0);
+                        continue;
+                    }
                     let width = n as usize;
                     let rem = width % 8;
                     let mut value = r.bits(rem).unwrap();
@@ -278,6 +316,51 @@ mod tests {
             surface: 0,
             weapon: 352,
         }
+    }
+
+    #[test]
+    fn smoke_custom_event_keeps_original_begin_time_and_clears_reused_scalar_state() {
+        let smoke = ImpactSnapshot {
+            event: ImpactEvent::SmokeExplosion { start_time: 12500 },
+            weapon: 236,
+            ..impact()
+        };
+        for alignment in 0..8 {
+            let mut out = Writer::default();
+            out.bits(0x55, alignment);
+            write_impacts_with_baselines(&mut out, &[smoke], &[], false).unwrap();
+            out.bytes.push(0xee);
+            let mut r = Reader::new(&out.bytes);
+            r.bits(alignment).unwrap();
+            let (_, fields) = decode(&mut r);
+            assert_eq!(fields[&4], 22 + 93);
+            assert_eq!(fields[&8], 0x40);
+            assert_eq!(fields[&0x58], 12500);
+            assert_eq!(fields[&0xd0], 236);
+            assert_eq!(r.u8().unwrap(), 0xee);
+            let grenade = ImpactSnapshot {
+                event: ImpactEvent::GrenadeExplosion,
+                weapon: 95,
+                ..smoke
+            };
+            let mut delta = Writer::default();
+            delta.bits(0x55, alignment);
+            write_impacts_with_baselines(&mut delta, &[grenade], &[smoke], false).unwrap();
+            delta.bytes.push(0xee);
+            let mut r = Reader::new(&delta.bytes);
+            r.bits(alignment).unwrap();
+            let (_, fields) = decode(&mut r);
+            assert_eq!(fields[&4], 109);
+            assert_eq!(fields[&8], 0);
+            assert_eq!(fields[&0x58], 0);
+            assert_eq!(fields[&0xd0] ^ 236, 95);
+            assert_eq!(r.u8().unwrap(), 0xee);
+        }
+        let names: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../fixtures/protocol/native-event-names-3.3.3.3.json"
+        ))
+        .unwrap();
+        assert_eq!(names["names"][93], "EV_CUSTOM_EXPLODE");
     }
 
     #[test]

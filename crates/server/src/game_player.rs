@@ -567,7 +567,7 @@ impl Player {
         self.apply_aim(cmd, elapsed);
         self.attack_held = cmd.buttons & self.current.attack_mask() != 0;
         self.melee_held = cmd.buttons & 4 != 0;
-        self.offhand_held = cmd.buttons & 0xc000;
+        self.offhand_held = cmd.buttons & 0x14000;
         self.last_angles = Some(cmd.angles);
     }
 
@@ -1359,7 +1359,7 @@ impl Player {
                     self.current.equipment.firing.as_mut().unwrap().state = 18;
                     self.grenade_time = definition.fuse_msec;
                 }
-                18 if cmd.buttons & (if slot == 0 { 0x4000 } else { 0x8000 }) == 0 => {
+                18 if cmd.buttons & (if slot == 0 { 0x4000 } else { 0x10000 }) == 0 => {
                     self.current.animate(
                         19,
                         2,
@@ -1391,7 +1391,7 @@ impl Player {
         }
         let slot = if cmd.buttons & 0x4000 != 0 && self.offhand_held & 0x4000 == 0 {
             0
-        } else if cmd.buttons & 0x8000 != 0 && self.offhand_held & 0x8000 == 0 {
+        } else if cmd.buttons & 0x10000 != 0 && self.offhand_held & 0x10000 == 0 {
             1
         } else {
             return false;
@@ -1767,6 +1767,34 @@ mod tests {
         p.apply(&cmd(2600, 0x4000));
         assert!(p.take_throws().is_empty());
         assert_eq!(p.equipment().weapon, 352);
+        assert_eq!(p.equipment().ammo.unwrap().clip, ammo.clip);
+    }
+    #[test]
+    fn tactical_quick_throw_preserves_the_frag_and_does_not_cook_smoke_while_held() {
+        let mut p = grenade_player("frag_grenade_mp");
+        let ammo = p.equipment().ammo.unwrap();
+        p.offhands[1] = Some(crate::game_grenade::Equipped {
+            definition: crate::game_grenade::captured("smoke_grenade_mp"),
+            count: 1,
+        });
+        for time in [1100, 1180, 1780, 5000] {
+            p.apply(&cmd(time, 0x10000));
+        }
+        assert_eq!(p.equipment().firing.unwrap().state, 18);
+        assert_eq!(p.equipment().offhand_weapon, 236);
+        assert_eq!(p.equipment().grenade_time, 1000);
+        assert!(p.take_throws().is_empty());
+        p.apply(&cmd(5100, 0));
+        p.apply(&cmd(5229, 0));
+        let thrown = p.take_throws();
+        assert_eq!(thrown.len(), 1);
+        assert_eq!(thrown[0].fuse_msec, 1000);
+        assert_eq!(thrown[0].definition.index, 236);
+        assert!(!thrown[0].in_hand);
+        p.apply(&cmd(5229, 0));
+        assert!(p.take_throws().is_empty());
+        assert_eq!(p.equipment().offhands[1].unwrap().count, 0);
+        assert_eq!(p.equipment().offhands[0].unwrap().count, 1);
         assert_eq!(p.equipment().ammo.unwrap().clip, ammo.clip);
     }
     #[test]

@@ -389,7 +389,7 @@ impl BotController {
         self.frame(now, Some(shot))
     }
 
-    fn eye(&self) -> [f32; 3] {
+    pub(crate) fn eye(&self) -> [f32; 3] {
         [
             self.motion.origin[0],
             self.motion.origin[1],

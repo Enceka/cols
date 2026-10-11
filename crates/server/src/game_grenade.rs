@@ -22,6 +22,8 @@ pub(crate) struct Definition {
     pub fuse_msec: u16,
     pub cook: bool,
     explosion_kind: u32,
+    #[serde(default)]
+    pub smoke: Option<crate::game_smoke::Definition>,
     pub radius: u16,
     pub inner_damage: u16,
     pub outer_damage: u16,
@@ -55,17 +57,22 @@ impl Definition {
     fn supported(&self) -> bool {
         self.weapon_type == 1
             && self.weapon_class == 6
-            && self.explosion_kind == 0
-            && matches!(self.offhand_class, 1 | 5)
-            && matches!(
-                self.name.as_str(),
-                "frag_grenade_mp"
-                    | "fragholiday_grenade_mp"
-                    | "fragshort_grenade_mp"
-                    | "fragtech_grenade_mp"
-                    | "semtex_mp"
-                    | "stielhandgranate_mp"
-            )
+            && ((self.explosion_kind == 5
+                && self.offhand_class == 2
+                && self.name == "smoke_grenade_mp"
+                && self.smoke.as_ref().is_some_and(|s| s.valid()))
+                || (self.explosion_kind == 0
+                    && matches!(self.offhand_class, 1 | 5)
+                    && self.smoke.is_none()
+                    && matches!(
+                        self.name.as_str(),
+                        "frag_grenade_mp"
+                            | "fragholiday_grenade_mp"
+                            | "fragshort_grenade_mp"
+                            | "fragtech_grenade_mp"
+                            | "semtex_mp"
+                            | "stielhandgranate_mp"
+                    )))
     }
     fn validate(&self) -> Result<()> {
         ensure!(
@@ -78,7 +85,7 @@ impl Definition {
                 && self.throw_msec > 0
                 && self.prepare_msec > 0
                 && self.fuse_msec > 0
-                && self.radius > 0
+                && (self.smoke.is_some() || self.radius > 0)
                 && self.inner_damage >= self.outer_damage
                 && self
                     .parallel
@@ -127,7 +134,10 @@ pub(crate) fn resolve(snapshot: &[u8], class: u8, owned: &[u32]) -> Result<[Opti
             tracing::warn!(item=id, weapon=%def.name, "selected offhand effect is not available yet");
             continue;
         }
-        ensure!(slot == 0, "lethal grenade equipped in the tactical slot");
+        ensure!(
+            slot == usize::from(def.smoke.is_some()),
+            "offhand equipped in the wrong slot"
+        );
         def.validate()?;
         let [offset, bit] = CATALOG.double_ammo_offsets[usize::from(class)][slot];
         let double = snapshot
@@ -175,6 +185,7 @@ struct Missile {
 }
 #[derive(Clone)]
 pub(crate) struct Explosion {
+    pub time: u32,
     pub origin: [f32; 3],
     pub normal: [f32; 3],
     pub definition: Definition,
@@ -281,6 +292,7 @@ impl Grenades {
             }
             if now >= missile.expires {
                 explosions.push(Explosion {
+                    time: missile.expires,
                     origin: missile.snapshot.origin,
                     normal: [0.0, 0.0, 1.0],
                     definition: missile.definition.clone(),

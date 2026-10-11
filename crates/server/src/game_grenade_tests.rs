@@ -53,6 +53,59 @@ fn world(wall: bool) -> Collision {
     Collision::load(file.path()).unwrap()
 }
 #[test]
+fn saved_tactical_smoke_uses_its_own_count_and_fuse_without_explosive_damage() {
+    let mut snapshot = vec![0; 32768];
+    snapshot[4418..4422].copy_from_slice(&60001u32.to_le_bytes());
+    let layout: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../fixtures/protocol/passive-skills-3.3.3.3.json"
+    ))
+    .unwrap();
+    let tactical = layout["class_offsets"][0][7].as_u64().unwrap() as usize;
+    snapshot[tactical..tactical + 4].copy_from_slice(&60006u32.to_le_bytes());
+    let equipped = resolve(&snapshot, 0, &[60000, 60005]).unwrap();
+    assert_eq!(equipped[0].as_ref().unwrap().definition.index, 95);
+    let smoke = equipped[1].as_ref().unwrap();
+    assert_eq!(
+        (
+            smoke.definition.index,
+            smoke.count,
+            smoke.definition.fuse_msec
+        ),
+        (236, 1, 1000)
+    );
+    assert!(!smoke.definition.cook);
+    let [offset, bit] = CATALOG.double_ammo_offsets[0][1];
+    snapshot[offset] |= 1 << bit;
+    let equipped = resolve(&snapshot, 0, &[60000, 60005]).unwrap();
+    assert_eq!(equipped[1].as_ref().unwrap().count, 2);
+    assert_eq!(equipped[0].as_ref().unwrap().count, 1);
+    assert!(resolve(&snapshot, 0, &[60000]).is_err());
+    let collision = world(false);
+    let mut flight = Grenades::default();
+    assert!(flight.launch(
+        Throw {
+            time: 1000,
+            angles: [0; 3],
+            definition: smoke.definition.clone(),
+            fuse_msec: 1000,
+            in_hand: false,
+            dropped: false
+        },
+        [0.0, 0.0, 60.0],
+        [0.0; 3],
+        &collision
+    ));
+    assert!(flight.advance(1999, &collision).is_empty());
+    let explosion = flight.advance(2000, &collision).pop().unwrap();
+    assert_eq!(explosion.time, 2000);
+    assert_eq!(
+        radius_damage(&explosion, explosion.origin, 60.0, &collision),
+        0
+    );
+    assert!(flight.snapshots().is_empty());
+    assert!(flight.advance(3000, &collision).is_empty());
+}
+#[test]
 fn sphere_hits_walls_gravity_reaches_floor_and_explosion_fires_once() {
     let collision = world(true);
     let mut flight = Grenades::default();

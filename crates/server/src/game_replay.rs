@@ -64,6 +64,7 @@ impl View {
 }
 #[derive(Clone)]
 pub(crate) struct Frame {
+    pub smokes: Vec<codol_protocol::game_smoke::SmokeSnapshot>,
     pub missiles: Vec<codol_protocol::game_missile::MissileSnapshot>,
     pub time: u32,
     pub views: Vec<View>,
@@ -221,7 +222,7 @@ impl Replay {
             return None;
         }
         let source = p.source_start + elapsed;
-        let Some(frame) = self.frames.iter().rev().find(|f| f.time <= source).cloned() else {
+        let Some(mut frame) = self.frames.iter().rev().find(|f| f.time <= source).cloned() else {
             self.finish("history unavailable");
             return None;
         };
@@ -237,6 +238,19 @@ impl Replay {
         if delay == 0 || delay > 10_000 {
             self.finish("invalid history time");
             return None;
+        }
+        // Native FX uses CGTime directly. Rebase persistent smoke and EV93's
+        // begin time alongside the view; replayDelay is only a cleanup cutoff.
+        for smoke in &mut frame.smokes {
+            smoke.start_time = smoke.start_time.wrapping_add(delay);
+            smoke.end_time = smoke.end_time.wrapping_add(delay);
+        }
+        for impact in &mut frame.impacts {
+            if let codol_protocol::game_impact::ImpactEvent::SmokeExplosion { start_time } =
+                &mut impact.event
+            {
+                *start_time = start_time.wrapping_add(delay);
+            }
         }
         // Network baseline epochs distinguish live -> replay -> live, even
         // when none of the first replay packets have been acknowledged yet.
@@ -318,6 +332,7 @@ mod tests {
             events: None,
         };
         Frame {
+            smokes: vec![],
             missiles: vec![],
             time,
             views: vec![View {
@@ -344,6 +359,43 @@ mod tests {
             replay.record(frame(time, 1));
         }
         replay
+    }
+    #[test]
+    fn smoke_snapshot_and_custom_explosion_rebase_together_without_changing_history() {
+        let mut replay = Replay::default();
+        for time in (1000..=4500).step_by(50) {
+            let mut f = frame(time, 1);
+            f.smokes.push(codol_protocol::game_smoke::SmokeSnapshot {
+                entity_number: 1708,
+                origin: [10.0, 20.0, 2.0],
+                weapon: 236,
+                start_time: 1000,
+                end_time: 61001,
+                present: true,
+                generation: 1,
+            });
+            f.impacts.push(codol_protocol::game_impact::ImpactSnapshot {
+                event: codol_protocol::game_impact::ImpactEvent::SmokeExplosion {
+                    start_time: 1000,
+                },
+                entity_number: 100,
+                origin: [10.0, 20.0, 2.0],
+                normal_byte: 5,
+                surface: 0,
+                weapon: 236,
+            });
+            replay.record(f);
+        }
+        assert!(replay.start(Kind::Death, 4000, 4000, 7));
+        let first = replay.sample(5000).unwrap();
+        let smoke = first.frame.smokes[0];
+        assert_eq!((smoke.start_time, smoke.end_time), (5000, 65001));
+        assert_eq!(
+            first.frame.impacts[0].event,
+            codol_protocol::game_impact::ImpactEvent::SmokeExplosion { start_time: 5000 }
+        );
+        assert_eq!(replay.frames.front().unwrap().smokes[0].start_time, 1000);
+        assert_eq!(replay.frames.front().unwrap().smokes[0].end_time, 61001);
     }
     #[test]
     fn death_view_replays_recorded_killer_with_rebased_clocks_then_returns_live() {

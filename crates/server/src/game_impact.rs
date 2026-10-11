@@ -38,6 +38,25 @@ impl ImpactEvents {
             codol_protocol::game_impact::ImpactEvent::GrenadeExplosion,
         )
     }
+    pub fn smoke(
+        &mut self,
+        now: u32,
+        start_time: u32,
+        weapon: u16,
+        origin: [f32; 3],
+        normal: [f32; 3],
+    ) -> Option<ImpactSnapshot> {
+        self.push_event(
+            now,
+            weapon,
+            crate::game_combat::WorldImpact {
+                origin,
+                normal,
+                surface: 0,
+            },
+            codol_protocol::game_impact::ImpactEvent::SmokeExplosion { start_time },
+        )
+    }
     fn push_event(
         &mut self,
         now: u32,

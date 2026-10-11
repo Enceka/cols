@@ -214,7 +214,8 @@ class ReadClientState {
                         Field(process,"predicted_weapon",checked(cg+0x340),4);
                         Field(process,"predicted_offhand_weapon",checked(cg+0x32c),4);
                         Field(process,"predicted_lethal_weapon",checked(cg+0x330),4);
-                        Field(process,"predicted_tactical_weapon",checked(cg+0x334),4);
+                        Field(process,"predicted_secondary_offhand_weapon",checked(cg+0x334),4);
+                        Field(process,"predicted_tactical_weapon",checked(cg+0x338),4);
                         Field(process,"predicted_grenade_time",checked(cg+0x34),4);
                         for(uint slot=0;slot<4;slot++) {
                             Field(process,"predicted_clip_key_"+slot,checked(cg+0x3dc+slot*12),4);
