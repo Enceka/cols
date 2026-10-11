@@ -16,6 +16,7 @@ from pathlib import Path
 
 from prepare_bot_locomotion import blocks, rawfile, select_action
 from prepare_game_state import CLIENT_SHA256
+from prepare_player_appearance import GROUPS, native_hash
 
 
 def rows(table):
@@ -112,7 +113,68 @@ def model_registry(state, capture):
     return models,list(registered)
 
 
-def prepare(state, capture, arsenal, stream_outfits=False):
+class NativeBotCharacters:
+    """Resolve the existing outfit through the retained native item banks."""
+    def __init__(self, capture):
+        if capture.get("client_sha256") != CLIENT_SHA256 or capture.get("read_only") is not True:
+            raise ValueError("native Bot character capture identity mismatch")
+        raw = lambda key: base64.b64decode(capture[key], validate=True)
+        self.bits = list(struct.unpack("<11I", raw("packing_bits_base64")))
+        self.records = list(struct.iter_unpack("<HHI", raw("variant_items_base64")))
+        self.spans = list(struct.iter_unpack("<HH", raw("variant_groups_base64")))
+        if len(self.spans) != 11 or any(s+n > len(self.records) for s,n in self.spans) or any(b > 10 for b in self.bits):
+            raise ValueError("invalid native Bot character groups")
+        offsets = [0x18,0x1c,0x20,0x14,0x24,0x28,0x2c,0x44,0x48,0x4c,0x54,0x40,0x50,0x30,0x34,0x38,0x3c,0x58,0x5c,0x60,0x64]
+        if list(struct.iter_unpack("<iii", raw("packing_fields_base64"))) != [(o,10 if o<0x40 else 6,0) for o in offsets]:
+            raise ValueError("native Bot character field order mismatch")
+        for key, expected in [
+            ("selector_hashes_base64", [native_hash(n) for n in ["m","f","tf","sc","zm","wht","yel","blk","cau"]]),
+            ("gender_selectors_base64", [2,3,4]),
+            ("faction_selectors_base64", [0,1]),
+            ("skin_selectors_base64", [5,6,7,8]),
+        ]:
+            if [v[0] for v in struct.iter_unpack("<I", raw(key))] != expected:
+                raise ValueError("native Bot character selectors mismatch")
+        self.variants = capture["variants"]
+
+    def compose(self, items, gender, team, models):
+        if gender not in ("m", "f") or team not in (1,2):
+            raise ValueError("invalid Bot character gender/team")
+        indices = [0]*11
+        for group,item in items.items():
+            g = GROUPS.index(group.lower())
+            start,count = self.spans[g]
+            matches = [r[0] for r in self.records[start:start+count] if r[2] == native_hash(item)]
+            if len(matches) != 1 or not 0 < matches[0] <= 1 << self.bits[g] or self.bits[g] == 0:
+                raise ValueError("Bot character item absent/ambiguous: " + item)
+            indices[g] = matches[0]
+        if not all(indices[:5]):
+            raise ValueError("Bot character lacks mandatory groups")
+        # A single native skin selector applies to all groups. Prefer the
+        # composition closest to the prepared model list, but never combine
+        # incompatible head/hand tones just because each has a table entry.
+        candidates = []
+        for skin in range(4):
+            mask = (0x80000000 >> int(gender == "f")) | (0x80000000 >> (3 if team == 1 else 2)) | (0x80000000 >> (5+skin))
+            selected = []
+            for group,index in zip(GROUPS,indices):
+                if index == 0: continue
+                for variant in self.variants:
+                    if variant["group"] != group or variant["index"] != index: continue
+                    selectors = base64.b64decode(variant["selectors_base64"], validate=True)
+                    if len(selectors) != 6: raise ValueError("invalid native Bot variant")
+                    if struct.unpack_from("<I",selectors,2)[0] & mask == mask:
+                        selected.append(variant["model"].lower());break
+            if len(selected) == sum(i != 0 for i in indices):
+                score = sum(n in models for n in selected)
+                candidates.append((score,-skin,selected))
+        if not candidates:
+            raise ValueError("Bot outfit has no consistent native skin variant")
+        _,negative_skin,selected = max(candidates)
+        return dict(groups=indices,bits=self.bits,gender=int(gender=="f"),faction=int(team==1),skin=-negative_skin), selected
+
+
+def prepare(state, capture, arsenal, stream_outfits=False, native_characters=None):
     for value in (state, capture, arsenal):
         if value["client_sha256"] != CLIENT_SHA256 or value["ncs_crc"] != state["ncs_crc"]:
             raise ValueError("Bot capture client/map identity mismatch")
@@ -143,16 +205,20 @@ def prepare(state, capture, arsenal, stream_outfits=False):
     def outfit(column, team):
         suffix, faction = ("_sc", "sc") if team == 1 else ("", "tf")
         gender = records["charGender" + suffix][column]
-        names = []
+        names,items = [],{}
         for group in ("FPA", "FJA", "BOO", "HAN", "HEA", "HEG", "ELP", "KNP"):
             item = records["char" + group + suffix][column]
             if not item:
                 continue
             table = capture["tables"]["mp/cocharitems/" + group.lower() + ".csv"]
             names.append(variant(table, item, gender, faction))
+            items[group] = item
         if len(names) < 5:
             raise ValueError("native Bot outfit lacks mandatory body parts")
-        return [model_id(n) for n in names]
+        character = None
+        if native_characters:
+            character,names = native_characters.compose(items,gender,team,names)
+        return [model_id(n) for n in names],character
 
     for client in range(1, 12):
         column = 1 + (client - 1) % 9
@@ -170,11 +236,13 @@ def prepare(state, capture, arsenal, stream_outfits=False):
         outfits=[]
         for team in [1,2]:
             try:
-                parts=outfit(column,team)
+                parts,character=outfit(column,team)
             except ValueError as error:
+                if native_characters: raise
                 fallbacks.append({"client":client,"team":team,"class":records["uniqueName"][column],"reason":str(error)})
-                parts=outfit(1,team)
+                parts,character=outfit(1,team)
             outfits.append(dict(model=parts[0],attachment_models=parts[1:]+[0]*(11-len(parts))))
+            if character: outfits[-1]["character"] = character
         team=state["match_config"].get("teams",[2]*6+[1]*6)[client]
         parts=[outfits[team-1]["model"]]+[i for i in outfits[team-1]["attachment_models"] if i]
         animation["model"] = parts[0]
@@ -193,10 +261,12 @@ def main():
     parser.add_argument("--characters", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--stream-outfits", action="store_true", help="allow captured DB placeholder names through the native asynchronous model loader")
+    parser.add_argument("--native-characters", type=Path, help="read-only retained outfit cache for native sleeves/gloves in Bot replays")
     args = parser.parse_args()
     state = json.loads(args.game_state.read_text())
     arsenal_path = args.game_state.parent / state["arsenal_file"]
-    result = prepare(state, json.loads(args.characters.read_text()), json.loads(arsenal_path.read_text()), args.stream_outfits)
+    native = NativeBotCharacters(json.loads(args.native_characters.read_text())) if args.native_characters else None
+    result = prepare(state, json.loads(args.characters.read_text()), json.loads(arsenal_path.read_text()), args.stream_outfits, native)
     for name in ("arsenal_file", "collision_file"):
         state[name] = str((args.game_state.parent / state[name]).resolve())
     with args.output.open("x") as target:

@@ -512,6 +512,28 @@ class ClientAssets {
             "client_sha256","e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b",
             "map",map,"ncs_crc",r.Word(0x02df7d90),"captured_contents_mask",0x02814011|0x0280e831,"brushes",brushes,"triangles",triangles)));
     }
+    object ViewModelNames() {
+        try {
+            uint slot=Word(0x07817bb8);if(slot>=256)throw new Exception("invalid viewmodel slot");
+            uint views=Word(0x01a19510+slot*4)^0x39641402;
+            var hands=new List<object>();
+            for(uint hand=0;hand<2;hand++) {
+                uint dobj=Word(views+hand*24);if(dobj==0)continue;
+                int count=Count(Read(dobj+9,1)[0],32);uint list=Word(dobj+0xc0);
+                var names=new List<string>();
+                for(uint i=0;i<count;i++)names.Add(Name(Word(Word(list+i*4))));
+                if(dobj!=Word(views+hand*24)||list!=Word(dobj+0xc0))throw new Exception("viewmodel changed during read");
+                hands.Add(Obj("hand",hand,"models",names));
+            }
+            return hands;
+        } catch(Exception error) {return Obj("error",error.Message);}
+    }
+    object CharacterInfo(uint cg,uint client) {
+        if(client>=19)return null;
+        uint ci=cg+0x15dea8+client*0x3b8;
+        return Obj("client",client,"parts",Word(ci+0x38c),"faction",Word(ci+0x390),
+            "gender",Word(ci+0x394),"skin",Word(ci+0x398));
+    }
     public static void ExportReplay(IntPtr process) {
         var r=new ClientAssets(process);var frames=new List<object>();uint previousActive=uint.MaxValue;
         for(int i=0;i<400;i++) {
@@ -540,6 +562,7 @@ class ClientAssets {
                 "skip_y",BitConverter.ToSingle(r.Read(cg+0xa78+0xa8+8,4),0),
                 "skip_scale",BitConverter.ToSingle(r.Read(cg+0xa78+0xa8+0x14,4),0),
                 "delay",U(ps,0xa68),"client",U(ps,0x144),"target",U(ps,0xa6c),
+                "character",r.CharacterInfo(cg,U(ps,0x144)),"first_person",r.ViewModelNames(),
                 "pm_type",U(ps,4),"other_flags",U(ps,0x10),"command_time",U(ps,0),
                 "origin",Floats(ps,0x1c,3),"angles",Floats(ps,0x14c,3),
                 "weapon",U(ps,0x340),"weapon_state",U(ps,0x27c),"clip",U(ps,0x3e0),
@@ -746,6 +769,8 @@ class ClientAssets {
             uint entities=r.Word(0x01a19510+entitySlot*4)^0x2168f672;
             uint entity=entities+id*0x238;
             clients.Add(Obj("client",id,"valid",r.Word(ci),"current_valid",r.Word(ci+4),
+                "character_parts",r.Word(ci+0x38c),"character_faction",r.Word(ci+0x390),
+                "character_gender",r.Word(ci+0x394),"character_skin",r.Word(ci+0x398),
                 "team",r.Word(ci+0x80),"cached_weapon",r.Word(ci+0x324),"entity_weapon",r.Word(entity+0xf0+0xd0),
                 "legs_animation",r.Word(entity+0xf0+0xd4),"torso_animation",r.Word(entity+0xf0+0xd8),
                 "legs_lerp_animation",r.Word(ci+0x170),"legs_lerp_rate",BitConverter.ToSingle(r.Read(ci+0x194,4),0),

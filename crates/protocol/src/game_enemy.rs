@@ -204,7 +204,7 @@ pub(crate) fn write_player_clients(
     players: &[EnemySnapshot],
     establish_baseline: bool,
 ) -> Result<(), LobbyError> {
-    write_player_clients_with_card(out, players, establish_baseline, None, false, None)
+    write_player_clients_with_card(out, players, establish_baseline, None, false, &[])
 }
 
 pub(crate) fn write_player_clients_with_card(
@@ -213,12 +213,15 @@ pub(crate) fn write_player_clients_with_card(
     establish_baseline: bool,
     local_card: Option<crate::game_player_card::Card>,
     held_weapons: bool,
-    local_character: Option<crate::game_character::Character>,
+    characters: &[Option<crate::game_character::Character>],
 ) -> Result<(), LobbyError> {
     if let Some(card) = local_card {
         card.validate()?;
     }
-    if let Some(character) = local_character {
+    if characters.len() > 19 {
+        return Err(LobbyError("too many native character identities"));
+    }
+    for character in characters.iter().flatten() {
         character.fields()?;
     }
     for (i, player) in players.iter().enumerate() {
@@ -239,7 +242,10 @@ pub(crate) fn write_player_clients_with_card(
                 *player,
                 local_card.filter(|_| player.client_index == 0),
                 held_weapons,
-                local_character.filter(|_| player.client_index == 0),
+                characters
+                    .get(usize::from(player.client_index))
+                    .copied()
+                    .flatten(),
             )?;
         }
     }
@@ -593,7 +599,7 @@ mod tests {
     }
 
     #[test]
-    fn native_character_fields_replace_model_slots_only_for_local_identity() {
+    fn native_character_fields_preserve_each_identity_and_explicit_podium_models() {
         let character = crate::game_character::Character {
             groups: [19, 1, 49, 79, 6, 0, 12, 0, 0, 0, 0],
             bits: [7, 4, 8, 8, 6, 7, 8, 5, 0, 8, 0],
@@ -601,25 +607,37 @@ mod tests {
             faction: 1,
             skin: 3,
         };
+        let remote_character = crate::game_character::Character {
+            groups: [10, 1, 12, 85, 5, 0, 0, 0, 0, 0, 0],
+            gender: 0,
+            faction: 0,
+            skin: 0,
+            ..character
+        };
         for alignment in 0..8 {
             let mut local = enemy();
             local.client_index = 0;
             local.entity_number = 0;
+            let podium = EnemySnapshot {
+                client_index: 12,
+                entity_number: 12,
+                ..enemy()
+            };
             let mut out = Writer::default();
             out.bits(0, alignment);
             write_player_clients_with_card(
                 &mut out,
-                &[local, enemy()],
+                &[local, enemy(), podium],
                 true,
                 None,
                 true,
-                Some(character),
+                &[Some(character), Some(remote_character)],
             )
             .unwrap();
             out.bytes.push(0xa7);
             let mut r = Reader::new(&out.bytes);
             r.bits(alignment).unwrap();
-            for client in [0, 1] {
+            for client in [0, 1, 12] {
                 assert_eq!(r.bits(1).unwrap(), 1);
                 assert_eq!(r.bits(1).unwrap(), 0);
                 assert_eq!(r.bits(5).unwrap(), client);
@@ -627,11 +645,16 @@ mod tests {
                 assert_eq!(r.bits(1).unwrap(), 1);
                 let fields = read_fields(&mut r, &fixture()["client"], 7, true, &BTreeMap::new());
                 assert_eq!(fields[&0x114], 27 + client);
-                if client == 0 {
-                    assert_eq!(fields[&0x124], 6);
-                    assert_eq!(fields[&0x128], 1);
-                    assert_eq!(fields[&0x12c], 1);
-                    assert_eq!(fields[&0x130], 3);
+                if client < 12 {
+                    let character = if client == 0 {
+                        character
+                    } else {
+                        remote_character
+                    };
+                    assert_eq!(fields[&0x124], if client == 0 { 6 } else { 5 });
+                    assert_eq!(fields[&0x128], u32::from(character.faction));
+                    assert_eq!(fields[&0x12c], u32::from(character.gender));
+                    assert_eq!(fields[&0x130], u32::from(character.skin));
                     let mut packed = Vec::new();
                     for row in fixture()["client"]["fields"].as_array().unwrap() {
                         let offset = row[0].as_u64().unwrap() as u32;
@@ -682,7 +705,7 @@ mod tests {
             };
             let mut out = Writer::default();
             out.bits(0, alignment);
-            write_player_clients_with_card(&mut out, &[local], true, Some(card), false, None)
+            write_player_clients_with_card(&mut out, &[local], true, Some(card), false, &[])
                 .unwrap();
             let mut reader = Reader::new(&out.bytes);
             reader.bits(alignment).unwrap();

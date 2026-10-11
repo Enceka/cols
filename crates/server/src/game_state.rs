@@ -1537,6 +1537,18 @@ impl PreparedGameState {
         world: SnapshotWorld<'_>,
     ) -> Result<Vec<u8>> {
         let motion = world.motion;
+        // Both roster and local appearance are frozen for this match, so
+        // archived views use the same identity even after a backpack refresh.
+        let mut characters = [None; 12];
+        characters[0] = self.player_appearance.as_ref().and_then(|a| a.character);
+        if let Some(config) = &self.match_config {
+            for (i, bot) in config.roster.iter().enumerate() {
+                characters[i + 1] = bot
+                    .outfits
+                    .as_ref()
+                    .and_then(|outfits| outfits[usize::from(config.teams[i + 1] - 1)].character);
+            }
+        }
         Ok(codol_protocol::game_snapshot::player_frame_with_world(
             server_time,
             command_time,
@@ -1559,7 +1571,7 @@ impl PreparedGameState {
                 death_waypoints: world.death_waypoints,
                 replay: world.replay,
                 local_card: self.player_card,
-                local_character: self.player_appearance.as_ref().and_then(|a| a.character),
+                characters: &characters,
                 held_weapon_tag: self
                     .training_enemy
                     .as_ref()

@@ -210,7 +210,7 @@ pub fn player_frame_with_motion(
             death_waypoints: None,
             replay: None,
             local_card: None,
-            local_character: None,
+            characters: &[],
             held_weapon_tag: None,
             held_weapons_in_baseline: false,
             vitals: None,
@@ -236,7 +236,9 @@ pub struct WorldSnapshot<'a> {
     pub death_waypoints: Option<&'a [crate::game_hit_feedback::DeathWaypointSnapshot]>,
     pub replay: Option<ReplayView>,
     pub local_card: Option<crate::game_player_card::Card>,
-    pub local_character: Option<crate::game_character::Character>,
+    /// Match-frozen native compositions, indexed by client identity. Podium
+    /// copies without an entry retain their explicit third-person models.
+    pub characters: &'a [Option<crate::game_character::Character>],
     pub held_weapon_tag: Option<u8>,
     pub held_weapons_in_baseline: bool,
     pub vitals: Option<PlayerVitals>,
@@ -811,7 +813,7 @@ pub fn player_frame_with_world(
             establish_baseline,
             world.local_card,
             world.held_weapon_tag.is_some(),
-            world.local_character,
+            world.characters,
         )?;
     } else if let Some(enemy) = world.enemy {
         if world.held_weapon_tag.is_some() {
@@ -821,7 +823,7 @@ pub fn player_frame_with_world(
                 establish_baseline,
                 None,
                 true,
-                None,
+                world.characters,
             )?;
         } else {
             crate::game_enemy::write_enemy_client(&mut out, enemy, establish_baseline)?;

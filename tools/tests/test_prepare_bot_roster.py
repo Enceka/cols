@@ -3,11 +3,40 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from prepare_bot_roster import animation_config, rows, variant, model_registry
+from prepare_bot_roster import animation_config, rows, variant, model_registry, NativeBotCharacters
 from test_prepare_bot_locomotion import inputs
 
 
 class BotRosterPreparation(unittest.TestCase):
+    def test_native_bot_composition_uses_one_skin_and_preserves_item_identity(self):
+        import base64
+        import struct
+        from test_prepare_player_appearance import inputs as appearance_inputs
+        capture,_,_ = appearance_inputs()
+        enc = lambda values: base64.b64encode(struct.pack('<'+'I'*len(values),*values)).decode()
+        capture['packing_bits_base64'] = enc([7,4,8,8,6,7,8,5,0,8,0])
+        offsets=[0x18,0x1c,0x20,0x14,0x24,0x28,0x2c,0x44,0x48,0x4c,0x54,0x40,0x50,0x30,0x34,0x38,0x3c,0x58,0x5c,0x60,0x64]
+        capture['packing_fields_base64']=enc([v for o in offsets for v in (o,10 if o<0x40 else 6,0)])
+        capture['gender_selectors_base64']=enc([2,3,4])
+        capture['faction_selectors_base64']=enc([0,1])
+        capture['skin_selectors_base64']=enc([5,6,7,8])
+        for v in capture['variants']:
+            mask=0x60800000 if v['group']=='hea' else 0x64000000 if v['group']=='han' else 0x67800000
+            v['selectors_base64']=base64.b64encode(struct.pack('<HI',0,mask)).decode()
+        capture['variants'].append(dict(group='han',index=1,model='han_test_cau',selectors_base64=base64.b64encode(struct.pack('<HI',0,0x60800000)).decode()))
+        items={g:g+'_test' for g in ['fpa','boo','fja','han','hea']}
+        models=[g+'_test_tf' for g in items]
+        bank=NativeBotCharacters(capture)
+        character,chosen=bank.compose(items,'f',2,models)
+        self.assertEqual(character['groups'],[1]*5+[0]*6)
+        self.assertEqual((character['gender'],character['faction'],character['skin']),(1,0,3))
+        self.assertIn('han_test_cau',chosen)
+        self.assertNotIn('han_test_tf',chosen)
+        with self.assertRaises(ValueError): bank.compose(items,'f',1,models)
+        with self.assertRaises(ValueError): bank.compose(dict(items,han='unknown'),'f',2,models)
+        capture['read_only']=False
+        with self.assertRaises(ValueError): NativeBotCharacters(capture)
+
     def test_repreparation_reuses_explicit_models_but_not_unlisted_runtime_player_slots(self):
         state={"match_config":{"models":[[193,"bot_body"]]}}
         capture={"models":[{"model":4,"name":"inherited_body"},{"model":193,"name":"bot_body"},{"model":243,"name":"old_player"}]}

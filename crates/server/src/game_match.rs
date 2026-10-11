@@ -46,6 +46,8 @@ pub(crate) struct BotLoadout {
 pub(crate) struct BotOutfit {
     pub model: u16,
     pub attachment_models: [u16; 10],
+    #[serde(default)]
+    pub character: Option<codol_protocol::game_character::Character>,
 }
 impl BotLoadout {
     fn outfit(&self, team: u8) -> BotOutfit {
@@ -53,6 +55,7 @@ impl BotLoadout {
             BotOutfit {
                 model: self.animation.model,
                 attachment_models: self.attachment_models,
+                character: None,
             },
             |a| a[usize::from(team - 1)],
         )
@@ -79,7 +82,14 @@ impl MatchConfig {
         );
         for entry in &self.roster {
             entry.animation.validate()?;
-            for outfit in entry.outfits.iter().flatten() {
+            for (faction, outfit) in entry.outfits.iter().flatten().enumerate() {
+                if let Some(character) = outfit.character {
+                    character.fields()?;
+                    ensure!(
+                        character.faction == 1 - faction as u8,
+                        "Bot character faction mismatch"
+                    );
+                }
                 ensure!(
                     (1..1024).contains(&outfit.model)
                         && outfit.attachment_models.iter().all(|&i| i < 1024),
@@ -1287,13 +1297,15 @@ mod tests {
             serde_json::from_slice(&std::fs::read(profile.join("inventory.json")).unwrap())
                 .unwrap();
         let owned: Vec<u32> = serde_json::from_value(inventory["items"].clone()).unwrap();
+        let suffix =
+            std::env::var("CODOL_BOT_OUTFIT_SUFFIX").unwrap_or_else(|_| "faction-outfits".into());
         for name in [
             "tdm-afghan-hud-state",
             "tdm-killhouse-hud-state",
             "tdm-crash-tropical-state",
         ] {
             let state = crate::game_state::PreparedGameState::load(
-                &root.join(format!("{name}-faction-outfits.json")),
+                &root.join(format!("{name}-{suffix}.json")),
             )
             .unwrap();
             for teams in [default_teams(), default_teams().map(|t| 3 - t)] {

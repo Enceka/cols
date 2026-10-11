@@ -1,7 +1,8 @@
 //! Native custom-character clientState packing (0x40cbd0 / 0x51bc80).
 use crate::lobby::LobbyError;
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Character {
     /// One-based item indices in fpa/boo/fja/han/hea/ves/heg/elp/knp/eye/bar.
     pub groups: [u16; 11],
