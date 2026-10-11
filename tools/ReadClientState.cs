@@ -227,8 +227,12 @@ class ReadClientState {
                         }
                         Field(process,"predicted_paired_weapon",checked(cg+0x344),4);
                         Field(process,"predicted_weapon_fire_count",checked(cg+0x284),4);
-                        for(uint slot=0;slot<3;slot++)
+                        Field(process,"predicted_perk_display",checked(cg+0x4bc),1);
+                        Field(process,"native_xp_ready",0x0318b16b,1);
+                        for(uint slot=0;slot<3;slot++) {
                             Field(process,"predicted_perk_"+slot,checked(cg+0x4c0+slot*4),4);
+                            Field(process,"native_perk_id_"+slot,checked(cg+0x16be18+slot*4),4);
+                        }
                         for(uint slot=0;slot<5;slot++) {
                             Field(process,"predicted_ability_mask_"+slot,checked(cg+0x4cc+slot*4),4);
                             Field(process,"local_ability_mask_"+slot,checked(cg+0x15dea8+0xa8+slot*4),4);

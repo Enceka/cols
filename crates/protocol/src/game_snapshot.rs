@@ -224,6 +224,7 @@ pub fn player_frame_with_motion(
         equipment,
         angles,
         WorldSnapshot {
+            perk_display: false,
             local_abilities: None,
             bags: &[],
             bag_baselines: &[],
@@ -262,6 +263,8 @@ pub fn player_frame_with_motion(
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct WorldSnapshot<'a> {
+    /// Native perk_sidebar_hud operator239 reads PS+0x4bc (hint2 field122).
+    pub perk_display: bool,
     pub bags: &'a [crate::game_scavenger::BagSnapshot],
     pub bag_baselines: &'a [crate::game_scavenger::BagSnapshot],
     pub smokes: &'a [crate::game_smoke::SmokeSnapshot],
@@ -707,7 +710,13 @@ pub fn player_frame_with_world(
         }
     }
     if let Some(motion) = motion {
-        write_hint2_tail(&mut out, last_changed, motion, shellshock);
+        write_hint2_tail(
+            &mut out,
+            last_changed,
+            motion,
+            shellshock,
+            world.perk_display,
+        );
     }
     // 0x5a463d: stats presence, 4-bit mask, first stat is a short.
     out.bits(1, 1);
@@ -1030,6 +1039,7 @@ fn write_hint2_tail(
     last_changed: u32,
     motion: MotionSnapshot,
     shellshock: Option<ShellShockSnapshot>,
+    perk_display: bool,
 ) {
     // 0x5a4541..0x5a458d: hint-2 fields strictly below the last ordinary
     // field, in table order. No gaps and no enclosing gate. Width0 denotes
@@ -1046,7 +1056,7 @@ fn write_hint2_tail(
             16,
         ),
         (106, 0, 1),
-        (122, 0, 0),
+        (122, u32::from(perk_display), 0),
     ] {
         if index >= last_changed {
             break;
@@ -1391,6 +1401,7 @@ mod tests {
                         begin_time: 70_000,
                         duration_msec,
                     }),
+                    false,
                 );
                 out.bits(1, 1); // stats gate immediately follows the hint-2 tail
                 out.bits(1, 4);
@@ -1454,6 +1465,41 @@ mod tests {
         assert!(encode(Some([0.0; 3]), None, ShellShockSnapshot::default()).is_err());
     }
 
+    #[test]
+    fn perk_sidebar_gate_is_a_direct_bool_in_the_native_hint2_tail() {
+        for alignment in 0..8 {
+            for display in [false, true] {
+                let mut out = Writer::default();
+                out.bits(0x55, alignment);
+                write_hint2_tail(&mut out, 217, authoritative_motion(), None, display);
+                out.bytes.push(0xb6);
+                let mut r = Reader::new(&out.bytes);
+                r.bits(alignment).unwrap();
+                let table: serde_json::Value = serde_json::from_str(include_str!(
+                    "../../../fixtures/protocol/player-state-fields-3.3.3.3.json"
+                ))
+                .unwrap();
+                for (index, field) in table["fields"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .enumerate()
+                    .take(217)
+                {
+                    if field[2] != 2 {
+                        continue;
+                    }
+                    if index == 122 {
+                        assert_eq!(field, &serde_json::json!([0x4bc, -57, 2]));
+                        assert_eq!(r.bits(1).unwrap(), u32::from(display));
+                    } else {
+                        assert_eq!(r.bits(1).unwrap(), 0);
+                    }
+                }
+                assert_eq!(r.u8().unwrap(), 0xb6);
+            }
+        }
+    }
     #[test]
     fn shellshock_replay_uses_caller_delay_and_preserves_named_reset() {
         let equipment = Equipment {

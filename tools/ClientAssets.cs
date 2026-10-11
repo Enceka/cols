@@ -196,10 +196,12 @@ class ClientAssets {
                     if(menus.Count>=4096)throw new Exception("HUD menu budget");
                     string name=r.Name(r.Word(header));
                     bool selected=kind==26&&(name=="perk_sidebar_hud"||name=="perk_gained"||name=="hud_fullscreen"||name=="loadsprite"||name=="splash"||name=="extra_info"||name=="announcer_line"||name=="weaponbar_hd"||name=="weaponbar_hd_extend"||name=="kd_rate_bar"||name=="combat_performance"||name=="scorebar_hd"||name=="exp_bar");
+                    bool events=kind==26&&(name=="endgameupdate"||name=="uiscript_startserver"||name=="connect"||name=="pregame"||name=="round_start"||name=="perk_sidebar_hud");
                     menus.Add(Obj("type",kind,"name",name,"header_base64",Convert.ToBase64String(r.Read(header,64)),
-                        "layout",selected?r.Layout(header,0x194,0):null,
+                        "full_header_base64",selected?Convert.ToBase64String(r.Read(header,0x194)):null,
                         "visible_expression",selected?r.HudExpression(r.Word(header+0xe8)):null,
-                        "items",selected?r.HudItems(header):null));
+                        "items",selected?r.HudItems(header):null,
+                        "on_open",events?r.HudEvents(r.Word(header+0xd4)):null));
                 }
                 index=U(entries,at+20);
             }
@@ -223,6 +225,18 @@ class ClientAssets {
             "perk_display_dvar",r.Name(r.Word(r.Word(0x01a2e834))),"perk_display_dvar_value",r.Word(r.Word(0x01a2e834)+12),
             "perk_popup_dvar",r.Name(r.Word(r.Word(0x01a202f0))),"perk_popup_dvar_value",r.Word(r.Word(0x01a202f0)+12))));
     }
+    object HudEvents(uint pointer) {
+        if(pointer==0)return null;
+        try {
+            byte[] header=Read(pointer,8);int count=Count(U(header,0),128);byte[] pointers=Read(U(header,4),count*4);var handlers=new List<object>();
+            for(int i=0;i<count;i++) {
+                byte[] handler=Read(U(pointers,i*4),8);uint kind=U(handler,4),value=U(handler,0);
+                handlers.Add(Obj("kind",kind,"header_base64",Convert.ToBase64String(handler),
+                    "script_base64",kind==0?Convert.ToBase64String(StringBytes(value)):null));
+            }
+            return Obj("handlers",handlers);
+        } catch(Exception error) {return Obj("error",error.Message);}
+    }
     object HudExpression(uint pointer) { return HudExpression(pointer,0); }
     object HudExpression(uint pointer,int depth) {
         if(pointer==0)return null;
@@ -236,14 +250,15 @@ class ClientAssets {
                 "expression",type==1&&kind==3?HudExpression(value,depth+1):null));
         }
         return Obj("entries",entries,"entries_base64",Convert.ToBase64String(data));
-        } catch(Exception error) { return Obj("error",error.Message,"pointer",pointer,"layout",Layout(pointer,32,0)); }
+        } catch(Exception error) { return Obj("error",error.Message); }
     }
     object HudItems(uint menu) {
         int count=Count(Word(menu+0xb4),512);byte[] pointers=Read(Word(menu+0x120),count*4);var items=new List<object>();
         for(int i=0;i<count;i++) {
             uint pointer=U(pointers,i*4);
-            items.Add(Obj("index",i,"header_base64",Convert.ToBase64String(Read(pointer,0x188)),"layout",Layout(pointer,0x188,0),
-                "visible_expression",HudExpression(Word(pointer+0x144)),"alpha_expression",HudExpression(Word(pointer+0x148)),
+            byte[] header=Read(pointer,0x188);
+            items.Add(Obj("index",i,"header_base64",Convert.ToBase64String(header),"name",Name(U(header,0)),"text",Name(U(header,0xe8)),
+                "alpha_expression",HudExpression(Word(pointer+0x148)),
                 "text_expression",HudExpression(Word(pointer+0x150)),"material_expression",HudExpression(Word(pointer+0x158))));
         }
         return items;

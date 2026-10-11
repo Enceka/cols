@@ -10,6 +10,7 @@ mod loadout;
 
 #[derive(Default)]
 pub(crate) struct SnapshotWorld<'a> {
+    pub perk_display: bool,
     pub bags: &'a [codol_protocol::game_scavenger::BagSnapshot],
     pub bag_baselines: &'a [codol_protocol::game_scavenger::BagSnapshot],
     pub shellshock: Option<codol_protocol::game_shellshock::ShellShockSnapshot>,
@@ -1643,6 +1644,7 @@ impl PreparedGameState {
             equipment,
             angles,
             codol_protocol::game_snapshot::WorldSnapshot {
+                perk_display: world.perk_display,
                 bags: world.bags,
                 bag_baselines: world.bag_baselines,
                 shellshock: world.shellshock,
