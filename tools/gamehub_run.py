@@ -54,8 +54,15 @@ def engines():
 
 
 def stop_prefix(engine, env):
-    subprocess.run([str(engine / "bin/wineserver"), "-k"], env=env,
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15, check=True)
+    stopped = subprocess.run([str(engine / "bin/wineserver"), "-k"], env=env,
+                             capture_output=True, text=True, timeout=15)
+    # Backend startup can fail before Wine has started. Its quiet status1
+    # means no prefix server; verify that state instead of masking the cause.
+    if stopped.returncode == 1 and not stopped.stdout and not stopped.stderr:
+        subprocess.run([str(engine / "bin/wineserver"), "-w"], env=env,
+                       capture_output=True, text=True, timeout=15, check=True)
+    else:
+        stopped.check_returncode()
 
 
 def trust_lab_certificate(work, certificate, output, backups):
@@ -101,6 +108,7 @@ def main():
     parser.add_argument("--game-map-catalog", type=Path, help="captured preparations for native room map selection")
     parser.add_argument("--native-bot-rooms", action="store_true", help="native custom rooms with one human and eleven server bots on prepared TDM maps")
     parser.add_argument("--resource-capture-map", help="collect one native TDM map without a gamestate or world; requires native-bot-rooms")
+    parser.add_argument("--resource-capture-playlist", type=int, help="single-entry native playlist ID for isolated resource capture")
     parser.add_argument("--resource-compass-probe",type=Path,help="metadata-only request for a native compass candidate; requires resource-capture-map")
     parser.add_argument("--snapshot-probe", nargs="?", type=int, const=60, help="bootstrap frame budget at 20 Hz (1..18000; default 60); requires game-state")
     parser.add_argument("--hit-regions", type=Path, help="enemy pose capture path; may be written later by client_state.py --hit-regions")
@@ -146,6 +154,8 @@ def main():
         parser.error("snapshot-probe requires game-state and 1..18000 frames")
     if args.game_map_catalog and (not args.rust_game or not args.game_map_catalog.is_file()):
         parser.error("game-map-catalog requires rust-game and an existing catalog")
+    if args.resource_capture_playlist is not None and (not args.resource_capture_map or not 0 <= args.resource_capture_playlist < 255):
+        parser.error("resource-capture-playlist requires an explicit map and ID0..254")
     if args.native_bot_rooms and not args.game_map_catalog:
         parser.error("native-bot-rooms requires game-map-catalog")
     if args.resource_capture_map:
@@ -280,6 +290,9 @@ def main():
                         if args.resource_capture_map:
                             tls_argv += ["--resource-capture-map", args.resource_capture_map]
                             state["resource_capture_map"] = args.resource_capture_map
+                        if args.resource_capture_playlist is not None:
+                            tls_argv += ["--resource-capture-playlist", str(args.resource_capture_playlist)]
+                            state["resource_capture_playlist"] = args.resource_capture_playlist
                         if args.resource_compass_probe:
                             tls_argv += ["--resource-compass-probe",str(args.resource_compass_probe.resolve())]
                             state["resource_compass_probe"] = str(args.resource_compass_probe.resolve())

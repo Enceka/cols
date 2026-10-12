@@ -10,6 +10,17 @@ import materialize_map_batch as batch
 
 
 class NativeBatchLifecycle(unittest.TestCase):
+    def test_quick_capture_binds_only_the_first_bot_playlist_without_changing_other_entries(self):
+        original=(batch.REPO/'configs/publisher/mp_playlists_shipRetail_release.info').read_bytes()
+        bound=batch.single_capture_playlist(original,'mp_dr_box')
+        first,other=bound.split(b'playlist 2',1)
+        self.assertIn(b'mp_dr_box,tdm,1',first)
+        self.assertNotIn(b'mp_afghan,tdm,1',first)
+        self.assertEqual(other,original.split(b'playlist 2',1)[1])
+        for invalid in [original.replace(b'playlist 1',b'playlist 2',1),
+                        original.replace(b'combattraining',b'other'),
+                        original.replace(b'mp_afghan,tdm,1',b'',1)]:
+            with self.assertRaises(ValueError):batch.single_capture_playlist(invalid,'mp_dr_box')
     def test_compass_candidate_cannot_start_a_native_match_or_restore_session(self):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory)

@@ -132,7 +132,10 @@ impl CompassProbe {
             probe.schema_version == 1
                 && probe.client_sha256 == codol_protocol::CLIENT_SHA256
                 && probe.map == map
-                && matches!(map, "mp_highrise" | "mp_subbase_sh")
+                && matches!(
+                    map,
+                    "mp_highrise" | "mp_subbase_sh" | "mp_dr_box" | "mp_dr_cistern"
+                )
                 && probe.entities_sha256.len() == 64
                 && probe.entities_sha256.bytes().all(|b| b.is_ascii_hexdigit())
                 && probe.minimap.material == format!("compass_map_{map}")

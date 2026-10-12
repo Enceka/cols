@@ -22,7 +22,7 @@
 
 正常目录另新增锈迹之地CRC1969495731、核弹镇CRC1765105316、货轮CRC3526583374及航站楼CRC3031257094，均有12人原生对局、同生命周期移动、小地图和结算证据，AAR胜负／比分与服务日志一致。核弹镇→货轮在同一客户端／房间合计294.77秒，航站楼161.70秒；证据为`world-collision-thirteen-map-admission.json`及所引用原生报告。
 
-批量配置与自动准备／验收见`FAST_MAP_ACCEPTANCE.md`。正常20图与26条身份配置分别统计。暴风雨CRC2021322058、伏击CRC982376201、靶场CRC1689093357已有独立世界碰撞和原生短局。伏击实际使用本图捕获的`compass_map_mp_convoy`非默认1024贴图，仍要求本图SHA、CRC及角点证明；名称别名不豁免资源检查。废弃都市CRC255035120、滨海镇CRC4259817884已完成原生短局；前者使用13／10个本图碰撞有效原始出生点，依据见`CAPTURED_MAP_STARTS.md`。潜艇基地CRC3503358511已完成原生小地图请求和短局验收。证据为`room-storm-admission.json`、`room-sixteen-map-admission.json`、`eighteen-map-admission.json`及`nineteen-map-admission.json`。
+批量配置与自动准备／验收见`FAST_MAP_ACCEPTANCE.md`。正常22图与26条身份配置分别统计。暴风雨CRC2021322058、伏击CRC982376201、靶场CRC1689093357已有独立世界碰撞和原生短局。伏击实际使用本图捕获的`compass_map_mp_convoy`非默认1024贴图，仍要求本图SHA、CRC及角点证明；名称别名不豁免资源检查。废弃都市CRC255035120、滨海镇CRC4259817884已完成原生短局；前者使用13／10个本图碰撞有效原始出生点，依据见`CAPTURED_MAP_STARTS.md`。潜艇基地CRC3503358511已完成原生小地图请求和短局验收。证据为`room-storm-admission.json`、`room-sixteen-map-admission.json`、`eighteen-map-admission.json`及`nineteen-map-admission.json`。
 
 高楼和潜艇基地的受限初始化请求均读到本图1024×1024、非默认小地图材质，详见`RESOURCE_COMPASS_REQUESTS.md`。高楼已接169块原生玻璃破碎及有界单向落差路径，60秒后台交战／重生与原生短局均通过，见`HIGHRISE_TRAVERSAL.md`及`highrise-map-admission/admission.json`；原生AI翻越、跳上和梯子动作仍待实现。潜艇基地已通过。两个黑房的当前原生箭头循环尚未选到，继续核对入口／过滤条件；竞技场容量需独立核对；三张未观察到路径的地图继续资源盘点。其余6图及已准备图的完整观感和长期稳定性继续分别验收。路径观察不能替代本图初始化和依赖验证。
 

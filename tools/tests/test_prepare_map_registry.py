@@ -16,6 +16,7 @@ class NativeMapRegistry(unittest.TestCase):
             row = [''] * 37
             row[:4] = ['1', '1', '1', str(native_id)]
             row[4], row[5], row[8], row[9] = name, 'MPUI_TEST', 'pvp', 'war;dom'
+            row[10], row[11] = ('1', '4') if name == 'za_coliseum' else ('4', '18')
             rows.extend(base64.b64encode(c.encode()).decode() for c in row)
         return dict(schema_version=1, read_only=True, client_sha256=CLIENT_SHA256,
                     tables={'mp/coMapList.csv': dict(found=True, columns=37, rows=2, cells_base64=rows)})
@@ -25,6 +26,18 @@ class NativeMapRegistry(unittest.TestCase):
         self.assertEqual([(m['name'], m['native_id']) for m in registry['maps']],
                          [('mp_afghan', 1), ('za_coliseum', 83)])
         self.assertFalse(registry['resource_preparation_claimed'])
+        self.assertEqual((registry['maps'][1]['minimum_players'], registry['maps'][1]['maximum_players']), (1, 4))
+
+    def test_native_custom_room_prohibition_and_capacity_are_preserved_and_bounded(self):
+        capture = self.capture()
+        cells = capture['tables']['mp/coMapList.csv']['cells_base64']
+        cells[35] = base64.b64encode(b'1').decode()
+        self.assertTrue(prepare(capture)['maps'][0]['no_custom_room'])
+        for column, value in [(10, '0'), (10, '19'), (11, '33'), (35, '2')]:
+            malformed = self.capture()
+            malformed['tables']['mp/coMapList.csv']['cells_base64'][column] = base64.b64encode(value.encode()).decode()
+            with self.subTest(column=column, value=value), self.assertRaises(ValueError):
+                prepare(malformed)
 
     def test_wrong_capture_layout_paths_and_ambiguous_names_or_ids_are_rejected(self):
         for change in ('client', 'read_only', 'layout', 'length', 'path', 'duplicate_id', 'duplicate_name'):

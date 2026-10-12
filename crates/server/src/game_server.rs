@@ -253,6 +253,7 @@ pub struct GameServer {
     game_state: Option<Arc<crate::game_state::PreparedGameState>>,
     game_map_catalog: Option<crate::game_map_catalog::GameMapCatalog>,
     resource_capture_map: Option<String>,
+    resource_capture_playlist: Option<(u32, u8)>,
     resource_compass_probe: Option<crate::game_minimap::CompassProbe>,
     hit_regions: HitRegionSource,
     services: Option<Arc<crate::services::LocalServices>>,
@@ -332,6 +333,7 @@ impl GameServer {
             game_state: None,
             game_map_catalog: None,
             resource_capture_map: None,
+            resource_capture_playlist: None,
             resource_compass_probe: None,
             hit_regions: HitRegionSource::default(),
             services: None,
@@ -413,6 +415,41 @@ impl GameServer {
         self.resource_compass_probe = Some(crate::game_minimap::CompassProbe::load(path, map)?);
         Ok(self)
     }
+    /// A single-entry publisher playlist is the native route for maps which
+    /// prohibit custom rooms. This opt-in still publishes no gameplay world.
+    pub fn with_resource_capture_playlist(mut self, playlist: u8) -> Result<Self> {
+        ensure!(
+            playlist < 255 && self.resource_capture_map.is_some(),
+            "resource playlist requires an explicit capture map and native playlist ID"
+        );
+        let version = self
+            .admissions
+            .bot_rooms
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("resource playlist requires local bot-room policy"))?
+            .version;
+        self.resource_capture_playlist = Some((version, playlist));
+        Ok(self)
+    }
+
+    fn resource_template(
+        &self,
+        map: &str,
+    ) -> Result<Option<Arc<crate::game_state::PreparedGameState>>> {
+        self.game_map_catalog
+            .as_ref()
+            .and_then(|catalog| catalog.select(map, "war").ok())
+            .map(|state| {
+                let initialized = (*state).clone().resource_initialization()?;
+                let initialized = if let Some(probe) = &self.resource_compass_probe {
+                    initialized.with_resource_compass_probe(probe)?
+                } else {
+                    initialized
+                };
+                Ok(Arc::new(initialized))
+            })
+            .transpose()
+    }
     fn template_for(
         &self,
         admission: &Admission,
@@ -421,6 +458,18 @@ impl GameServer {
             .start_command
             .as_deref()
             .ok_or_else(|| anyhow::anyhow!("game start missing"))?;
+        if let Some((version, playlist)) = self.resource_capture_playlist
+            && let Some((selected, entry)) = crate::game_map_selection::playlist_start(start)?
+        {
+            ensure!(
+                admission.build == -688906341
+                    && admission.playlist_version == Some(version)
+                    && selected == u32::from(playlist)
+                    && entry == 0,
+                "resource playlist build/version/entry differs from the explicit capture binding"
+            );
+            return self.resource_template(self.resource_capture_map.as_deref().unwrap());
+        }
         let parsed = crate::game_map_selection::from_mmstart(start);
         if let Some(catalog) = self.game_map_catalog.as_ref().filter(|c| c.has_rotations())
             && let Some((playlist, entry)) = crate::game_map_selection::playlist_start(start)?
@@ -450,20 +499,7 @@ impl GameServer {
                         selection.mode == "war",
                         "resource capture is limited to native TDM"
                     );
-                    return self
-                        .game_map_catalog
-                        .as_ref()
-                        .and_then(|catalog| catalog.select(&selection.map, &selection.mode).ok())
-                        .map(|state| {
-                            let initialized = (*state).clone().resource_initialization()?;
-                            let initialized = if let Some(probe) = &self.resource_compass_probe {
-                                initialized.with_resource_compass_probe(probe)?
-                            } else {
-                                initialized
-                            };
-                            Ok(Arc::new(initialized))
-                        })
-                        .transpose();
+                    return self.resource_template(&selection.map);
                 }
                 let catalog = self.game_map_catalog.as_ref().ok_or_else(|| {
                     anyhow::anyhow!("requested room map has no preparation catalog")
@@ -1036,6 +1072,28 @@ mod tests {
         assert_eq!(initialized.ncs_crc(), 0x87654321);
         assert!(!initialized.snapshot_probe());
         assert_eq!(initialized.snapshot_limit(), 0);
+        let server = server.with_resource_capture_playlist(0).unwrap();
+        admission.start_command = Some(
+            "mmstart sv_resetServer; 2486 1; 3265 12; 2489 1; playlist 0; start_map_rotate_once 0"
+                .into(),
+        );
+        admission.playlist_version = Some(7);
+        let playlist_metadata = server.template_for(&admission).unwrap().unwrap();
+        assert_eq!(playlist_metadata.map(), "mp_bog_sh");
+        assert_eq!(playlist_metadata.ncs_crc(), 0x87654321);
+        assert!(!playlist_metadata.snapshot_probe());
+        for (version, playlist, entry) in [
+            (None, 0, 0),
+            (Some(6), 0, 0),
+            (Some(7), 1, 0),
+            (Some(7), 0, 1),
+        ] {
+            admission.playlist_version = version;
+            admission.start_command = Some(format!(
+                "mmstart sv_resetServer; 2486 1; 3265 12; 2489 1; playlist {playlist}; start_map_rotate_once {entry}"
+            ));
+            assert!(server.template_for(&admission).is_err());
+        }
         assert!(
             server
                 .with_resource_capture_map("mp_unknown".into())

@@ -27,14 +27,17 @@ def prepare(capture):
         if row[8] != 'pvp' or 'war' not in row[9].split(';'):
             continue
         name, native_id = row[4], int(row[3])
+        minimum, maximum = int(row[10]), int(row[11])
+        no_custom = int(row[35] or '0')
         if (not re.fullmatch(r'(?:mp|za)_[a-z0-9_]{1,60}', name) or
                 not 1 <= native_id <= 512 or any(flag not in ('0', '1') for flag in row[:3]) or
-                native_id in ids or name in names):
+                native_id in ids or name in names or not 1 <= minimum <= maximum <= 32 or no_custom not in (0, 1)):
             raise ValueError('invalid or ambiguous native TDM map identity')
         ids.add(native_id)
         names.add(name)
         result.append({'name': name, 'native_id': native_id, 'native_flags': list(map(int, row[:3])),
-                       'label_key': row[5], 'modes': row[9].split(';'), 'character_rules': row[36]})
+                       'label_key': row[5], 'modes': row[9].split(';'), 'character_rules': row[36],
+                       'minimum_players': minimum, 'maximum_players': maximum, 'no_custom_room': bool(no_custom)})
     if not result:
         raise ValueError('native table has no TDM maps')
     return {'schema_version': 1, 'client_sha256': expected, 'table': 'mp/coMapList.csv',

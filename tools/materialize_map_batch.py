@@ -10,6 +10,7 @@ import concurrent.futures
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import shlex
 import shutil
@@ -25,6 +26,26 @@ from prepare_map_batch import read, write, prepare as prepare_batch, verify
 from verify_native_maps import Client
 
 
+def native_map(name):
+    return next(m for m in read(REPO/'fixtures/protocol/map-registry-3.3.3.3.json')['maps'] if m['name']==name)
+
+
+def single_capture_playlist(source, name):
+    """Keep the owned publisher's first native bot playlist and bind one map."""
+    starts=list(re.finditer(rb'(?m)^playlist\s+([0-9]+)\s*$', source))
+    if not starts or starts[0].group(1)!=b'1':
+        raise ValueError('resource capture requires native playlist0 as the first publisher entry')
+    start=starts[0].start();end=starts[1].start() if len(starts)>1 else len(source)
+    section=source[start:end]
+    if not re.search(rb'(?m)^combattraining\s*$',section):
+        raise ValueError('resource capture requires the measured native bot playlist')
+    maps=list(re.finditer(rb'(?m)^(?:mp|za)_[a-z0-9_]+,[a-z0-9_]+,[0-9]+\s*$',section))
+    if not maps:
+        raise ValueError('resource capture playlist has no real map entry')
+    section=section[:maps[0].start()]+name.encode('ascii')+b',tdm,1\n'+section[maps[-1].end():]
+    return source[:start]+section+source[end:]
+
+
 class Lab:
     def __init__(self, directory, service, prefix, base_catalog, initial_state):
         self.directory,self.service,self.prefix=directory,service,prefix
@@ -33,11 +54,20 @@ class Lab:
         self.experiment=None
         self.finished=[]
 
-    def start(self, name, catalog, stage, compass_probe=None):
+    def start(self, name, catalog, stage, compass_probe=None, capture_playlist=None):
         if compass_probe is not None and stage in ('native','restore'):
             raise ValueError('compass candidate requests require isolated resource collection')
         if self.process is not None:
             raise RuntimeError('previous owned experiment must stop before startup')
+        if stage not in ('native','restore') and native_map(name).get('no_custom_room'):
+            capture_playlist=0 if capture_playlist is None else capture_playlist
+            if capture_playlist!=0 or self.service.resolve()==(REPO/'client-work/server-data').resolve():
+                raise ValueError('quick resource capture requires native playlist0 and isolated service data')
+            publisher=self.service/'publisher/mp_playlists_shipRetail_release.info'
+            before=publisher.read_bytes();after=single_capture_playlist(before,name)
+            publisher.write_bytes(after)
+            write(self.directory/(name+'-publisher-selection.json'),dict(map=name,playlist=0,
+                before_sha256=hashlib.sha256(before).hexdigest(),after_sha256=hashlib.sha256(after).hexdigest()))
         log=(self.directory/(name+'-'+stage+'-harness.log')).open('w')
         started=time.time()
         initial_state=self.initial_state
@@ -48,7 +78,10 @@ class Lab:
                  '--local-auth-tickets','--rust-lobby','--rust-stun','--rust-game','--local-services',
                  '--trust-lab-cert','--quiet-network','--native-bot-rooms','--service-data-dir',str(self.service),
                  '--game-state',str(initial_state),'--game-map-catalog',str(catalog)]
+        if capture_playlist is not None and stage in ('native','restore'):
+            raise ValueError('resource playlist is limited to isolated collection')
         if stage not in ('native','restore'):command+=['--resource-capture-map',name]
+        if capture_playlist is not None:command+=['--resource-capture-playlist',str(capture_playlist)]
         if compass_probe is not None:
             command+=['--resource-compass-probe',str(compass_probe)]
         self.process=subprocess.Popen(command,stdout=log,stderr=subprocess.STDOUT,start_new_session=True)
@@ -98,6 +131,15 @@ class Lab:
     def enter(self, client, name):
         client.wait(lambda s:s['connection_state']==0 and s['frontend_state']==5
                     and s['active_inventory_count']>0,100)
+        if native_map(name).get('no_custom_room'):
+            if read(client.experiment).get('resource_capture_playlist')!=0:
+                raise ValueError('map prohibits native custom rooms; use its explicit quick capture binding')
+            client.click(.297,.05);client.click(.14,.125);client.click(.156,.255)
+            client.click(.215,.328);client.click(.763,.854)
+            state=client.wait(lambda s:s['room_native_map']==name and s['room_native_playlist']==0
+                and (s['room_member_count']>0 or s['connection_state']>=6),30)
+            if state['connection_state']==0:client.click(.848,.916)
+            return
         client.click(.297,.05);client.click(.14,.125)
         client.click(.437,.255);client.click(.763,.854)
         client.wait(lambda s:s['room_member_count']>0 and s['room_is_host']==1,15)
@@ -153,7 +195,7 @@ class Lab:
             initialized_path=self.initialization_catalog(name,constants,summary)
             write(self.directory/(name+'-raw-paths.json'),paths)
         probe=(self.compass_candidate(name,Path(paths['map-entities']),summary['ncs_crc'])
-               if name in ('mp_highrise','mp_subbase_sh') else None)
+               if name in ('mp_highrise','mp_subbase_sh','mp_dr_box','mp_dr_cistern') else None)
         client=self.start(name,initialized_path,'initialized',probe)
         try:
             self.enter(client,name)

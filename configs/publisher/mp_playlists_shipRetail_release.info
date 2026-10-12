@@ -1,5 +1,5 @@
 // Local 6v6 TDM with resource-derived Bot loadouts.
-version 7
+version 8
 
 gametype tdm
 name english "Team Deathmatch"
@@ -42,3 +42,37 @@ maxparty 6
 rule 1011 2
 rule 3265 12
 mp_afghan,tdm,1
+
+catinfo 3 1 0 "Dark Rooms" "黑房人机"
+
+playlist 3
+name english "mp_dr_box"
+name chinese "黑房：方箱"
+description english "6v6 Team Deathmatch with bots."
+description chinese "6v6 团队竞技人机对战。"
+category 3
+combattraining
+novoting
+unlocklevelstart 0
+unlocklevelend 70
+minparty 1
+maxparty 6
+rule 1011 1
+rule 3265 12
+mp_dr_box,tdm,1
+
+playlist 4
+name english "mp_dr_cistern"
+name chinese "黑房：蓄水池"
+description english "6v6 Team Deathmatch with bots."
+description chinese "6v6 团队竞技人机对战。"
+category 3
+combattraining
+novoting
+unlocklevelstart 0
+unlocklevelend 70
+minparty 1
+maxparty 6
+rule 1011 1
+rule 3265 12
+mp_dr_cistern,tdm,1

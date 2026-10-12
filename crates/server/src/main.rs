@@ -148,6 +148,9 @@ enum Command {
         /// Collect one native TDM map's loaded resources without sending a world.
         #[arg(long, requires = "native_bot_rooms")]
         resource_capture_map: Option<String>,
+        /// Bind resource collection to one native single-entry publisher playlist.
+        #[arg(long, requires = "resource_capture_map")]
+        resource_capture_playlist: Option<u8>,
         /// Request a native compass candidate during metadata-only resource initialization.
         #[arg(long, requires = "resource_capture_map")]
         resource_compass_probe: Option<PathBuf>,
@@ -444,6 +447,7 @@ async fn main() -> Result<()> {
             game_map_catalog,
             native_bot_rooms,
             resource_capture_map,
+            resource_capture_playlist,
             resource_compass_probe,
             continuous_play,
             game_capture_every,
@@ -516,6 +520,9 @@ async fn main() -> Result<()> {
                     }
                     if let Some(map) = resource_capture_map {
                         game = game.with_resource_capture_map(map)?;
+                    }
+                    if let Some(playlist) = resource_capture_playlist {
+                        game = game.with_resource_capture_playlist(playlist)?;
                     }
                     if let Some(probe) = resource_compass_probe {
                         game = game.with_resource_compass_probe(&probe)?;

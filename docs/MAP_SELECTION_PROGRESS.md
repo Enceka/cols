@@ -39,10 +39,13 @@
 | 废弃都市 | mp_abandon_sh_mk | 255035120 |
 | 滨海镇 | mp_seatown | 4259817884 |
 | 潜艇基地 | mp_subbase_sh | 3503358511 |
+| 高楼 | mp_highrise | 4261926685 |
+| 黑房方箱 | mp_dr_box | 4219922283 |
+| 黑房蓄水池 | mp_dr_cistern | 4219922283 |
 
-19图具有独立实体、碰撞、TDM出生点、HUD、武器与角色资料，正常准备为7500分／600000ms。出生点按本图站立胶囊筛选，仍要求两队各至少6个有效原始点，依据见`CAPTURED_MAP_STARTS.md`。原生箭头仍可选择其它地图，但未准备地图必须明确拒绝。赛单轮换按 publisher version／playlist／entry 顺序解析；自建房按描述和受限游戏请求识别地图，不执行 `mmstart` 文本。正常 publisher 为 version7。
+22图具有独立实体、碰撞、TDM出生点、HUD、武器与角色资料，正常准备为7500分／600000ms。出生点按本图站立胶囊筛选，仍要求两队各至少6个有效原始点，依据见`CAPTURED_MAP_STARTS.md`。黑房原生禁止自建房，通过快速赛单进入；竞技场最大4人，另外3图在当前版本列关闭，见`NATIVE_MAP_ENTRY_RULES.md`。未准备地图必须明确拒绝。赛单轮换按publisher version／playlist／entry顺序解析；自建房按描述和受限游戏请求识别地图，不执行`mmstart`文本。正常publisher为version8，黑房的独立赛单ID为2／3。
 
-本版26条团队竞技地图的真实ID、模式和角色规则已从`coMapList.csv`生成身份表，运行时准备及结算不再局限于三个手写ID；仍逐图要求完整准备文件。资源列表中23张图观察到主图／load／const路径，正常目录完成上述19图的原生实测。覆盖及证据边界见 `MAP_COVERAGE.md`。
+本版26条团队竞技地图的真实ID、模式和角色规则已从`coMapList.csv`生成身份表，运行时准备及结算不再局限于三个手写ID；仍逐图要求完整准备文件。资源列表中23张图观察到主图／load／const路径，正常目录完成上述22图的原生实测。覆盖及证据边界见 `MAP_COVERAGE.md`。
 
 坠机小地图使用实际 `compass_map_mp_crash_dlc` 材质及1024×1024贴图，角点为 `(1976,2528)`／`(-1200,-2166)`。`compass_map_mp_crash_tropical` 在本版指向16×16默认贴图，不能用作底图。探针按 `0xaa3650` 的材质比较判断 `render_default`，不将资源表的其它布尔字段当作渲染默认判据。
 

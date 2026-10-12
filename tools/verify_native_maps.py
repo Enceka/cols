@@ -262,7 +262,7 @@ def prepare(catalog_path, output):
     return path
 
 
-def run(catalog_path, experiment, output, map_names=None, map_direction='right'):
+def run(catalog_path, experiment, output, map_names=None, map_direction='right', quick_playlist=None):
     info = json.loads(experiment.read_text())
     argv = info['tls_argv']
     used = Path(argv[argv.index('--game-map-catalog')+1]).resolve()
@@ -273,6 +273,8 @@ def run(catalog_path, experiment, output, map_names=None, map_direction='right')
         raise ValueError('native batch requires a running project-owned diagnostic experiment')
     if info.get('resource_capture_map'):
         raise ValueError('resource collection cannot substitute for native gameplay')
+    if quick_playlist is not None and quick_playlist != 0:
+        raise ValueError('quick native check requires the measured single-entry bot playlist0')
     catalog = json.loads(catalog_path.read_text())
     if catalog.get('schema_version')!=1 or not catalog.get('entries'):
         raise ValueError('unsupported or empty diagnostic catalog')
@@ -306,13 +308,22 @@ def run(catalog_path, experiment, output, map_names=None, map_direction='right')
                 raise ValueError('native batch requires short diagnostic limits')
             state=client.wait(lambda s:s['connection_state']==0 and s['frontend_state']==5
                 and s['active_inventory_count']>0,100)
-            if state['room_member_count']==0:
+            if quick_playlist is not None:
+                if state['room_member_count']:
+                    raise ValueError('single-entry quick check requires a fresh owned client')
+                client.click(.297,.05);client.click(.14,.125);client.click(.156,.255)
+                client.click(.215,.328);client.click(.763,.854)
+                state=client.wait(lambda s:s['room_native_map']==entry['map'] and s['room_native_playlist']==0
+                    and (s['room_member_count']>0 or s['connection_state']>=6),30)
+                row['room_kind']='native_quick_playlist'
+            elif state['room_member_count']==0:
                 client.click(.297,.05);client.click(.14,.125)
                 client.click(.437,.255);client.click(.763,.854)
                 state=client.wait(lambda s:s['room_member_count']>0,15)
             print('room',state['room_native_map'],state['room_member_count'],flush=True)
-            client.select_map(entry['map'],map_direction)
-            client.click(.848,.916)
+            if quick_playlist is None:
+                client.select_map(entry['map'],map_direction)
+            if state['connection_state']==0:client.click(.848,.916)
             live=client.wait(lambda s:s['connection_state']==10 and s['current_snapshot_valid']==1,60)
             if live['net_constants_crc']!=source['ncs_crc']:
                 raise RuntimeError('native map CRC differs from preparation')
@@ -361,8 +372,12 @@ def run(catalog_path, experiment, output, map_names=None, map_direction='right')
                 raise RuntimeError('native after-action roster is incomplete or repeats the local player')
             if sum(r['kills'] for r in rows)==0:
                 raise RuntimeError('native after-action contains no combat kills')
-            client.return_to_room()
-            row['room_recreated_after_action']=client.return_recreated_room
+            if quick_playlist is None:
+                client.return_to_room()
+                row['room_recreated_after_action']=client.return_recreated_room
+            else:
+                row['room_reused_after_action']=False
+                row['return_scope']='quick playlist has native voting; each map uses a fresh client'
             row['passed']=True
         except (RuntimeError,ValueError,subprocess.SubprocessError,KeyError) as error:
             row['errors'].append(str(error))

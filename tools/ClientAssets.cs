@@ -119,13 +119,34 @@ class ClientAssets {
         return Obj("found",true,"entry",entry,"address",at,"name",Name(U(t,0)),"columns",cols,"rows",rows,"cells_base64",cells);
     }
     object AnimationRules(string name) {
+        return RawFile(name,2*1024*1024);
+    }
+    object RawFile(string name,int limit) {
         uint entry;uint at=Find(36,name,out entry);if(at==0)return Obj("found",false);
         // Current rawfile type36: name, compressedLen, len, buffer. Export
         // bounded bytes read-only; decode compressed text outside the game.
-        byte[] header=Read(at,16);int compressed=Count(U(header,4),2*1024*1024);
-        int length=Count(U(header,8),2*1024*1024);int bytes=compressed!=0?compressed:length;
+        byte[] header=Read(at,16);int compressed=Count(U(header,4),limit);
+        int length=Count(U(header,8),limit);int bytes=compressed!=0?compressed:length;
         return Obj("found",true,"name",name,"compressed_length",compressed,"length",length,
             "buffer_base64",Convert.ToBase64String(Read(U(header,12),bytes)));
+    }
+    public static void ExportFrontendAssets(IntPtr process) {
+        var r=new ClientAssets(process);var tables=new Dictionary<string,object>();
+        foreach(string name in new string[]{"mp/coMapList.csv","mp/coGameTypesTable.csv","mp/cogroupdefs.csv"})
+            try{tables[name]=r.Table(name);}catch(Exception e){tables[name]=Obj("error",e.Message);}
+        var rawfiles=new Dictionary<string,object>();
+        const string movie="scaleform/default/codo.gfx";
+        try{rawfiles[movie]=r.RawFile(movie,32*1024*1024);}catch(Exception e){rawfiles[movie]=Obj("error",e.Message);}
+        // Registration0x59be5a/0x59be64 and the frontend CommManager select
+        // exactly this dvar's integer column; no client getter is invoked.
+        uint versionColumn=r.Word(0x02e8a9a8);
+        if(versionColumn<0x10000||r.Name(r.Word(versionColumn))!="build_version_column")
+            throw new Exception("frontend version-column dvar identity differs");
+        var serializer=new JavaScriptSerializer();serializer.MaxJsonLength=64*1024*1024;
+        Console.WriteLine(serializer.Serialize(Obj("schema_version",1,"read_only",true,
+            "client_sha256","e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b",
+            "connection_state",r.Word(0x01a2e7ec),"build_version_column",r.Word(versionColumn+12),
+            "tables",tables,"rawfiles",rawfiles)));
     }
     object MarketplaceHeader() {
         // Target type-name table at 0xce0ea0 assigns marketplacedata type 45.

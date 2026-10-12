@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 import sys
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -53,6 +54,17 @@ class BackendStartupTests(unittest.TestCase):
             process = SimpleNamespace(poll=lambda: None)
             with patch.object(gamehub_run.time, 'sleep', side_effect=AssertionError('already ready')):
                 gamehub_run.wait_backend_ready(directory, process, process, True, False)
+
+    def test_cleanup_before_client_start_confirms_an_inactive_prefix_and_preserves_real_errors(self):
+        quiet = subprocess.CompletedProcess(['wineserver', '-k'], 1, '', '')
+        inactive = subprocess.CompletedProcess(['wineserver', '-w'], 0, '', '')
+        with patch.object(gamehub_run.subprocess, 'run', side_effect=[quiet, inactive]) as run:
+            gamehub_run.stop_prefix(Path('/owned/engine'), {'WINEPREFIX': '/owned/prefix'})
+            self.assertEqual(run.call_args_list[1].args[0], ['/owned/engine/bin/wineserver', '-w'])
+        error = subprocess.CompletedProcess(['wineserver', '-k'], 1, '', 'real failure')
+        with patch.object(gamehub_run.subprocess, 'run', return_value=error), \
+                self.assertRaises(subprocess.CalledProcessError):
+            gamehub_run.stop_prefix(Path('/owned/engine'), {})
 
 
 if __name__ == '__main__':
