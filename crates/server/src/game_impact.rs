@@ -81,6 +81,9 @@ impl ImpactEvents {
                 crate::game_tactical::Kind::Concussion => {
                     codol_protocol::game_impact::ImpactEvent::ConcussionExplosion { start_time }
                 }
+                crate::game_tactical::Kind::Gas | crate::game_tactical::Kind::GasNoKick => {
+                    return None;
+                }
             },
         )
     }

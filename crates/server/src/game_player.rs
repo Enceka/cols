@@ -693,13 +693,25 @@ impl Player {
     }
 
     pub fn tactical_protection(&self, kind: crate::game_tactical::Kind) -> f32 {
+        if matches!(
+            kind,
+            crate::game_tactical::Kind::Gas | crate::game_tactical::Kind::GasNoKick
+        ) {
+            return if self.gas_protected() { 0.0 } else { 1.0 };
+        }
         self.perks.value(
             match kind {
                 crate::game_tactical::Kind::Flash => "modFlashProtectionScale",
                 crate::game_tactical::Kind::Concussion => "modStunProtectionScale",
+                crate::game_tactical::Kind::Gas | crate::game_tactical::Kind::GasNoKick => {
+                    unreachable!()
+                }
             },
             1.0,
         )
+    }
+    pub fn gas_protected(&self) -> bool {
+        self.perks.has("modGasMask")
     }
     pub fn asym_robot(&self) -> bool {
         self.perks.has("modAsymRobot")

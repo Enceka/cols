@@ -26,6 +26,8 @@ pub(crate) struct Definition {
     pub smoke: Option<crate::game_smoke::Definition>,
     #[serde(default)]
     pub tactical: Option<crate::game_tactical::Kind>,
+    #[serde(default)]
+    pub gas: bool,
     pub radius: u16,
     pub inner_damage: u16,
     pub outer_damage: u16,
@@ -74,6 +76,12 @@ impl Definition {
                     && self.offhand_class == 2
                     && self.name == "smoke_grenade_mp"
                     && self.smoke.as_ref().is_some_and(|s| s.valid()))
+                || (self.gas
+                    && self.name == "tabun_gas_mp"
+                    && self.explosion_kind == 5
+                    && self.offhand_class == 2
+                    && self.smoke.is_none()
+                    && self.tactical.is_none())
                 || (self.explosion_kind == 0
                     && matches!(self.offhand_class, 1 | 5)
                     && self.smoke.is_none()
@@ -98,7 +106,7 @@ impl Definition {
                 && self.throw_msec > 0
                 && self.prepare_msec > 0
                 && self.fuse_msec > 0
-                && (self.smoke.is_some() || self.radius > 0)
+                && (self.smoke.is_some() || self.gas || self.radius > 0)
                 && self.inner_damage >= self.outer_damage
                 && self
                     .parallel

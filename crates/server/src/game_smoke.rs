@@ -41,7 +41,7 @@ impl Definition {
 }
 #[derive(Default)]
 pub(crate) struct Smoke {
-    active: Vec<(SmokeSnapshot, Definition)>,
+    active: Vec<(SmokeSnapshot, Option<Definition>)>,
     sequence: u32,
 }
 impl Smoke {
@@ -55,7 +55,25 @@ impl Smoke {
         let Some(definition) = explosion.definition.smoke.as_ref() else {
             return false;
         };
-        self.expire(explosion.time);
+        self.spawn_effect(
+            explosion.time,
+            explosion.origin,
+            explosion.definition.index,
+            definition.lifetime_msec,
+            Some(definition.clone()),
+        )
+    }
+    /// Smoke and gas share the same native GENERAL slot allocator. Only smoke
+    /// has the captured optical approximation used by Bot perception.
+    pub fn spawn_effect(
+        &mut self,
+        time: u32,
+        origin: [f32; 3],
+        weapon: u16,
+        lifetime_msec: u32,
+        optical: Option<Definition>,
+    ) -> bool {
+        self.expire(time);
         let Some(entity_number) = (FIRST_ENTITY..END_ENTITY)
             .find(|n| self.active.iter().all(|(s, _)| s.entity_number != *n))
         else {
@@ -65,14 +83,14 @@ impl Smoke {
         self.active.push((
             SmokeSnapshot {
                 entity_number,
-                origin: explosion.origin,
-                weapon: explosion.definition.index,
-                start_time: explosion.time,
-                end_time: explosion.time.saturating_add(definition.lifetime_msec),
+                origin,
+                weapon,
+                start_time: time,
+                end_time: time.saturating_add(lifetime_msec),
                 present: true,
                 generation: self.sequence,
             },
-            definition.clone(),
+            optical,
         ));
         true
     }
@@ -92,6 +110,9 @@ impl Smoke {
     fn transmittance(&self, now: u32, start: [f32; 3], end: [f32; 3]) -> f32 {
         let mut light = 1.0;
         for (state, definition) in &self.active {
+            let Some(definition) = definition else {
+                continue;
+            };
             let Some(age) = now.checked_sub(state.start_time) else {
                 continue;
             };

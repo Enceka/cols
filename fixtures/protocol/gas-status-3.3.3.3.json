@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "client_sha256": "e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b",
+  "capture_sha256": "da2280f90ab5645ed7a1700a6f5750f28826dcccdde29c28a19ec6766e71ca23",
+  "native_effect": {
+    "weapon": 250,
+    "name": "tabun_center_mp",
+    "effect": "weapon/grenade/fx_gas_nova_mp",
+    "lifetime_msec": 10000,
+    "definition_sha256": "e232c9e593eba78b46f21cd79e45ed776f9e8d65affce9495c35cb7a40bb2713",
+    "elements_sha256": "bb77a8a5d02159f1d7221aff70fb64684a273cdfaacb2ba09b0bdc5cbb089ef0",
+    "source": "captured Nova center binding; reference poison FX is a different resource"
+  },
+  "server_rules": {
+    "source": "Alpha/LAN reference script port; current client production rules unverified",
+    "script": "maps/mp/equipment/_tabun.gsc",
+    "sha256": "82e4979fd8c71446b78ca88545b85ccb51844557d064bec5c4bd86fc56178081",
+    "cloud_msec": 8000,
+    "tick_msec": 1000,
+    "damage": 13,
+    "clear_msec": 1000,
+    "radius": 185.0,
+    "height": 20.0,
+    "spoke_length": 220.0,
+    "radii": [
+      55.0,
+      55.0,
+      50.0,
+      25.0
+    ]
+  }
+}

@@ -10,6 +10,8 @@ use std::sync::LazyLock;
 pub(crate) enum Kind {
     Flash,
     Concussion,
+    Gas,
+    GasNoKick,
 }
 #[derive(Deserialize)]
 struct Binding {
@@ -51,7 +53,7 @@ static CATALOG: LazyLock<Catalog> = LazyLock::new(|| {
     assert_eq!(c.schema_version, 1);
     assert_eq!(c.client_sha256, codol_protocol::CLIENT_SHA256);
     assert_eq!(c.capture_sha256.len(), 64);
-    assert_eq!(c.bindings.len(), 2);
+    assert_eq!(c.bindings.len(), 4);
     assert!(c.server_rules.source.contains("reference script port"));
     for binding in &c.bindings {
         assert!((1..16).contains(&binding.index));
@@ -60,17 +62,18 @@ static CATALOG: LazyLock<Catalog> = LazyLock::new(|| {
         assert_eq!(binding.parameter_sha256.len(), 64);
         assert_eq!(
             binding.name,
-            if binding.kind == Kind::Flash {
-                "flashbang_mp"
-            } else {
-                "concussion_grenade_mp"
+            match binding.kind {
+                Kind::Flash => "flashbang_mp",
+                Kind::Concussion => "concussion_grenade_mp",
+                Kind::Gas => "tabun_gas_mp",
+                Kind::GasNoKick => "tabun_gas_nokick_mp",
             }
         );
         assert_eq!(
             binding.screen_type,
             if binding.kind == Kind::Flash { 1 } else { 0 }
         );
-        assert_eq!(binding.movement, binding.kind == Kind::Concussion);
+        assert_eq!(binding.movement, binding.kind != Kind::Flash);
     }
     c
 });
@@ -123,6 +126,14 @@ impl State {
     }
     pub fn clear(&mut self) {
         self.active = None;
+    }
+    pub fn clear_gas(&mut self) {
+        if self
+            .active
+            .is_some_and(|(k, _)| matches!(k, Kind::Gas | Kind::GasNoKick))
+        {
+            self.clear();
+        }
     }
     pub fn snapshot(&self, now: u32) -> Option<ShellShockSnapshot> {
         if let Some((_, s)) = self
@@ -225,6 +236,7 @@ pub(crate) fn hit(
         Kind::Concussion => {
             rules.concussion_min_msec as f32 + rules.concussion_distance_msec as f32 * falloff
         }
+        Kind::Gas | Kind::GasNoKick => return None,
     };
     let duration = (duration * protection).round().clamp(0.0, 65535.0) as u16;
     (duration != 0).then_some(Hit {
@@ -363,7 +375,9 @@ mod tests {
             configstrings(),
             vec![
                 (4280, "flashbang_mp".to_owned()),
-                (4276, "concussion_grenade_mp".to_owned())
+                (4276, "concussion_grenade_mp".to_owned()),
+                (4282, "tabun_gas_mp".to_owned()),
+                (4283, "tabun_gas_nokick_mp".to_owned())
             ]
         );
     }

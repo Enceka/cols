@@ -26,7 +26,8 @@ def prepare(capture_path, reference_dir):
     if len(names) > 15 or len(set(names)) != len(names):
         raise ValueError('native shock binding budget or duplicates')
     bindings = []
-    for kind, name in [('flash', 'flashbang_mp'), ('concussion', 'concussion_grenade_mp')]:
+    for kind, name in [('flash', 'flashbang_mp'), ('concussion', 'concussion_grenade_mp'),
+                       ('gas', 'tabun_gas_mp'), ('gas_no_kick', 'tabun_gas_nokick_mp')]:
         index = names.index(name) + 1
         record = capture['rawfiles']['shock/' + name + '.shock']
         payload = base64.b64decode(record['buffer_base64'], validate=True)

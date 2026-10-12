@@ -11,6 +11,7 @@ mod game_connection;
 mod game_death_waypoints;
 mod game_enemy;
 mod game_feedback;
+mod game_gas;
 mod game_grenade;
 mod game_handshake;
 mod game_health;

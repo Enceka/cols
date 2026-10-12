@@ -30,6 +30,34 @@
       "mouse_sensitivity_scale": 0.10000000149011612,
       "rawfile_sha256": "e4b5667928f6e8bc885aff1c41dbcc66b95791b51d8dc92982dd96d771d59123",
       "parameter_sha256": "76f86b3c29fcef33e4716c681c51eeb31c20896da6a9be9fe8555ffc07306132"
+    },
+    {
+      "kind": "gas",
+      "name": "tabun_gas_mp",
+      "index": 7,
+      "configstring": 4282,
+      "screen_type": 0,
+      "movement": true,
+      "look_control": false,
+      "max_pitch_speed": 0.0,
+      "max_yaw_speed": 0.0,
+      "mouse_sensitivity_scale": 0.0,
+      "rawfile_sha256": "f81953fbb662d28c065aea608efc81b8233a6197debcdc227e313380fdf4310f",
+      "parameter_sha256": "edeb9d9c2173e0e1970bc891c51baef94752e1e9d4d37350a12c93e1dd7b16ae"
+    },
+    {
+      "kind": "gas_no_kick",
+      "name": "tabun_gas_nokick_mp",
+      "index": 8,
+      "configstring": 4283,
+      "screen_type": 0,
+      "movement": true,
+      "look_control": false,
+      "max_pitch_speed": 0.0,
+      "max_yaw_speed": 0.0,
+      "mouse_sensitivity_scale": 0.0,
+      "rawfile_sha256": "3a4a763decc05d96273bcead8a02dd48e4694312774d4bb931ffc8a6a340f8d8",
+      "parameter_sha256": "edeb9d9c2173e0e1970bc891c51baef94752e1e9d4d37350a12c93e1dd7b16ae"
     }
   ],
   "server_rules": {

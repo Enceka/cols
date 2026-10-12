@@ -165,6 +165,7 @@ struct Bot {
     progress_time: u32,
 
     tactical: crate::game_tactical::State,
+    poison: crate::game_gas::Poison,
     controller: BotController,
     snapshot: EnemySnapshot,
     health: u16,
@@ -279,6 +280,7 @@ impl TdmMatch {
                 progress_origin: origin,
                 progress_time: 1000,
                 tactical: Default::default(),
+                poison: Default::default(),
                 controller,
                 snapshot,
                 health: 100,
@@ -421,6 +423,10 @@ impl TdmMatch {
         if !self.finished {
             self.finished = true;
             self.finished_at = Some(now);
+            for bot in &mut self.bots {
+                bot.poison.clear();
+                bot.tactical.clear();
+            }
             self.dirty = true;
             tracing::info!(now, winner=self.winning_team(), scores=?self.scores, "TDM match finished");
         }
@@ -462,6 +468,9 @@ impl TdmMatch {
         if victim.client_index != 0 {
             self.bots[usize::from(victim.client_index - 1)]
                 .tactical
+                .clear();
+            self.bots[usize::from(victim.client_index - 1)]
+                .poison
                 .clear();
         }
         self.rows[usize::from(victim.client_index)].deaths += 1;
@@ -598,6 +607,46 @@ impl TdmMatch {
             self.damage_bots(now, 0, explosion.definition.index, &hits, false),
             self_damage,
         )
+    }
+    pub fn advance_gas(
+        &mut self,
+        now: u32,
+        gas: &crate::game_gas::Gas,
+        collision: &Collision,
+    ) -> Option<codol_protocol::game_hit_feedback::HitKind> {
+        let mut hits = Vec::new();
+        for bot in &mut self.bots {
+            let target = crate::game_gas::Recipient {
+                client: bot.snapshot.client_index,
+                team: bot.snapshot.team,
+                origin: bot.snapshot.origin,
+                height: bot.view_motion.view_height + 10.0,
+                alive: !self.finished && bot.health > 0 && now.wrapping_sub(bot.birth) >= 1000,
+                protected: bot.weapon.as_ref().is_some_and(|w| w.gas_protected()),
+            };
+            if let Some(hit) = bot
+                .poison
+                .advance(now, gas, target, collision, &mut bot.tactical)
+            {
+                hits.push((bot.snapshot.client_index, hit));
+            }
+        }
+        let mut feedback = None;
+        for (client, hit) in hits {
+            let result = self.damage_bots(
+                now,
+                hit.attacker,
+                hit.weapon,
+                &[(client, hit.damage, false)],
+                false,
+            );
+            if result == Some(codol_protocol::game_hit_feedback::HitKind::Kill)
+                || feedback.is_none()
+            {
+                feedback = result;
+            }
+        }
+        feedback
     }
     fn damage_bots(
         &mut self,
@@ -798,6 +847,7 @@ impl TdmMatch {
                 bot.snapshot_time = now;
                 bot.weapon = bot.initial_weapon.clone();
                 bot.tactical.clear();
+                bot.poison.clear();
                 bot.memory = None;
                 bot.visible_target = None;
                 bot.perception_time = 0;
@@ -969,6 +1019,7 @@ impl TdmMatch {
                     bot.death = Some(landing.time);
                     bot.controller.kill(now);
                     bot.tactical.clear();
+                    bot.poison.clear();
                     falling_deaths.push((landing.time, bot.snapshot));
                     break;
                 }
@@ -1620,6 +1671,124 @@ mod tests {
             })
         );
         assert!(!game.bots[enemy].tactical.blind(1200));
+    }
+    #[test]
+    fn gas_applies_owner_credit_and_mask_immunity_then_clears_on_death_respawn_and_finish() {
+        let collision = world();
+        let mut game = TdmMatch::new(config(), template(), 190.0, &collision).unwrap();
+        for bot in &mut game.bots {
+            bot.snapshot.origin = [2000.0, 0.0, 0.0];
+        }
+        let enemy = game
+            .bots
+            .iter()
+            .position(|b| b.snapshot.team != template().team)
+            .unwrap();
+        let ally = game
+            .bots
+            .iter()
+            .position(|b| b.snapshot.team == template().team)
+            .unwrap();
+        game.bots[enemy].snapshot.origin = [0.0; 3];
+        game.bots[ally].snapshot.origin = [0.0; 3];
+        let mut gas = crate::game_gas::Gas::default();
+        let mut persistent = crate::game_smoke::Smoke::default();
+        assert!(gas.deploy(
+            &crate::game_grenade::Explosion {
+                time: 2000,
+                origin: [0.0, 0.0, 2.0],
+                normal: [0.0, 0.0, 1.0],
+                definition: crate::game_grenade::captured("tabun_gas_mp")
+            },
+            0,
+            template().team,
+            &collision,
+            &mut persistent
+        ));
+        let mut held = crate::game_player::tests::scavenger_player(90, 180);
+        held.set_perks(crate::game_perks::Perks::selected([0, 0, 60137], &[60137]).unwrap());
+        assert!(held.gas_protected());
+        game.bots[enemy].weapon = Some(held);
+        assert_eq!(game.advance_gas(2000, &gas, &collision), None);
+        assert_eq!(game.bots[enemy].health, 100);
+        assert!(game.bots[enemy].tactical.snapshot(2000).is_none());
+        game.bots[enemy]
+            .weapon
+            .as_mut()
+            .unwrap()
+            .set_perks(Default::default());
+        assert_eq!(
+            game.advance_gas(2100, &gas, &collision),
+            Some(codol_protocol::game_hit_feedback::HitKind::Hit)
+        );
+        assert_eq!(game.bots[enemy].health, 87);
+        assert_eq!(game.bots[ally].health, 100);
+        assert_eq!(game.advance_gas(2100, &gas, &collision), None);
+        for now in (3100..=9100).step_by(1000) {
+            game.advance_gas(now, &gas, &collision);
+        }
+        assert_eq!(game.bots[enemy].health, 0);
+        assert!(!game.bots[enemy].snapshot.alive);
+        assert_eq!(
+            game.bots[enemy]
+                .tactical
+                .snapshot(9100)
+                .unwrap()
+                .duration_msec,
+            0
+        );
+        let kills = game.take_kills();
+        assert_eq!(kills.len(), 1);
+        assert_eq!((kills[0].attacker, kills[0].weapon), (0, 251));
+        assert!(!kills[0].falling);
+        assert_eq!(game.scoreboard(1).rows[0].score, 100);
+        assert_eq!(game.scoreboard(1).rows[enemy + 1].deaths, 1);
+        let weapon = BotWeapon {
+            weapon: 352,
+            fire_interval_msec: 80,
+            ballistics: crate::game_combat::Ballistics {
+                damage: 33,
+                range: 8192.0,
+                near_range: 500.0,
+                location_multipliers: None,
+                falloff: None,
+                pellets: 1,
+                spread_degrees: 0.0,
+            },
+        };
+        game.step(
+            12100,
+            (template(), 70.0, 100),
+            weapon,
+            &collision,
+            |s, _, _, _| s,
+        )
+        .unwrap();
+        assert_eq!(game.bots[enemy].health, 100);
+        assert_eq!(
+            game.bots[enemy]
+                .tactical
+                .snapshot(12100)
+                .unwrap()
+                .duration_msec,
+            0
+        );
+        game.bots[enemy].tactical.apply(
+            12200,
+            crate::game_tactical::Hit {
+                kind: crate::game_tactical::Kind::Gas,
+                duration_msec: 1000,
+            },
+        );
+        game.finish(12300);
+        assert_eq!(
+            game.bots[enemy]
+                .tactical
+                .snapshot(12300)
+                .unwrap()
+                .duration_msec,
+            0
+        );
     }
     #[test]
     fn grenade_blast_excludes_allies_and_suicide_never_awards_a_kill() {

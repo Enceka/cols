@@ -36,6 +36,8 @@ pub(crate) struct Connection {
     smoke: crate::game_smoke::Smoke,
     scavenger: crate::game_scavenger::Bags,
     tactical: crate::game_tactical::State,
+    gas: crate::game_gas::Gas,
+    poison: crate::game_gas::Poison,
     motion: Option<crate::game_motion::Motion>,
     combat: Option<crate::game_combat::CombatWorld>,
     impacts: crate::game_impact::ImpactEvents,
@@ -460,6 +462,7 @@ impl Connection {
         }
         if self.vitals.health == 0 || self.tdm.as_ref().is_some_and(|m| m.finished) {
             self.tactical.clear();
+            self.poison.clear();
             if let Some(motion) = &mut self.motion {
                 motion.cancel_sprint();
                 motion.flags &= !0x8000;
@@ -1590,6 +1593,7 @@ impl Connection {
     fn advance_match(&mut self, now: u32) -> Result<()> {
         if self.vitals.health == 0 || self.tdm.as_ref().is_some_and(|m| m.finished) {
             self.tactical.clear();
+            self.poison.clear();
         }
         if let Some(motion) = &mut self.motion {
             motion.flags = (motion.flags & !0x8000)
@@ -1635,6 +1639,7 @@ impl Connection {
             self.hit_feedback.clear();
             self.player_birth = now;
             self.health_recovery = Default::default();
+            self.poison.clear();
             if let Some(primary) = state.primary_player() {
                 self.player
                     .as_mut()
@@ -1711,11 +1716,14 @@ impl Connection {
             self.grenades.clear();
             self.smoke.clear();
             self.tactical.clear();
+            self.gas.clear();
+            self.poison.clear();
             return Ok(());
         }
         let state = self.game_state.as_ref().unwrap().clone();
         let collision = state.collision.as_ref().unwrap();
         self.smoke.expire(now);
+        self.gas.expire(now);
         let Some(motion) = self.motion.as_ref() else {
             return Ok(());
         };
@@ -1734,6 +1742,7 @@ impl Connection {
             self.hit_feedback
                 .record(now, codol_protocol::game_hit_feedback::HitKind::Scavenger);
         }
+        let body_height = motion.view_height + 10.0;
         let eye = [origin[0], origin[1], origin[2] + motion.view_height];
         if let Some(player) = &mut self.player {
             for request in player.take_throws() {
@@ -1746,6 +1755,32 @@ impl Connection {
         local.angles = self.view_angles();
         local.weapon = self.player.as_ref().unwrap().equipment().weapon;
         for explosion in self.grenades.advance(now, collision) {
+            if explosion.definition.gas {
+                let deployed =
+                    self.gas
+                        .deploy(&explosion, 0, local.team, collision, &mut self.smoke);
+                // The thrown gas weapon owns the sound; its null FX pointer
+                // needs the separately captured center weapon for the cloud.
+                self.impacts.smoke(
+                    now,
+                    explosion.time,
+                    explosion.definition.index,
+                    explosion.origin,
+                    explosion.normal,
+                );
+                if deployed {
+                    self.impacts.smoke(
+                        now,
+                        explosion.time,
+                        crate::game_gas::effect().weapon,
+                        explosion.origin,
+                        explosion.normal,
+                    );
+                }
+                tracing::info!(now, start=explosion.time, deployed, origin=?explosion.origin,
+                    "gas grenade deployed");
+                continue;
+            }
             if explosion.definition.smoke.is_some() {
                 self.smoke.spawn(&explosion);
                 self.impacts.smoke(
@@ -1840,6 +1875,64 @@ impl Connection {
                         motion.cancel_melee_charge();
                         motion.velocity = [0.0; 3];
                     }
+                }
+            }
+        }
+        let feedback = self
+            .tdm
+            .as_mut()
+            .unwrap()
+            .advance_gas(now, &self.gas, collision);
+        if let Some(feedback) = feedback {
+            self.hit_feedback.record(now, feedback);
+        }
+        let target = crate::game_gas::Recipient {
+            client: 0,
+            team: local.team,
+            origin: local.origin,
+            height: body_height,
+            alive: local.alive
+                && !self.tdm.as_ref().unwrap().finished
+                && self.replay.kind().is_none(),
+            protected: self.player.as_ref().unwrap().gas_protected(),
+        };
+        if let Some(hit) =
+            self.poison
+                .advance(now, &self.gas, target, collision, &mut self.tactical)
+        {
+            self.vitals.health = self.vitals.health.saturating_sub(hit.damage);
+            self.vitals.damage_event = self.vitals.damage_event.wrapping_add(1);
+            self.vitals.damage_count = hit.damage.min(127) as u8;
+            self.health_recovery.damaged(now, self.vitals.health);
+            tracing::info!(
+                now,
+                damage = hit.damage,
+                health = self.vitals.health,
+                attacker = hit.attacker,
+                "player gas damage"
+            );
+            if self.vitals.health == 0 {
+                self.player_death = Some(now);
+                self.hit_feedback.clear();
+                self.tactical.clear();
+                self.poison.clear();
+                self.tdm.as_mut().unwrap().player_killed(
+                    now,
+                    local,
+                    crate::game_match::PlayerHit {
+                        damage: hit.damage,
+                        attacker: hit.attacker,
+                        weapon: hit.weapon,
+                        headshot: false,
+                    },
+                );
+                self.player
+                    .as_mut()
+                    .unwrap()
+                    .drop_offhand_on_death(now, local.angles);
+                if let Some(motion) = &mut self.motion {
+                    motion.cancel_melee_charge();
+                    motion.velocity = [0.0; 3];
                 }
             }
         }
