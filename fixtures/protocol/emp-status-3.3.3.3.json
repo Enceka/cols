@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "client_sha256": "e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b",
+  "native": {
+    "hud_operator": 154,
+    "getter_va": 5718320,
+    "getter_sha256": "a238c8750c0fd7671c0039a335242d682928a84258d96494b44c05d9a451dc5e",
+    "player_state_offset": 16,
+    "field": 54,
+    "bits": 28,
+    "mask": 1024
+  },
+  "server_rules": {
+    "source": "Alpha/LAN IW5 reference player EMP port; current production rules unverified",
+    "sources": [
+      {
+        "path": "maps/mp/_empgrenade.gsc",
+        "sha256": "ddd02f013da385030c5a9663d4eab07a6bf01038009cf3c86d0e0981eefb5844"
+      },
+      {
+        "path": "maps/mp/gametypes/_damage.gsc",
+        "sha256": "f1ae37d3f82e455d73d4bfc32c7ba2c407f9afe5c320c9f4e256e4ef811fc796"
+      }
+    ],
+    "duration_msec": 10000,
+    "flash_msec": 1000,
+    "immunity_ability": "modEmpProtectionScale"
+  }
+}

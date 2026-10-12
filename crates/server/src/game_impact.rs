@@ -57,6 +57,26 @@ impl ImpactEvents {
             codol_protocol::game_impact::ImpactEvent::SmokeExplosion { start_time },
         )
     }
+    /// Native EV_CUSTOM_EXPLODE93 without the persistent smoke flag.
+    pub fn custom(
+        &mut self,
+        now: u32,
+        start_time: u32,
+        weapon: u16,
+        origin: [f32; 3],
+        normal: [f32; 3],
+    ) -> Option<ImpactSnapshot> {
+        self.push_event(
+            now,
+            weapon,
+            crate::game_combat::WorldImpact {
+                origin,
+                normal,
+                surface: 0,
+            },
+            codol_protocol::game_impact::ImpactEvent::CustomExplosion { start_time },
+        )
+    }
     pub fn tactical(
         &mut self,
         now: u32,
@@ -79,7 +99,7 @@ impl ImpactEvents {
                     codol_protocol::game_impact::ImpactEvent::FlashExplosion
                 }
                 crate::game_tactical::Kind::Concussion => {
-                    codol_protocol::game_impact::ImpactEvent::ConcussionExplosion { start_time }
+                    codol_protocol::game_impact::ImpactEvent::CustomExplosion { start_time }
                 }
                 crate::game_tactical::Kind::Gas | crate::game_tactical::Kind::GasNoKick => {
                     return None;

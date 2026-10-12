@@ -11,7 +11,7 @@ from clientlib import manifest
 from schema_fields import flatten
 
 SUPPORTED = {"frag_grenade_mp", "fragholiday_grenade_mp", "fragshort_grenade_mp",
-             "fragtech_grenade_mp", "semtex_mp", "stielhandgranate_mp", "smoke_grenade_mp", "flash_grenade_mp", "concussion_grenade_mp", "tabun_gas_mp"}
+             "fragtech_grenade_mp", "semtex_mp", "stielhandgranate_mp", "smoke_grenade_mp", "flash_grenade_mp", "concussion_grenade_mp", "tabun_gas_mp", "emp_grenade_mp"}
 
 
 def smoke_effect(effect):
@@ -114,6 +114,10 @@ def prepare(assets_path, registry_path):
             if word(0x918) != 0 or weapon.get("explosion_effect") is not None:
                 raise ValueError("gas grenade unexpectedly has a native explosion effect")
             result[-1]["gas"] = True
+        if name == "emp_grenade_mp":
+            if weapon["explosion_effect"]["name"] != "explosions/emp_grenade":
+                raise ValueError("native EMP effect differs")
+            result[-1]["emp"] = True
     if {r["name"] for r in result} != SUPPORTED:
         raise ValueError("supported grenade set is incomplete")
     return {"schema_version": 1, "client_sha256": client, "capture_sha256": hashlib.sha256(raw).hexdigest(),

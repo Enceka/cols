@@ -123,6 +123,8 @@ pub struct PlayerVitals {
     pub damage_count: u8,
     pub spawn_count: u8,
     pub intermission: bool,
+    /// Native HUD operator154 reads PS+0x10 bit10 (field54).
+    pub emp_jammed: bool,
     pub corpse_slot: u8,
 }
 impl Default for PlayerVitals {
@@ -133,6 +135,7 @@ impl Default for PlayerVitals {
             damage_count: 0,
             spawn_count: 1,
             intermission: false,
+            emp_jammed: false,
             corpse_slot: 1,
         }
     }
@@ -628,6 +631,10 @@ pub fn player_frame_with_world(
                         0x800
                     } else {
                         0x1000
+                    } | if vitals.is_some_and(|v| v.emp_jammed && v.health > 0 && !v.intermission) {
+                        0x400
+                    } else {
+                        0
                     },
                     28,
                 ),
@@ -1909,45 +1916,59 @@ mod tests {
             }),
             None,
         ] {
-            let body = player_frame_with_world(
-                9000,
-                8950,
-                Some([1.0, 2.0, 3.0]),
-                true,
-                Some(equipment),
-                [0; 3],
-                WorldSnapshot {
-                    bags: &[],
-                    bag_baselines: &[],
-                    smokes: &[],
-                    smoke_baselines: &[],
-                    missiles: &[],
-                    missile_baselines: &[],
-                    motion: Some(motion),
-                    vitals: Some(PlayerVitals::default()),
-                    replay,
-                    ..Default::default()
-                },
-            )
-            .unwrap();
-            let mut reader = Reader::new(&body);
-            assert_eq!(reader.u8().unwrap(), 0);
-            assert_eq!(reader.u32().unwrap(), 9000);
-            reader.u8().unwrap();
-            reader.u8().unwrap();
-            assert_eq!(reader.bits(2).unwrap(), 2);
-            let (fields, _) = read_fields(&mut reader);
-            assert_eq!(fields[&54], if replay.is_some() { 0x800 } else { 0x1000 });
-            assert_eq!(
-                fields.get(&59).copied().unwrap_or(0),
-                if replay.is_some() { 7 } else { 0 }
-            );
-            assert_eq!(
-                fields.get(&142).copied().unwrap_or(0),
-                if replay.is_some() { 4000 } else { 0 }
-            );
-            assert_eq!(fields[&136], 2047);
-            assert_eq!(fields[&137], 2047);
+            for jammed in [false, true] {
+                let body = player_frame_with_world(
+                    9000,
+                    8950,
+                    Some([1.0, 2.0, 3.0]),
+                    true,
+                    Some(equipment),
+                    [0; 3],
+                    WorldSnapshot {
+                        bags: &[],
+                        bag_baselines: &[],
+                        smokes: &[],
+                        smoke_baselines: &[],
+                        missiles: &[],
+                        missile_baselines: &[],
+                        motion: Some(motion),
+                        vitals: Some(PlayerVitals {
+                            emp_jammed: jammed,
+                            ..Default::default()
+                        }),
+                        replay,
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+                let mut reader = Reader::new(&body);
+                assert_eq!(reader.u8().unwrap(), 0);
+                assert_eq!(reader.u32().unwrap(), 9000);
+                reader.u8().unwrap();
+                reader.u8().unwrap();
+                assert_eq!(reader.bits(2).unwrap(), 2);
+                let (fields, _) = read_fields(&mut reader);
+                assert_eq!(
+                    fields[&54],
+                    (if replay.is_some() { 0x800 } else { 0x1000 })
+                        | if jammed { 0x400 } else { 0 }
+                );
+                let table: serde_json::Value = serde_json::from_str(include_str!(
+                    "../../../fixtures/protocol/player-state-fields-3.3.3.3.json"
+                ))
+                .unwrap();
+                assert_eq!(table["fields"][54], serde_json::json!([16, 28, 0]));
+                assert_eq!(
+                    fields.get(&59).copied().unwrap_or(0),
+                    if replay.is_some() { 7 } else { 0 }
+                );
+                assert_eq!(
+                    fields.get(&142).copied().unwrap_or(0),
+                    if replay.is_some() { 4000 } else { 0 }
+                );
+                assert_eq!(fields[&136], 2047);
+                assert_eq!(fields[&137], 2047);
+            }
         }
         for bad in [
             ReplayView {

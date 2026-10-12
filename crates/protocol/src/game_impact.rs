@@ -43,7 +43,7 @@ pub enum ImpactEvent {
     Bullet,
     GrenadeExplosion,
     FlashExplosion,
-    ConcussionExplosion {
+    CustomExplosion {
         /// ES+0x58: the caller's actual missile expiry time, unchanged.
         start_time: u32,
     },
@@ -55,7 +55,7 @@ pub enum ImpactEvent {
 impl ImpactEvent {
     fn custom_time(self) -> Option<u32> {
         match self {
-            Self::ConcussionExplosion { start_time } | Self::SmokeExplosion { start_time } => {
+            Self::CustomExplosion { start_time } | Self::SmokeExplosion { start_time } => {
                 Some(start_time)
             }
             _ => None,
@@ -184,7 +184,7 @@ pub(crate) fn write_impacts_with_baselines(
             ImpactEvent::Bullet => 96,
             ImpactEvent::GrenadeExplosion => 109,
             ImpactEvent::FlashExplosion => 114, // EV_FLASHBANG_EXPLODE92
-            ImpactEvent::ConcussionExplosion { .. } | ImpactEvent::SmokeExplosion { .. } => 115, // EV_CUSTOM_EXPLODE93
+            ImpactEvent::CustomExplosion { .. } | ImpactEvent::SmokeExplosion { .. } => 115, // EV_CUSTOM_EXPLODE93
         });
         let mut previous = 0;
         for (index, value) in [
@@ -364,19 +364,19 @@ mod tests {
             for (event, weapon, event_id, time) in [
                 (ImpactEvent::FlashExplosion, 89, 92, None),
                 (
-                    ImpactEvent::ConcussionExplosion { start_time: 0 },
+                    ImpactEvent::CustomExplosion { start_time: 0 },
                     57,
                     93,
                     Some(0),
                 ),
                 (
-                    ImpactEvent::ConcussionExplosion { start_time: 70_000 },
+                    ImpactEvent::CustomExplosion { start_time: 70_000 },
                     57,
                     93,
                     Some(70_000),
                 ),
                 (
-                    ImpactEvent::ConcussionExplosion {
+                    ImpactEvent::CustomExplosion {
                         start_time: i32::MAX as u32,
                     },
                     74,
@@ -429,7 +429,7 @@ mod tests {
             r.finish().unwrap();
             for start_time in [12500, 14000, 0] {
                 let concussion = ImpactSnapshot {
-                    event: ImpactEvent::ConcussionExplosion { start_time },
+                    event: ImpactEvent::CustomExplosion { start_time },
                     weapon: 57,
                     surface: 0,
                     ..smoke
@@ -481,7 +481,7 @@ mod tests {
     fn tactical_events_keep_pinned_full_delta_and_expiry_rules() {
         for event in [
             ImpactEvent::FlashExplosion,
-            ImpactEvent::ConcussionExplosion { start_time: 12500 },
+            ImpactEvent::CustomExplosion { start_time: 12500 },
             ImpactEvent::SmokeExplosion { start_time: 12500 },
         ] {
             let current = ImpactSnapshot { event, ..impact() };
@@ -503,7 +503,7 @@ mod tests {
             r.finish().unwrap();
         }
         for event in [
-            ImpactEvent::ConcussionExplosion {
+            ImpactEvent::CustomExplosion {
                 start_time: i32::MAX as u32 + 1,
             },
             ImpactEvent::SmokeExplosion {

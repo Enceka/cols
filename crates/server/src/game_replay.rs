@@ -256,7 +256,7 @@ impl Replay {
         }
         for impact in &mut frame.impacts {
             if let codol_protocol::game_impact::ImpactEvent::SmokeExplosion { start_time }
-            | codol_protocol::game_impact::ImpactEvent::ConcussionExplosion { start_time } =
+            | codol_protocol::game_impact::ImpactEvent::CustomExplosion { start_time } =
                 &mut impact.event
             {
                 *start_time = start_time.wrapping_add(delay);
@@ -438,7 +438,7 @@ mod tests {
                 weapon: 236,
             });
             f.impacts.push(codol_protocol::game_impact::ImpactSnapshot {
-                event: codol_protocol::game_impact::ImpactEvent::ConcussionExplosion {
+                event: codol_protocol::game_impact::ImpactEvent::CustomExplosion {
                     start_time: 1000,
                 },
                 entity_number: 101,
@@ -460,11 +460,11 @@ mod tests {
         );
         assert_eq!(
             first.frame.impacts[1].event,
-            codol_protocol::game_impact::ImpactEvent::ConcussionExplosion { start_time: 5000 }
+            codol_protocol::game_impact::ImpactEvent::CustomExplosion { start_time: 5000 }
         );
         assert_eq!(
             replay.frames.front().unwrap().impacts[1].event,
-            codol_protocol::game_impact::ImpactEvent::ConcussionExplosion { start_time: 1000 }
+            codol_protocol::game_impact::ImpactEvent::CustomExplosion { start_time: 1000 }
         );
         assert_eq!(replay.frames.front().unwrap().smokes[0].start_time, 1000);
         assert_eq!(replay.frames.front().unwrap().smokes[0].end_time, 61001);

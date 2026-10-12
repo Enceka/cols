@@ -713,6 +713,15 @@ impl Player {
     pub fn gas_protected(&self) -> bool {
         self.perks.has("modGasMask")
     }
+    pub fn emp_protection(&self) -> f32 {
+        // The native table's default is zero even without this modifier.
+        // Hardwire activates it with zero; only an active modifier is immunity.
+        if self.perks.has("modEmpProtectionScale") {
+            self.perks.value("modEmpProtectionScale", 1.0)
+        } else {
+            1.0
+        }
+    }
     pub fn asym_robot(&self) -> bool {
         self.perks.has("modAsymRobot")
     }

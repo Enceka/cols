@@ -28,6 +28,8 @@ pub(crate) struct Definition {
     pub tactical: Option<crate::game_tactical::Kind>,
     #[serde(default)]
     pub gas: bool,
+    #[serde(default)]
+    pub emp: bool,
     pub radius: u16,
     pub inner_damage: u16,
     pub outer_damage: u16,
@@ -79,6 +81,12 @@ impl Definition {
                 || (self.gas
                     && self.name == "tabun_gas_mp"
                     && self.explosion_kind == 5
+                    && self.offhand_class == 2
+                    && self.smoke.is_none()
+                    && self.tactical.is_none())
+                || (self.emp
+                    && self.name == "emp_grenade_mp"
+                    && self.explosion_kind == 3
                     && self.offhand_class == 2
                     && self.smoke.is_none()
                     && self.tactical.is_none())

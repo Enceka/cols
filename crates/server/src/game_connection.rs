@@ -38,6 +38,7 @@ pub(crate) struct Connection {
     tactical: crate::game_tactical::State,
     gas: crate::game_gas::Gas,
     poison: crate::game_gas::Poison,
+    emp: crate::game_emp::State,
     motion: Option<crate::game_motion::Motion>,
     combat: Option<crate::game_combat::CombatWorld>,
     impacts: crate::game_impact::ImpactEvents,
@@ -463,6 +464,7 @@ impl Connection {
         if self.vitals.health == 0 || self.tdm.as_ref().is_some_and(|m| m.finished) {
             self.tactical.clear();
             self.poison.clear();
+            self.emp.clear();
             if let Some(motion) = &mut self.motion {
                 motion.cancel_sprint();
                 motion.flags &= !0x8000;
@@ -668,6 +670,7 @@ impl Connection {
             enemy = None;
         }
         let mut snapshot_motion = self.snapshot_motion();
+        self.vitals.emp_jammed = self.emp.active(server_time);
         let mut snapshot_vitals = (self.bot.is_some() || self.tdm.is_some()).then_some(self.vitals);
         let mut hit_feedback = state
             .feedback_resources()
@@ -1594,6 +1597,7 @@ impl Connection {
         if self.vitals.health == 0 || self.tdm.as_ref().is_some_and(|m| m.finished) {
             self.tactical.clear();
             self.poison.clear();
+            self.emp.clear();
         }
         if let Some(motion) = &mut self.motion {
             motion.flags = (motion.flags & !0x8000)
@@ -1640,6 +1644,7 @@ impl Connection {
             self.player_birth = now;
             self.health_recovery = Default::default();
             self.poison.clear();
+            self.emp.clear();
             if let Some(primary) = state.primary_player() {
                 self.player
                     .as_mut()
@@ -1718,6 +1723,7 @@ impl Connection {
             self.tactical.clear();
             self.gas.clear();
             self.poison.clear();
+            self.emp.clear();
             return Ok(());
         }
         let state = self.game_state.as_ref().unwrap().clone();
@@ -1794,6 +1800,40 @@ impl Connection {
                     origin=?explosion.origin, "smoke grenade deployed");
                 continue;
             }
+            if explosion.definition.emp {
+                self.impacts.custom(
+                    now,
+                    explosion.time,
+                    explosion.definition.index,
+                    explosion.origin,
+                    explosion.normal,
+                );
+                let affected = self
+                    .tdm
+                    .as_mut()
+                    .unwrap()
+                    .player_emp(now, &explosion, local, collision);
+                let protected = self.player.as_ref().unwrap().emp_protection();
+                let applied = local.alive
+                    && self.emp.apply(
+                        now,
+                        &explosion,
+                        crate::game_emp::Target {
+                            origin: local.origin,
+                            height: body_height,
+                            protection: protected,
+                        },
+                        collision,
+                        &mut self.tactical,
+                    );
+                tracing::info!(
+                    now,
+                    affected,
+                    applied,
+                    protection = protected,
+                    "EMP grenade status"
+                );
+            }
             if let Some(kind) = explosion.definition.tactical {
                 self.impacts.tactical(
                     now,
@@ -1830,7 +1870,7 @@ impl Connection {
                     affected,
                     "tactical grenade detonated"
                 );
-            } else {
+            } else if !explosion.definition.emp {
                 self.impacts.explosion(
                     now,
                     explosion.definition.index,

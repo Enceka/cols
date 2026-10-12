@@ -166,6 +166,7 @@ struct Bot {
 
     tactical: crate::game_tactical::State,
     poison: crate::game_gas::Poison,
+    emp: crate::game_emp::State,
     controller: BotController,
     snapshot: EnemySnapshot,
     health: u16,
@@ -281,6 +282,7 @@ impl TdmMatch {
                 progress_time: 1000,
                 tactical: Default::default(),
                 poison: Default::default(),
+                emp: Default::default(),
                 controller,
                 snapshot,
                 health: 100,
@@ -360,6 +362,7 @@ impl TdmMatch {
                         health: bot.health,
                         damage_event: bot.damage_event,
                         damage_count: bot.damage_count,
+                        emp_jammed: bot.emp.active(bot.snapshot_time),
                         spawn_count: (self.rows[usize::from(bot.snapshot.client_index)].deaths
                             + u32::from(bot.health > 0)) as u8,
                         ..Default::default()
@@ -426,6 +429,7 @@ impl TdmMatch {
             for bot in &mut self.bots {
                 bot.poison.clear();
                 bot.tactical.clear();
+                bot.emp.clear();
             }
             self.dirty = true;
             tracing::info!(now, winner=self.winning_team(), scores=?self.scores, "TDM match finished");
@@ -472,6 +476,7 @@ impl TdmMatch {
             self.bots[usize::from(victim.client_index - 1)]
                 .poison
                 .clear();
+            self.bots[usize::from(victim.client_index - 1)].emp.clear();
         }
         self.rows[usize::from(victim.client_index)].deaths += 1;
         let row = &mut self.rows[usize::from(attacker)];
@@ -607,6 +612,39 @@ impl TdmMatch {
             self.damage_bots(now, 0, explosion.definition.index, &hits, false),
             self_damage,
         )
+    }
+    pub fn player_emp(
+        &mut self,
+        now: u32,
+        explosion: &crate::game_grenade::Explosion,
+        local: EnemySnapshot,
+        collision: &Collision,
+    ) -> usize {
+        if self.finished {
+            return 0;
+        }
+        let mut affected = 0;
+        for bot in &mut self.bots {
+            if bot.health == 0
+                || bot.snapshot.team == local.team
+                || now.wrapping_sub(bot.birth) < 1000
+            {
+                continue;
+            }
+            let protection = bot.weapon.as_ref().map_or(1.0, |w| w.emp_protection());
+            affected += usize::from(bot.emp.apply(
+                now,
+                explosion,
+                crate::game_emp::Target {
+                    origin: bot.snapshot.origin,
+                    height: bot.view_motion.view_height + 10.0,
+                    protection,
+                },
+                collision,
+                &mut bot.tactical,
+            ));
+        }
+        affected
     }
     pub fn advance_gas(
         &mut self,
@@ -848,6 +886,7 @@ impl TdmMatch {
                 bot.weapon = bot.initial_weapon.clone();
                 bot.tactical.clear();
                 bot.poison.clear();
+                bot.emp.clear();
                 bot.memory = None;
                 bot.visible_target = None;
                 bot.perception_time = 0;
@@ -1020,6 +1059,7 @@ impl TdmMatch {
                     bot.controller.kill(now);
                     bot.tactical.clear();
                     bot.poison.clear();
+                    bot.emp.clear();
                     falling_deaths.push((landing.time, bot.snapshot));
                     break;
                 }
@@ -1785,6 +1825,75 @@ mod tests {
             game.bots[enemy]
                 .tactical
                 .snapshot(12300)
+                .unwrap()
+                .duration_msec,
+            0
+        );
+    }
+    #[test]
+    fn emp_excludes_allies_checks_hardwire_and_clears_the_archived_actor_on_death_and_finish() {
+        let collision = world();
+        let local = template();
+        let mut game = TdmMatch::new(config(), local, 190.0, &collision).unwrap();
+        for bot in &mut game.bots {
+            bot.snapshot.origin = [2000.0, 0.0, 0.0];
+        }
+        let enemy = game
+            .bots
+            .iter()
+            .position(|b| b.snapshot.team != local.team)
+            .unwrap();
+        let ally = game
+            .bots
+            .iter()
+            .position(|b| b.snapshot.team == local.team)
+            .unwrap();
+        game.bots[enemy].snapshot.origin = [0.0; 3];
+        game.bots[ally].snapshot.origin = [0.0; 3];
+        let explosion = crate::game_grenade::Explosion {
+            time: 2000,
+            origin: [0.0, 0.0, 60.0],
+            normal: [0.0, 0.0, 1.0],
+            definition: crate::game_grenade::captured("emp_grenade_mp"),
+        };
+        let mut held = crate::game_player::tests::scavenger_player(90, 180);
+        held.set_perks(crate::game_perks::Perks::selected([0, 60213, 0], &[60213]).unwrap());
+        game.bots[enemy].weapon = Some(held.clone());
+        assert_eq!(game.player_emp(2000, &explosion, local, &collision), 0);
+        assert!(!game.bots[enemy].emp.active(2000));
+        held.set_perks(Default::default());
+        game.bots[enemy].weapon = Some(held);
+        assert_eq!(game.player_emp(2000, &explosion, local, &collision), 1);
+        assert!(game.bots[enemy].emp.active(2000));
+        assert!(!game.bots[ally].emp.active(2000));
+        game.bots[enemy].snapshot_time = 2000;
+        assert!(
+            game.replay_views()
+                .iter()
+                .find(|v| v.client == game.bots[enemy].snapshot.client_index)
+                .unwrap()
+                .vitals
+                .emp_jammed
+        );
+        let victim = game.bots[enemy].snapshot;
+        game.credit(2100, victim, 0, 74, false, false);
+        assert!(!game.bots[enemy].emp.active(2100));
+        assert!(
+            !game
+                .replay_views()
+                .iter()
+                .find(|v| v.client == victim.client_index)
+                .unwrap()
+                .vitals
+                .emp_jammed
+        );
+        game.player_emp(2200, &explosion, local, &collision);
+        game.finish(2300);
+        assert!(!game.bots[enemy].emp.active(2300));
+        assert_eq!(
+            game.bots[enemy]
+                .tactical
+                .snapshot(2300)
                 .unwrap()
                 .duration_msec,
             0
