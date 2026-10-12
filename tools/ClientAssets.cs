@@ -678,15 +678,68 @@ class ClientAssets {
         }
         return false;
     }
+    sealed class WorldCollisionIds {
+        public HashSet<int> Brushes=new HashSet<int>();
+        public HashSet<int> AabbRoots=new HashSet<int>();
+        public int Leaves;
+    }
+    WorldCollisionIds WorldCollisionReferences(byte[] header,int brushCount) {
+        // 3.3.3.3: 0x588760/0x5887d0 walk BSP nodes (8 bytes) from root0;
+        // 0x5893d0 indexes world leaves (40 bytes) at cm+0x60. The leaf pool
+        // also contains inline-model leaves, which root0 does not reference.
+        int nodeCount=Count(U(header,0x54),65535),leafCount=Count(U(header,0x5c),65535);
+        if(nodeCount==0||leafCount==0)throw new Exception("world BSP missing");
+        byte[] bsp=Read(U(header,0x58),nodeCount*8),leaves=Read(U(header,0x60),leafCount*40);
+        var leafIds=new HashSet<int>();var seen=new HashSet<int>();var pending=new Stack<int>();pending.Push(0);
+        while(pending.Count>0) {
+            int index=pending.Pop();
+            if(index<0) {int leaf=-1-index;if(leaf>=leafCount)throw new Exception("world BSP leaf index");leafIds.Add(leaf);continue;}
+            if(index>=nodeCount)throw new Exception("world BSP node index");
+            if(!seen.Add(index))continue;
+            pending.Push(BitConverter.ToInt16(bsp,index*8+4));pending.Push(BitConverter.ToInt16(bsp,index*8+6));
+        }
+        if(leafIds.Count==0)throw new Exception("world BSP has no leaves");
+        var result=new WorldCollisionIds();result.Leaves=leafIds.Count;
+        int brushNodeCount=Count(U(header,0x28),65535);byte[] nodes=Read(U(header,0x2c),brushNodeCount*20);
+        seen.Clear();pending.Clear();
+        foreach(int leaf in leafIds) {
+            int offset=leaf*40;uint root=U(leaves,offset+36);
+            if(root>0) {if(root>=brushNodeCount)throw new Exception("world brush root index");pending.Push((int)root);}
+            int first=BitConverter.ToUInt16(leaves,offset),count=BitConverter.ToUInt16(leaves,offset+2);
+            for(int i=0;i<count;i++)result.AabbRoots.Add(first+i);
+        }
+        // 0x589090/0x588f80: signed count@+2, list pointer@+8, relative
+        // child offsets@+16/+18; a negative count also visits the next node.
+        int memberships=0;
+        while(pending.Count>0) {
+            int index=pending.Pop();if(index<0||index>=brushNodeCount)throw new Exception("world brush node index");
+            if(!seen.Add(index))continue;
+            int offset=index*20,count=BitConverter.ToInt16(nodes,offset+2);
+            if(count>0) {
+                memberships+=count;if(memberships>2097152)throw new Exception("world brush membership budget");
+                byte[] list=Read(U(nodes,offset+8),count*2);
+                for(int i=0;i<count;i++) {int brush=BitConverter.ToUInt16(list,i*2);if(brush>=brushCount)throw new Exception("world brush index");result.Brushes.Add(brush);}
+            } else {
+                if(count<0)pending.Push(index+1);
+                int left=BitConverter.ToUInt16(nodes,offset+16),right=BitConverter.ToUInt16(nodes,offset+18);
+                if(left==0||right==0)throw new Exception("world brush child offset");
+                pending.Push(index+left);pending.Push(index+right);
+            }
+        }
+        return result;
+    }
     public static void ExportCollision(IntPtr process) {
         var r=new ClientAssets(process);
         uint state=r.Word(0x01a2e7ec);if(state<6||state>10)throw new Exception("load the map before collision capture");
         uint cm=0x02dfb000;byte[] header=r.Read(cm,256);string map=r.Name(U(header,0));
         if(!r.NativeTdmMapPath(map))throw new Exception("collision map has no captured native TDM identity: "+map);
+        uint crc=r.Word(0x02df7d90);
         var brushes=new List<object>();int count=Count(BitConverter.ToUInt16(header,0x38),65535);
+        WorldCollisionIds world=r.WorldCollisionReferences(header,count);
         int materialCount=Count(U(header,0x10),65536);byte[] materials=r.Read(U(header,0x14),materialCount*12);
         byte[] raw=r.Read(U(header,0x3c),count*36),bounds=r.Read(U(header,0x40),count*24),contents=r.Read(U(header,0x44),count*4);
         for(int b=0;b<count;b++) {
+            if(!world.Brushes.Contains(b))continue;
             uint mask=U(contents,b*4);if((mask&(0x02814011|0x0280e831))==0)continue;
             var planes=new List<object>();var surfaceFlags=new List<uint>();int sides=Count(BitConverter.ToUInt16(raw,b*36),256);
             byte[] side=sides==0?new byte[0]:r.Read(U(raw,b*36+4),sides*8);
@@ -705,8 +758,16 @@ class ClientAssets {
         }
         int vc=Count(U(header,0x64),300000),tc=Count(U(header,0x6c),600000),pc=Count(U(header,0x80),100000),ac=Count(U(header,0x88),100000);
         byte[] verts=r.Read(U(header,0x68),vc*12),tris=r.Read(U(header,0x70),tc*6),parts=r.Read(U(header,0x84),pc*12),trees=r.Read(U(header,0x8c),ac*32);
+        var worldTrees=new HashSet<int>();var treeQueue=new Stack<int>(world.AabbRoots);
+        while(treeQueue.Count>0) {
+            int index=treeQueue.Pop();if(index<0||index>=ac)throw new Exception("world collision AABB index");
+            if(!worldTrees.Add(index))continue;
+            int children=BitConverter.ToUInt16(trees,index*32+14),first=(int)U(trees,index*32+28);
+            if(children>0) {if(first<0||first>ac-children)throw new Exception("world collision AABB children");for(int i=0;i<children;i++)treeQueue.Push(first+i);}
+        }
         var triangles=new List<object>();var done=new HashSet<uint>();
         for(int a=0;a<ac;a++) {
+            if(!worldTrees.Contains(a))continue;
             if(BitConverter.ToUInt16(trees,a*32+14)!=0)continue;
             uint part=U(trees,a*32+28);if(part>=pc)throw new Exception("collision partition index invalid");
             uint mat=BitConverter.ToUInt16(trees,a*32+12);byte[] material=r.Read(U(header,0x14)+mat*12,12);uint mask=U(material,8);
@@ -719,10 +780,14 @@ class ClientAssets {
                 triangles.Add(Obj("vertices",points,"contents",mask,"surface_flags",U(material,4)));
             }
         }
+        if(r.Name(r.Word(cm))!=map||r.Word(0x02df7d90)!=crc)throw new Exception("map changed during world collision capture");
         var serializer=new JavaScriptSerializer();serializer.MaxJsonLength=64*1024*1024;
         Console.WriteLine(serializer.Serialize(Obj("schema_version",1,"read_only",true,
             "client_sha256","e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b",
-            "map",map,"ncs_crc",r.Word(0x02df7d90),"captured_contents_mask",0x02814011|0x0280e831,"brushes",brushes,"triangles",triangles)));
+            "map",map,"ncs_crc",crc,"captured_contents_mask",0x02814011|0x0280e831,
+            "world_membership",Obj("bsp_root",0,"world_leaves",world.Leaves,"leaf_pool_count",U(header,0x5c),
+                "brush_pool_count",count,"world_brush_count",world.Brushes.Count,"world_aabb_count",worldTrees.Count),
+            "brushes",brushes,"triangles",triangles)));
     }
     object ViewModelNames() {
         try {

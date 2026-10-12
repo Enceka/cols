@@ -13,7 +13,8 @@ class NativeBatchLifecycle(unittest.TestCase):
     def test_complete_cached_resources_are_reprepared_without_restarting_the_client(self):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory);cached=root/'cache';cached.mkdir()
-            evidence=dict(entities='retained-entities',collision='retained-collision')
+            collision=root/'collision.json';collision.write_text(json.dumps(dict(world_membership=dict(bsp_root=0))))
+            evidence=dict(entities='retained-entities',collision=str(collision))
             (cached/'mp_overgrown-resource-paths.json').write_text(json.dumps(evidence))
             lab=batch.Lab(root,root/'service','owned',root/'catalog',root/'initial')
             with patch.object(lab,'start',side_effect=AssertionError('cache must avoid startup')), \
@@ -21,6 +22,26 @@ class NativeBatchLifecycle(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError,'map identity mismatch'):
                     lab.collect('mp_overgrown',root/'template',cached)
             prepare.assert_called_once_with('mp_overgrown',root/'template',evidence)
+
+    def test_legacy_cached_collision_refreshes_only_geometry_and_retains_other_inputs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);cache=root/'cache';cache.mkdir()
+            collision=root/'legacy.json';collision.write_text('{}')
+            constants=root/'constants.json';constants.write_text('{}')
+            catalog=root/'catalog.json';catalog.write_text(json.dumps(dict(entries=[])))
+            evidence=dict(collision=str(collision),**{'net-constants':str(constants)},characters='retained-characters')
+            (cache/'mp_nuked-resource-paths.json').write_text(json.dumps(evidence))
+            lab=batch.Lab(root,root/'service','owned',catalog,root/'initial')
+            with patch('materialize_map_batch.compute',return_value=dict(ncs_crc=123)), \
+                    patch.object(lab,'start') as start,patch.object(lab,'enter'),patch.object(lab,'stop') as stop, \
+                    patch.object(lab,'prepare_captures',return_value=root/'state.json') as prepare:
+                start.return_value.capture.return_value=('fresh-collision',dict(world_membership=dict(bsp_root=0)))
+                lab.collect('mp_nuked',root/'template',cache)
+                start.return_value.capture.assert_called_once_with('collision')
+                updated=prepare.call_args.args[2]
+                self.assertEqual(updated['collision'],'fresh-collision')
+                self.assertEqual(updated['characters'],'retained-characters')
+                stop.assert_called_once()
 
     def test_harness_command_with_another_service_cannot_be_signalled(self):
         command=f'python {batch.REPO}/tools/gamehub_run.py client --service-data-dir /another --prefix-name owned'
@@ -56,6 +77,32 @@ class NativeBatchLifecycle(unittest.TestCase):
             argv=['materialize_map_batch.py','--queue','unused','--template','unused','--inventory','unused',
                 '--service-data-dir',str(root/'client-work/server-data/nested'),'--output',str(output)]
             with patch.object(batch,'REPO',root),patch.object(sys,'argv',argv):
+                with self.assertRaises(SystemExit):batch.main()
+            self.assertFalse(output.exists())
+
+    def test_new_only_acceptance_does_not_repeat_existing_preparations(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);service=root/'client-work/isolated';service.mkdir(parents=True)
+            catalog=root/'catalog.json';queue=root/'queue.json';output=root/'output'
+            catalog.write_text(json.dumps(dict(entries=[dict(map='mp_bog_sh',mode='war',file=str(root/'bog.json'))])))
+            queue.write_text(json.dumps(dict(ready_catalog=str(catalog),maps=[dict(map='mp_rust_long',status='needs_resources')])))
+            argv=['materialize_map_batch.py','--queue',str(queue),'--template',str(root/'template'),
+                '--inventory',str(root/'inventory'),'--service-data-dir',str(service),
+                '--native-new-only','--output',str(output)]
+            with patch.object(batch,'REPO',root),patch.object(sys,'argv',argv),patch.object(batch,'Lab') as lab, \
+                    patch.object(batch,'prepare_batch'),patch.object(batch,'verify',side_effect=[
+                        dict(maps={'mp_bog_sh':dict(server_passed=True)}),dict(targeted_resource_collection=[],
+                             ready_server_passed=True,all_maps_passed=False)]) as verify:
+                lab.return_value.collect.return_value=root/'rust.json'
+                batch.main()
+                self.assertEqual(verify.call_args.kwargs['names'],['mp_rust_long'])
+
+    def test_conflicting_native_targets_are_rejected_before_output_creation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output=Path(directory)/'output'
+            argv=['materialize_map_batch.py','--queue','unused','--template','unused','--inventory','unused',
+                '--native-new-only','--native-maps','mp_bog_sh','--output',str(output)]
+            with patch.object(sys,'argv',argv):
                 with self.assertRaises(SystemExit):batch.main()
             self.assertFalse(output.exists())
 

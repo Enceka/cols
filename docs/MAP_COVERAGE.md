@@ -2,7 +2,7 @@
 
 客户端原生`mp/coMapList.csv`有26条`pvp`且模式包含`war`的记录。`map-registry-3.3.3.3.json`保存其真实ID、模式、三个原始标志、文字键及角色规则；`prepare_map_registry.py`验证捕获身份、表布局和名称／ID唯一性。运行时准备文件与结算使用该表身份，未知地图及错误文件仍拒绝；元数据不代表资源已准备。
 
-当前正常catalog包含阿富汗、安全屋、坠机之地、Bog、交叉火力、庄园、贫民窟、山景别墅和杂草丛生，均为7500分／600000ms。`prepare_tdm_map.py`接受本版26条身份，随后仍要求本图已初始化CRC、实体、碰撞、武器、角色及小地图绑定，未使用其它地图CRC或默认图片补齐。
+当前正常catalog有13张原生通过图：阿富汗、安全屋、坠机之地、Bog、交叉火力、庄园、贫民窟、山景别墅、杂草丛生、锈迹之地、核弹镇、货轮和航站楼，均为7500分／600000ms。`prepare_tdm_map.py`接受本版26条身份，随后仍要求本图已初始化CRC、实体、碰撞、武器、角色及小地图绑定，未使用其它地图CRC或默认图片补齐。
 
 只读IFS文件列表盘点：362个包、324个可识别列表、73839个观察路径。下表23张图观察到中文主图／load／const路径；三张没有观察到，不据此断言包坏损或资源确实缺失。列表是观察并集，没有验证最终patch覆盖视图、压缩块完整性或依赖闭包。证据为`research-output/full-map-resource-list-audit.json`及`full-map-coverage-audit.json`。
 
@@ -16,13 +16,13 @@
 | 6 | mp_estate_tropical | 原生通过 | 有 |
 | 7 | mp_fav_tropical | 原生通过 | 有 |
 | 8 | mp_killhouse_sh | 已准备 | 有 |
-| 9 | mp_nuked | 候选出生校验失败 | 有 |
+| 9 | mp_nuked | 原生通过，世界碰撞已筛选 | 有 |
 | 10 | mp_overgrown | 原生通过 | 有 |
-| 11 | mp_rust_long | 待准备 | 有 |
+| 11 | mp_rust_long | 原生通过 | 有 |
 | 13 | mp_storm_spring | 待准备 | 有 |
 | 14 | mp_ambush_sh | 待准备 | 有 |
 | 15 | mp_firingrange | 待准备 | 有 |
-| 16 | mp_cargoship | 候选120秒无交战击杀 | 有 |
+| 16 | mp_cargoship | 原生通过，世界碰撞已筛选 | 有 |
 | 50 | mp_highrise | 待准备 | 有 |
 | 53 | mp_dr_box | 待准备 | 有 |
 | 56 | mp_dr_cistern | 待准备 | 有 |
@@ -31,7 +31,7 @@
 | 67 | mp_utopia | 待准备 | 未观察到 |
 | 68 | mp_roundabout | 待准备 | 未观察到 |
 | 71 | mp_mountain | 原生通过 | 有 |
-| 79 | mp_terminal_cls | 待准备 | 有 |
+| 79 | mp_terminal_cls | 原生通过，世界碰撞已筛选 | 有 |
 | 83 | za_coliseum | 待准备 | 有 |
 | 84 | mp_subbase_sh | 待准备 | 有 |
 
@@ -39,4 +39,4 @@
 
 通用采集入口、小地图材质证明、地图模型编号及玩家碰撞掩码导航已接入，mp_bog_sh 的12人对局和Bot交战已实采。其余地图逐图恢复；剧情／合作／其它模式和连杀不在当前团队竞技统计内，全地图尚未完成。详见 `MAP_RESOURCE_PREPARATION.md`。
 
-验收使用[快速批量流程](FAST_MAP_ACCEPTANCE.md)：九张候选后台通过；四图早期实测含资源加载约2～5.4秒。新图原生短局使用隔离资料和同一客户端／房间，减少重复冷启动。共享表现和长时间稳定性另做专项复核，后台通过不替代原生通过。
+验收使用[快速批量流程](FAST_MAP_ACCEPTANCE.md)：正常13张图具有后台及原生短局证据；四图早期实测含资源加载约2～5.4秒。新图原生短局使用隔离资料和同一客户端／房间，减少重复冷启动。核弹镇、货轮和航站楼的世界碰撞范围修正见`WORLD_COLLISION_SCOPE.md`。其余13张仍需资源恢复或诊断，完整视觉和长时间稳定性另做专项复核。

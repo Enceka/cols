@@ -113,7 +113,7 @@ class NativeMapIsolation(unittest.TestCase):
                 self.index+=1
         client=ReorderedClient()
         self.assertEqual(client.select_map('mp_cross_fire','auto')['room_native_map'],'mp_cross_fire')
-        self.assertEqual(client.arrows,[.886,.886,.886])
+        self.assertEqual(client.arrows,[.878,.878,.878])
 
     def test_after_action_return_waits_for_real_room_members_when_first_click_is_early(self):
         class ReturningClient(Client):
@@ -129,6 +129,29 @@ class NativeMapIsolation(unittest.TestCase):
             returned=client.return_to_room()
         self.assertEqual(returned['room_member_count'],12)
         self.assertEqual(client.clicks,2)
+
+    def test_loading_transition_stops_map_selector_before_more_room_inputs(self):
+        class LeavingClient(Client):
+            def __init__(self):self.clicks=0
+            def state(self):
+                return dict(room_native_map='mp_bog_sh' if self.clicks==0 else 'mp_crash_tropical',
+                            room_member_count=12,connection_state=0 if self.clicks==0 else 6)
+            def click(self,*args):self.clicks+=1
+        client=LeavingClient()
+        with self.assertRaisesRegex(RuntimeError,'left room during map selection'):
+            client.select_map('mp_cross_fire')
+        self.assertEqual(client.clicks,1)
+
+    def test_auto_selector_tries_the_other_direction_at_a_disabled_endpoint(self):
+        class EndpointClient(Client):
+            def __init__(self):self.current='za_coliseum';self.arrows=[]
+            def state(self):return dict(room_native_map=self.current,room_member_count=12)
+            def click(self,x,y):
+                self.arrows.append(x)
+                if x==.707:self.current='mp_cross_fire'
+        client=EndpointClient()
+        self.assertEqual(client.select_map('mp_cross_fire','auto')['room_native_map'],'mp_cross_fire')
+        self.assertEqual(client.arrows,[.878,.878,.878,.707])
 
 
 if __name__ == '__main__':

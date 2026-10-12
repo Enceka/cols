@@ -27,10 +27,14 @@
 | 贫民窟 | mp_fav_tropical | 3314487911 |
 | 山景别墅 | mp_mountain | 78003556 |
 | 杂草丛生 | mp_overgrown | 692567894 |
+| 锈迹之地 | mp_rust_long | 1969495731 |
+| 核弹镇 | mp_nuked | 1765105316 |
+| 货轮 | mp_cargoship | 3526583374 |
+| 航站楼 | mp_terminal_cls | 3031257094 |
 
-九图具有独立实体、碰撞、TDM出生点、HUD、武器与角色资料，正常准备为7500分／600000ms。原生箭头仍可选择其它地图，但未准备地图必须明确拒绝。赛单轮换按 publisher version／playlist／entry 顺序解析；自建房按描述和受限游戏请求识别地图，不执行 `mmstart` 文本。正常 publisher 为 version7。
+13图具有独立实体、碰撞、TDM出生点、HUD、武器与角色资料，正常准备为7500分／600000ms。原生箭头仍可选择其它地图，但未准备地图必须明确拒绝。赛单轮换按 publisher version／playlist／entry 顺序解析；自建房按描述和受限游戏请求识别地图，不执行 `mmstart` 文本。正常 publisher 为 version7。
 
-本版26条团队竞技地图的真实ID、模式和角色规则已从`coMapList.csv`生成身份表，运行时准备及结算不再局限于三个手写ID；仍逐图要求完整准备文件。资源列表中23张图观察到主图／load／const路径，正常目录完成上述九图的原生实测。覆盖及证据边界见 `MAP_COVERAGE.md`。
+本版26条团队竞技地图的真实ID、模式和角色规则已从`coMapList.csv`生成身份表，运行时准备及结算不再局限于三个手写ID；仍逐图要求完整准备文件。资源列表中23张图观察到主图／load／const路径，正常目录完成上述13图的原生实测。覆盖及证据边界见 `MAP_COVERAGE.md`。
 
 坠机小地图使用实际 `compass_map_mp_crash_dlc` 材质及1024×1024贴图，角点为 `(1976,2528)`／`(-1200,-2166)`。`compass_map_mp_crash_tropical` 在本版指向16×16默认贴图，不能用作底图。探针按 `0xaa3650` 的材质比较判断 `render_default`，不将资源表的其它布尔字段当作渲染默认判据。
 

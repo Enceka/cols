@@ -112,6 +112,9 @@ class Lab:
             captures=read(complete)
             # Preparation revalidates SHA, map, CRC, real textures and all
             # resource identities; cached metadata alone cannot pass.
+            collision=read(Path(captures['collision']))
+            if collision.get('world_membership',{}).get('bsp_root')!=0:
+                return self.refresh_collision(name,template,captures)
             return self.prepare_captures(name,template,captures)
         cached=cache/(name+'-raw-paths.json') if cache else None
         if cached and cached.is_file():
@@ -138,14 +141,7 @@ class Lab:
             finally:self.stop()
         if paths:
             constants=Path(paths['net-constants'])
-            metadata=dict(schema_version=1,client_sha256=CLIENT_SHA256,map=name,mode='war',zone='mp',playlist=0,
-                          capture_sha256=hashlib.sha256(constants.read_bytes()).hexdigest(),**summary)
-            metadata_path=self.directory/(name+'-metadata.json')
-            write(metadata_path,metadata)
-            initialized=read(self.catalog)
-            initialized['entries'].append(dict(map=name,mode='war',file=str(metadata_path)))
-            initialized_path=self.directory/(name+'-initialization-catalog.json')
-            write(initialized_path,initialized)
+            initialized_path=self.initialization_catalog(name,constants,summary)
             write(self.directory/(name+'-raw-paths.json'),paths)
         client=self.start(name,initialized_path,'initialized')
         try:
@@ -159,6 +155,40 @@ class Lab:
             return self.prepare_captures(name,template,captures)
         except Exception:
             self.record_failure(client,name,'initialized')
+            raise
+        finally:self.stop()
+
+
+    def initialization_catalog(self, name, constants, summary):
+        metadata=dict(schema_version=1,client_sha256=CLIENT_SHA256,map=name,mode='war',zone='mp',playlist=0,
+                      capture_sha256=hashlib.sha256(constants.read_bytes()).hexdigest(),**summary)
+        metadata_path=self.directory/(name+'-metadata.json');write(metadata_path,metadata)
+        initialized=read(self.catalog)
+        initialized['entries']=[e for e in initialized['entries'] if e['map']!=name]
+        initialized['entries'].append(dict(map=name,mode='war',file=str(metadata_path)))
+        path=self.directory/(name+'-initialization-catalog.json');write(path,initialized)
+        return path
+
+    def refresh_collision(self, name, template, captures):
+        # Legacy exports traversed the whole pool, including inline models at
+        # their local origins. Refresh only geometry; reuse the remaining data.
+        constants=Path(captures['net-constants']);summary=compute(read(constants))
+        catalog=self.initialization_catalog(name,constants,summary)
+        client=self.start(name,catalog,'world-refresh')
+        try:
+            self.enter(client,name)
+            client.wait(lambda s:s['connection_state']==9 and s['net_constants_initialized']==1
+                        and s['net_constants_crc']==summary['ncs_crc'],45)
+            collision,data=client.capture('collision')
+            if data.get('world_membership',{}).get('bsp_root')!=0:
+                raise ValueError('refreshed collision has no native world membership')
+            sources=dict(captures,collision=collision,experiment=str(self.experiment))
+            write(self.directory/(name+'-world-refresh.json'),dict(map=name,
+                previous_collision=captures['collision'],collision=collision,
+                world_membership=data['world_membership']))
+            return self.prepare_captures(name,template,sources)
+        except Exception:
+            self.record_failure(client,name,'world-refresh')
             raise
         finally:self.stop()
 
@@ -268,7 +298,9 @@ def main():
     parser.add_argument('--maps',nargs='+',help='collect a subset; default is all observed pending maps')
     parser.add_argument('--cache',type=Path,help='reuse this map\'s verified raw captures for targeted retries')
     parser.add_argument('--normal-experiment',type=Path,help='suspend this owned normal client and automatically restore it')
-    parser.add_argument('--native-maps',nargs='+',help='limit native acceptance to these ready maps')
+    native_targets=parser.add_mutually_exclusive_group()
+    native_targets.add_argument('--native-maps',nargs='+',help='limit native acceptance to these ready maps')
+    native_targets.add_argument('--native-new-only',action='store_true',help='only smoke-test preparations created in this batch')
     parser.add_argument('--skip-native',action='store_true',help='only prepare resources and verify on the server')
     parser.add_argument('--skip-collection',action='store_true',help='verify the queue\'s existing preparations')
     args=parser.parse_args()
@@ -317,8 +349,12 @@ def main():
         report['complete']=True;write(output/'collection.json',report)
         configured=output/'configuration'
         prepare_batch(catalog_path,args.inventory.resolve(),configured)
-        result=verify(configured/'queue.json',output/'acceptance',names=args.native_maps,
-                      native_lab=None if args.skip_native else lab)
+        native_names=args.native_maps
+        if args.native_new_only:
+            native_names=[m['map'] for m in report['maps'] if m['prepared']]
+        native_enabled=not args.skip_native and (not args.native_new_only or bool(native_names))
+        result=verify(configured/'queue.json',output/'acceptance',names=native_names,
+                      native_lab=lab if native_enabled else None)
         print(json.dumps(dict(prepared=sum(m['prepared'] for m in report['maps']),
                               failed=[m['map'] for m in report['maps'] if not m['prepared']],
                               ready_server_passed=result['ready_server_passed'],

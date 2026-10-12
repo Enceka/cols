@@ -36,7 +36,9 @@ class Client:
     def click(self, x, y, content=True):
         b = self.action('info')['bounds']
         h, canvas = b['Height'], min(b['Height'], b['Width']*.625)
-        self.action('click', x, (h-canvas+canvas*y)/h if content else y)
+        fraction=(h-canvas+canvas*y)/h if content else y
+        self.last_click=dict(bounds=b,fraction=[x,fraction],content=content)
+        self.action('click', x, fraction)
         time.sleep(1.1)
 
     def wait(self, predicate, seconds):
@@ -85,7 +87,8 @@ class Client:
                 if attempt==2:raise
 
     def select_map(self, target, direction='right'):
-        arrows={'right':.886,'left':.698}
+        # Use the center of each native chevron, away from its narrow tips.
+        arrows={'right':.878,'left':.707}
         if direction not in (*arrows,'auto'):
             raise ValueError('native map direction must be left, right or auto')
         # Observed native room order. This is only a routing hint: actual map
@@ -97,8 +100,20 @@ class Client:
         seen=set()
         member_count=None
         selected=direction
-        for _ in range(60):
+        reversed_once=False
+        trace=dict(target=target,direction=direction,screenshots=0,steps=[])
+        trace_path=(self.experiment.parent/('map-selection-'+str(time.time_ns())+'.json')) if hasattr(self,'experiment') else None
+        def record(state, event):
+            trace['steps'].append(dict(event=event,**{k:state.get(k) for k in
+                ('connection_state','room_native_map','room_member_count','room_is_host')},
+                last_click=getattr(self,'last_click',None)))
+            if trace_path:trace_path.write_text(json.dumps(trace,indent=2)+'\n')
+        for _ in range(80):
             state=self.state()
+            record(state,'room')
+            if state.get('connection_state',0)!=0:
+                raise RuntimeError('native client left room during map selection: '+json.dumps(
+                    {k:state.get(k) for k in ('connection_state','room_native_map','room_member_count')}))
             current=state['room_native_map']
             if state['room_member_count']!=member_count:
                 # Room population changes during native Bot admission. A map
@@ -108,9 +123,14 @@ class Client:
             print('select',current,state['room_member_count'],flush=True)
             if current==target:
                 return self.wait(lambda s:s['room_native_map']==target
-                                 and s['room_member_count']==12,20)
+                                 and s['room_member_count']==12 and s.get('connection_state',0)==0,20)
             if current in seen:
-                raise RuntimeError('map selector cycled without finding the prepared map')
+                if direction!='auto' or reversed_once:
+                    raise RuntimeError('map selector cycled without finding the prepared map')
+                selected='left' if selected=='right' else 'right'
+                reversed_once=True
+                seen.clear()
+                record(state,'reverse-after-cycle')
             seen.add(current)
             # Choose one direction for this cycle. Recomputing it from an
             # incomplete order can bounce between adjacent maps forever.
@@ -121,12 +141,21 @@ class Client:
                 else:selected='right'
             # A same-map result can be a pending UI transition, not a full cycle.
             for attempt in range(3):
-                self.click(arrows[selected],.765)
+                self.click(arrows[selected],.769)
                 after=self.state()
+                record(after,'arrow-'+selected)
+                if after.get('connection_state',0)!=0:
+                    raise RuntimeError('native client left room during map selection: '+json.dumps(
+                        {k:after.get(k) for k in ('connection_state','room_native_map','room_member_count')}))
                 if after['room_native_map']!=current:
                     break
             else:
-                raise RuntimeError('native map arrow did not change the room map')
+                if direction!='auto' or reversed_once:
+                    raise RuntimeError('native map arrow did not change the room map')
+                selected='left' if selected=='right' else 'right'
+                reversed_once=True
+                seen.clear()
+                record(after,'reverse-at-boundary')
         raise RuntimeError('native map selection incomplete')
 
     def movement(self):
