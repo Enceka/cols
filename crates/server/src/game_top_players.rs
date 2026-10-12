@@ -48,8 +48,10 @@ impl Scene {
                         break;
                     }
                     if [8.0, 36.0, 68.0].iter().any(|height| {
-                        let trace =
-                            collision.raycast(eye, [origin[0], origin[1], origin[2] + height]);
+                        // Require body-space clearance. Weapon-only clip
+                        // volumes can enclose a walkable, visible scene.
+                        let trace = collision
+                            .movement_surface(eye, [origin[0], origin[1], origin[2] + height]);
                         trace.start_solid || trace.all_solid || trace.fraction < 1.0
                     }) {
                         break;
@@ -218,14 +220,20 @@ impl Presentation {
 mod tests {
     use super::*;
     #[test]
-    fn scene_grounds_real_appearances_and_preserves_live_actors() {
+    fn scene_grounds_real_appearances_inside_weapon_clip_and_preserves_live_actors() {
         let f = tempfile::NamedTempFile::new().unwrap();
         std::fs::write(f.path(),serde_json::to_vec(&serde_json::json!({
             "schema_version":1,"read_only":true,"client_sha256":codol_protocol::CLIENT_SHA256,
             "map":"maps/mp/test.d3dbsp","ncs_crc":0,
-            "brushes":[{"center":[0,0,-10],"half":[1000,1000,10],"contents":1,"planes":[]}],"triangles":[]
+            "brushes":[{"center":[0,0,-10],"half":[1000,1000,10],"contents":1,"planes":[]},
+                {"center":[0,0,50],"half":[1000,1000,50],"contents":0x08000800,"planes":[]}],"triangles":[]
         })).unwrap()).unwrap();
         let collision = Collision::load(f.path()).unwrap();
+        assert!(
+            collision
+                .raycast([0.0, 0.0, 58.0], [180.0, 0.0, 8.0])
+                .start_solid
+        );
         let actors: Vec<_> = (0..12)
             .map(|i| EnemySnapshot {
                 entity_number: u16::from(i),
