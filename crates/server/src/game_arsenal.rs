@@ -13,6 +13,7 @@ const MAX_CAPTURE_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Clone, Debug)]
 pub(crate) struct Arsenal {
+    pub(crate) captured_map: Option<String>,
     pub(crate) source_sha256: String,
     registered_count: u16,
     weapons: BTreeMap<u16, Weapon>,
@@ -56,6 +57,10 @@ struct Capture {
     read_only: bool,
     client_sha256: String,
     connection_state: u32,
+    #[serde(default)]
+    ncs_initialized: u32,
+    #[serde(default)]
+    map: Option<String>,
     ncs_crc: u32,
     registered_count: u16,
     marketplace: Table,
@@ -190,7 +195,8 @@ impl Arsenal {
             capture.schema_version == 1
                 && capture.read_only
                 && capture.client_sha256 == codol_protocol::CLIENT_SHA256
-                && capture.connection_state == 10
+                && (capture.connection_state == 10
+                    || (capture.connection_state == 9 && capture.ncs_initialized == 1))
                 && capture.ncs_crc == expected_crc
                 && (1..900).contains(&capture.registered_count),
             "arsenal client/state/net-constant identity mismatch"
@@ -370,6 +376,7 @@ impl Arsenal {
             );
         }
         Ok(Self {
+            captured_map: capture.map,
             source_sha256: format!("{:x}", Sha256::digest(bytes)),
             registered_count: capture.registered_count,
             weapons,
@@ -719,6 +726,15 @@ mod tests {
             format!("{:x}", Sha256::digest(&bytes))
         );
         assert!(Arsenal::from_bytes(&bytes, 124).is_err());
+        let mut initialized = data.clone();
+        initialized["connection_state"] = json!(9);
+        initialized["ncs_initialized"] = json!(1);
+        initialized["map"] = json!("maps/mp/mp_bog_sh.d3dbsp");
+        let loaded = load(&initialized);
+        assert_eq!(
+            loaded.captured_map.as_deref(),
+            Some("maps/mp/mp_bog_sh.d3dbsp")
+        );
         for (path, value) in [
             ("/read_only", json!(false)),
             ("/connection_state", json!(9)),

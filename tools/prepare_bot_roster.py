@@ -14,7 +14,7 @@ import re
 import struct
 from pathlib import Path
 
-from prepare_bot_locomotion import blocks, rawfile, select_action
+from prepare_bot_locomotion import actor_animations, blocks, rawfile, select_action
 from prepare_game_state import CLIENT_SHA256
 from prepare_player_appearance import GROUPS, native_hash
 
@@ -61,9 +61,8 @@ def animation_config(template, capture, definition):
     context = {"playeranimtype": types[at].lower(), "playeranimtypeprimary": types[at].lower(),
                "weaponclass": classes[wc], "weapon_position": "hip", "strafing": "not", "movetype": "idle"}
     indices = {}
-    for a in capture["animations"]:
-        if a.get("source", 0x07817b80) == 0x07817b80:
-            indices.setdefault(a["name"].lower(), set()).add(a["index"])
+    for a in actor_animations(capture):
+        indices.setdefault(a["name"].lower(), set()).add(a["index"])
 
     def index(name):
         found = indices.get(name.lower(), set())
@@ -90,8 +89,8 @@ def animation_config(template, capture, definition):
     locomotion["fire_standing"] = index(fire[1])
     duration = fire[2]
     if duration is None:
-        found = [a.get("duration_msec") for a in capture["animations"]
-                 if a.get("source", 0x07817b80) == 0x07817b80 and a["name"].lower() == fire[1].lower()]
+        found = [a.get("duration_msec") for a in actor_animations(capture)
+                 if a["name"].lower() == fire[1].lower()]
         duration = found[0] if len(found) == 1 else None
     if duration is not None:
         if not isinstance(duration, int) or not 1 <= duration <= 15000:

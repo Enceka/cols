@@ -377,6 +377,27 @@ pub fn client_message_with_base(
     movement_key: Option<u32>,
     base: &crate::game_usercmd::UserCommand,
 ) -> Result<ClientCommands, LobbyError> {
+    read_client_message(body, movement_key, base, false)
+}
+/// Resource initialization has no playerState baseline. Read reliable controls
+/// and ignore the remaining bounded movement payload. Gameplay stays strict.
+pub fn client_controls_without_player_state(body: &[u8]) -> Result<ClientCommands, LobbyError> {
+    if body.len() > 4096 {
+        return Err(LobbyError("resource control body size"));
+    }
+    read_client_message(
+        body,
+        None,
+        &crate::game_usercmd::UserCommand::default(),
+        true,
+    )
+}
+fn read_client_message(
+    body: &[u8],
+    movement_key: Option<u32>,
+    base: &crate::game_usercmd::UserCommand,
+    ignore_movement: bool,
+) -> Result<ClientCommands, LobbyError> {
     let mut reader = Reader::new(body);
     let mut commands = Vec::new();
     let mut movement = None;
@@ -397,6 +418,12 @@ pub fn client_message_with_base(
                 return Ok(ClientCommands { commands, movement });
             }
             op @ (0 | 1) => {
+                if ignore_movement {
+                    return Ok(ClientCommands {
+                        commands,
+                        movement: None,
+                    });
+                }
                 let key = movement_key.ok_or(LobbyError("movement before bootstrap snapshot"))?;
                 movement = Some(crate::game_usercmd::read_movement_from(
                     &mut reader,
@@ -420,6 +447,17 @@ pub fn client_message_with_base(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn resource_controls_ignore_opaque_movement_without_relaxing_gameplay_parsing() {
+        // Reliable sequence1/text"s", then an intentionally undecodable move.
+        let body = [10, 1, 0, 0, 0, b's', 0, 0xff, 0xff];
+        let controls = client_controls_without_player_state(&body).unwrap();
+        assert_eq!(controls.commands, vec![(1, b"s".to_vec())]);
+        assert!(controls.movement.is_none());
+        assert!(client_commands(&body).is_err());
+        assert!(client_controls_without_player_state(&[3, 0]).is_err());
+        assert!(client_controls_without_player_state(&vec![0; 4097]).is_err());
+    }
     #[test]
     fn large_reliable_updates_fit_complete_native_messages_and_ack_only_sent_records() {
         let mut commands = ReliableCommands::default();

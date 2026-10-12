@@ -6,7 +6,7 @@ import zlib
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from prepare_bot_locomotion import prepare
+from prepare_bot_locomotion import actor_animations, prepare
 
 
 def asset(name, text):
@@ -59,6 +59,14 @@ reload {
 
 
 class NativeBotAnimationPreparation(unittest.TestCase):
+    def test_initialization_uses_the_captured_renderer_bank_and_prefers_bg_when_available(self):
+        renderer=dict(source=0x07817b84,name='pb_stand_alert',index=395)
+        primary=dict(source=0x07817b80,name='pb_stand_alert',index=395)
+        self.assertEqual(actor_animations({'animations':[renderer]}),[renderer])
+        self.assertEqual(actor_animations({'animations':[renderer,primary]}),[primary])
+        with self.assertRaises(ValueError):
+            actor_animations({'animations':[dict(source=123,name='unknown',index=1)]})
+
     def test_native_rule_order_wins_over_later_strafe_rules_and_suppresses_moving_overlay(self):
         state, capture, arsenal = inputs()
         # Native metadata contains many duplicated unused placeholders.

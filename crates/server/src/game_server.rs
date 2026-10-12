@@ -252,6 +252,7 @@ pub struct GameServer {
     directory: PathBuf,
     game_state: Option<Arc<crate::game_state::PreparedGameState>>,
     game_map_catalog: Option<crate::game_map_catalog::GameMapCatalog>,
+    resource_capture_map: Option<String>,
     hit_regions: HitRegionSource,
     services: Option<Arc<crate::services::LocalServices>>,
 }
@@ -329,6 +330,7 @@ impl GameServer {
             directory,
             game_state: None,
             game_map_catalog: None,
+            resource_capture_map: None,
             hit_regions: HitRegionSource::default(),
             services: None,
             admissions: Arc::new(GameAdmissions {
@@ -385,6 +387,22 @@ impl GameServer {
             .bot_rooms = Some(crate::room_bots::Policy { version, maps });
         Ok(self)
     }
+    /// Explicit single-map collection. Captured metadata may be initialized
+    /// without gameplay snapshots or substitution of another map's CRC.
+    pub fn with_resource_capture_map(mut self, map: String) -> Result<Self> {
+        ensure!(
+            crate::game_map_registry::native_id(&map).is_some(),
+            "resource capture requires a captured native TDM map identity"
+        );
+        let policy = Arc::get_mut(&mut self.admissions)
+            .ok_or_else(|| anyhow::anyhow!("resource capture must precede admission sharing"))?
+            .bot_rooms
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("resource capture requires native bot rooms"))?;
+        policy.maps.insert(map.clone());
+        self.resource_capture_map = Some(map);
+        Ok(self)
+    }
     fn template_for(
         &self,
         admission: &Admission,
@@ -417,6 +435,18 @@ impl GameServer {
         );
         match parsed? {
             Some(selection) => {
+                if self.resource_capture_map.as_deref() == Some(&selection.map) {
+                    ensure!(
+                        selection.mode == "war",
+                        "resource capture is limited to native TDM"
+                    );
+                    return self
+                        .game_map_catalog
+                        .as_ref()
+                        .and_then(|catalog| catalog.select(&selection.map, &selection.mode).ok())
+                        .map(|state| (*state).clone().resource_initialization().map(Arc::new))
+                        .transpose();
+                }
                 let catalog = self.game_map_catalog.as_ref().ok_or_else(|| {
                     anyhow::anyhow!("requested room map has no preparation catalog")
                 })?;
@@ -443,6 +473,21 @@ impl GameServer {
         }
     }
     pub async fn run<F: Future<Output = std::io::Result<()>>>(mut self, shutdown: F) -> Result<()> {
+        if let Some(map) = &self.resource_capture_map {
+            let initializes = self
+                .game_map_catalog
+                .as_ref()
+                .is_some_and(|catalog| catalog.select(map, "war").is_ok());
+            write_private(
+                &self.directory.join("resource-capture.json"),
+                &serde_json::to_vec(
+                    &serde_json::json!({"map":map,"mode":"war", "world_simulation":false,
+                    "resource_gamestate_available":initializes,"gameplay_snapshots":false,
+                    "client_sha256":codol_protocol::CLIENT_SHA256}),
+                )?,
+            )
+            .await?;
+        }
         if self.continuous_play {
             write_private(&self.directory.join("play-mode.json"),&serde_json::to_vec(&serde_json::json!({"snapshot_frame_limit":null,"capture_receive_byte_limit":32*1024*1024,"capture_every":self.capture_every}))?).await?;
         }
@@ -620,8 +665,14 @@ impl GameServer {
                             } else {
                                 state.clone()
                             };
+                            let resource_collection =
+                                self.resource_capture_map.as_deref() == Some(state.map());
                             connection.connection =
                                 crate::game_connection::Connection::with_game_state(state);
+                            if resource_collection {
+                                connection.connection =
+                                    connection.connection.with_resource_collection();
+                            }
                             if let Some(registry) = weapon_registry {
                                 connection.connection =
                                     connection.connection.with_weapon_registry(registry);
@@ -892,6 +943,86 @@ mod tests {
         assert!(server.template_for(&admission).is_err());
     }
 
+    #[tokio::test]
+    async fn resource_collection_is_explicit_and_cannot_fall_back_to_another_world() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut server = GameServer::bind("127.0.0.1:0".parse().unwrap(), temp.path().join("game"))
+            .await
+            .unwrap()
+            .with_game_state(crate::game_state::synthetic());
+        let mut admission = Admission {
+            title: 1002,
+            owner: 9,
+            seed: 41,
+            build: -688906341,
+            expires: 100,
+            key: [7; 16],
+            booked: true,
+            playlist_version: None,
+            room_teams: None,
+            start_command: Some("mmstart sv_resetServer; map mp_bog_sh; g_gametype war".into()),
+        };
+        assert!(server.template_for(&admission).is_err());
+        Arc::get_mut(&mut server.admissions).unwrap().bot_rooms = Some(crate::room_bots::Policy {
+            version: 7,
+            maps: ["mp_afghan".into()].into(),
+        });
+        let server = server
+            .with_resource_capture_map("mp_bog_sh".into())
+            .unwrap();
+        assert!(server.template_for(&admission).unwrap().is_none());
+        assert!(
+            server
+                .admissions
+                .bot_rooms
+                .as_ref()
+                .unwrap()
+                .maps
+                .contains("mp_bog_sh")
+        );
+        for start in [
+            "mmstart sv_resetServer; map mp_nuked; g_gametype war",
+            "mmstart sv_resetServer; map mp_bog_sh; g_gametype sd",
+            "mmstart sv_resetServer; map mp_bog_sh; g_gametype war; quit",
+        ] {
+            admission.start_command = Some(start.into());
+            assert!(server.template_for(&admission).is_err());
+        }
+        admission.start_command =
+            Some("mmstart sv_resetServer; map mp_bog_sh; g_gametype war".into());
+        admission.build = 0;
+        assert!(server.template_for(&admission).is_err());
+        admission.build = -688906341;
+        let metadata = temp.path().join("bog.json");
+        crate::game_map_catalog::write_synthetic(&metadata, "mp_bog_sh");
+        let mut data: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&metadata).unwrap()).unwrap();
+        data["ncs_crc"] = serde_json::json!(0x87654321u32);
+        std::fs::write(&metadata, serde_json::to_vec(&data).unwrap()).unwrap();
+        let manifest = temp.path().join("capture-maps.json");
+        std::fs::write(
+            &manifest,
+            serde_json::to_vec(&serde_json::json!({"schema_version":1,
+            "entries":[{"map":"mp_bog_sh","mode":"war","file":"bog.json"}]}))
+            .unwrap(),
+        )
+        .unwrap();
+        let server = server.with_game_map_catalog(
+            crate::game_map_catalog::GameMapCatalog::load(&manifest)
+                .unwrap()
+                .with_continuous_play(),
+        );
+        let initialized = server.template_for(&admission).unwrap().unwrap();
+        assert_eq!(initialized.map(), "mp_bog_sh");
+        assert_eq!(initialized.ncs_crc(), 0x87654321);
+        assert!(!initialized.snapshot_probe());
+        assert_eq!(initialized.snapshot_limit(), 0);
+        assert!(
+            server
+                .with_resource_capture_map("mp_unknown".into())
+                .is_err()
+        );
+    }
     #[tokio::test]
     async fn an_unprepared_room_map_is_rejected_even_when_a_default_is_available() {
         let temp = tempfile::tempdir().unwrap();

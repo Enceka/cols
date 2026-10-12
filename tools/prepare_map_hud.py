@@ -44,9 +44,32 @@ def map_entities(capture, map_name):
     return entities
 
 
-def minimap(capture, map_name):
-    if map_name not in MATERIALS:
-        raise ValueError("unsupported minimap material")
+def minimap(capture, map_name, material_capture=None, material_capture_sha256=None):
+    material = MATERIALS.get(map_name)
+    proof = None
+    if material is None:
+        if (material_capture is None or material_capture.get('schema_version') != 1 or
+                material_capture.get('read_only') is not True or
+                material_capture.get('client_sha256') != CLIENT_SHA256 or
+                material_capture.get('map') != 'maps/mp/' + map_name + '.d3dbsp'):
+            raise ValueError('new minimap requires this map\'s read-only material capture')
+        material = 'compass_map_' + map_name
+        record = material_capture.get('map_hud_materials', {}).get(material, {})
+        dimensions = [[t['width'], t['height']] for t in record.get('textures', [])]
+        if (record.get('found') is not True or record.get('render_default') is not False or
+                not dimensions or len(dimensions) > 32 or
+                not any(all(type(v) is int and 64 <= v <= 8192 for v in d) for d in dimensions)):
+            raise ValueError('minimap material is absent, default or has no real image')
+        crc = material_capture.get('ncs_crc')
+        if type(crc) is not int or not 0 <= crc <= 0xffffffff:
+            raise ValueError('material capture CRC invalid')
+        digest = material_capture_sha256 or hashlib.sha256(
+            json.dumps(material_capture, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+        if not re.fullmatch('[a-fA-F0-9]{64}', digest):
+            raise ValueError('material capture hash invalid')
+        proof = dict(client_sha256=CLIENT_SHA256,capture_sha256=digest,
+                     map=material_capture['map'],material=material,ncs_crc=crc,
+                     render_default=False,texture_dims=dimensions)
     entities = map_entities(capture, map_name)
     worlds = [e for e in entities if e.get(b"classname") == b"worldspawn"]
     corners = [e for e in entities if e.get(b"targetname") == b"minimap_corner"]
@@ -69,8 +92,10 @@ def minimap(capture, map_name):
     if any(high[i] - low[i] <= 1 for i in range(2)):
         raise ValueError("degenerate minimap bounds")
     point = lambda p: [round(p[0] * north[i] + p[1] * west[i], 5) for i in range(2)]
-    return dict(material=MATERIALS[map_name], north_yaw=yaw,
-                upper_left=point(high), lower_right=point(low))
+    result = dict(material=material, north_yaw=yaw, upper_left=point(high), lower_right=point(low))
+    if proof is not None:
+        result['material_proof'] = proof
+    return result
 
 
 def main():

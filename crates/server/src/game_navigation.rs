@@ -48,7 +48,7 @@ impl Navigation {
                     }
                     let start = [x as f32 * CELL, y as f32 * CELL, z];
                     let end = [start[0], start[1], low];
-                    let trace = collision.raycast(start, end);
+                    let trace = collision.ground_raycast(start, end);
                     if trace.start_solid || trace.all_solid {
                         z -= 16.0;
                         continue;
@@ -252,6 +252,66 @@ fn distance(a: V3, b: V3) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn sight_clip_volumes_do_not_remove_player_walkable_ground() {
+        let data = serde_json::json!({"schema_version":1,"read_only":true,"client_sha256":codol_protocol::CLIENT_SHA256,
+            "map":"maps/mp/test.d3dbsp","ncs_crc":0,"brushes":[
+                {"center":[0,0,-10],"half":[2000,2000,10],"contents":1,"planes":[]},
+                {"center":[0,0,0],"half":[2000,2000,48],"contents":0x08000800,"planes":[]}],"triangles":[]});
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), serde_json::to_vec(&data).unwrap()).unwrap();
+        let collision = Collision::load(file.path()).unwrap();
+        assert!(
+            (collision
+                .raycast([0.0, 0.0, 200.0], [0.0, 0.0, -200.0])
+                .fraction
+                - 0.38)
+                .abs()
+                < 0.001
+        );
+        let start = [-300.0, 0.0, 0.125];
+        let end = [300.0, 0.0, 0.125];
+        let nav = Navigation::build([start, end].into_iter(), &collision);
+        assert!(!nav.route(start, end, &collision).is_empty());
+        assert!(nav.positions.iter().all(|p| p[2] < 1.0));
+    }
+    #[test]
+    #[ignore = "uses locally captured Bog collision to verify both team spawn areas"]
+    fn captured_bog_ground_connects_both_teams() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../research-output");
+        let state: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(root.join("tdm-bog-state.json")).unwrap())
+                .unwrap();
+        let config: crate::game_match::MatchConfig =
+            serde_json::from_value(state["match_config"].clone()).unwrap();
+        let collision = Collision::load(std::path::Path::new(
+            state["collision_file"].as_str().unwrap(),
+        ))
+        .unwrap();
+        let nav = Navigation::build(config.spawns.iter().flatten().copied(), &collision);
+        for &point in config.spawns.iter().flatten() {
+            let point = crate::game_bot::grounded_spawn(point, &collision).unwrap();
+            assert!(
+                nav.closest(point, &collision).is_some(),
+                "unlinked spawn {point:?}"
+            );
+        }
+        let a = crate::game_bot::grounded_spawn(config.spawns[0][0], &collision).unwrap();
+        let b = crate::game_bot::grounded_spawn(config.spawns[1][0], &collision).unwrap();
+        let path = nav.route(a, b, &collision);
+        assert!(
+            !path.is_empty(),
+            "opposing spawn areas must connect across player-walkable terrain"
+        );
+        for (&start, &end) in std::iter::once(&a).chain(path.iter()).zip(path.iter()) {
+            assert!(Navigation::clear(start, end, &collision));
+        }
+        std::fs::write(root.join("bog-navigation-captured-proof.json"),serde_json::to_vec_pretty(&serde_json::json!({
+            "map":state["map"],"ncs_crc":state["ncs_crc"],"source":state["collision_file"],
+            "nodes":nav.positions.len(),"route_nodes":path.len(),"linked_spawns":config.spawns.iter().map(Vec::len).sum::<usize>(),
+            "server_geometry_verified":true,"native_visual_verified":false
+        })).unwrap()).unwrap();
+    }
     #[test]
     fn walking_routes_and_shortcuts_keep_support_over_a_deep_gap() {
         // The old elevated sweep saw no wall and cut straight across this

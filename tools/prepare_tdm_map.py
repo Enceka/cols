@@ -13,7 +13,7 @@ from pathlib import Path
 from clientlib import REPO
 
 from prepare_game_state import CLIENT_SHA256, compute
-from prepare_bot_locomotion import prepare as prepare_locomotion
+from prepare_bot_locomotion import actor_animations, prepare as prepare_locomotion
 from prepare_bot_roster import prepare as prepare_roster
 from prepare_map_hud import map_entities, minimap
 
@@ -41,7 +41,7 @@ def native_maps():
     return [m['name'] for m in registry['maps']]
 
 
-def prepare(template, map_name, constants, entities, collision, arsenal, characters):
+def prepare(template, map_name, constants, entities, collision, arsenal, characters, material_capture_sha256=None):
     if map_name not in native_maps() or template["client_sha256"] != CLIENT_SHA256:
         raise ValueError("unsupported map/template identity")
     summary = compute(constants, "m4_mp", True, True, "viewhands_tf141")
@@ -57,7 +57,7 @@ def prepare(template, map_name, constants, entities, collision, arsenal, charact
     state = copy.deepcopy(template)
     state.update(summary)
     state.update(map=map_name, mode="war", zone="mp", playlist=0, spawn_origin=teams[1][0])
-    state["minimap"] = minimap(entities, map_name)
+    state["minimap"] = minimap(entities, map_name, characters, material_capture_sha256)
     state["match_config"].update(spawns=teams, roster=[], models=[])
     # Rebind the human skeleton and generic nodes by names in this capture.
     models = {m["name"]: m for m in characters["models"]}
@@ -65,9 +65,8 @@ def prepare(template, map_name, constants, entities, collision, arsenal, charact
     animation = state["training_enemy"]
     animation.update(model=body["model"], origin=teams[0][0], bounds_min=body["bounds_min"], bounds_max=body["bounds_max"])
     indices = {}
-    for a in characters["animations"]:
-        if a.get("source", 0x07817b80) == 0x07817b80:
-            indices.setdefault(a["name"].lower(), set()).add(a["index"])
+    for a in actor_animations(characters):
+        indices.setdefault(a["name"].lower(), set()).add(a["index"])
     for field, name in (("idle_animation", "pb_stand_alert"), ("fire_animation", "pt_stand_shoot_auto"),
                         ("death_animation", "pb_stand_death_chest_blowback")):
         found = indices.get(name, set())
@@ -76,6 +75,11 @@ def prepare(template, map_name, constants, entities, collision, arsenal, charact
         animation[field] = next(iter(found))
     prepare_locomotion(state, characters, arsenal, CLIENT_SHA256)
     result = prepare_roster(state, characters, arsenal, stream_outfits=True)
+    if state.get('appearance_file'):
+        # Native inherited model slots differ by map. Player composition starts
+        # after this map's inherited and explicitly registered Bot model IDs.
+        state['appearance_first_model']=max([m['model'] for m in characters['models']]+
+            [i for i,_ in state['match_config']['models']])+1
     result.update(map=map_name, ncs_crc=crc, spawns=[len(t) for t in teams])
     return state, result
 
@@ -88,7 +92,8 @@ def main():
         parser.add_argument("--" + name, type=Path, required=True)
     args = parser.parse_args()
     loaded = {n: json.loads(getattr(args, n).read_text()) for n in ("constants", "entities", "collision", "arsenal", "characters")}
-    state, result = prepare(json.loads(args.template.read_text()), args.map, **loaded)
+    state, result = prepare(json.loads(args.template.read_text()), args.map,
+        material_capture_sha256=hashlib.sha256(args.characters.read_bytes()).hexdigest(), **loaded)
     state["capture_sha256"] = hashlib.sha256(args.constants.read_bytes()).hexdigest()
     state["map_entities_sha256"] = hashlib.sha256(args.entities.read_bytes()).hexdigest()
     state["training_enemy"]["source_sha256"] = hashlib.sha256(args.characters.read_bytes()).hexdigest()

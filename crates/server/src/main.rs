@@ -22,6 +22,8 @@ struct Cli {
 }
 
 #[derive(Subcommand)]
+// CLI arguments are parsed once at startup, outside gameplay frame processing.
+#[allow(clippy::large_enum_variant)]
 enum Command {
     /// Prepare a real human training opponent from loaded models and animation evidence.
     PrepareTrainingEnemy {
@@ -125,6 +127,9 @@ enum Command {
         /// Include the eleven server simulated TDM players in native custom rooms.
         #[arg(long, requires = "game_map_catalog")]
         native_bot_rooms: bool,
+        /// Collect one native TDM map's loaded resources without sending a world.
+        #[arg(long, requires = "native_bot_rooms")]
+        resource_capture_map: Option<String>,
         /// Keep the authenticated local play session running until shutdown.
         #[arg(long, requires_all=["game_state","service_data_dir"], conflicts_with="snapshot_probe")]
         continuous_play: bool,
@@ -376,6 +381,7 @@ async fn main() -> Result<()> {
             snapshot_probe,
             game_map_catalog,
             native_bot_rooms,
+            resource_capture_map,
             continuous_play,
             game_capture_every,
             hit_regions,
@@ -444,6 +450,9 @@ async fn main() -> Result<()> {
                             .ok_or_else(|| anyhow::anyhow!("bot rooms require local services"))?;
                         game = game
                             .with_native_bot_rooms(services.publisher_playlist_version().await?)?;
+                    }
+                    if let Some(map) = resource_capture_map {
+                        game = game.with_resource_capture_map(map)?;
                     }
                     let endpoint = game.admissions();
                     tracing::info!(address=%endpoint.address(),"experimental Rust game UDP endpoint ready");

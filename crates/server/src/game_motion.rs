@@ -388,6 +388,11 @@ impl Collision {
     pub fn raycast(&self, start: V3, end: V3) -> Trace {
         self.raycast_mask(start, end, SHOT_MASK)
     }
+    /// Navigation support must use the same contents as the player's hull.
+    /// Bullet/visibility-only volumes can overlap physically walkable terrain.
+    pub(crate) fn ground_raycast(&self, start: V3, end: V3) -> Trace {
+        self.raycast_mask(start, end, PLAYER_MASK)
+    }
     pub(crate) fn projectile_trace(&self, start: V3, end: V3, radius: f32) -> Trace {
         let capsule = Capsule {
             radius,

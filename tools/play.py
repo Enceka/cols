@@ -11,7 +11,9 @@ from clientlib import REPO
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--prefix-name",default="wine10-throwables-20261011")
-    parser.add_argument("--map-catalog",type=Path,default=REPO/"research-output/native-three-map-catalog.json")
+    catalog=REPO/"research-output/native-tdm-map-catalog.json"
+    if not catalog.is_file():catalog=REPO/"research-output/native-three-map-catalog.json"
+    parser.add_argument("--map-catalog",type=Path,default=catalog)
     parser.add_argument("--game-state",type=Path,default=REPO/"research-output/tdm-afghan-hud-state.json")
     parser.add_argument("--seconds",type=int,default=0,help="optional bounded verification run; default: until exit")
     args=parser.parse_args()

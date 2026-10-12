@@ -21,10 +21,11 @@
 | Afghan | mp_afghan | 523897474 |
 | 安全屋（本版显示“杀戮小屋”） | mp_killhouse_sh | 3852334052 |
 | 坠机之地 | mp_crash_tropical | 4159215889 |
+| Bog | mp_bog_sh | 3785594714 |
 
-三图具有独立实体、碰撞、TDM出生点、HUD、武器与角色资料，正常准备为7500分／600000ms。原生箭头仍可选择其它地图，但未准备地图必须明确拒绝。赛单轮换按 publisher version／playlist／entry 顺序解析；自建房按描述和受限游戏请求识别地图，不执行 `mmstart` 文本。正常 publisher 为 version7。
+四图具有独立实体、碰撞、TDM出生点、HUD、武器与角色资料，正常准备为7500分／600000ms。原生箭头仍可选择其它地图，但未准备地图必须明确拒绝。赛单轮换按 publisher version／playlist／entry 顺序解析；自建房按描述和受限游戏请求识别地图，不执行 `mmstart` 文本。正常 publisher 为 version7。
 
-本版26条团队竞技地图的真实ID、模式和角色规则已从`coMapList.csv`生成身份表，运行时准备及结算不再局限于三个手写ID；仍逐图要求完整准备文件。资源列表中23张图观察到主图／load／const路径，当前只完成上述三图的实际准备。覆盖及证据边界见 `MAP_COVERAGE.md`。
+本版26条团队竞技地图的真实ID、模式和角色规则已从`coMapList.csv`生成身份表，运行时准备及结算不再局限于三个手写ID；仍逐图要求完整准备文件。资源列表中23张图观察到主图／load／const路径，当前完成上述四图的实际准备。覆盖及证据边界见 `MAP_COVERAGE.md`。
 
 坠机小地图使用实际 `compass_map_mp_crash_dlc` 材质及1024×1024贴图，角点为 `(1976,2528)`／`(-1200,-2166)`。`compass_map_mp_crash_tropical` 在本版指向16×16默认贴图，不能用作底图。探针按 `0xaa3650` 的材质比较判断 `render_default`，不将资源表的其它布尔字段当作渲染默认判据。
 

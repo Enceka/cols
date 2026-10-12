@@ -14,7 +14,7 @@ python3 tools/play.py
 
 当前本机准备目录：
 
-- `research-output/native-three-map-catalog.json`：Afghan、杀戮小屋/安全屋、坠机之地的独立地图准备。
+- `research-output/native-tdm-map-catalog.json`：Afghan、杀戮小屋/安全屋、坠机之地、mp_bog_sh 的独立地图准备。
 - `research-output/tdm-afghan-hud-state.json`：快速人机入口的默认准备。
 - `client-work/wine10-throwables-20261011`：已验证的当前游戏环境；其它研究prefix保留。
 
@@ -30,8 +30,8 @@ STUN地址发现服务也已取消“记录满512个包就不再响应”的旧�
 
 macOS自动测试窗口工具由`sh tools/build_game_window.sh`构建。所有输入先校验实验PID及研究副本标记，再确认游戏为前台；Wine无应用包时，AppKit激活失败可通过macOS公共进程API恢复窗口焦点。桥接程序只接受带研究标记的本版游戏进程，不读取或修改游戏内存；焦点复核失败仍中止输入。
 
-三图准备现含`feedback_resources`：由本图NCS导出普通/致命命中材质和命中声槽，分别显示白色/红色并按1000/600ms淡出。旧准备文件需用相应捕获重新生成此项；不要把另一图的CRC或资源槽直接复制进去。
+已准备地图现含`feedback_resources`：由本图NCS导出普通/致命命中材质和命中声槽，分别显示白色/红色并按1000/600ms淡出。旧准备文件需用相应捕获重新生成此项；不要把另一图的CRC或资源槽直接复制进去。
 
-三图准备现含`replay_resources`：从本图NCS本地化银行生成个人回放跳过提示，按当前客户端按键绑定显示。最终回放使用原生“决胜杀”标题，无跳过提示；回放结束后依次展示前三名和结算。
+已准备地图现含`replay_resources`：从本图NCS本地化银行生成个人回放跳过提示，按当前客户端按键绑定显示。最终回放使用原生“决胜杀”标题，无跳过提示；回放结束后依次展示前三名和结算。
 
-三图现支持原生队友死亡骷髅定位：只显示同队队友，重生或到期清理，视野外不显示边缘箭头。由本图`feedback_resources.death_material`绑定，缺失时关闭。
+已准备地图支持原生队友死亡骷髅定位：只显示同队队友，重生或到期清理，视野外不显示边缘箭头。由本图`feedback_resources.death_material`绑定，缺失时关闭。

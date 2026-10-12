@@ -48,6 +48,26 @@ class MinimapPreparation(unittest.TestCase):
         self.assertEqual(result["upper_left"], [1976, 2528])
         self.assertEqual(result["lower_right"], [-1200, -2166])
 
+    def test_new_map_requires_its_captured_material_and_rejects_default_or_unrelated_images(self):
+        capture=self.capture(yaw=0,corners=((100,100),(-100,-100)))
+        capture['maps'][0]['name']='maps/mp/mp_bog_sh.d3dbsp'
+        material=dict(schema_version=1,read_only=True,client_sha256=CLIENT_SHA256,
+            map='maps/mp/mp_bog_sh.d3dbsp',ncs_crc=123,
+            map_hud_materials={'compass_map_mp_bog_sh':dict(found=True,render_default=False,
+                textures=[dict(width=512,height=512)])})
+        result=minimap(capture,'mp_bog_sh',material)
+        self.assertEqual(result['material'],'compass_map_mp_bog_sh')
+        self.assertEqual(result['material_proof']['ncs_crc'],123)
+        self.assertEqual(result['material_proof']['texture_dims'],[[512,512]])
+        for change in ('missing','map','client','default','small'):
+            altered=copy.deepcopy(material)
+            if change=='missing':altered['map_hud_materials'].clear()
+            elif change=='map':altered['map']='maps/mp/mp_afghan.d3dbsp'
+            elif change=='client':altered['client_sha256']='other'
+            elif change=='default':altered['map_hud_materials']['compass_map_mp_bog_sh']['render_default']=True
+            else:altered['map_hud_materials']['compass_map_mp_bog_sh']['textures']=[dict(width=16,height=16)]
+            with self.subTest(change=change),self.assertRaises(ValueError):minimap(capture,'mp_bog_sh',altered)
+
 
 if __name__ == "__main__":
     unittest.main()

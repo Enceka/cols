@@ -15,6 +15,7 @@ struct KillCause {
 
 #[derive(Default)]
 pub(crate) struct Connection {
+    resource_collection: bool,
     challenge: Option<u32>,
     display_name: Option<String>,
     owner_id: u64,
@@ -331,6 +332,10 @@ impl Connection {
         self.gamestate_update
     }
 
+    pub(crate) fn with_resource_collection(mut self) -> Self {
+        self.resource_collection = true;
+        self
+    }
     pub fn poll_profile_ready(&mut self) -> Option<&'static [u8]> {
         if self.profile_ready_sent
             || !self.connected
@@ -1104,12 +1109,16 @@ impl Connection {
                         .expect("decoded slot"),
                 )
             });
-        let base = if key.is_some() {
+        let base = if key.is_some() && !self.resource_collection {
             self.input_base_for(header.message_ack)?
         } else {
             Default::default()
         };
-        let received = game_wire::client_message_with_base(&clear, key, &base)?;
+        let received = if self.resource_collection {
+            game_wire::client_controls_without_player_state(&clear)?
+        } else {
+            game_wire::client_message_with_base(&clear, key, &base)?
+        };
         ensure!(
             self.gamestate_sent || received.commands.is_empty(),
             "client commands before gamestate"
@@ -1183,7 +1192,7 @@ impl Connection {
                 game_wire::compact_server_packet(3, client_ack, challenge, client_command, &body)?;
             sending_gamestate = true;
             Some(reply)
-        } else if client_ack > self.client_commands.sequence() {
+        } else if self.resource_collection || client_ack > self.client_commands.sequence() {
             Some(game_wire::server_packet(
                 self.native_sent + 1,
                 client_ack,
@@ -1196,7 +1205,9 @@ impl Connection {
         };
         self.server_commands = commands;
         self.client_commands = client_commands;
-        if let Some(movement) = received.movement {
+        if !self.resource_collection
+            && let Some(movement) = received.movement
+        {
             self.predicted_position = Some((
                 movement.predicted_time,
                 movement.predicted_origin_bits.map(f32::from_bits),
@@ -3040,6 +3051,35 @@ mod tests {
         assert!(connection.handle(&eof(4, 1, 0), 1, 7).is_err());
     }
 
+    #[test]
+    fn resource_collection_keeps_transport_alive_without_publishing_gameplay_snapshots() {
+        let state = crate::game_state::synthetic()
+            .with_continuous_play()
+            .resource_initialization()
+            .unwrap();
+        let mut c = Connection::with_game_state(Arc::new(state)).with_resource_collection();
+        c.challenge = Some(0x75);
+        c.connected = true;
+        let profile = vec![0; codol_protocol::profile::SNAPSHOT_BYTES];
+        for (i, chunk) in profile
+            .chunks(codol_protocol::game_stats::CHUNK_BYTES)
+            .enumerate()
+        {
+            let mut part = vec![i as u8, 0, 0];
+            part.extend_from_slice(chunk);
+            c.stats.accept(&part).unwrap();
+        }
+        c.handle(&eof(1, 0, 0), 1, 7).unwrap().unwrap();
+        c.handle(&eof(2, 1, 0), 1, 7).unwrap().unwrap();
+        c.handle(&eof(3, 2, 1), 1, 7).unwrap().unwrap();
+        let mut keepalive = c.handle(&eof(4, 3, 1), 1, 7).unwrap().unwrap();
+        game_wire::xor_stream(&mut keepalive[8..], 0x75 ^ 4, b"");
+        assert_eq!(&keepalive[8..], &[game_wire::SERVER_EOF]);
+        c.gamestate_update = Some(6);
+        assert!(c.poll_snapshot(Instant::now()).unwrap().is_none());
+        assert!(c.pending_inputs.is_empty());
+        assert_eq!(c.snapshot_count, 0);
+    }
     #[test]
     fn gamestate_requires_probe_ack_and_client_commands_commit_atomically() {
         let mut connection = Connection::with_game_state(Arc::new(crate::game_state::synthetic()));

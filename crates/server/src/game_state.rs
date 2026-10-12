@@ -496,6 +496,24 @@ impl PreparedGameState {
     pub(crate) fn snapshot_limit(&self) -> u32 {
         self.snapshot_frames
     }
+    pub(crate) fn resource_initialization(mut self) -> Result<Self> {
+        ensure!(
+            self.bootstrap_weapon.is_none()
+                && self.player_loadout.is_none()
+                && self.secondary_weapon.is_none()
+                && self.training_enemy.is_none()
+                && self.training_target.is_none()
+                && self.match_config.is_none()
+                && self.spawn_origin.is_none()
+                && self.collision_file.is_none()
+                && self.arsenal_file.is_none()
+                && self.appearance_file.is_none(),
+            "resource initialization requires metadata without a gameplay world"
+        );
+        self.snapshot_probe = false;
+        self.snapshot_frames = 0;
+        Ok(self)
+    }
     pub(crate) fn snapshot_probe(&self) -> bool {
         self.snapshot_probe
     }
@@ -511,6 +529,16 @@ impl PreparedGameState {
                 directory.join(file),
                 state.ncs_crc,
             )?));
+            if let Some(map) = state
+                .arsenal
+                .as_ref()
+                .and_then(|arsenal| arsenal.captured_map.as_ref())
+            {
+                ensure!(
+                    map == &format!("maps/mp/{}.d3dbsp", state.map),
+                    "arsenal belongs to another map"
+                );
+            }
         }
         if let Some(file) = &state.collision_file {
             let collision = crate::game_motion::Collision::load(&directory.join(file))?;
@@ -737,7 +765,7 @@ impl PreparedGameState {
                 state.map_entities_sha256.is_some(),
                 "minimap requires captured map entities"
             );
-            minimap.validate(&state.map)?;
+            minimap.validate(&state.map, state.ncs_crc)?;
         }
         if let Some(resources) = &state.feedback_resources {
             resources.validate(state.ncs_crc)?;

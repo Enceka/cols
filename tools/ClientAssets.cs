@@ -610,7 +610,8 @@ class ClientAssets {
     }
     public static void ExportArsenal(IntPtr process) {
         var r=new ClientAssets(process);
-        if(r.Word(0x01a2e7ec)!=10)throw new Exception("load the map before arsenal capture");
+        uint loadedState=r.Word(0x01a2e7ec);
+        if(loadedState<9||loadedState>10||r.Word(0x02df9934)!=1)throw new Exception("initialize the map resources before arsenal capture");
         var marketplace=(Dictionary<string,object>)r.Table("mp/coMarketplaceItems.csv");
         var cells=(List<string>)marketplace["cells_base64"];int columns=(int)marketplace["columns"];
         var items=new Dictionary<string,List<uint>>(StringComparer.Ordinal);
@@ -660,14 +661,28 @@ class ClientAssets {
         var serializer=new JavaScriptSerializer();serializer.MaxJsonLength=16*1024*1024;
         Console.WriteLine(serializer.Serialize(Obj("schema_version",1,"read_only",true,
             "client_sha256","e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b",
-            "connection_state",10,"ncs_crc",r.Word(0x02df7d90),"registered_count",count,
+            "connection_state",loadedState,"ncs_initialized",r.Word(0x02df9934),"map",r.Name(r.Word(0x02dfb000)),"ncs_crc",r.Word(0x02df7d90),"registered_count",count,
             "marketplace",marketplace,"weapons",weapons)));
+    }
+    bool NativeTdmMapPath(string path) {
+        var table=(Dictionary<string,object>)Table("mp/coMapList.csv");
+        if(!table.ContainsKey("found")||(bool)table["found"]!=true||(int)table["columns"]!=37)
+            throw new Exception("native map table unavailable or wrong layout");
+        var cells=(List<string>)table["cells_base64"];
+        if((int)table["rows"]>128||cells.Count!=(int)table["rows"]*37)throw new Exception("native map table bounds");
+        for(int row=0;row<cells.Count;row+=37) {
+            string name=Encoding.ASCII.GetString(Convert.FromBase64String(cells[row+4]));
+            string category=Encoding.ASCII.GetString(Convert.FromBase64String(cells[row+8]));
+            string modes=Encoding.ASCII.GetString(Convert.FromBase64String(cells[row+9]));
+            if(category=="pvp"&&Array.IndexOf(modes.Split(';'),"war")>=0&&path=="maps/mp/"+name+".d3dbsp")return true;
+        }
+        return false;
     }
     public static void ExportCollision(IntPtr process) {
         var r=new ClientAssets(process);
         uint state=r.Word(0x01a2e7ec);if(state<6||state>10)throw new Exception("load the map before collision capture");
         uint cm=0x02dfb000;byte[] header=r.Read(cm,256);string map=r.Name(U(header,0));
-        if(map!="maps/mp/mp_afghan.d3dbsp"&&map!="maps/mp/mp_killhouse_sh.d3dbsp"&&map!="maps/mp/mp_crash_tropical.d3dbsp")throw new Exception("unexpected collision map: "+map);
+        if(!r.NativeTdmMapPath(map))throw new Exception("collision map has no captured native TDM identity: "+map);
         var brushes=new List<object>();int count=Count(BitConverter.ToUInt16(header,0x38),65535);
         int materialCount=Count(U(header,0x10),65536);byte[] materials=r.Read(U(header,0x14),materialCount*12);
         byte[] raw=r.Read(U(header,0x3c),count*36),bounds=r.Read(U(header,0x40),count*24),contents=r.Read(U(header,0x44),count*4);
@@ -990,7 +1005,16 @@ class ClientAssets {
     public static void ExportCharacters(IntPtr process) {
         var r=new ClientAssets(process);
         var hudMaterials=new Dictionary<string,object>();
-        foreach(string name in new string[]{"compass_map_mp_crash_tropical","compass_map_mp_crash_dlc","compass_map_mp_crash","compass_map_mp_afghan","compass_map_mp_killhouse_sh","waypoint_dead","headicon_dead","waypoint_flag_friendly"}) {
+        var materialNames=new HashSet<string>(new string[]{"compass_map_mp_crash_tropical","compass_map_mp_crash_dlc","compass_map_mp_crash","compass_map_mp_afghan","compass_map_mp_killhouse_sh","waypoint_dead","headicon_dead","waypoint_flag_friendly"});
+        byte[] materialPool=r.Read(0x01fc4e28,100000*28);
+        for(int index=1;index<100000;index++) {
+            int at=index*28;
+            if(U(materialPool,at)!=5||(materialPool[at+17]&5)==0)continue;
+            string name=r.Name(r.Word(U(materialPool,at+8)+0x10));
+            if(name.StartsWith("compass_map_",StringComparison.Ordinal))materialNames.Add(name);
+        }
+        if(materialNames.Count>128)throw new Exception("compass material budget");
+        foreach(string name in materialNames) {
             try {
                 uint entry;uint material=r.Find(5,name,out entry);
                 if(material==0) {hudMaterials[name]=Obj("found",false);continue;}
@@ -1017,7 +1041,8 @@ class ClientAssets {
                     "render_layout",name.Contains("dead")?r.Layout(material,104,2):null);
             } catch(Exception error) {hudMaterials[name]=Obj("error",error.Message);}
         }
-        if(r.Word(0x01a2e7ec)!=10)throw new Exception("load the map before character capture");
+        uint loadedState=r.Word(0x01a2e7ec);
+        if(loadedState<9||loadedState>10||r.Word(0x02df9934)!=1)throw new Exception("initialize the map resources before character capture");
         uint slot=r.Word(0x07817bac);if(slot>=256)throw new Exception("cgs model slot invalid");
         uint cgs=r.Word(0x01a19510+slot*4)^0xce9af8cf;
         byte[] indices=r.Read(cgs+0xf0,1024*4);var models=new List<object>();
@@ -1132,7 +1157,7 @@ class ClientAssets {
         var serializer=new JavaScriptSerializer();serializer.MaxJsonLength=16*1024*1024;
         Console.WriteLine(serializer.Serialize(Obj("schema_version",1,"read_only",true,
             "client_sha256","e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b",
-            "ncs_crc",r.Word(0x02df7d90),"models",models,"character_assets",characterAssets,"tables",tables,"clients",clients,"map_hud_materials",hudMaterials,
+            "ncs_crc",r.Word(0x02df7d90),"map",r.Name(r.Word(0x02dfb000)),"models",models,"character_assets",characterAssets,"tables",tables,"clients",clients,"map_hud_materials",hudMaterials,
             "animation_contexts",animationContexts,"animations",animations,"animation_rules",animationRules,"corpses",corpses)));
     }
     public static void ExportTrainingTarget(IntPtr process) {

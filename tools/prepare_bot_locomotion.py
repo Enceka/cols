@@ -16,6 +16,20 @@ from pathlib import Path
 from clientlib import manifest
 
 
+def actor_animations(capture):
+    # Both context words are exported by the fixed-version reader. The BG
+    # context may not exist until the first player snapshot; the initialized
+    # renderer already owns the matching character animation bank.
+    animations=capture['animations']
+    primary=[a for a in animations if a.get('source',0x07817b80)==0x07817b80]
+    renderer=[a for a in animations if a.get('source')==0x07817b84]
+    if primary:
+        return primary
+    if renderer:
+        return renderer
+    raise ValueError('captured character animation bank unavailable')
+
+
 def rawfile(capture, name):
     record = capture["animation_rules"][name]
     if record.get("found") is not True or record.get("name") != name:
@@ -124,9 +138,7 @@ def prepare(state, capture, arsenal, client_sha):
     context = {"playeranimtype": "autorifle", "playeranimtypeprimary": "autorifle", "weaponclass": "rifle",
                "weapon_position": "hip", "strafing": "not", "movetype": "idle"}
     indices = {}
-    for animation in capture["animations"]:
-        if animation.get("source", 0x07817b80) != 0x07817b80:
-            continue
+    for animation in actor_animations(capture):
         name, index = animation["name"].lower(), animation["index"]
         if not 0 < index < 1024:
             raise ValueError("captured animation index outside native range")

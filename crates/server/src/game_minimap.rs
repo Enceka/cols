@@ -10,17 +10,62 @@ pub(crate) struct Minimap {
     pub north_yaw: f32,
     pub upper_left: [f32; 2],
     pub lower_right: [f32; 2],
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub material_proof: Option<MaterialProof>,
+}
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct MaterialProof {
+    pub client_sha256: String,
+    pub capture_sha256: String,
+    pub map: String,
+    pub material: String,
+    pub ncs_crc: u32,
+    pub render_default: bool,
+    pub texture_dims: Vec<[u16; 2]>,
 }
 
 impl Minimap {
-    pub fn validate(&self, map: &str) -> Result<()> {
+    pub fn validate(&self, map: &str, ncs_crc: u32) -> Result<()> {
         // Loaded 3.3.3.3 Crash material references the _dlc image. The
         // generated _tropical material uses the default image instead.
         let material = match map {
             "mp_afghan" => "compass_map_mp_afghan",
             "mp_killhouse_sh" => "compass_map_mp_killhouse_sh",
             "mp_crash_tropical" => "compass_map_mp_crash_dlc",
-            _ => anyhow::bail!("unsupported minimap map"),
+            _ => {
+                ensure!(
+                    crate::game_map_registry::native_id(map).is_some(),
+                    "unknown minimap map"
+                );
+                let proof = self
+                    .material_proof
+                    .as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("minimap needs captured material proof"))?;
+                ensure!(
+                    proof.client_sha256 == codol_protocol::CLIENT_SHA256
+                        && proof.capture_sha256.len() == 64
+                        && proof.capture_sha256.bytes().all(|b| b.is_ascii_hexdigit())
+                        && proof.map == format!("maps/mp/{map}.d3dbsp")
+                        && proof.material == self.material
+                        && proof.ncs_crc == ncs_crc
+                        && !proof.render_default
+                        && !proof.texture_dims.is_empty()
+                        && proof.texture_dims.len() <= 32
+                        && proof
+                            .texture_dims
+                            .iter()
+                            .any(|d| d.iter().all(|v| (64..=8192).contains(v)))
+                        && self.material.starts_with("compass_map_")
+                        && self.material.len() < 128
+                        && self
+                            .material
+                            .bytes()
+                            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_'),
+                    "minimap material proof identity or image invalid"
+                );
+                self.material.as_str()
+            }
         };
         ensure!(self.material == material, "minimap material/map mismatch");
         ensure!(
@@ -66,14 +111,49 @@ mod tests {
     use super::*;
 
     #[test]
+    fn additional_map_materials_require_bound_capture_identity_and_real_images() {
+        let map = Minimap {
+            material: "compass_map_mp_bog_sh".into(),
+            north_yaw: 0.0,
+            upper_left: [100.0, 100.0],
+            lower_right: [-100.0, -100.0],
+            material_proof: Some(MaterialProof {
+                client_sha256: codol_protocol::CLIENT_SHA256.into(),
+                capture_sha256: "a".repeat(64),
+                map: "maps/mp/mp_bog_sh.d3dbsp".into(),
+                material: "compass_map_mp_bog_sh".into(),
+                ncs_crc: 123,
+                render_default: false,
+                texture_dims: vec![[512, 512]],
+            }),
+        };
+        map.validate("mp_bog_sh", 123).unwrap();
+        assert!(map.validate("mp_bog_sh", 124).is_err());
+        assert!(map.validate("mp_nuked", 123).is_err());
+        let mut altered = map.clone();
+        altered.material_proof = None;
+        assert!(altered.validate("mp_bog_sh", 123).is_err());
+        let mut altered = map.clone();
+        altered.material = "compass_map_mp_afghan".into();
+        assert!(altered.validate("mp_bog_sh", 123).is_err());
+        let mut altered = map.clone();
+        altered.material_proof.as_mut().unwrap().render_default = true;
+        assert!(altered.validate("mp_bog_sh", 123).is_err());
+        let mut altered = map;
+        altered.material_proof.as_mut().unwrap().texture_dims = vec![[16, 16]];
+        assert!(altered.validate("mp_bog_sh", 123).is_err());
+    }
+
+    #[test]
     fn crash_requires_the_loaded_material_and_publishes_its_own_bounds() {
         let mut minimap = Minimap {
             material: "compass_map_mp_crash_dlc".into(),
             north_yaw: 0.0,
             upper_left: [1976.0, 2528.0],
             lower_right: [-1200.0, -2166.0],
+            material_proof: None,
         };
-        minimap.validate("mp_crash_tropical").unwrap();
+        minimap.validate("mp_crash_tropical", 123).unwrap();
         assert_eq!(
             minimap.configstrings()[1],
             (
@@ -81,8 +161,8 @@ mod tests {
                 "compass_map_mp_crash_dlc 1976 2528 -1200 -2166".into()
             )
         );
-        assert!(minimap.validate("mp_afghan").is_err());
+        assert!(minimap.validate("mp_afghan", 123).is_err());
         minimap.material = "compass_map_mp_crash_tropical".into();
-        assert!(minimap.validate("mp_crash_tropical").is_err());
+        assert!(minimap.validate("mp_crash_tropical", 123).is_err());
     }
 }
