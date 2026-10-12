@@ -17,6 +17,7 @@ struct Map {
     name: String,
     native_id: u32,
     modes: Vec<String>,
+    maximum_players: u8,
 }
 static CATALOG: LazyLock<Catalog> = LazyLock::new(|| {
     let c: Catalog = serde_json::from_str(include_str!(
@@ -45,6 +46,13 @@ pub(crate) fn native_id(name: &str) -> Option<u32> {
         .iter()
         .find(|map| map.name == name)
         .map(|map| map.native_id)
+}
+pub(crate) fn maximum_players(name: &str) -> Option<u8> {
+    CATALOG
+        .maps
+        .iter()
+        .find(|map| map.name == name)
+        .map(|map| map.maximum_players)
 }
 
 #[cfg(test)]

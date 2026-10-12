@@ -199,6 +199,9 @@ impl PreparedGameState {
         );
         self.collision = current.collision.clone();
     }
+    pub(crate) fn match_player_count(&self) -> u8 {
+        self.match_config.as_ref().map_or(1, |c| c.player_count)
+    }
     pub(crate) fn has_tdm(&self) -> bool {
         self.match_config.is_some()
     }
@@ -630,6 +633,11 @@ impl PreparedGameState {
             }
         }
         if let Some(config) = &state.match_config {
+            ensure!(
+                crate::game_map_registry::maximum_players(state.map())
+                    .is_some_and(|max| config.player_count <= max),
+                "match exceeds native map capacity"
+            );
             ensure!(
                 state.training_enemy.is_some() && state.arsenal.is_some(),
                 "TDM requires human and weapon assets"
@@ -1659,7 +1667,7 @@ impl PreparedGameState {
         }
         if self.match_config.is_some() {
             values.retain(|(index, _)| *index != 1976);
-            for client in 1..=11u16 {
+            for client in 1..u16::from(self.match_player_count()) {
                 values.push((
                     1975 + client,
                     codol_protocol::room_messages::bot_name(client as u8),

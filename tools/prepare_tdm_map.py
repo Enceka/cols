@@ -18,7 +18,7 @@ from prepare_bot_roster import NativeBotCharacters, prepare as prepare_roster
 from prepare_map_hud import map_entities, minimap
 
 
-def team_spawns(capture, map_name):
+def team_spawns(capture, map_name, minimum=6):
     teams = [[], []]
     classes = [b"mp_tdm_spawn_axis_start", b"mp_tdm_spawn_allies_start"]
     for fields in map_entities(capture, map_name):
@@ -28,8 +28,8 @@ def team_spawns(capture, map_name):
         if len(position) != 3 or any(not math.isfinite(v) or not -32768 <= v <= 32767 for v in position):
             raise ValueError("invalid map spawn coordinates")
         teams[classes.index(fields[b"classname"])].append(position)
-    if any(not 6 <= len(t) <= 128 for t in teams):
-        raise ValueError("map needs at least six captured starts per team")
+    if any(not minimum <= len(t) <= 128 for t in teams):
+        raise ValueError("map needs a captured start for every active player")
     return teams
 
 
@@ -54,12 +54,18 @@ def prepare(template, map_name, constants, entities, collision, arsenal, charact
             raise ValueError("map/collision/arsenal/character identity mismatch")
     if collision["map"] != "maps/mp/" + map_name + ".d3dbsp" or not collision["brushes"]:
         raise ValueError("collision belongs to another or empty map")
-    teams = team_spawns(entities, map_name)
+    registry = json.loads((REPO / "fixtures/protocol/map-registry-3.3.3.3.json").read_text())
+    native = next(m for m in registry["maps"] if m["name"] == map_name)
+    player_count = min(12, native["maximum_players"])
+    if player_count not in (4, 12):
+        raise ValueError("unsupported native TDM player count")
+    teams = team_spawns(entities, map_name, player_count // 2)
     state = copy.deepcopy(template)
     state.update(summary)
     state.update(map=map_name, mode="war", zone="mp", playlist=0, spawn_origin=teams[1][0])
     state["minimap"] = minimap(entities, map_name, characters, material_capture_sha256)
-    state["match_config"].update(spawns=teams, roster=[], models=[])
+    state["match_config"].update(spawns=teams, roster=[], models=[], player_count=player_count,
+        teams=[2]*(player_count//2)+[1]*(player_count//2)+[0]*(12-player_count))
     # Rebind the human skeleton and generic nodes by names in this capture.
     models = {m["name"]: m for m in characters["models"]}
     body = models["mp_fullbody_juggernaut_explosive_so"]

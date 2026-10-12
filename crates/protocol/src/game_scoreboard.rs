@@ -75,7 +75,7 @@ pub fn summary_command(
 
 /// Names and team membership must survive removal of cgame's clientInfo at
 /// lobby return. The live scoreboard obtains them from CI; AAR reads these
-/// captured playerdata fields instead. All twelve slots belong to this match.
+/// captured playerdata fields instead. Unused slots are explicitly cleared.
 pub fn summary_identity_commands(
     local_name: &str,
     teams: &[u8; 12],
@@ -83,14 +83,19 @@ pub fn summary_identity_commands(
     if local_name.is_empty() || local_name.len() > 64 || local_name.chars().any(char::is_control) {
         return Err(LobbyError("invalid summary player name"));
     }
-    if teams.iter().any(|t| !matches!(t, 1 | 2)) {
+    let active = teams.iter().take_while(|&&t| t != 0).count();
+    if !matches!(active, 4 | 12)
+        || teams[..active].iter().any(|t| !matches!(t, 1 | 2))
+        || teams[..active].iter().filter(|&&t| t == 1).count() != active / 2
+        || teams[active..].iter().any(|&t| t != 0)
+    {
         return Err(LobbyError("invalid summary teams"));
     }
     let mut commands = vec![vec![b'J']];
     for client in 0..19u32 {
         let name = if client == 0 {
             local_name.to_owned()
-        } else if client >= 12 {
+        } else if client as usize >= active {
             String::new()
         } else {
             crate::room_messages::bot_name(client as u8)
@@ -380,6 +385,30 @@ mod tests {
             profile[offset..offset + count].copy_from_slice(&payload[cursor..cursor + count]);
             cursor += count;
         }
+    }
+    #[test]
+    fn four_player_summary_clears_all_unused_names_teams_and_local_markers() {
+        let teams = [2, 2, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0];
+        let mut profile = vec![0xa5; PLAYERDATA_RECORD_BYTES];
+        for command in summary_identity_commands("Player", &teams).unwrap() {
+            apply(&command, &mut profile);
+        }
+        for client in 0..19 {
+            assert_eq!(
+                profile[260 + client * 198],
+                if client < 4 { teams[client] } else { 0 }
+            );
+            assert_eq!(profile[157 + client * 198], u8::from(client == 0));
+            if client >= 4 {
+                assert_eq!(
+                    &profile[166 + client * 198..166 + client * 198 + 65],
+                    &[0; 65]
+                );
+            }
+        }
+        let mut wrong = teams;
+        wrong[8] = 1;
+        assert!(summary_identity_commands("Player", &wrong).is_err());
     }
 
     fn field(f: &serde_json::Value, name: &str) -> usize {

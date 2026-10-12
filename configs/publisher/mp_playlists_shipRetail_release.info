@@ -1,5 +1,5 @@
-// Local 6v6 TDM with resource-derived Bot loadouts.
-version 8
+// Local TDM with resource-derived Bot loadouts and native map capacities.
+version 9
 
 gametype tdm
 name english "Team Deathmatch"
@@ -76,3 +76,21 @@ maxparty 6
 rule 1011 1
 rule 3265 12
 mp_dr_cistern,tdm,1
+
+catinfo 4 1 0 "Arena Bots" "竞技场人机"
+
+playlist 5
+name english "za_coliseum"
+name chinese "竞技场"
+description english "2v2 Team Deathmatch with bots."
+description chinese "2v2 团队竞技人机对战。"
+category 4
+combattraining
+novoting
+unlocklevelstart 0
+unlocklevelend 70
+minparty 1
+maxparty 2
+rule 1011 1
+rule 3265 4
+za_coliseum,tdm,1

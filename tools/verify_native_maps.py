@@ -6,6 +6,7 @@ service data. The supplied running experiment must use that exact catalog.
 The tool posts only ordinary, bounded UI/game inputs through game-window.
 """
 import argparse
+import concurrent.futures
 import json
 import math
 from pathlib import Path
@@ -61,13 +62,16 @@ class Client:
         raise RuntimeError('native state timeout: '+json.dumps({k:state.get(k) for k in
             ('connection_state','frontend_state','room_native_map','room_member_count')}))
 
-    def capture(self, mode):
+    def capture(self, mode, ready=None):
         for attempt in range(3):
-            result = subprocess.run([sys.executable,str(REPO/'tools/client_state.py'),
-                '--experiment',str(self.experiment),'--'+mode],text=True,capture_output=True)
+            command=[sys.executable,str(REPO/'tools/client_state.py'),
+                '--experiment',str(self.experiment),'--'+mode]
+            if ready is not None:command+=['--sample-ready',str(ready)]
+            result = subprocess.run(command,text=True,capture_output=True)
             if result.returncode==0:
                 output=json.loads(result.stdout)['output']
                 return output,json.loads(Path(output).read_text())
+            if ready is not None:break
             if attempt<2:
                 # Streaming models and the final replay change pointers during
                 # reads. Retry bounded read-only captures, never change resources.
@@ -233,6 +237,29 @@ class Client:
                 return distance,attempts
         raise RuntimeError('bounded movement did not establish movement in the same life: '+json.dumps(attempts))
 
+    def sampled_movement(self):
+        attempts=[]
+        for key in ('w','d','s'):
+            ready=self.experiment.parent/('movement-ready-'+str(time.time_ns())+'.json')
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                sampling=pool.submit(self.capture,'replay',ready)
+                deadline=time.monotonic()+20
+                while not ready.exists():
+                    if sampling.done():
+                        sampling.result()
+                        raise RuntimeError('native movement sampling ended before readiness')
+                    if time.monotonic()>=deadline:
+                        raise RuntimeError('native movement sampling readiness timeout')
+                    time.sleep(.025)
+                receipt=self.action('hold',key,.7)
+                path,data=sampling.result()
+            result=movement_frames(data['frames'])
+            attempts.append(dict(key=key,sample=path,input_receipt=receipt,same_life=bool(result)))
+            if result is not None:
+                attempts[-1].update(result)
+                return result['distance_units'],attempts
+        raise RuntimeError('continuous native frames did not establish same-life movement')
+
 
 def origin(state):
     values=[struct.unpack('<f',struct.pack('<I',state['predicted_origin_'+axis+'_bits']))[0]
@@ -240,6 +267,35 @@ def origin(state):
     if not all(math.isfinite(value) for value in values):
         raise RuntimeError('non-finite native player position')
     return values
+
+
+def movement_frames(frames):
+    """Require bounded XY displacement within one ordinary, living PS segment."""
+    anchor=None
+    for frame in frames:
+        if (frame.get('active') or frame.get('client')!=0 or frame.get('pm_type')!=0
+                or frame.get('health',0)<=0 or not frame.get('stable_command')):
+            anchor=None
+            continue
+        point=frame['origin']
+        if len(point)!=3 or not all(math.isfinite(x) for x in point):
+            anchor=None
+            continue
+        if (anchor is None or frame['spawn_count']!=anchor['spawn_count']
+                or frame['command_time']<anchor['command_time']
+                or frame['command_time']-anchor['command_time']>1000):
+            anchor=frame
+            continue
+        if frame['command_time']==anchor['command_time']:
+            continue
+        distance=math.dist(anchor['origin'][:2],point[:2])
+        if distance>128:
+            anchor=frame
+            continue
+        if distance>=8:
+            return dict(distance_units=round(distance,2),spawn_count=frame['spawn_count'],
+                before=anchor['origin'],after=point,command_times=[anchor['command_time'],frame['command_time']])
+    return None
 
 
 def prepare(catalog_path, output):
@@ -304,6 +360,7 @@ def run(catalog_path, experiment, output, map_names=None, map_direction='right',
         print('native map',entry['map'],flush=True)
         try:
             source=json.loads((catalog_path.parent/entry['file']).read_text())
+            player_count=source['match_config'].get('player_count',12)
             if source['match_config']['time_limit_msec']>60000:
                 raise ValueError('native batch requires short diagnostic limits')
             state=client.wait(lambda s:s['connection_state']==0 and s['frontend_state']==5
@@ -329,7 +386,10 @@ def run(catalog_path, experiment, output, map_names=None, map_direction='right',
                 raise RuntimeError('native map CRC differs from preparation')
             row['ncs_crc']=live['net_constants_crc']
             row['initial_state']={k:live[k] for k in ('predicted_health','predicted_weapon','room_member_count')}
-            distance,attempts=client.movement()
+            if player_count==4:
+                distance,attempts=client.sampled_movement()
+            else:
+                distance,attempts=client.movement()
             row['player_movement_units']=round(distance,2)
             row['movement_same_life']=True
             row['movement_attempts']=attempts
@@ -339,7 +399,7 @@ def run(catalog_path, experiment, output, map_names=None, map_direction='right',
                                          for c in characters['clients'])
             if characters['map']!='maps/mp/'+entry['map']+'.d3dbsp' or characters['ncs_crc']!=source['ncs_crc']:
                 raise RuntimeError('native character resources belong to another map')
-            if row['native_characters']!=12:
+            if row['native_characters']!=player_count:
                 raise RuntimeError('native character models or animation trees missing')
             if characters['compass_name']!=source['minimap']['material']:
                 raise RuntimeError('native compass material differs from preparation')
@@ -349,6 +409,17 @@ def run(catalog_path, experiment, output, map_names=None, map_direction='right',
                     t['width']>16 and t['height']>16 and t['texture'] for t in material.get('textures',[])):
                 raise RuntimeError('native compass uses a missing/default texture')
             row.update(samples=[],sample_frames=0,live_frames=0,replay_frames=0,intermission_frames=0)
+            # Continuous movement already sampled this real match. A short
+            # arena can end before the later loop; retain and count its frames.
+            for attempt in attempts:
+                if not attempt.get('sample'):
+                    continue
+                frames=json.loads(Path(attempt['sample']).read_text())
+                row['samples'].append(attempt['sample'])
+                row['sample_frames']+=len(frames['frames'])
+                row['live_frames']+=sum(f['pm_type']==0 and not f['active'] for f in frames['frames'])
+                row['replay_frames']+=sum(bool(f['active']) for f in frames['frames'])
+                row['intermission_frames']+=sum(f['pm_type']==6 and not f['active'] for f in frames['frames'])
             deadline=time.monotonic()+130
             while client.state()['connection_state']==10 and time.monotonic()<deadline:
                 frame_path,frames=client.capture('replay')
@@ -368,7 +439,7 @@ def run(catalog_path, experiment, output, map_names=None, map_direction='right',
             native_ids={r['native_id']:r['name'] for r in registry['maps']}
             if native_ids.get(finished['aar_map_id'])!=entry['map']:
                 raise RuntimeError('native after-action map ID mismatch')
-            if row['scoreboard_rows']!=12 or len(rows)!=12 or sum(r['is_local'] for r in rows)!=1:
+            if row['scoreboard_rows']!=player_count or len(rows)!=player_count or sum(r['is_local'] for r in rows)!=1:
                 raise RuntimeError('native after-action roster is incomplete or repeats the local player')
             if sum(r['kills'] for r in rows)==0:
                 raise RuntimeError('native after-action contains no combat kills')

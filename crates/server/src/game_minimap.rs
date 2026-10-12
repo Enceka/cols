@@ -134,7 +134,7 @@ impl CompassProbe {
                 && probe.map == map
                 && matches!(
                     map,
-                    "mp_highrise" | "mp_subbase_sh" | "mp_dr_box" | "mp_dr_cistern"
+                    "mp_highrise" | "mp_subbase_sh" | "mp_dr_box" | "mp_dr_cistern" | "za_coliseum"
                 )
                 && probe.entities_sha256.len() == 64
                 && probe.entities_sha256.bytes().all(|b| b.is_ascii_hexdigit())

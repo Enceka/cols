@@ -91,7 +91,11 @@ fn simulate(state: &PreparedGameState, simulation_msec: u32, row: &mut MapReport
         .match_bot_weapon()
         .ok_or_else(|| anyhow::anyhow!("Bot weapon missing"))?;
     let initial = game.snapshots();
-    ensure!(initial.len() == 11, "map requires eleven Bots");
+    let expected_bots = usize::from(state.match_player_count() - 1);
+    ensure!(
+        initial.len() == expected_bots,
+        "map Bot count differs from native preparation"
+    );
     let mut previous = initial;
     let mut travelled = std::collections::BTreeMap::<u8, f32>::new();
     let mut moved = std::collections::BTreeSet::new();
@@ -106,7 +110,7 @@ fn simulate(state: &PreparedGameState, simulation_msec: u32, row: &mut MapReport
             |s, f, fire, toggle| state.animate_enemy(s, f, fire, toggle),
         )?;
         let current_bots = game.snapshots();
-        ensure!(current_bots.len() == 11, "incomplete Bot roster");
+        ensure!(current_bots.len() == expected_bots, "incomplete Bot roster");
         for (before, current) in previous.iter().zip(&current_bots) {
             ensure!(
                 before.client_index == current.client_index,
@@ -152,7 +156,7 @@ fn simulate(state: &PreparedGameState, simulation_msec: u32, row: &mut MapReport
     row.moved_bots = moved.len();
     row.destroyed_glass = collision.destroyed_glass().len();
     ensure!(
-        row.moved_bots >= 8,
+        row.moved_bots >= 8.min(expected_bots),
         "only {} Bots travelled at least 128 units while alive",
         row.moved_bots
     );

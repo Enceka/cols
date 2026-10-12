@@ -7,6 +7,7 @@ only real initialized preparations enter the server/native test catalogs.
 import argparse
 import hashlib
 import json
+import re
 from pathlib import Path
 import subprocess
 
@@ -41,6 +42,8 @@ def prepare(catalog_path, inventory_path, output):
     for entry in registry['maps']:
         name=entry['name']
         task=dict(map=name,native_id=entry['native_id'],mode='war',shared_configuration='shared.json',
+                  maximum_players=min(12,entry['maximum_players']),
+                  bot_count=min(12,entry['maximum_players'])-1,
                   observed_fastfiles=observed.get(name,{}).get('observed_fastfiles',{}),
                   resource_inputs_required=['initialized_constants','map_entities','collision','arsenal',
                                             'characters','minimap_material'],status='needs_resources')
@@ -139,14 +142,32 @@ def verify(queue_path, output, experiment=None, names=None, direction='auto', na
                 raise ValueError('native target is absent from the ready catalog')
             if not outcomes[name]['server_passed']:
                 continue
+            rules=next(m for m in read(REPO/'fixtures/protocol/map-registry-3.3.3.3.json')['maps'] if m['name']==name)
+            quick=rules.get('no_custom_room') or rules['maximum_players']<12
+            selected_catalog=native_catalog
+            if quick:
+                if not native_lab:
+                    raise ValueError('quick native maps require an owned lab and a fresh client per map')
+                native_lab.stop();experiment=None
+                source=read(native_catalog)
+                entry=next(e for e in source['entries'] if e['map']==name)
+                version=re.search(rb'(?m)^version ([0-9]+)$',
+                    (native_lab.service/'publisher/mp_playlists_shipRetail_release.info').read_bytes())
+                if not version:raise ValueError('native publisher version is missing')
+                selected_catalog=output/(name+'-quick-catalog.json')
+                write(selected_catalog,dict(schema_version=1,entries=[dict(entry,
+                    file=str((native_catalog.parent/entry['file']).resolve()))],rotations=[dict(
+                    version=int(version.group(1)),playlist=0,maps=[dict(map=name,mode='war')])]))
             for attempt in range(2):
                 label=name+('-retry' if attempt else '')
                 native_report=output/(label+'-native.json')
                 try:
                     if experiment is None:
-                        experiment=native_lab.start(label,native_catalog,'native').experiment
-                    native_run(native_catalog,experiment,native_report,[name],direction)
+                        experiment=native_lab.start(label,selected_catalog,'native').experiment
+                    native_run(selected_catalog,experiment,native_report,[name],direction,
+                               **({'quick_playlist':0} if quick else {}))
                     outcomes[name].update(native_passed=True,native_report=str(native_report),native_retries=attempt)
+                    if quick:native_lab.stop();experiment=None
                     break
                 except (RuntimeError,ValueError,subprocess.SubprocessError,KeyError) as error:
                     state=native_failure(experiment,output,label,error)

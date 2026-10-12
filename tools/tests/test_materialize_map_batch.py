@@ -15,6 +15,11 @@ class NativeBatchLifecycle(unittest.TestCase):
         bound=batch.single_capture_playlist(original,'mp_dr_box')
         first,other=bound.split(b'playlist 2',1)
         self.assertIn(b'mp_dr_box,tdm,1',first)
+        arena=batch.single_capture_playlist(original,'za_coliseum',4)
+        arena_first=arena.split(b'playlist 2',1)[0]
+        self.assertIn(b'rule 3265 4',arena_first)
+        self.assertIn(b'za_coliseum,tdm,1',arena_first)
+        self.assertNotIn(b'mp_dr_box,tdm,1',arena_first)
         self.assertNotIn(b'mp_afghan,tdm,1',first)
         self.assertEqual(other,original.split(b'playlist 2',1)[1])
         for invalid in [original.replace(b'playlist 1',b'playlist 2',1),

@@ -22,8 +22,13 @@ impl Scene {
     ) -> Result<Self> {
         let leaders = leaders(rows)?;
         ensure!(
-            actors.len() == 12
-                && (0..12).all(|i| actors.iter().filter(|a| a.client_index == i).count() == 1),
+            matches!(rows.len(), 4 | 12)
+                && actors.len() == rows.len()
+                && (0..rows.len() as u8).all(|i| actors
+                    .iter()
+                    .filter(|a| a.client_index == i)
+                    .count()
+                    == 1),
             "incomplete podium actor roster"
         );
         for &seed in seeds {

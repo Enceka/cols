@@ -254,7 +254,7 @@ def prepare(state, capture, arsenal, stream_outfits=False, native_characters=Non
             character,names = native_characters.compose(items,gender,team,names)
         return [model_id(n) for n in names],character
 
-    for client in range(1, 12):
+    for client in range(1, state["match_config"].get("player_count",12)):
         column = 1 + (client - 1) % 9
         name = records["loadoutPrimary"][column].lower() + "_mp"
         weapon = weapons.get(name)

@@ -20,10 +20,10 @@ struct Selection {
 }
 
 impl Selection {
-    fn enough(&self) -> bool {
+    fn enough(&self, minimum: usize) -> bool {
         self.retained
             .iter()
-            .all(|team| (6..=128).contains(&team.len()))
+            .all(|team| (minimum..=128).contains(&team.len()))
     }
 }
 
@@ -113,10 +113,12 @@ pub fn prepare(source: &Path, output: &Path, report: &Path) -> Result<()> {
     let mut evidence = serde_json::json!({"schema_version":1,"native_client_used":false,"map":map,
         "ncs_crc":crc,"source_sha256":format!("{:x}",Sha256::digest(&bytes)),
         "selection":selection,"prepared":false});
-    if !selection.enough() {
+    let players = json["match_config"]["player_count"].as_u64().unwrap_or(12);
+    ensure!(matches!(players, 4 | 12), "invalid prepared match size");
+    if !selection.enough(players as usize / 2) {
         write_new(report, &evidence)?;
         anyhow::bail!(
-            "fewer than six clear captured starts per team; see {}",
+            "too few clear captured starts for the active roster; see {}",
             report.display()
         );
     }
@@ -155,7 +157,7 @@ mod tests {
         let mut axis = valid.clone();
         axis.insert(2, [0.0, 0.0, -1000.0]);
         let result = select([axis, valid.clone()], &world());
-        assert!(result.enough());
+        assert!(result.enough(6));
         assert_eq!(result.retained, [valid.clone(), valid]);
         assert_eq!(result.rejected.len(), 1);
         assert_eq!(result.rejected[0].team, 1);
@@ -167,6 +169,6 @@ mod tests {
     fn fewer_than_six_clear_points_stays_unprepared() {
         let valid: Vec<_> = (0..6).map(|i| [i as f32 * 100.0, 0.0, 8.0]).collect();
         let result = select([valid[..5].to_vec(), valid], &world());
-        assert!(!result.enough());
+        assert!(!result.enough(6));
     }
 }

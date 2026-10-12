@@ -8,10 +8,33 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from clientlib import REPO
-from verify_native_maps import Client, prepare, run
+from verify_native_maps import Client, prepare, run, movement_frames
 
 
 class NativeMapIsolation(unittest.TestCase):
+    def test_sampled_movement_never_posts_input_before_native_readiness(self):
+        class SamplingClient(Client):
+            def capture(self,mode,ready=None):
+                return 'unused',dict(frames=[])
+            def action(self,*args):
+                raise AssertionError('input before readiness')
+        with tempfile.TemporaryDirectory() as directory:
+            client=SamplingClient(Path(directory)/'experiment.json')
+            with self.assertRaisesRegex(RuntimeError,'before readiness'):
+                client.sampled_movement()
+
+    def test_continuous_movement_requires_one_living_spawn_and_excludes_replay_and_warps(self):
+        def frame(x,time=1000,life=1,**extra):
+            return dict(origin=[x,0,0],command_time=time,spawn_count=life,active=0,
+                        client=0,pm_type=0,health=100,stable_command=True,**extra)
+        self.assertEqual(movement_frames([frame(0),frame(10,1050)])['distance_units'],10)
+        self.assertIsNone(movement_frames([frame(0),frame(200,1050)]))
+        self.assertIsNone(movement_frames([frame(0),frame(10,1050,2)]))
+        dead=frame(10,1050);dead['health']=0
+        replay=frame(10,1050);replay['active']=1
+        unstable=frame(10,1050);unstable['stable_command']=False
+        for bad in [dead,replay,unstable]:
+            self.assertIsNone(movement_frames([frame(0),bad]))
     def test_short_catalog_keeps_normal_configuration_and_resolves_resources(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

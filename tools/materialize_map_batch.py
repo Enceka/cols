@@ -30,8 +30,10 @@ def native_map(name):
     return next(m for m in read(REPO/'fixtures/protocol/map-registry-3.3.3.3.json')['maps'] if m['name']==name)
 
 
-def single_capture_playlist(source, name):
+def single_capture_playlist(source, name, maximum_players=12):
     """Keep the owned publisher's first native bot playlist and bind one map."""
+    if maximum_players not in (4,12):
+        raise ValueError('native bot playlist requires four or twelve players')
     starts=list(re.finditer(rb'(?m)^playlist\s+([0-9]+)\s*$', source))
     if not starts or starts[0].group(1)!=b'1':
         raise ValueError('resource capture requires native playlist0 as the first publisher entry')
@@ -43,6 +45,8 @@ def single_capture_playlist(source, name):
     if not maps:
         raise ValueError('resource capture playlist has no real map entry')
     section=section[:maps[0].start()]+name.encode('ascii')+b',tdm,1\n'+section[maps[-1].end():]
+    section,count=re.subn(rb'(?m)^rule 3265 [0-9]+$',b'rule 3265 '+str(maximum_players).encode(),section)
+    if count!=1:raise ValueError('native bot playlist maximum rule is missing or repeated')
     return source[:start]+section+source[end:]
 
 
@@ -59,15 +63,26 @@ class Lab:
             raise ValueError('compass candidate requests require isolated resource collection')
         if self.process is not None:
             raise RuntimeError('previous owned experiment must stop before startup')
-        if stage not in ('native','restore') and native_map(name).get('no_custom_room'):
+        if stage not in ('native','restore') and (native_map(name).get('no_custom_room')
+                                                  or native_map(name)['maximum_players']<12):
             capture_playlist=0 if capture_playlist is None else capture_playlist
             if capture_playlist!=0 or self.service.resolve()==(REPO/'client-work/server-data').resolve():
                 raise ValueError('quick resource capture requires native playlist0 and isolated service data')
             publisher=self.service/'publisher/mp_playlists_shipRetail_release.info'
-            before=publisher.read_bytes();after=single_capture_playlist(before,name)
+            before=publisher.read_bytes();after=single_capture_playlist(before,name,min(12,native_map(name)['maximum_players']))
             publisher.write_bytes(after)
             write(self.directory/(name+'-publisher-selection.json'),dict(map=name,playlist=0,
                 before_sha256=hashlib.sha256(before).hexdigest(),after_sha256=hashlib.sha256(after).hexdigest()))
+        if stage=='native':
+            entries=read(catalog)['entries']
+            target=next((e['map'] for e in entries if name in (e['map'],e['map']+'-retry')),None)
+            if target and (native_map(target).get('no_custom_room') or native_map(target)['maximum_players']<12):
+                if self.service.resolve()==(REPO/'client-work/server-data').resolve() or len(entries)!=1:
+                    raise ValueError('quick native checks require one map and isolated service data')
+                state=read((catalog.parent/entries[0]['file']).resolve())
+                publisher=self.service/'publisher/mp_playlists_shipRetail_release.info'
+                publisher.write_bytes(single_capture_playlist(publisher.read_bytes(),target,
+                    state['match_config'].get('player_count',12)))
         log=(self.directory/(name+'-'+stage+'-harness.log')).open('w')
         started=time.time()
         initial_state=self.initial_state
@@ -131,7 +146,7 @@ class Lab:
     def enter(self, client, name):
         client.wait(lambda s:s['connection_state']==0 and s['frontend_state']==5
                     and s['active_inventory_count']>0,100)
-        if native_map(name).get('no_custom_room'):
+        if native_map(name).get('no_custom_room') or native_map(name)['maximum_players']<12:
             if read(client.experiment).get('resource_capture_playlist')!=0:
                 raise ValueError('map prohibits native custom rooms; use its explicit quick capture binding')
             client.click(.297,.05);client.click(.14,.125);client.click(.156,.255)
@@ -158,7 +173,7 @@ class Lab:
         complete=cache/(name+'-resource-paths.json') if cache else None
         if complete and complete.is_file():
             captures=read(complete)
-            if name in ('mp_highrise','mp_subbase_sh'):
+            if name in ('mp_highrise','mp_subbase_sh','mp_dr_box','mp_dr_cistern','za_coliseum'):
                 try:minimap(read(Path(captures['entities'])),name,read(Path(captures['characters'])))
                 except ValueError:captures=self.probe_compass(name,captures)
             # Preparation revalidates SHA, map, CRC, real textures and all
@@ -195,7 +210,7 @@ class Lab:
             initialized_path=self.initialization_catalog(name,constants,summary)
             write(self.directory/(name+'-raw-paths.json'),paths)
         probe=(self.compass_candidate(name,Path(paths['map-entities']),summary['ncs_crc'])
-               if name in ('mp_highrise','mp_subbase_sh','mp_dr_box','mp_dr_cistern') else None)
+               if name in ('mp_highrise','mp_subbase_sh','mp_dr_box','mp_dr_cistern','za_coliseum') else None)
         client=self.start(name,initialized_path,'initialized',probe)
         try:
             self.enter(client,name)

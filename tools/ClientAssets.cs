@@ -945,6 +945,10 @@ class ClientAssets {
             uint slot=r.Word(0x07817ba8);if(slot>=256)throw new Exception("invalid cg slot");
             uint cg=r.Word(0x01a19510+slot*4)^0xfbb2c97a;
             byte[] ps=r.Read(cg,0xa78);
+            // Validate the copied PS immediately. Model/FX inspections below
+            // can span several ticks and must not invalidate a coherent copy.
+            bool stableCommand=r.Word(cg)==U(ps,0);
+            if(i==0) { Console.Error.WriteLine("sample_ready=replay");Console.Error.Flush(); }
             uint active=r.Word(cg+0xc6fe8);
             if(active!=previousActive) { Console.Error.WriteLine("killcam_state="+active);Console.Error.Flush();previousActive=active; }
             uint input=r.Word(0x01a2e838)^0x6891d1c7;uint command=r.Word(input+0x625c);
@@ -1015,7 +1019,7 @@ class ClientAssets {
                 "melee_candidate_count",candidateCount,"melee_candidates",meleeCandidates,
                 "melee_row",U(ps,0x33c),
                 "health",U(ps,0x190),"spawn_count",U(ps,0x19c),"corpse_slot",U(ps,0xe8),
-                "stable_command",r.Word(cg)==U(ps,0)));
+                "stable_command",stableCommand));
             System.Threading.Thread.Sleep(25);
         }
         var serializer=new JavaScriptSerializer();serializer.MaxJsonLength=16*1024*1024;

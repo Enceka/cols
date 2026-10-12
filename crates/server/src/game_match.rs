@@ -15,6 +15,8 @@ use serde::Deserialize;
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct MatchConfig {
+    #[serde(default = "default_player_count")]
+    pub player_count: u8,
     /// Axis and allies starts from this map's captured entity string.
     pub spawns: [Vec<[f32; 3]>; 2],
     pub score_limit: u32,
@@ -25,6 +27,9 @@ pub(crate) struct MatchConfig {
     pub roster: Vec<BotLoadout>,
     #[serde(default)]
     pub models: Vec<(u16, String)>,
+}
+fn default_player_count() -> u8 {
+    12
 }
 pub(crate) fn default_teams() -> [u8; 12] {
     [2, 2, 2, 2, 2, 2, 1, 1, 1, 1, 1, 1]
@@ -64,9 +69,19 @@ impl BotLoadout {
 impl MatchConfig {
     pub fn validate(&self, collision: &Collision) -> Result<()> {
         ensure!(
-            self.teams.iter().all(|t| matches!(t, 1 | 2))
-                && self.teams.iter().filter(|&&t| t == 1).count() == 6,
-            "TDM requires six players per team"
+            matches!(self.player_count, 4 | 12)
+                && self.teams[..usize::from(self.player_count)]
+                    .iter()
+                    .all(|t| matches!(t, 1 | 2))
+                && self.teams[..usize::from(self.player_count)]
+                    .iter()
+                    .filter(|&&t| t == 1)
+                    .count()
+                    == usize::from(self.player_count / 2)
+                && self.teams[usize::from(self.player_count)..]
+                    .iter()
+                    .all(|&t| t == 0),
+            "TDM requires a balanced active roster with empty unused slots"
         );
         ensure!(
             (100..=100_000).contains(&self.score_limit) && self.score_limit.is_multiple_of(100),
@@ -77,8 +92,8 @@ impl MatchConfig {
             "invalid TDM duration"
         );
         ensure!(
-            self.roster.is_empty() || self.roster.len() == 11,
-            "TDM roster needs eleven bots"
+            self.roster.is_empty() || self.roster.len() == usize::from(self.player_count - 1),
+            "TDM roster must match the configured player count"
         );
         for entry in &self.roster {
             entry.animation.validate()?;
@@ -138,8 +153,8 @@ impl MatchConfig {
         }
         for (team_index, team) in self.spawns.iter().enumerate() {
             ensure!(
-                (6..=128).contains(&team.len()),
-                "TDM needs at least six map starts per team"
+                (usize::from(self.player_count / 2)..=128).contains(&team.len()),
+                "TDM needs a captured start for every active player"
             );
             for (index, &spawn) in team.iter().enumerate() {
                 crate::game_bot::grounded_spawn(spawn, collision).with_context(|| {
@@ -259,7 +274,7 @@ impl TdmMatch {
         let mut bots = Vec::new();
         let mut ordinals = [0usize; 2];
         ordinals[usize::from(config.teams[0] - 1)] = 1;
-        for client in 1..=11u8 {
+        for client in 1..config.player_count {
             let team = config.teams[usize::from(client)];
             let ordinal = ordinals[usize::from(team - 1)];
             ordinals[usize::from(team - 1)] += 1;
@@ -397,7 +412,7 @@ impl TdmMatch {
         &self.baselines
     }
     pub fn scoreboard(&self, owner: u64) -> ScoreboardSnapshot {
-        let mut rows = self.rows.to_vec();
+        let mut rows = self.rows[..usize::from(self.config.player_count)].to_vec();
         rows[0].user_id = owner;
         ScoreboardSnapshot {
             rows,
@@ -1485,6 +1500,7 @@ mod tests {
     }
     fn config() -> MatchConfig {
         MatchConfig {
+            player_count: 12,
             spawns: [
                 (0..6).map(|i| [300.0, i as f32 * 100.0, 0.0]).collect(),
                 (0..6).map(|i| [-300.0, i as f32 * 100.0, 0.0]).collect(),
@@ -1495,6 +1511,38 @@ mod tests {
             roster: Vec::new(),
             models: Vec::new(),
         }
+    }
+    #[test]
+    fn four_player_world_keeps_only_its_active_actors_and_preserves_full_roster_requirements() {
+        let collision = world();
+        let mut small = config();
+        small.player_count = 4;
+        small.teams = [2, 2, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0];
+        small
+            .spawns
+            .iter_mut()
+            .for_each(|starts| starts.truncate(2));
+        let game = TdmMatch::new(small.clone(), template(), 190.0, &collision).unwrap();
+        assert_eq!(
+            game.snapshots()
+                .iter()
+                .map(|s| s.client_index)
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
+        let board = game.scoreboard(42);
+        assert_eq!(board.rows.len(), 4);
+        assert_eq!(board.rows[0].user_id, 42);
+        assert_eq!(game.actors(template(), 70.0).len(), 4);
+        let mut bad = small.clone();
+        bad.teams[4] = 1;
+        assert!(bad.validate(&collision).is_err());
+        bad = small.clone();
+        bad.teams[2] = 2;
+        assert!(bad.validate(&collision).is_err());
+        small.player_count = 12;
+        small.teams = default_teams();
+        assert!(small.validate(&collision).is_err());
     }
     #[test]
     fn fatal_fall_scores_once_as_an_environmental_death_without_awarding_a_kill() {

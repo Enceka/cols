@@ -23,6 +23,7 @@ def main():
     mode.add_argument("--build", action="store_true")
     mode.add_argument("--experiment", type=Path, help="a running experiment.json")
     parser.add_argument("--prefix-name", help="project-owned build prefix; experiment selects its own prefix")
+    parser.add_argument("--sample-ready", type=Path, help="new experiment-local readiness receipt for replay sampling")
     extract = parser.add_mutually_exclusive_group()
     extract.add_argument("--frontend-assets", action="store_true", help="read the fixed native frontend movie and map/mode tables")
     extract.add_argument("--assets", action="store_true", help="extract the fixed profile-schema and data-table allowlist")
@@ -48,6 +49,12 @@ def main():
     extract.add_argument("--tactical-assets", action="store_true", help="read native shock files, status tables, NCS order and parameter blocks")
     extract.add_argument("--hud-assets", action="store_true", help="read loaded native HUD/menu identities and fixed HUD rawfiles")
     args = parser.parse_args()
+    if args.sample_ready and (not args.experiment or not args.replay):
+        parser.error("sample-ready requires an experiment and replay sampling")
+    if args.sample_ready:
+        args.sample_ready = args.sample_ready.resolve()
+        if args.sample_ready.parent != args.experiment.resolve().parent or args.sample_ready.exists():
+            parser.error("sample-ready must be a new file in this experiment directory")
     if args.prefix_name and (not args.build or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", args.prefix_name)):
         parser.error("prefix-name requires build and a simple project directory name")
     if args.build and (args.frontend_assets or args.glass or args.map_check or args.tactical_assets or args.appearance_load or args.outfits or args.grounding or args.replay or args.feedback or args.assets or args.profiles or args.net_constants or args.map_entities or args.bootstrap_weapon or args.weapon_models or args.arsenal or args.collision or args.weapon_registry or args.training_target or args.bullet_impacts or args.characters or args.hit_regions):
@@ -101,7 +108,31 @@ def main():
         hashes = json.loads(stamp.read_text())
         if hashes != {"sources_sha256": source_hashes, "binary_sha256": sha256(binary)}:
             parser.error("probe changed; rebuild it")
-        result = subprocess.run([wine, str(binary)] + (["--frontend-assets"] if args.frontend_assets else ["--glass"] if args.glass else ["--map-check"] if args.map_check else ["--hud-assets"] if args.hud_assets else ["--tactical-assets"] if args.tactical_assets else ["--appearance-load"] if args.appearance_load else ["--outfits"] if args.outfits else ["--grounding"] if args.grounding else ["--replay"] if args.replay else ["--feedback"] if args.feedback else ["--assets"] if args.assets else ["--profiles"] if args.profiles else ["--net-constants"] if args.net_constants else ["--map-entities"] if args.map_entities else ["--bootstrap-weapon"] if args.bootstrap_weapon else ["--weapon-models"] if args.weapon_models else ["--arsenal"] if args.arsenal else ["--collision"] if args.collision else ["--weapon-registry"] if args.weapon_registry else ["--training-target"] if args.training_target else ["--bullet-impacts"] if args.bullet_impacts else ["--characters"] if args.characters else ["--hit-regions"] if args.hit_regions else []), env=env, capture_output=True, text=True, timeout=40 if args.appearance_load else 30)
+        command = [wine, str(binary)] + (["--frontend-assets"] if args.frontend_assets else ["--glass"] if args.glass else ["--map-check"] if args.map_check else ["--hud-assets"] if args.hud_assets else ["--tactical-assets"] if args.tactical_assets else ["--appearance-load"] if args.appearance_load else ["--outfits"] if args.outfits else ["--grounding"] if args.grounding else ["--replay"] if args.replay else ["--feedback"] if args.feedback else ["--assets"] if args.assets else ["--profiles"] if args.profiles else ["--net-constants"] if args.net_constants else ["--map-entities"] if args.map_entities else ["--bootstrap-weapon"] if args.bootstrap_weapon else ["--weapon-models"] if args.weapon_models else ["--arsenal"] if args.arsenal else ["--collision"] if args.collision else ["--weapon-registry"] if args.weapon_registry else ["--training-target"] if args.training_target else ["--bullet-impacts"] if args.bullet_impacts else ["--characters"] if args.characters else ["--hit-regions"] if args.hit_regions else [])
+        if args.sample_ready:
+            # Consume the native marker while stdout remains file-backed. This
+            # avoids both startup races and pipe deadlocks from large frames.
+            import tempfile
+            with tempfile.TemporaryFile(mode="w+") as output_stream:
+                with subprocess.Popen(command, env=env, stdout=output_stream,
+                                      stderr=subprocess.PIPE, text=True) as probe:
+                    import threading
+                    timer = threading.Timer(30, probe.kill)
+                    timer.start()
+                    try:
+                        errors = []
+                        for line in probe.stderr:
+                            errors.append(line)
+                            if line.strip() == "sample_ready=replay":
+                                args.sample_ready.write_text(json.dumps(dict(mode="replay", read_only=True)) + "\n")
+                        status = probe.wait()
+                    finally:
+                        timer.cancel()
+                output_stream.seek(0)
+                result = subprocess.CompletedProcess(command, status, output_stream.read(), "".join(errors))
+        else:
+            result = subprocess.run(command, env=env, capture_output=True, text=True,
+                                    timeout=40 if args.appearance_load else 30)
         if result.returncode:
             raise RuntimeError((result.stdout + result.stderr)[-2000:])
         decoded = json.loads(result.stdout)

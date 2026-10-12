@@ -11,6 +11,39 @@ from prepare_game_state import CLIENT_SHA256
 
 
 class MapBatch(unittest.TestCase):
+    def test_four_player_quick_map_uses_its_own_catalog_and_fresh_owned_session(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);_,catalog,inventory=self.inputs(root)
+            arena=root/'arena.json'
+            arena.write_text(json.dumps(dict(map='za_coliseum',mode='war',client_sha256=CLIENT_SHA256,
+                ncs_crc=123,match_config=dict(player_count=4,score_limit=7500,time_limit_msec=600000))))
+            catalog.write_text(json.dumps(dict(schema_version=1,entries=[dict(map='za_coliseum',mode='war',file=arena.name)])))
+            prepare(catalog,inventory,root/'batch')
+            service=root/'service';(service/'publisher').mkdir(parents=True)
+            (service/'publisher/mp_playlists_shipRetail_release.info').write_text('version 9\n')
+            class Lab:
+                def __init__(self):self.service=service;self.starts=[];self.stops=0
+                def start(self,name,path,stage):
+                    self.starts.append((name,path,stage))
+                    return type('Session',(),dict(experiment=root/'experiment.json'))()
+                def stop(self):self.stops+=1
+            lab=Lab()
+            def server(command,**kwargs):
+                Path(command[command.index('--output')+1]).write_text(json.dumps(dict(passed=True,
+                    maps=[dict(map='za_coliseum',passed=True,errors=[])])))
+            def native(path,experiment,output,names,direction,**kwargs):
+                self.assertEqual(kwargs,dict(quick_playlist=0))
+                data=json.loads(path.read_text())
+                self.assertEqual(len(data['entries']),1)
+                self.assertEqual(data['rotations'],[dict(version=9,playlist=0,maps=[dict(map='za_coliseum',mode='war')])])
+                state=json.loads(Path(data['entries'][0]['file']).read_text())
+                self.assertEqual(state['match_config']['player_count'],4)
+            with patch('prepare_map_batch.subprocess.run',side_effect=server), \
+                    patch('prepare_map_batch.native_run',side_effect=native):
+                result=verify(root/'batch/queue.json',root/'result',native_lab=lab)
+            self.assertTrue(result['maps']['za_coliseum']['native_passed'])
+            self.assertEqual(lab.stops,2)
+
     def inputs(self, root):
         state=root/'bog.json'
         state.write_text(json.dumps(dict(map='mp_bog_sh',mode='war',client_sha256=CLIENT_SHA256,
@@ -33,6 +66,8 @@ class MapBatch(unittest.TestCase):
             self.assertEqual(by_name['mp_bog_sh']['status'],'ready')
             self.assertEqual(by_name['mp_estate_tropical']['status'],'needs_resources')
             self.assertEqual(by_name['mp_bloc_sh']['status'],'needs_resource_audit')
+            self.assertEqual(by_name['za_coliseum']['maximum_players'],4)
+            self.assertEqual(by_name['za_coliseum']['bot_count'],3)
             self.assertNotIn('ncs_crc',by_name['mp_estate_tropical'])
             self.assertNotIn('preparation',by_name['mp_estate_tropical'])
             self.assertEqual(state.read_bytes(),original)
