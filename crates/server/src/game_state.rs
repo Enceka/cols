@@ -719,13 +719,11 @@ impl PreparedGameState {
             "prepared game state source hash"
         );
         ensure!(
-            matches!(
-                state.map.as_str(),
-                "mp_afghan" | "mp_killhouse_sh" | "mp_crash_tropical"
-            ) && state.mode == "war"
+            crate::game_map_registry::native_id(&state.map).is_some()
+                && state.mode == "war"
                 && state.zone == "mp"
                 && state.playlist == 0,
-            "only the controlled training playlist is supported"
+            "prepared map requires a captured native TDM identity"
         );
         ensure!(
             (1..=512).contains(&state.asset_count) && (1..=65536).contains(&state.constant_count),
@@ -763,13 +761,8 @@ impl PreparedGameState {
         self.player_loadout.is_some()
     }
     pub(crate) fn summary_map_id(&self) -> Result<u32> {
-        // IDs from this build's captured mp/coMapList.csv column 3.
-        match self.map.as_str() {
-            "mp_afghan" => Ok(1),
-            "mp_crash_tropical" => Ok(4),
-            "mp_killhouse_sh" => Ok(8),
-            _ => anyhow::bail!("map has no verified summary ID"),
-        }
+        crate::game_map_registry::native_id(&self.map)
+            .ok_or_else(|| anyhow::anyhow!("map has no verified summary ID"))
     }
     pub(crate) fn with_room_teams(mut self, teams: [u8; 12]) -> Result<Self> {
         let config = self

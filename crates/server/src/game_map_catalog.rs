@@ -56,7 +56,7 @@ impl GameMapCatalog {
         for entry in manifest.entries {
             ensure!(
                 identifier(&entry.map)
-                    && entry.map.starts_with("mp_")
+                    && crate::game_map_registry::native_id(&entry.map).is_some()
                     && identifier(&entry.mode)
                     && !entry.file.as_os_str().is_empty(),
                 "invalid game map catalog entry"

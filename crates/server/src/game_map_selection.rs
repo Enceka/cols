@@ -129,7 +129,10 @@ pub(crate) fn from_mmstart(command: &str) -> Result<Option<MapSelection>> {
         match key {
             "map" => {
                 ensure!(
-                    identifier(value) && value.starts_with("mp_") && value.len() > 3,
+                    identifier(value)
+                        && (value.starts_with("mp_")
+                            || crate::game_map_registry::native_id(value).is_some())
+                        && value.len() > 3,
                     "invalid multiplayer map identifier"
                 );
                 map = Some(value.to_owned());
@@ -255,6 +258,14 @@ mod tests {
             mode: "war".into(),
         });
         assert_eq!(from_mmstart(CUSTOM).unwrap(), expected);
+        assert_eq!(
+            from_mmstart(&CUSTOM.replace("mp_killhouse_sh", "za_coliseum")).unwrap(),
+            Some(MapSelection {
+                map: "za_coliseum".into(),
+                mode: "war".into()
+            })
+        );
+        assert!(from_mmstart(&CUSTOM.replace("mp_killhouse_sh", "za_unknown")).is_err());
         let p2p = "mmstart sv_resetServer;2486 2;3265 12;2489 0;2500 0;g_gametype war;2810 7;sv_post_options AQID==;map mp_killhouse_sh;2654 a-b_0123";
         assert_eq!(from_mmstart(p2p).unwrap(), expected);
         // Selection extraction is independent of the order of custom fields.

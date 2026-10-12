@@ -1,0 +1,689 @@
+{
+  "schema_version": 1,
+  "client_sha256": "e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b",
+  "table": "mp/coMapList.csv",
+  "table_cells_sha256": "985066aab06581d388a4252eff8790b90bbea3b4713bf6d7326b824536477e0f",
+  "resource_preparation_claimed": false,
+  "maps": [
+    {
+      "name": "mp_afghan",
+      "native_id": 1,
+      "native_flags": [
+        1,
+        1,
+        1
+      ],
+      "label_key": "MPUI_AFGHAN",
+      "modes": [
+        "ctf",
+        "dd",
+        "dm",
+        "dom",
+        "sab",
+        "sd",
+        "sr",
+        "war",
+        "gun",
+        "conf",
+        "collect",
+        "tjugg",
+        "koth",
+        "ph",
+        "tag"
+      ],
+      "character_rules": "allieschar:socom_141_desert;axischar:opforce_composite;environment:desert"
+    },
+    {
+      "name": "mp_bloc_sh",
+      "native_id": 2,
+      "native_flags": [
+        1,
+        0,
+        0
+      ],
+      "label_key": "MPUI_BLOC",
+      "modes": [
+        "ctf",
+        "dd",
+        "dm",
+        "dom",
+        "sab",
+        "sd",
+        "sr",
+        "war",
+        "gun",
+        "conf",
+        "collect",
+        "tjugg",
+        "tag"
+      ],
+      "character_rules": "allieschar:socom_141_forest;axischar:opforce_airborne;environment:arctic"
+    },
+    {
+      "name": "mp_bog_sh",
+      "native_id": 3,
+      "native_flags": [
+        1,
+        1,
+        1
+      ],
+      "label_key": "MPUI_BOG_SH",
+      "modes": [
+        "ctf",
+        "dd",
+        "dm",
+        "dom",
+        "sab",
+        "sd",
+        "sr",
+        "war",
+        "gun",
+        "conf",
+        "collect",
+        "tjugg",
+        "clash",
+        "ph",
+        "tag"
+      ],
+      "character_rules": "allieschar:socom_141_desert;axischar:opforce_composite;environment:urban"
+    },
+    {
+      "name": "mp_crash_tropical",
+      "native_id": 4,
+      "native_flags": [
+        1,
+        1,
+        1
+      ],
+      "label_key": "MPUI_CRASH_TROPICAL",
+      "modes": [
+        "ctf",
+        "dd",
+        "dm",
+        "dom",
+        "sab",
+        "sd",
+        "sr",
+        "war",
+        "asym",
+        "borg",
+        "gun",
+        "eod",
+        "conf",
+        "collect",
+        "tjugg",
+        "ph",
+        "tag"
+      ],
+      "character_rules": "allieschar:socom_141_desert;axischar:opforce_composite;environment:forest"
+    },
+    {
+      "name": "mp_cross_fire",
+      "native_id": 5,
+      "native_flags": [
+        1,
+        1,
+        1
+      ],
+      "label_key": "MPUI_CROSSFIRE",
+      "modes": [
+        "ctf",
+        "dd",
+        "dm",
+        "dom",
+        "sab",
+        "sd",
+        "sr",
+        "war",
+        "gun",
+        "eod",
+        "conf",
+        "collect",
+        "tjugg",
+        "koth",
+        "ph",
+        "tag"
+      ],
+      "character_rules": "allieschar:socom_141_desert;axischar:opforce_composite;environment:desert"
+    },
+    {
+      "name": "mp_estate_tropical",
+      "native_id": 6,
+      "native_flags": [
+        1,
+        1,
+        1
+      ],
+      "label_key": "MPUI_ESTATE_TROPICAL",
+      "modes": [
+        "ctf",
+        "dd",
+        "dm",
+        "dom",
+        "sab",
+        "sd",
+        "sr",
+        "war",
+        "borg",
+        "gun",
+        "conf",
+        "collect",
+        "tjugg",
+        "koth",
+        "ph",
+        "tag"
+      ],
+      "character_rules": "allieschar:socom_141_forest;axischar:opforce_airborne;environment:forest"
+    },
+    {
+      "name": "mp_fav_tropical",
+      "native_id": 7,
+      "native_flags": [
+        1,
+        1,
+        1
+      ],
+      "label_key": "MPUI_FAVELA",
+      "modes": [
+        "ctf",
+        "dd",
+        "dm",
+        "dom",
+        "sab",
+        "sd",
+        "sr",
+        "war",
+        "borg",
+        "gun",
+        "conf",
+        "collect",
+        "tjugg",
+        "koth",
+        "ph",
+        "tag"
+      ],
+      "character_rules": "allieschar:socom_141_desert;axischar:militia;environment:urban"
+    },
+    {
+      "name": "mp_killhouse_sh",
+      "native_id": 8,
+      "native_flags": [
+        1,
+        1,
+        1
+      ],
+      "label_key": "MPUI_KILLHOUSE",
+      "modes": [
+        "ctf",
+        "dd",
+        "dm",
+        "dom",
+        "sab",
+        "sd",
+        "sr",
+        "war",
+        "gun",
+        "sas",
+        "conf",
+        "collect",
+        "tjugg",
+        "clash",
+        "tag"
+      ],
+      "character_rules": "allieschar:socom_141_desert;axischar:opforce_composite;environment:urban"
+    },
+    {
+      "name": "mp_nuked",
+      "native_id": 9,
+      "native_flags": [
+        1,
+        1,
+        1
+      ],
+      "label_key": "MPUI_NUKED",
+      "modes": [
+        "ctf",
+        "dd",
+        "dm",
+        "dom",
+        "sab",
+        "sd",
+        "sr",
+        "war",
+        "asym",
+        "cha",
+        "mugger",
+        "gun",
+        "tjugg",
+        "sas",
+        "conf",
+        "collect",
+        "clash",
+        "borg",
+        "tag"
+      ],
+      "character_rules": "allieschar:socom_141_desert;axischar:opforce_composite;environment:urban"
+    },
+    {
+      "name": "mp_overgrown",
+      "native_id": 10,
+      "native_flags": [
+        1,
+        1,
+        1
+      ],
+      "label_key": "MPUI_OVERGROWN",
+      "modes": [
+        "ctf",
+        "dd",
+        "dm",
+        "dom",
+        "sab",
+        "sd",
+        "sr",
+        "war",
+        "borg",
+        "gun",
+        "eod",
+        "conf",
+        "collect",
+        "tjugg",
+        "koth",
+        "tag"
+      ],
+      "character_rules": "allieschar:socom_141_forest;axischar:opforce_airborne;environment:forest"
+    },
+    {
+      "name": "mp_rust_long",
+      "native_id": 11,
+      "native_flags": [
+        1,
+        1,
+        1
+      ],
+      "label_key": "MPUI_RUST",
+      "modes": [
+        "ctf",
+        "dd",
+        "dm",
+        "dom",
+        "sab",
+        "sd",
+        "sr",
+        "war",
+        "cha",
+        "mugger",
+        "gun",
+        "tjugg",
+        "sas",
+        "conf",
+        "collect",
+        "des",
+        "clash",
+        "infect",
+        "tag"
+      ],
+      "character_rules": "allieschar:socom_141_desert;axischar:opforce_composite;environment:desert"
+    },
+    {
+      "name": "mp_storm_spring",
+      "native_id": 13,
+      "native_flags": [
+        1,
+        1,
+        1
+      ],
+      "label_key": "MPUI_STORM",
+      "modes": [
+        "ctf",
+        "dd",
+        "dm",
+        "dom",
+        "sab",
+        "sd",
+        "sr",
+        "war",
+        "gun",
+        "conf",
+        "collect",
+        "tjugg",
+        "koth",
+        "tag"
+      ],
+      "character_rules": "allieschar:socom_141_desert;axischar:opforce_airborne;environment:arctic"
+    },
+    {
+      "name": "mp_ambush_sh",
+      "native_id": 14,
+      "native_flags": [
+        1,
+        1,
+        1
+      ],
+      "label_key": "MPUI_CONVOY",
+      "modes": [
+        "ctf",
+        "dd",
+        "dm",
+        "dom",
+        "sab",
+        "sd",
+        "sr",
+        "war",
+        "cha",
+        "borg",
+        "gun",
+        "conf",
+        "collect",
+        "tjugg",
+        "koth",
+        "ph",
+        "tag"
+      ],
+      "character_rules": "allieschar:us_army;axischar:opforce_composite;environment:urban"
+    },
+    {
+      "name": "mp_firingrange",
+      "native_id": 15,
+      "native_flags": [
+        1,
+        1,
+        1
+      ],
+      "label_key": "MPUI_FIRINGRANGE",
+      "modes": [
+        "ctf",
+        "dd",
+        "dm",
+        "dom",
+        "sab",
+        "sd",
+        "sr",
+        "war",
+        "asym",
+        "borg",
+        "gun",
+        "eod",
+        "sas",
+        "conf",
+        "collect",
+        "tjugg",
+        "tag"
+      ],
+      "character_rules": "allieschar:socom_141_desert;axischar:opforce_composite;environment:desert"
+    },
+    {
+      "name": "mp_cargoship",
+      "native_id": 16,
+      "native_flags": [
+        1,
+        1,
+        1
+      ],
+      "label_key": "MPUI_CARGOSHIP",
+      "modes": [
+        "ctf",
+        "dd",
+        "dm",
+        "dom",
+        "sab",
+        "sd",
+        "sr",
+        "war",
+        "gun",
+        "conf",
+        "collect",
+        "tjugg",
+        "tag"
+      ],
+      "character_rules": "allieschar:socom_141_desert;axischar:opforce_composite;environment:urban"
+    },
+    {
+      "name": "mp_highrise",
+      "native_id": 50,
+      "native_flags": [
+        1,
+        1,
+        1
+      ],
+      "label_key": "MPUI_HIGHRISE",
+      "modes": [
+        "ctf",
+        "dd",
+        "dm",
+        "dom",
+        "sab",
+        "sd",
+        "sr",
+        "war",
+        "gun",
+        "conf",
+        "cha",
+        "tjugg",
+        "tag",
+        "ph"
+      ],
+      "character_rules": "allieschar:socom_141_desert;axischar:opforce_airborne;environment:urban"
+    },
+    {
+      "name": "mp_dr_box",
+      "native_id": 53,
+      "native_flags": [
+        1,
+        1,
+        1
+      ],
+      "label_key": "MPUI_DR_BOX",
+      "modes": [
+        "dm",
+        "war",
+        "asym"
+      ],
+      "character_rules": "allieschar:us_army;axischar:opforce_composite;environment:urban"
+    },
+    {
+      "name": "mp_dr_cistern",
+      "native_id": 56,
+      "native_flags": [
+        1,
+        1,
+        1
+      ],
+      "label_key": "MPUI_DR_CISTERN",
+      "modes": [
+        "dm",
+        "war",
+        "asym"
+      ],
+      "character_rules": "allieschar:us_army;axischar:opforce_composite;environment:urban"
+    },
+    {
+      "name": "mp_abandon_sh_mk",
+      "native_id": 60,
+      "native_flags": [
+        1,
+        1,
+        1
+      ],
+      "label_key": "MPUI_ABANDON_SH_MK",
+      "modes": [
+        "ctf",
+        "dd",
+        "dm",
+        "dom",
+        "sab",
+        "sd",
+        "sr",
+        "war",
+        "gun",
+        "conf",
+        "tjugg",
+        "asym",
+        "tag"
+      ],
+      "character_rules": "environment:urban"
+    },
+    {
+      "name": "mp_seatown",
+      "native_id": 63,
+      "native_flags": [
+        1,
+        1,
+        1
+      ],
+      "label_key": "MPUI_SEATOWN",
+      "modes": [
+        "ctf",
+        "dd",
+        "dm",
+        "dom",
+        "sab",
+        "sd",
+        "sr",
+        "war",
+        "asym",
+        "gun",
+        "eod",
+        "conf",
+        "tjugg",
+        "ph",
+        "tag",
+        "borg"
+      ],
+      "character_rules": "environment:desert"
+    },
+    {
+      "name": "mp_utopia",
+      "native_id": 67,
+      "native_flags": [
+        1,
+        0,
+        0
+      ],
+      "label_key": "MPUI_UTOPIA",
+      "modes": [
+        "cha",
+        "ctf",
+        "dm",
+        "sd",
+        "sr",
+        "war"
+      ],
+      "character_rules": "allieschar:us_army;axischar:opforce_composite;environment:urban"
+    },
+    {
+      "name": "mp_roundabout",
+      "native_id": 68,
+      "native_flags": [
+        1,
+        0,
+        0
+      ],
+      "label_key": "MPUI_ROUNDABOUT",
+      "modes": [
+        "cha",
+        "ctf",
+        "dm",
+        "war"
+      ],
+      "character_rules": "allieschar:us_army;axischar:opforce_composite;environment:urban"
+    },
+    {
+      "name": "mp_mountain",
+      "native_id": 71,
+      "native_flags": [
+        1,
+        1,
+        1
+      ],
+      "label_key": "MPUI_SUMMIT",
+      "modes": [
+        "ctf",
+        "dm",
+        "dom",
+        "sab",
+        "sd",
+        "sr",
+        "war",
+        "gun",
+        "conf",
+        "cha",
+        "tjugg",
+        "tag",
+        "dd",
+        "ph"
+      ],
+      "character_rules": "allieschar:socom_141_desert;axischar:opforce_airborne;environment:arctic"
+    },
+    {
+      "name": "mp_terminal_cls",
+      "native_id": 79,
+      "native_flags": [
+        1,
+        1,
+        1
+      ],
+      "label_key": "MPUI_TERMINAL",
+      "modes": [
+        "ctf",
+        "dd",
+        "dm",
+        "dom",
+        "sab",
+        "sd",
+        "sr",
+        "war",
+        "gun",
+        "conf",
+        "cha",
+        "tjugg",
+        "tag",
+        "ph"
+      ],
+      "character_rules": "allieschar:socom_141_desert;axischar:opforce_airborne;environment:arctic"
+    },
+    {
+      "name": "za_coliseum",
+      "native_id": 83,
+      "native_flags": [
+        1,
+        1,
+        1
+      ],
+      "label_key": "MPUI_TERMINAL",
+      "modes": [
+        "war",
+        "zarena"
+      ],
+      "character_rules": "allieschar:socom_141_desert;axischar:opforce_airborne;environment:urban"
+    },
+    {
+      "name": "mp_subbase_sh",
+      "native_id": 84,
+      "native_flags": [
+        1,
+        1,
+        1
+      ],
+      "label_key": "MPUI_SUBBASE",
+      "modes": [
+        "ctf",
+        "dm",
+        "dom",
+        "sab",
+        "sd",
+        "sr",
+        "war",
+        "gun",
+        "conf",
+        "cha",
+        "tjugg",
+        "tag",
+        "dd",
+        "ph"
+      ],
+      "character_rules": "allieschar:socom_141_desert;axischar:opforce_airborne;environment:urban"
+    }
+  ],
+  "capture_sha256": "976a232928ca5c50a0241a433cc28d948ff20c87c2e78d40ac233c347dcd6fe7"
+}

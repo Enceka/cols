@@ -20,6 +20,7 @@ pub mod game_hit_location;
 mod game_impact;
 mod game_landing;
 pub mod game_map_catalog;
+mod game_map_registry;
 mod game_map_selection;
 mod game_match;
 mod game_minimap;

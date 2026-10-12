@@ -10,6 +10,7 @@ import hashlib
 import json
 import math
 from pathlib import Path
+from clientlib import REPO
 
 from prepare_game_state import CLIENT_SHA256, compute
 from prepare_bot_locomotion import prepare as prepare_locomotion
@@ -32,8 +33,16 @@ def team_spawns(capture, map_name):
     return teams
 
 
+def native_maps():
+    registry = json.loads((REPO / 'fixtures/protocol/map-registry-3.3.3.3.json').read_text())
+    if (registry['schema_version'] != 1 or registry['client_sha256'] != CLIENT_SHA256 or
+            registry['resource_preparation_claimed'] is not False):
+        raise ValueError('invalid captured native map registry')
+    return [m['name'] for m in registry['maps']]
+
+
 def prepare(template, map_name, constants, entities, collision, arsenal, characters):
-    if map_name not in {"mp_afghan", "mp_killhouse_sh", "mp_crash_tropical"} or template["client_sha256"] != CLIENT_SHA256:
+    if map_name not in native_maps() or template["client_sha256"] != CLIENT_SHA256:
         raise ValueError("unsupported map/template identity")
     summary = compute(constants, "m4_mp", True, True, "viewhands_tf141")
     if not summary["observed_crc_verified"]:
@@ -74,7 +83,7 @@ def prepare(template, map_name, constants, entities, collision, arsenal, charact
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--template", type=Path, required=True)
-    parser.add_argument("--map", choices=["mp_afghan", "mp_killhouse_sh", "mp_crash_tropical"], required=True)
+    parser.add_argument("--map", choices=native_maps(), required=True)
     for name in ("constants", "entities", "collision", "arsenal", "characters", "output"):
         parser.add_argument("--" + name, type=Path, required=True)
     args = parser.parse_args()
