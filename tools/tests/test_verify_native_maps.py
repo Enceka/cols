@@ -94,7 +94,7 @@ class NativeMapIsolation(unittest.TestCase):
 
     def test_target_waits_for_bot_admission_without_clicking_away(self):
         class AdmittingClient(Client):
-            def __init__(self):self.samples=iter([1,1,12])
+            def __init__(self):self.samples=iter([11,11,12])
             def state(self):
                 return dict(room_native_map='mp_cross_fire',room_member_count=next(self.samples))
             def click(self,*args):raise AssertionError('target map must remain selected')
@@ -152,6 +152,17 @@ class NativeMapIsolation(unittest.TestCase):
         client=EndpointClient()
         self.assertEqual(client.select_map('mp_cross_fire','auto')['room_native_map'],'mp_cross_fire')
         self.assertEqual(client.arrows,[.878,.878,.878,.707])
+
+    def test_target_created_without_owner_broadcast_is_announced_and_restored_before_start(self):
+        class InitialClient(Client):
+            def __init__(self):self.clicks=0
+            def state(self):
+                return dict(room_native_map='mp_storm_spring' if self.clicks!=1 else 'mp_mountain',
+                            room_member_count=12 if self.clicks==2 else 1,connection_state=0)
+            def click(self,*args):self.clicks+=1
+        client=InitialClient()
+        self.assertEqual(client.select_map('mp_storm_spring','auto')['room_member_count'],12)
+        self.assertEqual(client.clicks,2)
 
 
 if __name__ == '__main__':

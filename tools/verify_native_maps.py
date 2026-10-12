@@ -38,7 +38,7 @@ class Client:
         h, canvas = b['Height'], min(b['Height'], b['Width']*.625)
         fraction=(h-canvas+canvas*y)/h if content else y
         self.last_click=dict(bounds=b,fraction=[x,fraction],content=content)
-        self.action('click', x, fraction)
+        self.last_click['receipt']=self.action('click', x, fraction)
         time.sleep(1.1)
 
     def wait(self, predicate, seconds):
@@ -101,11 +101,13 @@ class Client:
         member_count=None
         selected=direction
         reversed_once=False
+        target_reannounced=False
         trace=dict(target=target,direction=direction,screenshots=0,steps=[])
         trace_path=(self.experiment.parent/('map-selection-'+str(time.time_ns())+'.json')) if hasattr(self,'experiment') else None
         def record(state, event):
             trace['steps'].append(dict(event=event,**{k:state.get(k) for k in
-                ('connection_state','room_native_map','room_member_count','room_is_host')},
+                ('connection_state','frontend_state','room_native_map','room_native_mode','room_member_count','room_is_host',
+                 'mouse_raw_x_0','mouse_raw_y_0','mouse_raw_x_1','mouse_raw_y_1','mouse_raw_bucket')},
                 last_click=getattr(self,'last_click',None)))
             if trace_path:trace_path.write_text(json.dumps(trace,indent=2)+'\n')
         for _ in range(80):
@@ -122,6 +124,22 @@ class Client:
                 member_count=state['room_member_count']
             print('select',current,state['room_member_count'],flush=True)
             if current==target:
+                if state['room_member_count']==1 and not target_reannounced:
+                    # Creation can install the room receiver without sending
+                    # its first broadcast. A native arrow round trip publishes
+                    # the selected map and allows the server's Bot admission.
+                    target_reannounced=True
+                    for outward,back in [('right','left'),('left','right')]:
+                        self.click(arrows[outward],.769)
+                        after=self.state();record(after,'announce-away-'+outward)
+                        if after.get('connection_state',0)!=0:
+                            raise RuntimeError('native client left room while announcing target map')
+                        if after['room_native_map']!=target:
+                            self.click(arrows[back],.769)
+                            after=self.state();record(after,'announce-return-'+back)
+                            if after.get('connection_state',0)!=0 or after['room_native_map']!=target:
+                                raise RuntimeError('native target map announcement did not restore the selection')
+                            break
                 return self.wait(lambda s:s['room_native_map']==target
                                  and s['room_member_count']==12 and s.get('connection_state',0)==0,20)
             if current in seen:

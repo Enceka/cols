@@ -92,7 +92,20 @@ case "click", "move", "scroll":
     // Activation is asynchronous. Pump AppKit's run loop so the CLI observes
     // the focus change instead of reading its cached isActive value.
     try focusGame(app)
-    let point = CGPoint(x: x + width * rx, y: y + height * ry)
+    // Wine can resize or reposition its window when it regains focus.
+    // Resolve the click against the current frame after activation.
+    let activeWindows = CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID) as? [[String: Any]] ?? []
+    guard let activeWindow = activeWindows.first(where: {
+        ($0[kCGWindowOwnerPID as String] as? Int) == pidNumber &&
+        ($0[kCGWindowNumber as String] as? Int) == number
+    }), let activeBounds = activeWindow[kCGWindowBounds as String] as? [String: NSNumber],
+        let activeX = activeBounds["X"]?.doubleValue, let activeY = activeBounds["Y"]?.doubleValue,
+        let activeWidth = activeBounds["Width"]?.doubleValue, let activeHeight = activeBounds["Height"]?.doubleValue,
+        activeWidth > 0, activeHeight > 0
+    else { fail("research client window changed during activation") }
+    result["bounds_before_activation"] = rawBounds
+    result["bounds"] = activeBounds
+    let point = CGPoint(x: activeX + activeWidth * rx, y: activeY + activeHeight * ry)
     // Wine games may poll GetCursorPos instead of using an event's coordinates.
     guard CGPreflightPostEventAccess(), CGWarpMouseCursorPosition(point) == .success
     else { fail("mouse event access unavailable; no click sent") }
@@ -108,6 +121,10 @@ case "click", "move", "scroll":
         else { fail("research client lost focus; click aborted") }
         event.post(tap: .cghidEventTap)
         Thread.sleep(forTimeInterval: 0.08)
+    }
+    if let cursor = CGEvent(source: nil)?.location {
+        result["cursor"] = ["X": cursor.x, "Y": cursor.y]
+        result["cursor_matches_target"] = hypot(cursor.x - point.x, cursor.y - point.y) <= 3
     }
     if args[2] == "scroll" {
         guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid,
