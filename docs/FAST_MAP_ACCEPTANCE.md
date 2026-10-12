@@ -91,6 +91,14 @@ macOS窗口输入在激活游戏后重新核对窗口边界，记录激活前／
 
 `map-selector-retry-batch`再次隔离九张选图阶段失败，后台13张正常图全部通过，结束后恢复正常客户端及6772库存。`map-input-receipt-diagnostic`确认暴风雨直接创建时未发送房主频道广播；其创建描述的地图／模式CRC、12人容量和build匹配。窗口重取与广播往返的工具回归通过81项Python；Swift构建见`map-window-focus-build.log`。这些工具检查未使九张待准备图通过原生验收。`input-coordinate-lab-v2`的定向房间画面及报文确认：11个Bot立即准备会启动原生自动开局倒计时；`room-ready-gating-live/idle-room.json`与`room-ready-gating-map-acceptance`的循环选图确认未准备Bot允许持续停留。Bot的DLC资源等级0还会使原生箭头过滤扩展地图；等级16的报文和字段依据见`MAP_SELECTION_PROGRESS.md`。地图通过状态仍分别以资源准备和原生验收报告为准。
 
-当前正常目录为16图。`room-dlc-map-acceptance`的暴风雨原生短局165.82秒，12人模型／结算、同生命周期移动264.81单位和本图1024小地图通过；AAR600:500与服务日志一致。伏击通过本图Convoy材质重新准备，靶场复用原始捕获补齐初始化资料；`room-return-native-recovery`在`client-1791807681924`同一客户端完成伏击→靶场219.8／111.5秒，两局12人角色、移动、小地图、交战及结算通过。伏击结束后原生退出频道，工具重建并验证房间；靶场保留房间。两图AAR分别700:1000／500:1000，与服务日志一致。三图准入及正常账号6772库存、资源哈希和证书清理见`room-storm-admission.json`、`room-sixteen-map-admission.json`及所引用恢复记录；正常7500分／600000ms保持不变。
+正常目录已接暴风雨、伏击和靶场。`room-dlc-map-acceptance`的暴风雨原生短局165.82秒，12人模型／结算、同生命周期移动264.81单位和本图1024小地图通过；AAR600:500与服务日志一致。伏击通过本图Convoy材质重新准备，靶场复用原始捕获补齐初始化资料；`room-return-native-recovery`在`client-1791807681924`同一客户端完成伏击→靶场219.8／111.5秒，两局12人角色、移动、小地图、交战及结算通过。伏击结束后原生退出频道，工具重建并验证房间；靶场保留房间。两图AAR分别700:1000／500:1000，与服务日志一致。三图准入及正常账号6772库存、资源哈希和证书清理见`room-storm-admission.json`、`room-sixteen-map-admission.json`及所引用恢复记录；正常7500分／600000ms保持不变。
 
-完整Rust／fmt／Clippy检查`room-map-gating-complete-check.log`通过445项Rust；包含房间重建边界的`room-return-recreation-check.log`通过85项Python。资源和原生批次没有自动截图，房间倒计时与AAR过渡另有少量定向画面用于定位。高楼和潜艇基地尚无真实小地图材质证明，其它待准备及模式边界见`MAP_COVERAGE.md`和`REVIEW_PENDING.md`，不标为全地图通过。
+完整Rust／fmt／Clippy检查`room-map-gating-complete-check.log`通过445项Rust；包含房间重建边界的`room-return-recreation-check.log`通过85项Python。资源和原生批次没有自动截图，房间倒计时与AAR过渡另有少量定向画面用于定位。待准备及模式边界见`MAP_COVERAGE.md`和`REVIEW_PENDING.md`，不标为全地图通过。
+
+正常目录已接废弃都市和滨海镇。`four-map-expansion-acceptance`的滨海镇199.56秒确认12人角色、小地图、同生命周期移动53.26单位及本图结算；废弃都市的13／11个捕获出生点中，Allies索引2无法站立，离线筛选保留13／10个原始点，详见`CAPTURED_MAP_STARTS.md`。`abandon-clear-starts-native`原生短局195.47秒确认12人角色、小地图、同生命周期移动116.54单位及结算。两图AAR与服务比分一致，正常资料哈希不变、6772库存及证书恢复均确认，见`eighteen-map-admission.json`及引用实验。完整检查`map-start-selection-final-check.log`通过447项Rust、86项Python及fmt／Clippy。
+
+两个黑房仍未出现在当前原生自建房箭头循环。`blackroom-ui-lab`在同一房间完成双向循环，12人未准备、DLC等级16、原生倒计时0；创建页已检查的可见列表中没有独立黑房项，完整入口仍未核实。两张页面定向画面仅用于定位，自动资源／短局批次不截图。现有证据不确认完整过滤语义，也不证明资源坏损。
+
+当前正常目录为19图。`compass-candidate-live`使用受限资源初始化请求取得高楼及潜艇基地的真实1024小地图材质；候选请求不能充当正式材质证明，详见`RESOURCE_COMPASS_REQUESTS.md`。`compass-two-map-acceptance`的潜艇基地231.86秒确认12人角色、小地图、同生命周期移动135.31单位及结算，AAR800:400与服务端一致，正常资料哈希及6772库存保持不变，见`nineteen-map-admission.json`。高楼准备完整，但后台60／120秒模拟均未交战，明确保留失败；跨越资源和边界见`HIGHRISE_TRAVERSAL.md`。全地图仍未通过。
+
+`nineteen-map-implementation-final-check.log`通过449项Rust、88项Python及fmt／Clippy；`nineteen-map-implementation-server-proof.json`的19图后台批量全部通过，含资源加载37553ms。正常重启及当前账号／资源哈希核对见`nineteen-map-normal-restoration/normal-restoration.json`，隔离实验均有结束时间和证书恢复记录。地图完整视觉／听感及小时级稳定性仍独立验收。
