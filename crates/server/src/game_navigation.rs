@@ -13,6 +13,8 @@ pub(crate) struct Navigation {
 }
 impl Navigation {
     pub fn build(starts: impl Iterator<Item = V3>, collision: &Collision) -> Self {
+        let planning = collision.navigation_view();
+        let collision = &planning;
         let starts: Vec<_> = starts.collect();
         let min_x = starts.iter().map(|p| p[0]).fold(f32::INFINITY, f32::min) - 512.0;
         let max_x = starts
@@ -181,6 +183,8 @@ impl Navigation {
             .map(|(i, _)| i)
     }
     pub fn route(&self, start: V3, goal: V3, collision: &Collision) -> Vec<V3> {
+        let planning = collision.navigation_view();
+        let collision = &planning;
         // A long capsule sweep's broadphase covers much of the map. Use the
         // precomputed graph for distant goals instead of tracing through it.
         if distance(start, goal) <= CELL * 4.0 && Self::clear(start, goal, collision) {
@@ -233,6 +237,8 @@ impl Navigation {
         path: &mut std::collections::VecDeque<V3>,
         collision: &Collision,
     ) -> Option<V3> {
+        let planning = collision.navigation_view();
+        let collision = &planning;
         while path.front().is_some_and(|p| distance(start, *p) < 36.0) {
             path.pop_front();
         }

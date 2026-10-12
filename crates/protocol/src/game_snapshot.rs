@@ -240,6 +240,7 @@ pub fn player_frame_with_motion(
         WorldSnapshot {
             perk_display: false,
             local_abilities: None,
+            destroyed_glass: &[],
             bags: &[],
             bag_baselines: &[],
             smokes: &[],
@@ -277,6 +278,7 @@ pub fn player_frame_with_motion(
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct WorldSnapshot<'a> {
+    pub destroyed_glass: &'a [u16],
     /// Native perk_sidebar_hud operator239 reads PS+0x4bc (hint2 field122).
     pub perk_display: bool,
     pub bags: &'a [crate::game_scavenger::BagSnapshot],
@@ -1054,7 +1056,7 @@ pub fn player_frame_with_world(
     } else {
         out.bits(0, 1); // clients (0x46c840)
     }
-    out.bits(0, 1); // glass (0x43e070)
+    crate::game_glass::write(&mut out, world.destroyed_glass)?;
     out.bytes.push(SERVER_EOF);
     Ok(out.bytes)
 }

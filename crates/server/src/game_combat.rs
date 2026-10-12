@@ -66,13 +66,12 @@ pub(crate) fn fire_at_actors(
         collision,
     } = scene;
     let mut outcome = ActorShot::default();
+    if !ballistics.valid() || eye.iter().any(|v| !v.is_finite()) {
+        return outcome;
+    }
     for angles in ballistics.rays(angles, time) {
         let direction = forward(angles);
         let end = std::array::from_fn(|i| eye[i] + direction[i] * ballistics.range);
-        let world = collision.raycast(eye, end);
-        if world.start_solid || world.all_solid {
-            continue;
-        }
         let mut nearest: Option<(Actor, f32, Option<HitLocation>)> = None;
         for actor in actors.iter().filter(|a| a.client != shooter.0) {
             let min = [
@@ -97,12 +96,15 @@ pub(crate) fn fire_at_actors(
             } else {
                 (coarse, None)
             };
-            if (world.contents == 0 || fraction < world.fraction)
-                && nearest.is_none_or(|(_, previous, _)| fraction < previous)
-            {
+            if nearest.is_none_or(|(_, previous, _)| fraction < previous) {
                 nearest = Some((*actor, fraction, location));
             }
         }
+        let world = collision.shot_raycast(eye, end, nearest.map_or(1.0, |(_, f, _)| f));
+        if world.start_solid || world.all_solid {
+            continue;
+        }
+        let nearest = nearest.filter(|(_, f, _)| world.contents == 0 || *f < world.fraction);
         if let Some((actor, fraction, location)) = nearest {
             if actor.team != shooter.1 {
                 let base = ballistics
@@ -171,6 +173,12 @@ pub(crate) fn melee_at_actors(
             .filter_map(|a| actor_fraction(eye, end, a).map(|fraction| (a, fraction)))
             .filter(|(_, fraction)| world.contents == 0 || *fraction < world.fraction)
             .min_by(|a, b| a.1.total_cmp(&b.1));
+        if hit.is_none()
+            && let Some(piece) = world.glass_piece
+        {
+            scene.collision.shatter_glass(piece);
+            return outcome;
+        }
         if let Some((actor, _)) = hit {
             if actor.team != shooter.1 {
                 outcome.damage.push((actor.client, damage, false));
@@ -292,13 +300,10 @@ fn trace_shot(
     range: f32,
     collision: &Collision,
     target: Option<(&TargetConfig, Option<BodyPose<'_>>)>,
+    break_glass: bool,
 ) -> (Option<(f32, Option<HitLocation>)>, Option<WorldImpact>) {
     let direction = forward(angles);
     let end = std::array::from_fn(|i| eye[i] + direction[i] * range);
-    let world = collision.raycast(eye, end);
-    if world.start_solid || world.all_solid {
-        return (None, None);
-    }
     let target_hit = target.and_then(|(config, pose)| {
         let min = std::array::from_fn(|i| config.origin[i] + config.bounds_min[i] * config.scale);
         let max = std::array::from_fn(|i| config.origin[i] + config.bounds_max[i] * config.scale);
@@ -313,6 +318,14 @@ fn trace_shot(
             None => Some((fraction, None)),
         }
     });
+    let world = if break_glass {
+        collision.shot_raycast(eye, end, target_hit.map_or(1.0, |hit| hit.0))
+    } else {
+        collision.raycast(eye, end)
+    };
+    if world.start_solid || world.all_solid {
+        return (None, None);
+    }
     if let Some(hit) = target_hit
         && (world.contents == 0 || hit.0 < world.fraction)
     {
@@ -342,7 +355,7 @@ pub fn world_impact(
     if !ballistics.valid() || eye.iter().any(|n| !n.is_finite() || n.abs() > 1_000_000.0) {
         return None;
     }
-    trace_shot(eye, angles, ballistics.range, collision, None).1
+    trace_shot(eye, angles, ballistics.range, collision, None, false).1
 }
 
 /// World impacts of every ray of a shot that has no damageable target.
@@ -353,10 +366,13 @@ pub fn world_impacts(
     ballistics: Ballistics,
     collision: &Collision,
 ) -> Vec<WorldImpact> {
+    if !ballistics.valid() || eye.iter().any(|v| !v.is_finite() || v.abs() > 1_000_000.0) {
+        return Vec::new();
+    }
     ballistics
         .rays(angles, time)
         .into_iter()
-        .filter_map(|ray| world_impact(eye, ray, ballistics, collision))
+        .filter_map(|ray| trace_shot(eye, ray, ballistics.range, collision, None, true).1)
         .collect()
 }
 
@@ -737,6 +753,7 @@ impl CombatWorld {
                 ballistics.range,
                 collision,
                 (self.health > 0).then_some((&self.config, pose)),
+                true,
             );
             outcome.impacts.extend(impact);
             let Some((fraction, location)) = hit else {
@@ -869,6 +886,92 @@ mod tests {
         let file = tempfile::NamedTempFile::new().unwrap();
         std::fs::write(file.path(), serde_json::to_vec(&export).unwrap()).unwrap();
         Collision::load(file.path()).unwrap()
+    }
+    #[test]
+    fn actor_bullets_break_front_glass_but_stop_at_teammates_and_permanent_windows() {
+        let export = json!({
+            "schema_version":1, "read_only":true,
+            "client_sha256":codol_protocol::CLIENT_SHA256,
+            "map":"maps/mp/test.d3dbsp", "ncs_crc":0,
+            "brushes":[
+                {"center":[50,0,45],"half":[0.5,100,45],"contents":0x0800_0010,"planes":[],"glass_piece":0},
+                {"center":[200,0,45],"half":[0.5,100,45],"contents":0x0800_0010,"planes":[],"glass_piece":1},
+                {"center":[250,0,45],"half":[0.5,100,45],"contents":0x0800_0010,"planes":[]},
+                {"center":[300,0,45],"half":[0.5,100,45],"contents":0x0800_0010,"planes":[],"glass_piece":2}
+            ], "triangles":[]
+        });
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), serde_json::to_vec(&export).unwrap()).unwrap();
+        let collision = Collision::load(file.path()).unwrap();
+        let actor = |client, team, x| Actor {
+            client,
+            team,
+            origin: [x, 0.0, 0.0],
+            height: 70.0,
+            yaw: 0.0,
+        };
+        for (time, actors, expected_damage, pieces) in [
+            (
+                1000,
+                vec![actor(1, 2, 100.0), actor(6, 1, 150.0)],
+                false,
+                vec![0],
+            ),
+            (2000, vec![actor(6, 1, 150.0)], true, vec![0]),
+            (3000, vec![actor(6, 1, 350.0)], false, vec![0, 1]),
+        ] {
+            let outcome = fire_at_actors(
+                [0.0, 0.0, 60.0],
+                [0; 3],
+                time,
+                ballistics(),
+                (0, 2),
+                ActorScene {
+                    actors: &actors,
+                    regions: None,
+                    collision: &collision,
+                },
+            );
+            assert_eq!(!outcome.damage.is_empty(), expected_damage);
+            assert_eq!(collision.destroyed_glass(), pieces);
+        }
+    }
+
+    #[test]
+    fn melee_glass_hit_consumes_the_strike_before_a_body_behind_it() {
+        let export = json!({
+            "schema_version":1, "read_only":true,
+            "client_sha256":codol_protocol::CLIENT_SHA256,
+            "map":"maps/mp/test.d3dbsp", "ncs_crc":0,
+            "brushes":[{"center":[30,0,45],"half":[0.5,100,45],"contents":0x0800_0010,"planes":[],"glass_piece":9}],
+            "triangles":[]
+        });
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), serde_json::to_vec(&export).unwrap()).unwrap();
+        let collision = Collision::load(file.path()).unwrap();
+        let actors = [Actor {
+            client: 6,
+            team: 1,
+            origin: [55.0, 0.0, 0.0],
+            height: 70.0,
+            yaw: 0.0,
+        }];
+        let strike = || {
+            melee_at_actors(
+                [0.0, 0.0, 60.0],
+                [0; 3],
+                100,
+                (0, 2),
+                ActorScene {
+                    actors: &actors,
+                    regions: None,
+                    collision: &collision,
+                },
+            )
+        };
+        assert!(strike().damage.is_empty());
+        assert_eq!(collision.destroyed_glass(), vec![9]);
+        assert_eq!(strike().damage, vec![(6, 100, false)]);
     }
     #[test]
     fn multiplayer_pellets_stop_at_teammates_and_the_nearest_enemy() {

@@ -187,6 +187,18 @@ pub struct PreparedGameState {
     snapshot_frames: u32,
 }
 impl PreparedGameState {
+    pub(crate) fn for_connection(&self) -> Self {
+        let mut state = self.clone();
+        state.collision = self.collision.as_ref().map(|c| Arc::new(c.fresh_session()));
+        state
+    }
+    pub(crate) fn preserve_match_collision(&mut self, current: &Self) {
+        assert_eq!(
+            (self.map(), self.ncs_crc()),
+            (current.map(), current.ncs_crc())
+        );
+        self.collision = current.collision.clone();
+    }
     pub(crate) fn has_tdm(&self) -> bool {
         self.match_config.is_some()
     }
@@ -1692,6 +1704,10 @@ impl PreparedGameState {
         world: SnapshotWorld<'_>,
     ) -> Result<Vec<u8>> {
         let motion = world.motion;
+        let destroyed_glass = self
+            .collision
+            .as_ref()
+            .map_or_else(Vec::new, |c| c.destroyed_glass());
         // Both roster and local appearance are frozen for this match, so
         // archived views use the same identity even after a backpack refresh.
         let mut characters = [None; 12];
@@ -1712,6 +1728,7 @@ impl PreparedGameState {
             equipment,
             angles,
             codol_protocol::game_snapshot::WorldSnapshot {
+                destroyed_glass: &destroyed_glass,
                 perk_display: world.perk_display,
                 bags: world.bags,
                 bag_baselines: world.bag_baselines,
@@ -1933,7 +1950,7 @@ impl PreparedGameState {
         Ok(Some(tdm))
     }
     pub(crate) fn for_bot_validation(&self) -> Result<Self> {
-        let mut state = self.clone();
+        let mut state = self.for_connection();
         let arsenal = self
             .arsenal
             .as_ref()

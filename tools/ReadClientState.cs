@@ -58,6 +58,7 @@ class ReadClientState {
             bool weaponModels=args.Length==1 && args[0]=="--weapon-models";
             bool arsenal=args.Length==1 && args[0]=="--arsenal";
             bool collision=args.Length==1 && args[0]=="--collision";
+            bool glass=args.Length==1 && args[0]=="--glass";
             bool weaponRegistry=args.Length==1 && args[0]=="--weapon-registry";
             bool trainingTarget=args.Length==1 && args[0]=="--training-target";
             bool bulletImpacts=args.Length==1 && args[0]=="--bullet-impacts";
@@ -69,7 +70,7 @@ class ReadClientState {
             bool hitRegions=args.Length==1 && args[0]=="--hit-regions";
             bool tacticalAssets=args.Length==1 && args[0]=="--tactical-assets";
             bool hudAssets=args.Length==1 && args[0]=="--hud-assets";
-            if(args.Length!=0 && !mapCheck && !hudAssets && !tacticalAssets && !appearanceLoad && !outfits && !grounding && !replay && !feedback && !hitRegions && !assets && !profiles && !netConstants && !mapEntities && !bootstrapWeapon && !weaponModels && !arsenal && !collision && !weaponRegistry && !trainingTarget && !bulletImpacts && !characters) throw new Exception("only fixed extraction modes are supported");
+            if(args.Length!=0 && !glass && !mapCheck && !hudAssets && !tacticalAssets && !appearanceLoad && !outfits && !grounding && !replay && !feedback && !hitRegions && !assets && !profiles && !netConstants && !mapEntities && !bootstrapWeapon && !weaponModels && !arsenal && !collision && !weaponRegistry && !trainingTarget && !bulletImpacts && !characters) throw new Exception("only fixed extraction modes are supported");
             IntPtr snapshot=CreateToolhelp32Snapshot(2,0); uint found=0;
             if(snapshot==new IntPtr(-1)) throw new Exception("process snapshot failed");
             try {
@@ -106,6 +107,7 @@ class ReadClientState {
                 if(weaponModels) { ClientAssets.ExportWeaponModels(process);return 0; }
                 if(arsenal) { ClientAssets.ExportArsenal(process);return 0; }
                 if(collision) { ClientAssets.ExportCollision(process);return 0; }
+                if(glass) { ClientAssets.ExportGlass(process);return 0; }
                 if(weaponRegistry) { ClientAssets.ExportWeaponRegistry(process);return 0; }
                 if(trainingTarget) { ClientAssets.ExportTrainingTarget(process);return 0; }
                 if(bulletImpacts) { ClientAssets.ExportBulletImpacts(process);return 0; }

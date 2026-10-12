@@ -118,6 +118,11 @@ struct WorldHistory {
 
 impl Connection {
     pub fn with_game_state(state: Arc<crate::game_state::PreparedGameState>) -> Self {
+        let state = if state.collision.is_some() {
+            Arc::new(state.for_connection())
+        } else {
+            state
+        };
         Self {
             active_backpack: state
                 .selected_backpack_class()
@@ -276,13 +281,21 @@ impl Connection {
                     self.player = state.player();
                 }
             }
-            self.game_state = Some(state);
+            self.replace_game_state(state);
             tracing::info!("applied acknowledged player backpack update");
         }
     }
+    fn replace_game_state(&mut self, mut state: Arc<crate::game_state::PreparedGameState>) {
+        if let Some(current) = &self.game_state
+            && current.collision.is_some()
+        {
+            Arc::make_mut(&mut state).preserve_match_collision(current);
+        }
+        self.game_state = Some(state);
+    }
     fn equip_spawn_loadout(&mut self) {
         if let Some(next) = self.next_spawn_loadout.take() {
-            self.game_state = Some(next);
+            self.replace_game_state(next);
             tracing::info!("applied deferred player backpack at respawn");
         }
     }
@@ -2503,6 +2516,76 @@ fn decode_connect_name(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn glass_authority_survives_backpack_respawn_and_is_isolated_from_new_connections() {
+        let export = serde_json::json!({
+            "schema_version":1,"read_only":true,"client_sha256":codol_protocol::CLIENT_SHA256,
+            "map":"maps/mp/mp_afghan.d3dbsp","ncs_crc":0x12345678,
+            "brushes":[{"center":[50,0,45],"half":[1,100,45],"contents":0x0800_0010,"planes":[],"glass_piece":4}],
+            "triangles":[]
+        });
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), serde_json::to_vec(&export).unwrap()).unwrap();
+        let mut template = crate::game_state::synthetic();
+        template.collision = Some(Arc::new(
+            crate::game_motion::Collision::load(file.path()).unwrap(),
+        ));
+        let template = Arc::new(template);
+        let mut first = Connection::with_game_state(template.clone());
+        let second = Connection::with_game_state(template.clone());
+        first
+            .game_state
+            .as_ref()
+            .unwrap()
+            .collision
+            .as_ref()
+            .unwrap()
+            .shatter_glass(4);
+        first.next_spawn_loadout = Some(template.clone());
+        first.equip_spawn_loadout();
+        assert_eq!(
+            first
+                .game_state
+                .as_ref()
+                .unwrap()
+                .collision
+                .as_ref()
+                .unwrap()
+                .destroyed_glass(),
+            vec![4]
+        );
+        assert!(
+            second
+                .game_state
+                .as_ref()
+                .unwrap()
+                .collision
+                .as_ref()
+                .unwrap()
+                .destroyed_glass()
+                .is_empty()
+        );
+        assert!(
+            template
+                .collision
+                .as_ref()
+                .unwrap()
+                .destroyed_glass()
+                .is_empty()
+        );
+        let third = Connection::with_game_state(template);
+        assert!(
+            third
+                .game_state
+                .as_ref()
+                .unwrap()
+                .collision
+                .as_ref()
+                .unwrap()
+                .destroyed_glass()
+                .is_empty()
+        );
+    }
     #[test]
     fn raw_landing_event_and_profile_immunity_apply_once_before_health_recovery() {
         let landing = crate::game_landing::calculate(2000, 214.0, 0.0, 0.0, 800, 3 << 20).unwrap();

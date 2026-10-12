@@ -23,6 +23,7 @@ pub struct MapReport {
     pub passed: bool,
     pub elapsed_msec: u128,
     pub moved_bots: usize,
+    pub destroyed_glass: usize,
     pub kills: usize,
     pub respawns: usize,
     pub top_players_scene: bool,
@@ -44,6 +45,7 @@ pub fn verify(catalog: &GameMapCatalog, simulation_msec: u32) -> Result<Report> 
             passed: false,
             elapsed_msec: 0,
             moved_bots: 0,
+            destroyed_glass: 0,
             kills: 0,
             respawns: 0,
             top_players_scene: false,
@@ -148,6 +150,7 @@ fn simulate(state: &PreparedGameState, simulation_msec: u32, row: &mut MapReport
         }
     }
     row.moved_bots = moved.len();
+    row.destroyed_glass = collision.destroyed_glass().len();
     ensure!(
         row.moved_bots >= 8,
         "only {} Bots travelled at least 128 units while alive",

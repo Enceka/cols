@@ -11,7 +11,15 @@
 use anyhow::{Context, Result, ensure};
 use codol_protocol::game_usercmd::UserCommand;
 use serde::Deserialize;
-use std::{fs::File, io::Read, path::Path};
+use std::{
+    fs::File,
+    io::Read,
+    path::Path,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+};
 
 type V3 = [f32; 3];
 pub const SPEED: u16 = 190;
@@ -98,6 +106,9 @@ fn legacy_contents_mask() -> u32 {
 }
 #[derive(Deserialize)]
 struct BrushExport {
+    /// Native cbrush+2 is one-based; zero denotes permanent geometry.
+    #[serde(default)]
+    glass_piece: Option<u16>,
     center: V3,
     half: V3,
     contents: u32,
@@ -113,7 +124,7 @@ struct TriangleExport {
     surface_flags: u32,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 enum Shape {
     Brush {
         planes: Vec<[f32; 4]>,
@@ -123,14 +134,15 @@ enum Shape {
         vertices: [V3; 3],
     },
 }
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct Primitive {
+    glass_piece: Option<u16>,
     bounds: Bounds,
     contents: u32,
     surface_flags: u32,
     shape: Shape,
 }
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 enum Node {
     Leaf {
         bounds: Bounds,
@@ -156,13 +168,35 @@ pub struct Collision {
     pub map: String,
     pub ncs_crc: u32,
     pub captured_contents_mask: u32,
-    primitives: Vec<Primitive>,
-    indices: Vec<usize>,
-    nodes: Vec<Node>,
+    primitives: Arc<Vec<Primitive>>,
+    indices: Arc<Vec<usize>>,
+    nodes: Arc<Vec<Node>>,
+    known_glass: [u64; 16],
+    destroyed_glass: [AtomicU64; 16],
+    ignore_glass: bool,
+}
+
+impl Clone for Collision {
+    fn clone(&self) -> Self {
+        Self {
+            map: self.map.clone(),
+            ncs_crc: self.ncs_crc,
+            captured_contents_mask: self.captured_contents_mask,
+            primitives: self.primitives.clone(),
+            indices: self.indices.clone(),
+            nodes: self.nodes.clone(),
+            known_glass: self.known_glass,
+            destroyed_glass: std::array::from_fn(|i| {
+                AtomicU64::new(self.destroyed_glass[i].load(Ordering::Relaxed))
+            }),
+            ignore_glass: self.ignore_glass,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
 pub struct Trace {
+    pub glass_piece: Option<u16>,
     pub fraction: f32,
     pub normal: V3,
     pub start_solid: bool,
@@ -173,6 +207,7 @@ pub struct Trace {
 impl Default for Trace {
     fn default() -> Self {
         Self {
+            glass_piece: None,
             fraction: 1.0,
             normal: [0.0; 3],
             start_solid: false,
@@ -184,6 +219,88 @@ impl Default for Trace {
 }
 
 impl Collision {
+    /// Each connection owns destruction. The map template and other rooms
+    /// share only immutable geometry; a new match begins with intact glass.
+    pub(crate) fn fresh_session(&self) -> Self {
+        Self {
+            destroyed_glass: std::array::from_fn(|_| AtomicU64::new(0)),
+            ignore_glass: false,
+            ..self.clone()
+        }
+    }
+
+    /// Planning can approach a breakable pane, but movement and damage always
+    /// trace the real world. This view never destroys a gameplay object.
+    pub(crate) fn navigation_view(&self) -> Self {
+        Self {
+            ignore_glass: true,
+            ..self.clone()
+        }
+    }
+
+    fn glass_is_absent(&self, piece: Option<u16>) -> bool {
+        piece.is_some_and(|p| {
+            self.ignore_glass
+                || self.destroyed_glass[usize::from(p) / 64].load(Ordering::Relaxed)
+                    & (1 << (p % 64))
+                    != 0
+        })
+    }
+
+    pub(crate) fn shatter_glass(&self, piece: u16) -> bool {
+        if piece >= 1024 || self.ignore_glass {
+            return false;
+        }
+        let index = usize::from(piece) / 64;
+        let bit = 1 << (piece % 64);
+        if self.known_glass[index] & bit == 0 {
+            return false;
+        }
+        let changed = self.destroyed_glass[index].fetch_or(bit, Ordering::Relaxed) & bit == 0;
+        if changed {
+            tracing::info!(
+                map = self.map,
+                piece,
+                "native glass shattered by authoritative hit"
+            );
+        }
+        changed
+    }
+
+    pub(crate) fn destroyed_glass(&self) -> Vec<u16> {
+        self.destroyed_glass
+            .iter()
+            .enumerate()
+            .flat_map(|(i, word)| {
+                let word = word.load(Ordering::Relaxed);
+                (0..64)
+                    .filter(move |bit| word & (1 << bit) != 0)
+                    .map(move |bit| (i * 64 + bit) as u16)
+            })
+            .collect()
+    }
+
+    /// A validated bullet breaks only mapped glass before its closest body.
+    /// Recast after each shatter; permanent WINDOW brushes still stop bullets.
+    pub(crate) fn shot_raycast(&self, start: V3, end: V3, body_fraction: f32) -> Trace {
+        loop {
+            let hit = self.raycast(start, end);
+            if hit.start_solid || hit.all_solid || hit.fraction >= body_fraction {
+                return hit;
+            }
+            let Some(piece) = hit.glass_piece else {
+                return hit;
+            };
+            if !self.shatter_glass(piece) {
+                return hit;
+            }
+        }
+    }
+
+    pub(crate) fn visibility_raycast(&self, start: V3, end: V3) -> Trace {
+        self.navigation_view().raycast(start, end)
+    }
+
     pub fn load(path: &Path) -> Result<Self> {
         const LIMIT: u64 = 64 * 1024 * 1024;
         let f = File::open(path)
@@ -216,7 +333,15 @@ impl Collision {
             "collision primitive budget exceeded"
         );
         let mut primitives = Vec::new();
+        let mut known_glass = [0; 16];
         for b in export.brushes {
+            if let Some(piece) = b.glass_piece {
+                ensure!(
+                    piece < 1024 && b.contents & 0x10 != 0,
+                    "invalid native glass brush identity"
+                );
+                known_glass[usize::from(piece) / 64] |= 1 << (piece % 64);
+            }
             ensure!(
                 valid(b.center)
                     && valid(b.half)
@@ -262,6 +387,7 @@ impl Collision {
             }
             if b.contents & (PLAYER_MASK | SHOT_MASK) != 0 {
                 primitives.push(Primitive {
+                    glass_piece: b.glass_piece,
                     bounds,
                     contents: b.contents,
                     surface_flags: 0,
@@ -299,6 +425,7 @@ impl Collision {
                 }),
             };
             primitives.push(Primitive {
+                glass_piece: None,
                 bounds,
                 contents: t.contents,
                 surface_flags: t.surface_flags,
@@ -315,9 +442,12 @@ impl Collision {
             map: export.map,
             ncs_crc: export.ncs_crc,
             captured_contents_mask: export.captured_contents_mask,
-            indices: (0..primitives.len()).collect(),
-            primitives,
-            nodes: Vec::new(),
+            indices: Arc::new((0..primitives.len()).collect()),
+            primitives: Arc::new(primitives),
+            nodes: Arc::new(Vec::new()),
+            known_glass,
+            destroyed_glass: std::array::from_fn(|_| AtomicU64::new(0)),
+            ignore_glass: false,
         };
         collision.build(0, collision.indices.len());
         Ok(collision)
@@ -331,7 +461,7 @@ impl Collision {
             bounds = bounds.union(self.primitives[i].bounds);
         }
         let node = self.nodes.len();
-        self.nodes.push(Node::Leaf {
+        Arc::make_mut(&mut self.nodes).push(Node::Leaf {
             bounds,
             first,
             count,
@@ -342,7 +472,7 @@ impl Collision {
                     (bounds.max[a] - bounds.min[a]).total_cmp(&(bounds.max[b] - bounds.min[b]))
                 })
                 .unwrap();
-            self.indices[first..first + count].sort_unstable_by(|&a, &b| {
+            Arc::make_mut(&mut self.indices)[first..first + count].sort_unstable_by(|&a, &b| {
                 self.primitives[a]
                     .bounds
                     .center(axis)
@@ -350,7 +480,7 @@ impl Collision {
             });
             let left = self.build(first, count / 2);
             let right = self.build(first + count / 2, count - count / 2);
-            self.nodes[node] = Node::Branch {
+            Arc::make_mut(&mut self.nodes)[node] = Node::Branch {
                 bounds,
                 left,
                 right,
@@ -446,7 +576,10 @@ impl Collision {
             Node::Leaf { first, count, .. } => {
                 for &i in &self.indices[first..first + count] {
                     let primitive = &self.primitives[i];
-                    if primitive.contents & mask == 0 || !primitive.bounds.intersects(bounds) {
+                    if primitive.contents & mask == 0
+                        || self.glass_is_absent(primitive.glass_piece)
+                        || !primitive.bounds.intersects(bounds)
+                    {
                         continue;
                     }
                     let hit = match &primitive.shape {
@@ -470,6 +603,7 @@ impl Collision {
                             _ => primitive.surface_flags,
                         };
                         result.contents = primitive.contents;
+                        result.glass_piece = primitive.glass_piece;
                     }
                 }
             }
@@ -495,7 +629,10 @@ impl Collision {
             Node::Leaf { first, count, .. } => {
                 for &i in &self.indices[first..first + count] {
                     let p = &self.primitives[i];
-                    if p.contents & sweep.mask == 0 || !p.bounds.intersects(bounds) {
+                    if p.contents & sweep.mask == 0
+                        || self.glass_is_absent(p.glass_piece)
+                        || !p.bounds.intersects(bounds)
+                    {
                         continue;
                     }
                     let hit = match &p.shape {
@@ -516,6 +653,7 @@ impl Collision {
                             _ => p.surface_flags,
                         };
                         result.contents = p.contents;
+                        result.glass_piece = p.glass_piece;
                     }
                 }
             }
@@ -1656,6 +1794,7 @@ mod tests {
     }
     fn brush(center: V3, half: V3) -> BrushExport {
         BrushExport {
+            glass_piece: None,
             center,
             half,
             contents: 1,
@@ -1665,6 +1804,93 @@ mod tests {
     }
     fn floor() -> BrushExport {
         brush([0.0, 0.0, -20.0], [2000.0, 2000.0, 20.0])
+    }
+    fn pane(x: f32, piece: Option<u16>) -> BrushExport {
+        let mut pane = brush([x, 0.0, 45.0], [0.5, 100.0, 45.0]);
+        pane.contents = 0x0800_0010;
+        pane.glass_piece = piece;
+        pane
+    }
+
+    #[test]
+    fn glass_hit_updates_bullet_capsule_projectile_and_support_traces_only_for_its_piece() {
+        let world = world(
+            vec![floor(), pane(50.0, Some(168)), pane(100.0, None)],
+            vec![],
+        );
+        let start = [0.0, 0.0, 40.0];
+        let end = [150.0, 0.0, 40.0];
+        assert_eq!(world.raycast(start, end).glass_piece, Some(168));
+        assert_eq!(
+            world.trace([0.0; 3], [150.0, 0.0, 0.0], 70.0).glass_piece,
+            Some(168)
+        );
+        assert_eq!(
+            world.projectile_trace(start, end, 2.0).glass_piece,
+            Some(168)
+        );
+        let hit = world.shot_raycast(start, end, 1.0);
+        assert_eq!(world.destroyed_glass(), vec![168]);
+        assert_eq!(hit.glass_piece, None);
+        assert!((hit.fraction - 99.5 / 150.0).abs() < 0.0001);
+        assert_eq!(world.projectile_trace(start, end, 2.0).glass_piece, None);
+        assert_eq!(
+            world.trace([0.0; 3], [150.0, 0.0, 0.0], 70.0).glass_piece,
+            None
+        );
+        assert_eq!(
+            world
+                .ground_raycast([50.0, 0.0, 100.0], [50.0, 0.0, -10.0])
+                .contents,
+            1
+        );
+        assert!(!world.shatter_glass(168));
+        assert!(!world.shatter_glass(167));
+        assert!(!world.shatter_glass(1024));
+    }
+
+    #[test]
+    fn glass_cannot_be_destroyed_behind_a_body_wall_or_from_inside_a_solid() {
+        let world = world(
+            vec![floor(), pane(50.0, Some(0)), pane(100.0, Some(1))],
+            vec![],
+        );
+        let start = [0.0, 0.0, 40.0];
+        let end = [150.0, 0.0, 40.0];
+        world.shot_raycast(start, end, 0.25);
+        assert!(world.destroyed_glass().is_empty());
+        world.shot_raycast([50.0, 0.0, 40.0], end, 1.0);
+        assert!(world.destroyed_glass().is_empty());
+        world.shot_raycast(start, end, 0.5);
+        assert_eq!(world.destroyed_glass(), vec![0]);
+        assert_eq!(world.raycast(start, end).glass_piece, Some(1));
+        let wall = self::world(
+            vec![floor(), pane(50.0, None), pane(100.0, Some(1))],
+            vec![],
+        );
+        wall.shot_raycast(start, end, 1.0);
+        assert!(wall.destroyed_glass().is_empty());
+    }
+
+    #[test]
+    fn glass_planning_and_visibility_keep_real_collision_and_other_sessions_intact() {
+        let template = world(vec![floor(), pane(50.0, Some(1023))], vec![]);
+        let first = template.fresh_session();
+        let second = template.fresh_session();
+        let start = [0.0, 0.0, 40.0];
+        let end = [100.0, 0.0, 40.0];
+        assert_eq!(first.visibility_raycast(start, end).contents, 0);
+        let planning = first.navigation_view();
+        assert_eq!(planning.raycast(start, end).contents, 0);
+        assert!(!planning.shatter_glass(1023));
+        assert_eq!(first.raycast(start, end).glass_piece, Some(1023));
+        first.shot_raycast(start, end, 1.0);
+        assert_eq!(first.raycast(start, end).contents, 0);
+        for other in [&template, &second, &first.fresh_session()] {
+            assert_eq!(other.raycast(start, end).glass_piece, Some(1023));
+            assert!(other.destroyed_glass().is_empty());
+            assert!(Arc::ptr_eq(&first.primitives, &other.primitives));
+        }
     }
     fn cmd(time: u32, direction: u8, buttons: u32) -> UserCommand {
         UserCommand {

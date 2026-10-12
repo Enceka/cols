@@ -754,7 +754,12 @@ class ClientAssets {
                 int material=BitConverter.ToUInt16(raw,b*36+face);if(material>=materialCount)throw new Exception("brush axial material invalid");
                 surfaceFlags.Add(U(materials,material*12+4));
             }
-            brushes.Add(Obj("center",Floats(bounds,b*24,3),"half",Floats(bounds,b*24+12,3),"contents",mask,"planes",planes,"plane_surface_flags",surfaceFlags));
+            // 0x58993d/0x588f21 read brush+2 and subtract one before the
+            // glass-state callback; zero means an ordinary permanent brush.
+            int glass=BitConverter.ToUInt16(raw,b*36+2);
+            if(glass>1024)throw new Exception("native glass piece outside network limit");
+            brushes.Add(Obj("center",Floats(bounds,b*24,3),"half",Floats(bounds,b*24+12,3),"contents",mask,"planes",planes,"plane_surface_flags",surfaceFlags,
+                "glass_piece",glass==0?null:(object)(glass-1)));
         }
         int vc=Count(U(header,0x64),300000),tc=Count(U(header,0x6c),600000),pc=Count(U(header,0x80),100000),ac=Count(U(header,0x88),100000);
         byte[] verts=r.Read(U(header,0x68),vc*12),tris=r.Read(U(header,0x70),tc*6),parts=r.Read(U(header,0x84),pc*12),trees=r.Read(U(header,0x8c),ac*32);
@@ -788,6 +793,24 @@ class ClientAssets {
             "world_membership",Obj("bsp_root",0,"world_leaves",world.Leaves,"leaf_pool_count",U(header,0x5c),
                 "brush_pool_count",count,"world_brush_count",world.Brushes.Count,"world_aabb_count",worldTrees.Count),
             "brushes",brushes,"triangles",triangles)));
+    }
+    public static void ExportGlass(IntPtr process) {
+        var r=new ClientAssets(process);
+        uint state=r.Word(0x01a2e7ec);if(state<6||state>10)throw new Exception("load the map before glass capture");
+        string map=r.Name(r.Word(0x02dfb000));if(!r.NativeTdmMapPath(map))throw new Exception("glass map identity invalid");
+        uint crc=r.Word(0x02df7d90);byte[] system=r.Read(0x0297200c,100);
+        int count=Count(U(system,0x14),1024);uint initial=U(system,0x5c);
+        if(count>0&&initial<0x10000)throw new Exception("glass initial pieces unavailable");
+        byte[] records=count==0?new byte[0]:r.Read(initial,count*52);
+        byte[] states=r.Read(0x01a0fbd0,1024*5);var pieces=new List<object>();
+        for(int i=0;i<count;i++)pieces.Add(Obj("piece",i,"origin",Floats(records,i*52+0x10,3),
+            "area_bits",U(records,i*52+0x2c),"initial_base64",Convert.ToBase64String(records,i*52,52),
+            "applied_state",states[i*5],"incoming_state",states[i*5+1]));
+        if(r.Name(r.Word(0x02dfb000))!=map||r.Word(0x02df7d90)!=crc)throw new Exception("map changed during glass capture");
+        Console.WriteLine(new JavaScriptSerializer().Serialize(Obj("schema_version",1,"read_only",true,
+            "client_sha256","e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b",
+            "connection_state",state,"map",map,"ncs_crc",crc,"piece_count",count,
+            "system_header_base64",Convert.ToBase64String(system),"pieces",pieces)));
     }
     object ViewModelNames() {
         try {

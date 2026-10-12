@@ -285,7 +285,7 @@ impl BotController {
 
         let visible_before = self.engagement.is_some()
             && target.is_some_and(|t| {
-                let trace = collision.raycast(self.eye(), t.eye);
+                let trace = collision.visibility_raycast(self.eye(), t.eye);
                 !trace.start_solid && !trace.all_solid && trace.contents == 0
             });
         let hold = visible_before
@@ -346,7 +346,7 @@ impl BotController {
             desired_angles
         };
         let distance = distance(eye, target.eye);
-        let trace = collision.raycast(eye, target.eye);
+        let trace = collision.visibility_raycast(eye, target.eye);
         let visible = !trace.start_solid && !trace.all_solid && trace.contents == 0;
         if !visible || !weapon_valid {
             self.reset_engagement();

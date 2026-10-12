@@ -1032,6 +1032,31 @@ impl TdmMatch {
                 bot.tactical.move_scale(now, robot),
                 bot.tactical.turn_limit(now),
             );
+            // A pane on a real walking route is an aim target, not permission
+            // to move through it. The held weapon still owns cadence and ammo;
+            // only its committed bullet can change glass collision.
+            let target = target.or_else(|| {
+                if bot.tactical.blind(now) {
+                    return None;
+                }
+                let waypoint = bot.steering?;
+                let eye = bot.controller.eye();
+                let end = [waypoint[0], waypoint[1], waypoint[2] + 60.0];
+                let hit = collision.raycast(eye, end);
+                if hit.start_solid || hit.all_solid || hit.glass_piece.is_none() {
+                    return None;
+                }
+                let point: [f32; 3] =
+                    std::array::from_fn(|axis| eye[axis] + (end[axis] - eye[axis]) * hit.fraction);
+                if distance(eye, point) > 192.0 * 192.0 {
+                    return None;
+                }
+                Some(BotTarget {
+                    origin: [point[0], point[1], origin[2]],
+                    eye: point,
+                    alive: true,
+                })
+            });
             let mut frame =
                 bot.controller
                     .step_navigated(now, target, bot.steering, active_weapon, collision);
@@ -1272,7 +1297,7 @@ fn visible_enemy(
             if length > 2000.0 || (length > 160.0 && dx * cos + dy * sin < length * 0.5) {
                 return false;
             }
-            let trace = collision.raycast(
+            let trace = collision.visibility_raycast(
                 eye,
                 [a.origin[0], a.origin[1], a.origin[2] + a.height * 0.8],
             );
