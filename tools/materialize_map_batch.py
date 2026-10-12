@@ -53,7 +53,8 @@ class Lab:
             command+=['--resource-compass-probe',str(compass_probe)]
         self.process=subprocess.Popen(command,stdout=log,stderr=subprocess.STDOUT,start_new_session=True)
         log.close()
-        for _ in range(150):
+        deadline=time.monotonic()+240
+        while time.monotonic()<deadline:
             for path in (REPO/'research-output/gamehub').glob('client-*/experiment.json'):
                 if path.stat().st_mtime<started:continue
                 try:info=read(path)

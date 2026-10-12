@@ -1,5 +1,5 @@
-//! Walkable capsule grid built from the same captured map collision as motion.
-use crate::game_motion::Collision;
+//! Capsule walking and bounded one-way drops against captured map collision.
+use crate::game_motion::{Collision, Motion, WORLD};
 use std::collections::{BTreeMap, BinaryHeap};
 const CELL: f32 = 48.0;
 const HEIGHT: f32 = 70.0;
@@ -95,11 +95,18 @@ impl Navigation {
                 for (dx, dy) in [(1, 0), (0, 1), (1, 1), (1, -1)] {
                     if let Some(others) = cells.get(&(x + dx, y + dy)) {
                         for &other in others {
-                            if (positions[index][2] - positions[other][2]).abs() <= CELL * 1.1
-                                && Self::clear(positions[index], positions[other], collision)
-                            {
+                            let a = positions[index];
+                            let b = positions[other];
+                            if (a[2] - b[2]).abs() <= CELL * 1.1 && Self::clear(a, b, collision) {
                                 links[index].push(other);
                                 links[other].push(index);
+                            } else {
+                                if Self::can_drop(a, b, collision) {
+                                    links[index].push(other);
+                                }
+                                if Self::can_drop(b, a, collision) {
+                                    links[other].push(index);
+                                }
                             }
                         }
                     }
@@ -160,6 +167,58 @@ impl Navigation {
                 && support.fraction < 1.0
                 && support.normal[2] >= 0.7
         })
+    }
+    /// A falling connection has different reachability from its reverse.
+    /// Keep it local and bounded; a clear sweep alone cannot admit a gap.
+    /// Run the same standing movement, gravity and stopping behavior as Bots,
+    /// requiring actual landing on the destination's captured support.
+    fn can_drop(a: V3, b: V3, collision: &Collision) -> bool {
+        let drop = a[2] - b[2];
+        let horizontal = (a[0] - b[0]).hypot(a[1] - b[1]);
+        if !(18.0..=128.0).contains(&drop) || !(CELL * 0.5..=CELL * 1.5).contains(&horizontal) {
+            return false;
+        }
+        let mut motion = Motion::new(a);
+        motion.apply(
+            &codol_protocol::game_usercmd::UserCommand {
+                time: 1000,
+                ..Default::default()
+            },
+            1.0,
+            false,
+            collision,
+        );
+        for step in 1..=80 {
+            let dx = b[0] - motion.origin[0];
+            let dy = b[1] - motion.origin[1];
+            let moving = dx.hypot(dy) > 16.0;
+            if !moving {
+                motion.velocity[0] = 0.0;
+                motion.velocity[1] = 0.0;
+            }
+            let yaw = (dy.atan2(dx) * 65536.0 / std::f32::consts::TAU).round() as i32 as u16;
+            motion.apply(
+                &codol_protocol::game_usercmd::UserCommand {
+                    time: 1000 + step * 16,
+                    direction: u8::from(moving),
+                    angles: [0, yaw, 0],
+                    ..Default::default()
+                },
+                1.0,
+                false,
+                collision,
+            );
+            if motion.ground_entity == WORLD
+                && (motion.origin[0] - b[0]).hypot(motion.origin[1] - b[1]) <= 18.0
+                && (motion.origin[2] - b[2]).abs() <= 1.0
+            {
+                return true;
+            }
+            if motion.origin[2] < b[2] - 16.0 {
+                return false;
+            }
+        }
+        false
     }
     fn closest(&self, position: V3, collision: &Collision) -> Option<usize> {
         let x = (position[0] / CELL).round() as i32;
@@ -258,6 +317,44 @@ fn distance(a: V3, b: V3) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn bounded_drop_routes_are_one_way_and_require_real_landing_support() {
+        let scene = |lower: bool, wall: bool| {
+            let mut brushes = vec![serde_json::json!({
+                "center":[-1000,0,-100],"half":[1000,1000,100],"contents":1,"planes":[]
+            })];
+            if lower {
+                brushes.push(serde_json::json!({
+                    "center":[1000,0,-148],"half":[1000,1000,100],"contents":1,"planes":[]
+                }));
+            }
+            if wall {
+                brushes.push(serde_json::json!({
+                    "center":[24,0,20],"half":[1,1000,100],"contents":1,"planes":[]
+                }));
+            }
+            let export = serde_json::json!({
+                "schema_version":1,"read_only":true,"client_sha256":codol_protocol::CLIENT_SHA256,
+                "map":"maps/mp/test.d3dbsp","ncs_crc":0,"brushes":brushes,"triangles":[]
+            });
+            let file = tempfile::NamedTempFile::new().unwrap();
+            std::fs::write(file.path(), serde_json::to_vec(&export).unwrap()).unwrap();
+            Collision::load(file.path()).unwrap()
+        };
+        let a = [0.0, 0.0, 0.03125];
+        let b = [48.0, 0.0, -47.96875];
+        let collision = scene(true, false);
+        assert!(!Navigation::clear(a, b, &collision));
+        assert!(Navigation::can_drop(a, b, &collision));
+        assert!(!Navigation::can_drop(b, a, &collision));
+        let nav = Navigation::build([a, b].into_iter(), &collision);
+        assert!(!nav.route(a, b, &collision).is_empty());
+        assert!(nav.route(b, a, &collision).is_empty());
+        assert!(!Navigation::can_drop(a, b, &scene(false, false)));
+        assert!(!Navigation::can_drop(a, b, &scene(true, true)));
+        assert!(!Navigation::can_drop(a, [48.0, 0.0, -256.0], &collision));
+        assert!(!Navigation::can_drop(a, [480.0, 0.0, -48.0], &collision));
+    }
     #[test]
     fn sight_clip_volumes_do_not_remove_player_walkable_ground() {
         let data = serde_json::json!({"schema_version":1,"read_only":true,"client_sha256":codol_protocol::CLIENT_SHA256,

@@ -99,6 +99,8 @@ macOS窗口输入在激活游戏后重新核对窗口边界，记录激活前／
 
 两个黑房仍未出现在当前原生自建房箭头循环。`blackroom-ui-lab`在同一房间完成双向循环，12人未准备、DLC等级16、原生倒计时0；创建页已检查的可见列表中没有独立黑房项，完整入口仍未核实。两张页面定向画面仅用于定位，自动资源／短局批次不截图。现有证据不确认完整过滤语义，也不证明资源坏损。
 
-当前正常目录为19图。`compass-candidate-live`使用受限资源初始化请求取得高楼及潜艇基地的真实1024小地图材质；候选请求不能充当正式材质证明，详见`RESOURCE_COMPASS_REQUESTS.md`。`compass-two-map-acceptance`的潜艇基地231.86秒确认12人角色、小地图、同生命周期移动135.31单位及结算，AAR800:400与服务端一致，正常资料哈希及6772库存保持不变，见`nineteen-map-admission.json`。高楼准备完整，但后台60／120秒模拟均未交战，明确保留失败；跨越资源和边界见`HIGHRISE_TRAVERSAL.md`。全地图仍未通过。
+当前正常目录为20图。高楼和潜艇基地使用受限原生初始化请求得到各自真实1024小地图材质，候选请求不替代正式材质证明，见`RESOURCE_COMPASS_REQUESTS.md`。高楼的169块玻璃破碎及有界单向落差路径支持真实交战；60秒后台记录11个Bot移动、14块玻璃破碎、5次击杀及4次重生。原生短局162.22秒确认12名角色、小地图、同生命周期移动142.52单位和12行结算，AAR200:300与服务端一致，结算后原生箭头往返通过；证据见`highrise-map-admission/admission.json`。正常7500分／600000ms与6772库存保留。全地图仍未通过。
 
-`nineteen-map-implementation-final-check.log`通过449项Rust、88项Python及fmt／Clippy；`nineteen-map-implementation-server-proof.json`的19图后台批量全部通过，含资源加载37553ms。正常重启及当前账号／资源哈希核对见`nineteen-map-normal-restoration/normal-restoration.json`，隔离实验均有结束时间和证书恢复记录。地图完整视觉／听感及小时级稳定性仍独立验收。
+`highrise-native-acceptance/twenty-map-server.json`的20图后台批量全部通过，含资源加载总耗时80384ms；`highrise-server-startup-recovery/check.log`通过460项Rust、91项Python及fmt／Clippy。全26条配置及20图准备队列位于`twenty-map-normal-queue/queue.json`。正常恢复见`twenty-map-normal-restoration/normal-restoration.json`，隔离诊断均有结束时间和证书清理记录，自动流程0截图。角色、回放、前三名、玻璃／落差动作的完整视觉／听感及长时间稳定性仍单独验收。
+
+启动客户端之前等待地图后端真正就绪，避免地图加载阻塞认证，见[地图加载与客户端启动](BACKEND_STARTUP.md)。原生短局失败仍保留对应实验；启动失败不能被后台通过替代，恢复失败也必须单独处理和记录。

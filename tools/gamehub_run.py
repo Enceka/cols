@@ -21,6 +21,33 @@ ENGINE_INDEX = Path.home() / "Library/Application Support/com.gamemac.www/wine-e
 LAB_MARKER = ".codol-research-copy.json"
 
 
+def wait_backend_ready(output, server, tls, rust_auth=False, rust_game=False):
+    """A bound AUTH port can precede blocking map preparation by a minute.
+
+    Launching Wine at that point lets its TLS request expire before the Rust
+    runtime can service it. The game listener announces readiness after all
+    prepared maps have loaded; use that event without opening probe sockets.
+    """
+    started = time.monotonic()
+    deadline = started + (180 if rust_game else 5)
+    while True:
+        if server.poll() is not None:
+            raise RuntimeError("observer exited; see observer.log")
+        if tls is not None and tls.poll() is not None:
+            raise RuntimeError("AUTH backend exited; see tls-status.log")
+        observer_ready = bool(list((output / "captures").glob("run-*/run.json")))
+        auth_ready = not rust_auth or bool(list((output / "auth-captures").glob("auth-*/run.json")))
+        game_ready = not rust_game or (
+            "experimental Rust game UDP endpoint ready" in
+            (output / "tls-status.log").read_text(errors="replace")
+        )
+        if observer_ready and auth_ready and game_ready:
+            return round(time.monotonic() - started, 3)
+        if time.monotonic() >= deadline:
+            raise TimeoutError("backend startup; see observer.log and tls-status.log")
+        time.sleep(0.1)
+
+
 def engines():
     data = json.loads(ENGINE_INDEX.read_text())
     return data["wine_installations"]
@@ -275,15 +302,9 @@ def main():
                 (output / "observe.toml").write_text(cfg)
                 observer_executable=REPO/"target"/("release" if args.release_server else "debug")/"codol-server"
                 server = subprocess.Popen([str(observer_executable), "observe", "--config", str(output / "observe.toml")], stdout=server_log, stderr=subprocess.STDOUT)
-                deadline = time.monotonic() + 5
-                while not list((output / "captures").glob("run-*/run.json")) or (args.rust_auth and not list((output / "auth-captures").glob("auth-*/run.json"))):
-                    if server.poll() is not None:
-                        raise RuntimeError("observer exited; see observer.log")
-                    if tls is not None and tls.poll() is not None:
-                        raise RuntimeError("AUTH backend exited; see tls-status.log")
-                    if time.monotonic() >= deadline:
-                        raise TimeoutError("observer startup")
-                    time.sleep(0.1)
+                state["backend_ready_wait_seconds"] = wait_backend_ready(
+                    output, server, tls, args.rust_auth, args.rust_game
+                )
                 argv = [wine, str(work / "codoMP_client_shipRetail.exe"), "-q", "0", "-src=tgp", "-game_id", "29", "-zone_id", "83886082", "+set", "r_fullscreen", "0"]
                 if args.native_bot_rooms:
                     argv += ["+set", "1011", "1", "+set", "3265", "12", "+set", "dw_autoStartGame", "0"]
