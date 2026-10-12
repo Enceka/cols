@@ -22,6 +22,7 @@ mod game_landing;
 pub mod game_map_catalog;
 mod game_map_registry;
 mod game_map_selection;
+pub mod game_map_starts;
 pub mod game_map_verify;
 mod game_match;
 mod game_minimap;

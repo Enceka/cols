@@ -253,6 +253,7 @@ pub struct GameServer {
     game_state: Option<Arc<crate::game_state::PreparedGameState>>,
     game_map_catalog: Option<crate::game_map_catalog::GameMapCatalog>,
     resource_capture_map: Option<String>,
+    resource_compass_probe: Option<crate::game_minimap::CompassProbe>,
     hit_regions: HitRegionSource,
     services: Option<Arc<crate::services::LocalServices>>,
 }
@@ -331,6 +332,7 @@ impl GameServer {
             game_state: None,
             game_map_catalog: None,
             resource_capture_map: None,
+            resource_compass_probe: None,
             hit_regions: HitRegionSource::default(),
             services: None,
             admissions: Arc::new(GameAdmissions {
@@ -403,6 +405,14 @@ impl GameServer {
         self.resource_capture_map = Some(map);
         Ok(self)
     }
+    pub fn with_resource_compass_probe(mut self, path: &std::path::Path) -> Result<Self> {
+        let map = self
+            .resource_capture_map
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("compass probe requires resource capture"))?;
+        self.resource_compass_probe = Some(crate::game_minimap::CompassProbe::load(path, map)?);
+        Ok(self)
+    }
     fn template_for(
         &self,
         admission: &Admission,
@@ -444,7 +454,15 @@ impl GameServer {
                         .game_map_catalog
                         .as_ref()
                         .and_then(|catalog| catalog.select(&selection.map, &selection.mode).ok())
-                        .map(|state| (*state).clone().resource_initialization().map(Arc::new))
+                        .map(|state| {
+                            let initialized = (*state).clone().resource_initialization()?;
+                            let initialized = if let Some(probe) = &self.resource_compass_probe {
+                                initialized.with_resource_compass_probe(probe)?
+                            } else {
+                                initialized
+                            };
+                            Ok(Arc::new(initialized))
+                        })
                         .transpose();
                 }
                 let catalog = self.game_map_catalog.as_ref().ok_or_else(|| {
@@ -483,6 +501,7 @@ impl GameServer {
                 &serde_json::to_vec(
                     &serde_json::json!({"map":map,"mode":"war", "world_simulation":false,
                     "resource_gamestate_available":initializes,"gameplay_snapshots":false,
+                    "compass_candidate_requested":self.resource_compass_probe.is_some(),
                     "client_sha256":codol_protocol::CLIENT_SHA256}),
                 )?,
             )

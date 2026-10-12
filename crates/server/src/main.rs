@@ -25,6 +25,15 @@ struct Cli {
 // CLI arguments are parsed once at startup, outside gameplay frame processing.
 #[allow(clippy::large_enum_variant)]
 enum Command {
+    /// Select captured TDM starts that fit the gameplay capsule, preserving rejected evidence.
+    PrepareMapStarts {
+        #[arg(long)]
+        game_state: PathBuf,
+        #[arg(long)]
+        output: PathBuf,
+        #[arg(long)]
+        report: PathBuf,
+    },
     /// Quickly validate each prepared map's server movement, combat and respawns.
     VerifyMaps {
         #[arg(long)]
@@ -139,6 +148,9 @@ enum Command {
         /// Collect one native TDM map's loaded resources without sending a world.
         #[arg(long, requires = "native_bot_rooms")]
         resource_capture_map: Option<String>,
+        /// Request a native compass candidate during metadata-only resource initialization.
+        #[arg(long, requires = "resource_capture_map")]
+        resource_compass_probe: Option<PathBuf>,
         /// Keep the authenticated local play session running until shutdown.
         #[arg(long, requires_all=["game_state","service_data_dir"], conflicts_with="snapshot_probe")]
         continuous_play: bool,
@@ -197,6 +209,13 @@ async fn main() -> Result<()> {
         .with_writer(std::io::stderr)
         .init();
     match Cli::parse().command {
+        Command::PrepareMapStarts {
+            game_state,
+            output,
+            report,
+        } => {
+            codol_server::game_map_starts::prepare(&game_state, &output, &report)?;
+        }
         Command::VerifyMaps {
             catalog,
             output,
@@ -425,6 +444,7 @@ async fn main() -> Result<()> {
             game_map_catalog,
             native_bot_rooms,
             resource_capture_map,
+            resource_compass_probe,
             continuous_play,
             game_capture_every,
             hit_regions,
@@ -496,6 +516,9 @@ async fn main() -> Result<()> {
                     }
                     if let Some(map) = resource_capture_map {
                         game = game.with_resource_capture_map(map)?;
+                    }
+                    if let Some(probe) = resource_compass_probe {
+                        game = game.with_resource_compass_probe(&probe)?;
                     }
                     let endpoint = game.admissions();
                     tracing::info!(address=%endpoint.address(),"experimental Rust game UDP endpoint ready");

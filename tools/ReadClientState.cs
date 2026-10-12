@@ -426,6 +426,10 @@ class ReadClientState {
                     IdentityField(process,"room_native_map",checked(roomController+0xf738));
                     Field(process,"room_native_playlist",checked(roomController+0xf73c),1);
                     Field(process,"room_minimum_players",checked(roomController+0xf73d),1);
+                    Field(process,"room_maximum_players",checked(roomController+0xf73e),1);
+                    // Native room consumers: 0x6e74d0 / 0x6dfae0.
+                    Field(process,"room_native_countdown",checked(roomController+0x2e0),4);
+                    Field(process,"room_native_special_flag",checked(roomController+0xf754),1);
                     Field(process,"room_member_count",checked(roomController+0xf718),4);
                     uint memberCount=Read(process,checked(roomController+0xf718),4);
                     if(memberCount<=32) {

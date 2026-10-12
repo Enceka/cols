@@ -20,6 +20,7 @@ import time
 
 from clientlib import REPO
 from prepare_game_state import compute, CLIENT_SHA256
+from prepare_map_hud import minimap, minimap_geometry
 from prepare_map_batch import read, write, prepare as prepare_batch, verify
 from verify_native_maps import Client
 
@@ -32,7 +33,9 @@ class Lab:
         self.experiment=None
         self.finished=[]
 
-    def start(self, name, catalog, stage):
+    def start(self, name, catalog, stage, compass_probe=None):
+        if compass_probe is not None and stage in ('native','restore'):
+            raise ValueError('compass candidate requests require isolated resource collection')
         if self.process is not None:
             raise RuntimeError('previous owned experiment must stop before startup')
         log=(self.directory/(name+'-'+stage+'-harness.log')).open('w')
@@ -46,6 +49,8 @@ class Lab:
                  '--trust-lab-cert','--quiet-network','--native-bot-rooms','--service-data-dir',str(self.service),
                  '--game-state',str(initial_state),'--game-map-catalog',str(catalog)]
         if stage not in ('native','restore'):command+=['--resource-capture-map',name]
+        if compass_probe is not None:
+            command+=['--resource-compass-probe',str(compass_probe)]
         self.process=subprocess.Popen(command,stdout=log,stderr=subprocess.STDOUT,start_new_session=True)
         log.close()
         for _ in range(150):
@@ -110,6 +115,9 @@ class Lab:
         complete=cache/(name+'-resource-paths.json') if cache else None
         if complete and complete.is_file():
             captures=read(complete)
+            if name in ('mp_highrise','mp_subbase_sh'):
+                try:minimap(read(Path(captures['entities'])),name,read(Path(captures['characters'])))
+                except ValueError:captures=self.probe_compass(name,captures)
             # Preparation revalidates SHA, map, CRC, real textures and all
             # resource identities; cached metadata alone cannot pass.
             collision=read(Path(captures['collision']))
@@ -143,7 +151,9 @@ class Lab:
             constants=Path(paths['net-constants'])
             initialized_path=self.initialization_catalog(name,constants,summary)
             write(self.directory/(name+'-raw-paths.json'),paths)
-        client=self.start(name,initialized_path,'initialized')
+        probe=(self.compass_candidate(name,Path(paths['map-entities']),summary['ncs_crc'])
+               if name in ('mp_highrise','mp_subbase_sh') else None)
+        client=self.start(name,initialized_path,'initialized',probe)
         try:
             self.enter(client,name)
             client.wait(lambda s:s['connection_state']==9 and s['net_constants_initialized']==1
@@ -168,6 +178,39 @@ class Lab:
         initialized['entries'].append(dict(map=name,mode='war',file=str(metadata_path)))
         path=self.directory/(name+'-initialization-catalog.json');write(path,initialized)
         return path
+
+    def compass_candidate(self, name, entities, crc):
+        path=self.directory/(name+'-compass-probe.json')
+        write(path,dict(schema_version=1,client_sha256=CLIENT_SHA256,map=name,ncs_crc=crc,
+            entities_sha256=hashlib.sha256(entities.read_bytes()).hexdigest(),
+            minimap=dict(material='compass_map_'+name,**minimap_geometry(read(entities),name))))
+        return path
+
+    def probe_compass(self, name, captures):
+        constants=Path(captures['net-constants']);summary=compute(read(constants))
+        catalog=self.initialization_catalog(name,constants,summary)
+        entities=Path(captures['entities'])
+        candidate=self.compass_candidate(name,entities,summary['ncs_crc'])
+        client=self.start(name,catalog,'compass',candidate)
+        try:
+            self.enter(client,name)
+            client.wait(lambda s:s['connection_state']==9 and s['net_constants_initialized']==1
+                        and s['net_constants_crc']==summary['ncs_crc'],45)
+            for attempt in range(3):
+                path,data=client.capture('characters')
+                try:minimap(read(entities),name,data,hashlib.sha256(Path(path).read_bytes()).hexdigest())
+                except ValueError:
+                    if attempt==2:raise
+                    time.sleep(5)
+                    continue
+                sources=dict(captures,characters=path)
+                write(self.directory/(name+'-compass-paths.json'),dict(candidate=str(candidate),
+                      previous_characters=captures['characters'],characters=path,experiment=str(self.experiment)))
+                return sources
+        except Exception:
+            self.record_failure(client,name,'compass')
+            raise
+        finally:self.stop()
 
     def refresh_collision(self, name, template, captures):
         # Legacy exports traversed the whole pool, including inline models at
@@ -196,17 +239,23 @@ class Lab:
     def prepare_captures(self, name, template, captures):
         write(self.directory/(name+'-resource-paths.json'),captures)
         preparation=self.directory/(name+'-state.json')
+        candidate=self.directory/(name+'-captured-starts.json')
         command=[sys.executable,str(REPO/'tools/prepare_tdm_map.py'),'--template',str(template),'--map',name,
                  '--constants',captures['net-constants'],'--entities',captures['entities'],
                  '--collision',captures['collision'],'--arsenal',captures['arsenal'],
                  '--characters',captures['characters'],'--native-characters',captures['outfits'],
-                 '--output',str(preparation)]
+                 '--output',str(candidate)]
         with (self.directory/(name+'-preparation.log')).open('w') as log:
             subprocess.run(command,stdout=log,stderr=subprocess.STDOUT,check=True)
-        state=read(preparation)
+        state=read(candidate)
         if state.get('appearance_file'):
             state['appearance_file']=str((template.parent/state['appearance_file']).resolve())
-        write(preparation,state)
+        write(candidate,state)
+        with (self.directory/(name+'-start-selection.log')).open('w') as log:
+            subprocess.run([str(REPO/'target/release/codol-server'),'prepare-map-starts',
+                            '--game-state',str(candidate),'--output',str(preparation),
+                            '--report',str(self.directory/(name+'-start-selection.json'))],
+                           stdout=log,stderr=subprocess.STDOUT,check=True)
         return preparation
 
 

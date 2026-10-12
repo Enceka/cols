@@ -10,6 +10,37 @@ import materialize_map_batch as batch
 
 
 class NativeBatchLifecycle(unittest.TestCase):
+    def test_compass_candidate_cannot_start_a_native_match_or_restore_session(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            lab=batch.Lab(root,root/'service','owned',root/'catalog',root/'initial')
+            for stage in ('native','restore'):
+                with self.assertRaisesRegex(ValueError,'isolated resource collection'):
+                    lab.start('mp_highrise',root/'catalog',stage,root/'probe')
+            self.assertEqual(list(root.iterdir()),[])
+    def test_captured_starts_are_retained_before_authority_selects_clear_points(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);template=root/'template'/'state.json';template.parent.mkdir()
+            evidence={k:'captured-'+k for k in ('net-constants','entities','collision','arsenal','characters','outfits')}
+            lab=batch.Lab(root,root/'service','owned',root/'catalog',root/'initial')
+            calls=[]
+            def execute(command,**kwargs):
+                calls.append(command)
+                output=Path(command[command.index('--output')+1])
+                if command[1].endswith('prepare_tdm_map.py'):
+                    output.write_text(json.dumps(dict(appearance_file='appearance.json',match_config=dict(spawns=[[],[]]))))
+                else:
+                    source=Path(command[command.index('--game-state')+1])
+                    self.assertEqual(source.name,'mp_abandon_sh_mk-captured-starts.json')
+                    self.assertEqual(Path(batch.read(source)['appearance_file']),(template.parent/'appearance.json').resolve())
+                    output.write_text(source.read_text())
+            with patch('materialize_map_batch.subprocess.run',side_effect=execute):
+                result=lab.prepare_captures('mp_abandon_sh_mk',template,evidence)
+            self.assertEqual(result.name,'mp_abandon_sh_mk-state.json')
+            self.assertEqual(calls[1][1],'prepare-map-starts')
+            self.assertEqual(batch.read(root/'mp_abandon_sh_mk-resource-paths.json'),evidence)
+            self.assertTrue((root/'mp_abandon_sh_mk-captured-starts.json').exists())
+
     def test_complete_cached_resources_are_reprepared_without_restarting_the_client(self):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory);cached=root/'cache';cached.mkdir()
@@ -22,6 +53,24 @@ class NativeBatchLifecycle(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError,'map identity mismatch'):
                     lab.collect('mp_overgrown',root/'template',cached)
             prepare.assert_called_once_with('mp_overgrown',root/'template',evidence)
+
+    def test_cached_missing_compass_registers_only_the_candidate_and_retains_other_resources(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);cache=root/'cache';cache.mkdir()
+            collision=root/'collision.json';batch.write(collision,dict(world_membership=dict(bsp_root=0)))
+            characters=root/'characters.json';batch.write(characters,{})
+            entities=root/'entities.json';batch.write(entities,{})
+            evidence=dict(collision=str(collision),characters=str(characters),entities=str(entities),arsenal='retained')
+            batch.write(cache/'mp_highrise-resource-paths.json',evidence)
+            updated=dict(evidence,characters='registered-native-material')
+            lab=batch.Lab(root,root/'service','owned',root/'catalog',root/'initial')
+            with patch('materialize_map_batch.minimap',side_effect=ValueError('missing material')), \
+                    patch.object(lab,'probe_compass',return_value=updated) as probe, \
+                    patch.object(lab,'prepare_captures',return_value=root/'state') as prepare, \
+                    patch.object(lab,'refresh_collision',side_effect=AssertionError('current world collision stays cached')):
+                lab.collect('mp_highrise',root/'template',cache)
+            probe.assert_called_once_with('mp_highrise',evidence)
+            prepare.assert_called_once_with('mp_highrise',root/'template',updated)
 
     def test_legacy_cached_collision_refreshes_only_geometry_and_retains_other_inputs(self):
         with tempfile.TemporaryDirectory() as directory:

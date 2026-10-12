@@ -74,6 +74,7 @@ def main():
     parser.add_argument("--game-map-catalog", type=Path, help="captured preparations for native room map selection")
     parser.add_argument("--native-bot-rooms", action="store_true", help="native custom rooms with one human and eleven server bots on prepared TDM maps")
     parser.add_argument("--resource-capture-map", help="collect one native TDM map without a gamestate or world; requires native-bot-rooms")
+    parser.add_argument("--resource-compass-probe",type=Path,help="metadata-only request for a native compass candidate; requires resource-capture-map")
     parser.add_argument("--snapshot-probe", nargs="?", type=int, const=60, help="bootstrap frame budget at 20 Hz (1..18000; default 60); requires game-state")
     parser.add_argument("--hit-regions", type=Path, help="enemy pose capture path; may be written later by client_state.py --hit-regions")
     parser.add_argument("--local-services", action="store_true", help="enable time/storage services with persistent data in client-work/server-data")
@@ -126,6 +127,8 @@ def main():
         registry=json.loads((REPO / 'fixtures/protocol/map-registry-3.3.3.3.json').read_text())
         if args.resource_capture_map not in {m['name'] for m in registry['maps']}:
             parser.error("resource-capture-map requires a captured native TDM identity")
+    if args.resource_compass_probe and (not args.resource_capture_map or not args.resource_compass_probe.is_file()):
+        parser.error("resource-compass-probe requires resource-capture-map and an existing candidate file")
     if args.release_server and not args.rust_auth:
         parser.error("release-server requires rust-auth")
     if args.hit_regions and not args.game_state:
@@ -250,6 +253,9 @@ def main():
                         if args.resource_capture_map:
                             tls_argv += ["--resource-capture-map", args.resource_capture_map]
                             state["resource_capture_map"] = args.resource_capture_map
+                        if args.resource_compass_probe:
+                            tls_argv += ["--resource-compass-probe",str(args.resource_compass_probe.resolve())]
+                            state["resource_compass_probe"] = str(args.resource_compass_probe.resolve())
                         if args.hit_regions:
                             tls_argv += ["--hit-regions", str(args.hit_regions.resolve())]
                         if args.snapshot_probe:

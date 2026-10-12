@@ -68,6 +68,9 @@ impl Minimap {
             }
         };
         ensure!(self.material == material, "minimap material/map mismatch");
+        self.validate_geometry()
+    }
+    fn validate_geometry(&self) -> Result<()> {
         ensure!(
             self.north_yaw.is_finite() && (0.0..360.0).contains(&self.north_yaw),
             "invalid minimap north yaw"
@@ -106,9 +109,59 @@ impl Minimap {
     }
 }
 
+/// A bounded native material-registration request used only during resource
+/// initialization. It is not a material proof or a gameplay preparation.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct CompassProbe {
+    pub schema_version: u32,
+    pub client_sha256: String,
+    pub map: String,
+    pub ncs_crc: u32,
+    pub entities_sha256: String,
+    pub minimap: Minimap,
+}
+impl CompassProbe {
+    pub fn load(path: &std::path::Path, map: &str) -> Result<Self> {
+        ensure!(
+            std::fs::metadata(path)?.len() <= 65536,
+            "compass probe exceeds limit"
+        );
+        let probe: Self = serde_json::from_slice(&std::fs::read(path)?)?;
+        ensure!(
+            probe.schema_version == 1
+                && probe.client_sha256 == codol_protocol::CLIENT_SHA256
+                && probe.map == map
+                && matches!(map, "mp_highrise" | "mp_subbase_sh")
+                && probe.entities_sha256.len() == 64
+                && probe.entities_sha256.bytes().all(|b| b.is_ascii_hexdigit())
+                && probe.minimap.material == format!("compass_map_{map}")
+                && probe.minimap.material_proof.is_none(),
+            "compass probe requires this map's captured identity and native candidate name"
+        );
+        probe.minimap.validate_geometry()?;
+        Ok(probe)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compass_candidate_does_not_supply_gameplay_material_proof() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let mut value = serde_json::json!({"schema_version":1,"client_sha256":codol_protocol::CLIENT_SHA256,
+            "map":"mp_highrise","ncs_crc":123,"entities_sha256":"a".repeat(64),
+            "minimap":{"material":"compass_map_mp_highrise","north_yaw":0,"upper_left":[100,100],"lower_right":[-100,-100]}});
+        std::fs::write(file.path(), serde_json::to_vec(&value).unwrap()).unwrap();
+        let probe = CompassProbe::load(file.path(), "mp_highrise").unwrap();
+        assert!(probe.minimap.validate("mp_highrise", 123).is_err());
+        assert!(CompassProbe::load(file.path(), "mp_subbase_sh").is_err());
+        value["minimap"]["material"] = "compass_map_mp_afghan".into();
+        std::fs::write(file.path(), serde_json::to_vec(&value).unwrap()).unwrap();
+        assert!(CompassProbe::load(file.path(), "mp_highrise").is_err());
+    }
 
     #[test]
     fn additional_map_materials_require_bound_capture_identity_and_real_images() {

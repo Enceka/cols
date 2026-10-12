@@ -75,6 +75,13 @@ def minimap(capture, map_name, material_capture=None, material_capture_sha256=No
         proof = dict(client_sha256=CLIENT_SHA256,capture_sha256=digest,
                      map=material_capture['map'],material=material,ncs_crc=crc,
                      render_default=False,texture_dims=dimensions)
+    result = dict(material=material,**minimap_geometry(capture,map_name))
+    if proof is not None:
+        result['material_proof'] = proof
+    return result
+
+
+def minimap_geometry(capture,map_name):
     entities = map_entities(capture, map_name)
     worlds = [e for e in entities if e.get(b"classname") == b"worldspawn"]
     corners = [e for e in entities if e.get(b"targetname") == b"minimap_corner"]
@@ -97,10 +104,7 @@ def minimap(capture, map_name, material_capture=None, material_capture_sha256=No
     if any(high[i] - low[i] <= 1 for i in range(2)):
         raise ValueError("degenerate minimap bounds")
     point = lambda p: [round(p[0] * north[i] + p[1] * west[i], 5) for i in range(2)]
-    result = dict(material=material, north_yaw=yaw, upper_left=point(high), lower_right=point(low))
-    if proof is not None:
-        result['material_proof'] = proof
-    return result
+    return dict(north_yaw=yaw,upper_left=point(high),lower_right=point(low))
 
 
 def main():

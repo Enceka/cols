@@ -129,6 +129,8 @@ pub struct PreparedGameState {
     map_entities_sha256: Option<String>,
     #[serde(default)]
     minimap: Option<crate::game_minimap::Minimap>,
+    #[serde(skip)]
+    resource_compass_probe: Option<crate::game_minimap::Minimap>,
     #[serde(default)]
     feedback_resources: Option<crate::game_feedback::Resources>,
     #[serde(default)]
@@ -516,6 +518,18 @@ impl PreparedGameState {
     }
     pub(crate) fn snapshot_probe(&self) -> bool {
         self.snapshot_probe
+    }
+    pub(crate) fn with_resource_compass_probe(
+        self,
+        probe: &crate::game_minimap::CompassProbe,
+    ) -> Result<Self> {
+        let mut state = self.resource_initialization()?;
+        ensure!(
+            state.map == probe.map && state.ncs_crc == probe.ncs_crc,
+            "compass probe map/CRC differs from resource initialization"
+        );
+        state.resource_compass_probe = Some(probe.minimap.clone());
+        Ok(state)
     }
     pub fn load(path: &Path) -> Result<Self> {
         ensure!(
@@ -1615,7 +1629,11 @@ impl PreparedGameState {
             ]);
             values.sort_by_key(|value| value.0);
         }
-        if let Some(minimap) = &self.minimap {
+        if let Some(minimap) = self
+            .minimap
+            .as_ref()
+            .or(self.resource_compass_probe.as_ref())
+        {
             values.extend(minimap.configstrings());
             values.sort_by_key(|value| value.0);
         }
@@ -1979,6 +1997,7 @@ pub(crate) fn synthetic() -> PreparedGameState {
         spawn_origin: None,
         map_entities_sha256: None,
         minimap: None,
+        resource_compass_probe: None,
         feedback_resources: None,
         replay_resources: None,
         top_players: None,
@@ -2011,6 +2030,36 @@ pub(crate) fn synthetic() -> PreparedGameState {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn compass_candidate_remains_metadata_only_and_checks_the_initialized_crc() {
+        let probe = crate::game_minimap::CompassProbe {
+            schema_version: 1,
+            client_sha256: codol_protocol::CLIENT_SHA256.into(),
+            map: "mp_highrise".into(),
+            ncs_crc: 0x12345678,
+            entities_sha256: "a".repeat(64),
+            minimap: crate::game_minimap::Minimap {
+                material: "compass_map_mp_highrise".into(),
+                north_yaw: 0.0,
+                upper_left: [100.0, 100.0],
+                lower_right: [-100.0, -100.0],
+                material_proof: None,
+            },
+        };
+        let mut state = super::synthetic();
+        state.map = probe.map.clone();
+        let prepared = state.clone().with_resource_compass_probe(&probe).unwrap();
+        assert!(!prepared.snapshot_probe());
+        assert_eq!(prepared.snapshot_limit(), 0);
+        assert!(prepared.minimap.is_none());
+        assert!(prepared.resource_compass_probe.is_some());
+        assert!(prepared.body(1).is_ok());
+        state.ncs_crc = 123;
+        assert!(state.clone().with_resource_compass_probe(&probe).is_err());
+        state.ncs_crc = probe.ncs_crc;
+        state.spawn_origin = Some([0.0, 0.0, 0.0]);
+        assert!(state.with_resource_compass_probe(&probe).is_err());
+    }
     use super::*;
     #[test]
     fn identical_guns_do_not_hide_changed_passive_or_offhand_spawn_equipment() {
