@@ -844,7 +844,7 @@ class ClientAssets {
                 var names=new List<string>();
                 for(uint i=0;i<count;i++)names.Add(Name(Word(Word(list+i*4))));
                 if(dobj!=Word(views+hand*24)||list!=Word(dobj+0xc0))throw new Exception("viewmodel changed during read");
-                hands.Add(Obj("hand",hand,"models",names));
+                hands.Add(Obj("hand",hand,"models",names,"hide_part_bits_base64",Convert.ToBase64String(Read(dobj+0xa0,32))));
             }
             return hands;
         } catch(Exception error) {return Obj("error",error.Message);}
@@ -948,10 +948,16 @@ class ClientAssets {
             // Validate the copied PS immediately. Model/FX inspections below
             // can span several ticks and must not invalidate a coherent copy.
             bool stableCommand=r.Word(cg)==U(ps,0);
+            byte[] secondPs=r.Read(cg,0xa78);bool stableWeapon=true;
+            foreach(int at in new int[]{0,0x19c,0x270,0x274,0x27c,0x280,0x284,0x340,0x344,0x3e0})
+                if(U(ps,at)!=U(secondPs,at))stableWeapon=false;
             if(i==0) { Console.Error.WriteLine("sample_ready=replay");Console.Error.Flush(); }
             uint active=r.Word(cg+0xc6fe8);
             if(active!=previousActive) { Console.Error.WriteLine("killcam_state="+active);Console.Error.Flush();previousActive=active; }
             uint input=r.Word(0x01a2e838)^0x6891d1c7;uint command=r.Word(input+0x625c);
+            byte[] serverPs=r.Read(input+0xc,0xa78);
+            bool stableServerCommand=r.Word(input+0xc)==U(serverPs,0);
+            uint held=U(ps,0x340),heldDef=held>0&&held<900?r.Word(0x017f5a40+held*4):0;
             // AimAssist's local client is0; the CG pointer slot is an
             // obfuscation-bank index, not a local-client number.
             uint assist=0x02c27580;
@@ -975,6 +981,17 @@ class ClientAssets {
                 "render_origin",Floats(r.Read(cg+0xae504,12),0,3),
                 "render_angles",Floats(r.Read(cg+0xb2688,12),0,3),
                 "cmd_angles",new uint[]{r.Word(input+0x365c+(command&255)*44+8),r.Word(input+0x365c+(command&255)*44+12)},
+                "cmd_weapons",new uint[]{BitConverter.ToUInt16(r.Read(input+0x365c+(command&255)*44+0x14,2),0),BitConverter.ToUInt16(r.Read(input+0x365c+(command&255)*44+0x16,2),0),BitConverter.ToUInt16(r.Read(input+0x365c+(command&255)*44+0x18,2),0)},
+                "paired_weapon",U(ps,0x344),"ads_fraction",BitConverter.ToSingle(ps,0x34c),
+                "server_command_time",U(serverPs,0),"server_origin",Floats(serverPs,0x1c,3),
+                "server_velocity",Floats(serverPs,0x28,3),"server_spawn_count",U(serverPs,0x19c),
+                "server_weapon",U(serverPs,0x340),"server_clip",U(serverPs,0x3e0),"server_pm_type",U(serverPs,4),
+                "stable_server_command",stableServerCommand,"stable_weapon",stableWeapon,
+                "native_fire_type",heldDef>=0x10000?r.Word(heldDef+0x48c):0,
+                "native_ads_move_scale",heldDef>=0x10000?BitConverter.ToSingle(r.Read(heldDef+0x7cc,4),0):0,
+                "inventory_flags_base64",Convert.ToBase64String(ps,0x2e0,75),
+                "presentation_parent",U(ps,0x340)<900?BitConverter.ToUInt16(r.Read(cg+0xbd01c+U(ps,0x340)*2,2),0):0,
+                "selected_presentation_parent",BitConverter.ToUInt16(r.Read(input+0x365c+(command&255)*44+0x14,2),0)<900?BitConverter.ToUInt16(r.Read(cg+0xbd01c+(uint)BitConverter.ToUInt16(r.Read(input+0x365c+(command&255)*44+0x14,2),0)*2,2),0):0,
                 "card_time",U(card,0),"card_name",Encoding.GetEncoding(936).GetString(card,0x20,nameEnd-0x20),
                 "card_title",U(card,4),"card_background",U(card,8),"card_icon",U(card,12),"card_rank",U(card,0x14),
                 "buttons",r.Word(input+0x365c+(command&255)*44+4),
@@ -996,6 +1013,7 @@ class ClientAssets {
                 "shellshock_index",U(ps,0x5ac),"shellshock_begin",U(ps,0x5b0),"shellshock_duration",U(ps,0x5b4),"shellshock_adjacent",U(ps,0x5a8),
                 "shellshock_cache_base64",Convert.ToBase64String(r.Read(cg+0xbdb68,0x30)),
                 "origin",Floats(ps,0x1c,3),"angles",Floats(ps,0x14c,3),
+                "velocity",Floats(ps,0x28,3),"move_multiplier",BitConverter.ToSingle(ps,0x258),
                 "weapon",U(ps,0x340),"weapon_state",U(ps,0x27c),"clip",U(ps,0x3e0),
                 "perk_display",U(ps,0x4bc)&255,
                 "perk_masks",new uint[]{U(ps,0x4c0),U(ps,0x4c4),U(ps,0x4c8)},

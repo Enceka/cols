@@ -51,9 +51,10 @@ def single_capture_playlist(source, name, maximum_players=12):
 
 
 class Lab:
-    def __init__(self, directory, service, prefix, base_catalog, initial_state):
+    def __init__(self, directory, service, prefix, base_catalog, initial_state, native_bot_rooms=True):
         self.directory,self.service,self.prefix=directory,service,prefix
         self.catalog,self.initial_state=base_catalog,initial_state
+        self.native_bot_rooms=native_bot_rooms
         self.process=None
         self.experiment=None
         self.finished=[]
@@ -83,6 +84,11 @@ class Lab:
                 publisher=self.service/'publisher/mp_playlists_shipRetail_release.info'
                 publisher.write_bytes(single_capture_playlist(publisher.read_bytes(),target,
                     state['match_config'].get('player_count',12)))
+        # Cargo checks do not update target/release. Every owned launch must
+        # use the current server source; Cargo reuses an unchanged build.
+        with (self.directory/'server-build.log').open('a') as build_log:
+            subprocess.run(['sh',str(REPO/'tools/cargo.sh'),'build','--release','--locked',
+                            '-p','codol-server'],cwd=REPO,stdout=build_log,stderr=subprocess.STDOUT,check=True)
         log=(self.directory/(name+'-'+stage+'-harness.log')).open('w')
         started=time.time()
         initial_state=self.initial_state
@@ -91,8 +97,9 @@ class Lab:
         command=[sys.executable,str(REPO/'tools/gamehub_run.py'),'client','--prefix-name',self.prefix,
                  '--seconds','0','--continuous-play','--title-id-hex','3ea','--rust-auth','--release-server',
                  '--local-auth-tickets','--rust-lobby','--rust-stun','--rust-game','--local-services',
-                 '--trust-lab-cert','--quiet-network','--native-bot-rooms','--service-data-dir',str(self.service),
+                 '--trust-lab-cert','--quiet-network','--service-data-dir',str(self.service),
                  '--game-state',str(initial_state),'--game-map-catalog',str(catalog)]
+        if self.native_bot_rooms:command+=['--native-bot-rooms']
         if capture_playlist is not None and stage in ('native','restore'):
             raise ValueError('resource playlist is limited to isolated collection')
         if stage not in ('native','restore'):command+=['--resource-capture-map',name]

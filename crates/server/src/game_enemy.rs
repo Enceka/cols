@@ -219,6 +219,7 @@ mod tests {
                 weapon: 352,
                 inventory_weapon: None,
                 alternate_weapon: None,
+                alternates: [None, None],
                 fire_count: 0,
                 queued_burst: false,
                 barrel_flags: 0,

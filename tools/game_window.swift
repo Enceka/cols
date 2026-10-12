@@ -151,35 +151,36 @@ case "look":
     event.post(tap: .cghidEventTap)
     result["delta"] = [dx, dy]
 case "hold":
-    let keys: [String: CGKeyCode] = ["w":13,"s":1,"a":0,"d":2,"q":12,"e":14,"r":15,"f":3,"g":5,"space":49,"shift":56,"ctrl":59,"c":8,"1":18,"2":19,"escape":53]
+    let keys: [String: CGKeyCode] = ["w":13,"s":1,"a":0,"d":2,"q":12,"e":14,"r":15,"f":3,"g":5,"space":49,"shift":56,"ctrl":59,"c":8,"x":7,"b":11,"v":9,"3":20,"4":21,"5":23,"6":22,"1":18,"2":19,"escape":53]
     let sprintChord = args.count == 5 && args[3] == "w+shift"
+    let adsChord = args.count == 5 && args[3] == "w+ads"
     guard args.count == 5, let seconds = Double(args[4]), seconds.isFinite,
           (0.03...(sprintChord ? 8.0 : args[3] == "g" ? 6.0 : 3.0)).contains(seconds),
-          sprintChord || keys[args[3]] != nil || ["fire","ads"].contains(args[3])
+          sprintChord || adsChord || keys[args[3]] != nil || ["fire","ads"].contains(args[3])
     else { fail("hold requires an allowlisted gameplay key and a bounded duration (sprint chord:8 seconds; grenade:6; others:3)") }
     guard let app = NSRunningApplication(processIdentifier:pid), app.activate(options:[.activateAllWindows]), CGPreflightPostEventAccess()
     else { fail("unable to focus game or post gameplay key") }
     try focusGame(app)
     let pointer = CGEvent(source: nil)?.location ?? CGPoint(x: x + width / 2, y: y + height / 2)
-    if ["fire", "ads"].contains(args[3]) {
+    if adsChord || ["fire", "ads"].contains(args[3]) {
         guard pointer.x >= x && pointer.x < x + width && pointer.y >= y && pointer.y < y + height
         else { fail("gameplay mouse button requires the pointer inside the game") }
     }
     func gameplayEvent(_ down: Bool) -> CGEvent? {
         if let code=keys[args[3]] {return CGEvent(keyboardEventSource:nil,virtualKey:code,keyDown:down)}
-        let right=args[3]=="ads"
+        let right=args[3]=="ads" || adsChord
         return CGEvent(mouseEventSource:nil,mouseType:right ? (down ? .rightMouseDown : .rightMouseUp) : (down ? .leftMouseDown : .leftMouseUp),mouseCursorPosition:pointer,mouseButton:right ? .right : .left)
     }
-    if sprintChord {
+    if sprintChord || adsChord {
         guard let forwardDown=CGEvent(keyboardEventSource:nil,virtualKey:13,keyDown:true),
               let forwardUp=CGEvent(keyboardEventSource:nil,virtualKey:13,keyDown:false),
-              let sprintDown=CGEvent(keyboardEventSource:nil,virtualKey:56,keyDown:true),
-              let sprintUp=CGEvent(keyboardEventSource:nil,virtualKey:56,keyDown:false)
-        else {fail("cannot construct sprint chord")}
+              let modifierDown=adsChord ? gameplayEvent(true) : CGEvent(keyboardEventSource:nil,virtualKey:56,keyDown:true),
+              let modifierUp=adsChord ? gameplayEvent(false) : CGEvent(keyboardEventSource:nil,virtualKey:56,keyDown:false)
+        else {fail("cannot construct movement chord")}
         forwardDown.post(tap:.cghidEventTap)
-        sprintDown.post(tap:.cghidEventTap)
+        modifierDown.post(tap:.cghidEventTap)
         defer {
-            sprintUp.post(tap:.cghidEventTap)
+            modifierUp.post(tap:.cghidEventTap)
             forwardUp.post(tap:.cghidEventTap)
         }
         let release=Date().addingTimeInterval(seconds)

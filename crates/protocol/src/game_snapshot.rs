@@ -4,6 +4,7 @@ use crate::{
     game_events, game_shellshock::ShellShockSnapshot, game_state::Writer, game_wire::SERVER_EOF,
     lobby::LobbyError,
 };
+use std::collections::BTreeSet;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Ammo {
@@ -27,6 +28,8 @@ pub struct Equipment {
     pub inventory_weapon: Option<u16>,
     /// PS+0x344: paired presentation weapon for a models-only alternate.
     pub alternate_weapon: Option<u16>,
+    /// Native0x410300 looks up every selected form directly in PS.weapons.
+    pub alternates: [Option<EquippedWeapon>; 2],
     /// PS+0x284: native shots in the current trigger press, clamped at4.
     pub fire_count: u8,
     /// PS+0x280 bit0: a new trigger edge buffered during a burst/recovery.
@@ -396,6 +399,20 @@ pub fn player_frame_with_world(
     if inventory_weapon.is_some_and(|w| w == 0 || w >= 900) {
         return Err(LobbyError("invalid inventory weapon"));
     }
+    if let Some(e) = equipment {
+        let mut seen = BTreeSet::new();
+        seen.extend(inventory_weapon);
+        seen.extend(e.secondary.map(|w| w.weapon));
+        seen.extend(e.offhands.into_iter().flatten().map(|w| w.weapon));
+        for other in e.alternates.into_iter().flatten() {
+            if other.weapon == 0 || other.weapon >= 900 || !seen.insert(other.weapon) {
+                return Err(LobbyError("invalid alternate inventory weapon"));
+            }
+        }
+        if !seen.contains(&e.weapon) {
+            return Err(LobbyError("held form missing from native inventory"));
+        }
+    }
     let ammo = equipment.and_then(|e| e.ammo);
     let secondary = equipment.and_then(|e| e.secondary);
     let events = equipment.and_then(|e| e.events);
@@ -433,6 +450,12 @@ pub fn player_frame_with_world(
     let ammunition: Vec<Ammo> = ammo
         .into_iter()
         .chain(secondary.and_then(|other| other.ammo))
+        .chain(
+            equipment
+                .into_iter()
+                .flat_map(|e| e.alternates.into_iter().flatten())
+                .filter_map(|w| w.ammo),
+        )
         .chain(
             equipment
                 .into_iter()
@@ -782,6 +805,8 @@ pub fn player_frame_with_world(
                     ammo: None,
                     needs_rechamber: false,
                 })
+            } else if slot <= 5 {
+                equipment.unwrap().alternates[slot - 4]
             } else {
                 None
             };
@@ -1313,6 +1338,7 @@ mod tests {
                             weapon: 352,
                             inventory_weapon: None,
                             alternate_weapon: None,
+                            alternates: [None, None],
                             fire_count: 0,
                             queued_burst: false,
                             barrel_flags: 0,
@@ -1673,6 +1699,7 @@ mod tests {
             weapon: 352,
             inventory_weapon: None,
             alternate_weapon: None,
+            alternates: [None, None],
             fire_count: 0,
             queued_burst: false,
             barrel_flags: 0,
@@ -1759,6 +1786,7 @@ mod tests {
             weapon: 352,
             inventory_weapon: None,
             alternate_weapon: None,
+            alternates: [None, None],
             fire_count: 0,
             queued_burst: false,
             barrel_flags: 0,
@@ -1888,6 +1916,7 @@ mod tests {
             weapon: 352,
             inventory_weapon: None,
             alternate_weapon: None,
+            alternates: [None, None],
             fire_count: 0,
             queued_burst: false,
             barrel_flags: 0,
@@ -2024,6 +2053,7 @@ mod tests {
             move_multiplier: 1.0,
             inventory_weapon: None,
             alternate_weapon: Some(180),
+            alternates: [None, None],
             fire_count: 1,
             queued_burst: false,
             barrel_flags: 0,
@@ -2251,6 +2281,14 @@ mod tests {
             move_multiplier: 1.0,
             inventory_weapon: None,
             alternate_weapon: Some(180),
+            alternates: [
+                Some(EquippedWeapon {
+                    weapon: 180,
+                    ammo: None,
+                    needs_rechamber: false,
+                }),
+                None,
+            ],
             fire_count: 1,
             queued_burst: false,
             barrel_flags: 0,
@@ -2361,7 +2399,15 @@ mod tests {
             assert_eq!(r.bits(3).unwrap(), 7);
             assert_eq!(r.bits(10).unwrap(), 163);
             assert_eq!(r.bits(5).unwrap(), 8); // inventory flag3 survives authoritative correction
-            assert_eq!(r.bits(14).unwrap(), 0);
+            for slot in 1..15 {
+                let changed = r.bits(1).unwrap();
+                assert_eq!(changed, u32::from(slot == 4));
+                if changed != 0 {
+                    assert_eq!(r.bits(1).unwrap(), 1);
+                    assert_eq!(r.bits(10).unwrap(), 180);
+                    assert_eq!(r.bits(5).unwrap(), 0);
+                }
+            }
             assert_eq!(r.bits(1).unwrap(), 1);
             assert_eq!(r.bits(4).unwrap(), 0);
             assert_eq!(r.bits(10).unwrap(), 163);
@@ -2397,6 +2443,7 @@ mod tests {
             move_multiplier: 1.0,
             inventory_weapon: None,
             alternate_weapon: None,
+            alternates: [None, None],
             fire_count: 0,
             queued_burst: false,
             barrel_flags: 0,
@@ -2425,6 +2472,35 @@ mod tests {
                     ammo: None,
                     barrel_flags: 4,
                     ..bad
+                })
+            )
+            .is_err()
+        );
+        let missing = Equipment {
+            weapon: 180,
+            inventory_weapon: Some(163),
+            ammo: None,
+            ..bad
+        };
+        assert!(equipped_frame(1000, Some([0.0; 3]), true, Some(missing)).is_err());
+        let extra = EquippedWeapon {
+            weapon: 180,
+            ammo: None,
+            needs_rechamber: false,
+        };
+        let valid = Equipment {
+            alternates: [Some(extra), None],
+            ..missing
+        };
+        assert!(equipped_frame(1000, Some([0.0; 3]), true, Some(valid)).is_ok());
+        assert!(
+            equipped_frame(
+                1000,
+                Some([0.0; 3]),
+                true,
+                Some(Equipment {
+                    alternates: [Some(extra), Some(extra)],
+                    ..missing
                 })
             )
             .is_err()

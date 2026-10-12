@@ -2108,9 +2108,7 @@ impl Connection {
                     self.last_input = Some(input);
                     continue;
                 }
-                let scale = self.player.as_ref().map_or(1.0, |p| p.move_scale());
                 let robot = self.player.as_ref().is_some_and(|p| p.asym_robot());
-                let scale = scale * self.tactical.move_scale(input.time, robot);
                 motion.flags = (motion.flags & !0x8000)
                     | if self.tactical.stunned(input.time) {
                         0x8000
@@ -2122,6 +2120,13 @@ impl Connection {
                     .as_ref()
                     .and_then(|p| p.equipment().aim)
                     .is_some_and(|a| a.movement_slow);
+                let scale = self.player.as_ref().map_or(1.0, |p| {
+                    if ads {
+                        p.ads_move_scale()
+                    } else {
+                        p.move_scale()
+                    }
+                }) * self.tactical.move_scale(input.time, robot);
                 let old_bob = motion.bob_cycle;
                 let was_ground = motion.ground_entity != 2047;
                 let was_approaching = motion.melee_charge().is_some();
@@ -2717,6 +2722,7 @@ mod tests {
                 move_multiplier: 1.0,
                 inventory_weapon: None,
                 alternate_weapon: None,
+                alternates: [None, None],
                 fire_count: 0,
                 queued_burst: false,
                 barrel_flags: 0,

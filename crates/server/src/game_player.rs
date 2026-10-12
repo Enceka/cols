@@ -206,6 +206,7 @@ struct Weapon {
     ads: Option<AdsTiming>,
     switch: Option<SwitchTiming>,
     move_scale: f32,
+    ads_move_scale: f32,
     sprint_duration_scale: f32,
     sprint_timing: Option<SprintTiming>,
     ballistics: Option<crate::game_combat::Ballistics>,
@@ -344,6 +345,7 @@ impl Player {
                 ads,
                 switch: None,
                 move_scale: 1.0,
+                ads_move_scale: 1.0,
                 sprint_duration_scale: 1.0,
                 sprint_timing: None,
                 ballistics: None,
@@ -543,6 +545,9 @@ impl Player {
     pub fn set_move_scale(&mut self, scale: f32) {
         self.current.move_scale = scale;
     }
+    pub fn set_ads_move_scale(&mut self, scale: f32) {
+        self.current.ads_move_scale = if scale > 0.0 { scale } else { 1.0 };
+    }
     pub fn set_sprint_duration_scale(&mut self, scale: f32) {
         self.current.sprint_duration_scale = scale;
     }
@@ -604,6 +609,11 @@ impl Player {
 
     pub fn move_scale(&self) -> f32 {
         self.current.move_scale * self.perks.value("modMoveSpeedScale", 1.0)
+    }
+    /// PM_CmdScale0x416c16..0x416cc4 selects WeaponDef+0x7cc while
+    /// aiming, replacing +0x7c8. Motion applies the separate native0.4 factor.
+    pub fn ads_move_scale(&self) -> f32 {
+        self.current.ads_move_scale * self.perks.value("modMoveSpeedScale", 1.0)
     }
     pub fn set_ballistics(&mut self, stats: crate::game_combat::Ballistics) {
         assert!(stats.valid());
@@ -727,6 +737,18 @@ impl Player {
     }
     pub fn equipment(&self) -> Equipment {
         let mut equipment = self.current.equipment;
+        let mut alternates = self.weapons().filter(|w| {
+            w.equipment
+                .inventory_weapon
+                .is_some_and(|parent| parent != w.equipment.weapon)
+        });
+        equipment.alternates = std::array::from_fn(|_| {
+            alternates.next().map(|w| EquippedWeapon {
+                weapon: w.equipment.weapon,
+                ammo: w.equipment.ammo,
+                needs_rechamber: w.needs_rechamber,
+            })
+        });
         equipment.perks = self.perks.native_masks();
         equipment.abilities = self.perks.abilities;
         equipment.move_multiplier = self.perks.value("modMoveSpeedScale", 1.0);
@@ -1891,6 +1913,8 @@ pub(crate) mod tests {
         p.apply(&select(1250, 353, 1));
         assert_eq!(p.equipment().weapon, 353);
         assert_eq!(p.equipment().inventory_weapon, Some(352));
+        assert_eq!(p.equipment().alternates[0].unwrap().weapon, 353);
+        assert_eq!(p.equipment().alternates[0].unwrap().ammo.unwrap().clip, 29);
         assert_eq!(p.equipment().firing.unwrap().state, 2);
         assert_eq!(p.equipment().ammo.unwrap().clip, 29);
         p.apply(&select(2649, 353, 0));
@@ -1900,6 +1924,8 @@ pub(crate) mod tests {
         p.apply(&select(2850, 352, 0));
         p.apply(&select(4249, 352, 0));
         assert_eq!(p.equipment().weapon, 352);
+        assert_eq!(p.equipment().alternates[0].unwrap().weapon, 353);
+        assert_eq!(p.equipment().alternates[0].unwrap().ammo.unwrap().clip, 28);
         assert_eq!(p.equipment().ammo.unwrap().clip, 28);
         assert_eq!(p.equipment().secondary.unwrap().weapon, 354);
         assert!(p.owns_weapon(353));
@@ -1947,6 +1973,7 @@ pub(crate) mod tests {
                 move_multiplier: 1.0,
                 inventory_weapon: None,
                 alternate_weapon: None,
+                alternates: [None, None],
                 fire_count: 0,
                 queued_burst: false,
                 barrel_flags: 0,
@@ -2682,6 +2709,26 @@ pub(crate) mod tests {
         assert_eq!(p.sprint_rules().maximum(), 0);
         p.set_perks(Default::default());
         assert_eq!(p.sprint_rules().maximum(), 2000);
+    }
+    #[test]
+    fn stock_ads_mobility_follows_the_selected_weapon_without_changing_hip_speed() {
+        let mut primary = switchable_player(352, 0.95);
+        primary.set_ads_move_scale(2.2);
+        let mut secondary = switchable_player(354, 1.0);
+        secondary.set_ads_move_scale(0.8);
+        let mut p = primary.with_secondary(secondary);
+        assert_eq!(p.move_scale(), 0.95);
+        assert_eq!(p.ads_move_scale(), 2.2);
+        p.apply(&select(1100, 354, 0));
+        p.apply(&select(2100, 354, 0));
+        assert_eq!(p.move_scale(), 1.0);
+        assert_eq!(p.ads_move_scale(), 0.8);
+        p.apply(&select(2200, 352, 0));
+        p.apply(&select(3200, 352, 0));
+        assert_eq!(p.move_scale(), 0.95);
+        assert_eq!(p.ads_move_scale(), 2.2);
+        p.set_ads_move_scale(0.0);
+        assert_eq!(p.ads_move_scale(), 1.0);
     }
     #[test]
     fn captured_lightweight_removes_landing_damage_without_affecting_explosions() {

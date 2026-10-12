@@ -365,6 +365,8 @@ impl TdmMatch {
             bot.snapshot.attachment_models = outfit.attachment_models;
             bot.snapshot.weapon = weapon.equipment().weapon;
             bot.controller.set_match_move_scale(weapon.move_scale());
+            bot.controller
+                .set_match_ads_move_scale(weapon.ads_move_scale());
             bot.initial_weapon = Some(weapon.clone());
             bot.weapon = Some(weapon);
         }
@@ -406,6 +408,8 @@ impl TdmMatch {
         for bot in &mut self.bots {
             bot.controller
                 .set_match_move_scale(bot.weapon.as_ref().map_or(scale, |w| w.move_scale()));
+            bot.controller
+                .set_match_ads_move_scale(bot.weapon.as_ref().map_or(1.0, |w| w.ads_move_scale()));
         }
     }
     pub fn baselines(&self) -> &[EnemySnapshot] {
@@ -1441,6 +1445,7 @@ mod tests {
                 weapon: 352,
                 inventory_weapon: None,
                 alternate_weapon: None,
+                alternates: [None, None],
                 fire_count: 0,
                 queued_burst: false,
                 barrel_flags: 0,

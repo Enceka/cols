@@ -70,6 +70,8 @@ struct BootstrapWeapon {
     #[serde(default)]
     move_scale: Option<f32>,
     #[serde(default)]
+    ads_move_scale: Option<f32>,
+    #[serde(default)]
     sprint_duration_scale: Option<f32>,
     #[serde(default)]
     sprint_timing: Option<crate::game_player::SprintTiming>,
@@ -674,6 +676,9 @@ impl PreparedGameState {
                     && weapon
                         .move_scale
                         .is_none_or(|s| s.is_finite() && s > 0.0 && s <= 4.0)
+                    && weapon
+                        .ads_move_scale
+                        .is_none_or(|s| s.is_finite() && (0.0..=4.0).contains(&s))
                     && weapon
                         .sprint_duration_scale
                         .is_none_or(|s| { s.is_finite() && (0.0..=16.0).contains(&s) }),
@@ -1329,6 +1334,7 @@ impl PreparedGameState {
             },
         };
         let scale = f32::from_bits(word(0x7c8));
+        let ads_scale = f32::from_bits(word(0x7cc));
         let fire_type = word(0x48c);
         // 0x42c270 / 0x42dff0 register a composed alternate immediately after
         // its parent. This inherited index identifies the base alt definition.
@@ -1432,6 +1438,7 @@ impl PreparedGameState {
             "invalid native weapon sprint duration scale"
         );
         tracing::info!(weapon = %w.name, ads_in_msec = word(0xad0), ads_out_msec = word(0xad4),
+            hip_move_scale = scale, ads_move_scale = ads_scale,
             fire_msec = word(0xd10), rechamber_msec = rechamber.map_or(0, |t| t.duration_msec),
             hip_min = ?spread.minimum, hip_max = ?spread.maximum, "resolved weapon gameplay attributes");
         Ok(BootstrapWeapon {
@@ -1455,6 +1462,7 @@ impl PreparedGameState {
             camo: Some(0),
             switch: Some(switch),
             move_scale: Some(scale),
+            ads_move_scale: Some(ads_scale),
             sprint_duration_scale: Some(sprint_duration_scale),
             sprint_timing: Some(crate::game_player::SprintTiming {
                 in_msec: time(0x76c)?,
@@ -1833,6 +1841,7 @@ impl PreparedGameState {
                 move_multiplier: 1.0,
                 inventory_weapon: None,
                 alternate_weapon: None,
+                alternates: [None, None],
                 fire_count: 0,
                 queued_burst: false,
                 barrel_flags: 0,
@@ -1877,6 +1886,9 @@ impl PreparedGameState {
         }
         if let Some(scale) = w.move_scale {
             player.set_move_scale(scale);
+        }
+        if let Some(scale) = w.ads_move_scale {
+            player.set_ads_move_scale(scale);
         }
         if let Some(scale) = w.sprint_duration_scale {
             player.set_sprint_duration_scale(scale);
@@ -2450,6 +2462,85 @@ mod tests {
             output.display()
         );
     }
+    #[test]
+    #[ignore = "requires local captured Afghan arsenal"]
+    fn captured_special_forms_and_stock_keep_native_inventory_ammo_and_mobility() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../research-output");
+        let state: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(root.join("tdm-afghan-hud-state.json")).unwrap())
+                .unwrap();
+        let arsenal = crate::game_arsenal::Arsenal::load(
+            root.join(state["arsenal_file"].as_str().unwrap()),
+            state["ncs_crc"].as_u64().unwrap() as u32,
+        )
+        .unwrap();
+        for item in [10007, 11462, 10553, 10080, 11497, 10604] {
+            let resolved = arsenal.resolve(item, &[], &[item], 352).unwrap();
+            let weapon =
+                PreparedGameState::resolved_with_alternate(&arsenal, resolved, Some(54)).unwrap();
+            let alternate = weapon.alternate.as_ref().unwrap();
+            assert_eq!(
+                weapon.ammo.as_ref().unwrap().clip_key,
+                alternate.ammo.as_ref().unwrap().clip_key
+            );
+            assert_eq!(
+                weapon.ammo.as_ref().unwrap().reserve_key,
+                alternate.ammo.as_ref().unwrap().reserve_key
+            );
+            let mut p = PreparedGameState::make_player(&weapon);
+            let command = |time, form| codol_protocol::game_usercmd::UserCommand {
+                time,
+                weapons: [form, if form == 353 { 352 } else { 0 }, 0],
+                ..Default::default()
+            };
+            p.apply(&command(1000, 352));
+            p.apply(&command(1100, 353));
+            p.apply(&command(1150, 353));
+            p.apply(&command(3000, 353));
+            let e = p.equipment();
+            assert_eq!(e.weapon, 353);
+            assert_eq!(e.alternate_weapon, Some(352));
+            assert_eq!(e.alternates[0].unwrap().weapon, 353);
+            assert_eq!(e.ammo.unwrap().clip, weapon.ammo.as_ref().unwrap().clip);
+            let body = codol_protocol::game_snapshot::player_frame(
+                3050,
+                3000,
+                Some([0.0; 3]),
+                true,
+                Some(e),
+                [0; 3],
+            )
+            .unwrap();
+            codol_protocol::game_wire::server_packet(4, 0, 0, b"", &body).unwrap();
+            eprintln!(
+                "item={item} base={} alt={} inventory={:?}/{:?} shared_clip={} shared_reserve={}",
+                weapon.name,
+                alternate.name,
+                e.inventory_weapon,
+                e.alternates[0].map(|w| w.weapon),
+                e.ammo.unwrap().clip_key,
+                e.ammo.unwrap().reserve_key
+            );
+        }
+        for (parts, expected) in [(vec![], 1.0), (vec![22142], 2.2), (vec![22142, 20743], 2.3)] {
+            let mut owned = vec![10001];
+            owned.extend(&parts);
+            let resolved = arsenal.resolve(10001, &parts, &owned, 352).unwrap();
+            let weapon =
+                PreparedGameState::resolved_weapon(resolved, &arsenal.source_sha256, Some(54))
+                    .unwrap();
+            let p = PreparedGameState::make_player(&weapon);
+            assert!((p.move_scale() - 0.95).abs() < 1e-6);
+            assert!((p.ads_move_scale() - expected).abs() < 1e-6);
+            eprintln!(
+                "M4 parts={parts:?} hip={} ADS={} native_speed={}",
+                p.move_scale(),
+                p.ads_move_scale(),
+                190.0 * 0.4 * p.ads_move_scale()
+            );
+        }
+    }
+
     #[test]
     #[ignore = "requires local captured Afghan arsenal"]
     fn captured_guns_keep_native_melee_timings_ammo_and_snapshot_encoding() {

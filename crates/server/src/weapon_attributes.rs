@@ -90,6 +90,7 @@ const GAMEPLAY_FIELDS: &[(usize, usize)] = &[
     (0x740, 4),
     (0x744, 4),
     (0x7ac, 4),
+    (0x7c8, 12),
     (0x810, 0x30),
     (0xac0, 4),
     (0x8c0, 4),
@@ -475,6 +476,23 @@ mod tests {
 
     fn number(kind: u8, operation: u8, offset: usize, operand: f32) -> [u8; 12] {
         raw(kind, operation, offset, operand.to_bits())
+    }
+    #[test]
+    fn captured_m4_stock_and_afg_grip_add_to_ads_mobility_only() {
+        let mut b = base();
+        write_word(&mut b, 0x7c8, 0.95f32.to_bits());
+        write_word(&mut b, 0x7cc, 1.0f32.to_bits());
+        let c = compose(
+            &b,
+            &[
+                number(7, 7, 0x7cc, 1.2), // cqc_stalkerm4, item22142.
+                number(7, 7, 0x7cc, 0.1), // for_gripafgm4, item20743.
+            ],
+        )
+        .unwrap();
+        assert_eq!(read_word(&c, 0x7c8), 0.95f32.to_bits());
+        assert!((f32::from_bits(read_word(&c, 0x7cc)) - 2.3).abs() < 1e-6);
+        assert!(compose(&b, &[raw(0, 0, 0x7cc, 0)]).is_err());
     }
     #[test]
     fn cheytac_quickdraw_reduces_both_ads_transitions_and_rederives_rates() {

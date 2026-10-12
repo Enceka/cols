@@ -144,6 +144,7 @@ pub struct BotController {
     engagement: Option<(f32, f32)>,
     physics_chop_msec: u32,
     match_move_scale: f32,
+    match_ads_move_scale: f32,
     locomotion: Locomotion,
     control_move_scale: f32,
     control_turn_limit: Option<[f32; 2]>,
@@ -175,6 +176,7 @@ impl BotController {
             engagement: None,
             physics_chop_msec: PHYSICS_CHOP_MSEC,
             match_move_scale: 1.0,
+            match_ads_move_scale: 1.0,
             locomotion: Locomotion::Walk,
             control_move_scale: 1.0,
             control_turn_limit: None,
@@ -223,6 +225,9 @@ impl BotController {
     }
     pub fn set_match_move_scale(&mut self, scale: f32) {
         self.match_move_scale = scale;
+    }
+    pub fn set_match_ads_move_scale(&mut self, scale: f32) {
+        self.match_ads_move_scale = scale;
     }
 
     fn reset_engagement(&mut self) {
@@ -475,7 +480,10 @@ impl BotController {
                 buttons: if mode == Locomotion::Sprint { 2 } else { 0 },
                 ..UserCommand::default()
             };
-            let speed_scale = if self.engagement.is_some() {
+            let ads = self.engagement.is_some() && mode == Locomotion::Walk;
+            let speed_scale = if ads {
+                self.match_ads_move_scale
+            } else if self.engagement.is_some() {
                 self.match_move_scale
             } else {
                 self.move_speed / f32::from(self.motion.speed)
@@ -483,7 +491,7 @@ impl BotController {
             self.motion.apply(
                 &command,
                 speed_scale * self.control_move_scale,
-                self.engagement.is_some() && mode == Locomotion::Walk,
+                ads,
                 collision,
             );
             // A controller tick can contain several physics commands. Retain
@@ -791,6 +799,26 @@ mod tests {
                     .is_none()
             );
         }
+    }
+    #[test]
+    fn stock_mobility_changes_engaged_walk_to_native_ads_speed() {
+        let world = collision(false);
+        let mut normal = BotController::new([0.0; 3], [0; 3], 94.0).unwrap();
+        normal.set_match_engagement();
+        normal.set_match_move_scale(0.95);
+        let mut stock = BotController::new([0.0; 3], [0; 3], 94.0).unwrap();
+        stock.set_match_engagement();
+        stock.set_match_move_scale(0.95);
+        stock.set_match_ads_move_scale(2.2);
+        let mut speeds = [0.0f32; 2];
+        for (i, bot) in [&mut normal, &mut stock].into_iter().enumerate() {
+            for time in (1000..2000).step_by(50) {
+                let frame = bot.step(time, Some(target(1000.0)), weapon(), &world);
+                speeds[i] = frame.motion.velocity[0].hypot(frame.motion.velocity[1]);
+            }
+        }
+        assert!((speeds[0] - 76.0).abs() < 0.1);
+        assert!((speeds[1] - 167.2).abs() < 0.1);
     }
     #[test]
     fn native_movement_runs_and_sprints_with_weapon_scale_then_walks_when_engaging() {
