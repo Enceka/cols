@@ -20,7 +20,10 @@ MATERIALS = {
     "mp_crash_tropical": "compass_map_mp_crash_dlc",
 }
 # These aliases still require the current map's captured texture proof.
-CAPTURED_ALIASES = {"mp_overgrown": "compass_map_mp_overgrown_dlc"}
+CAPTURED_ALIASES = {
+    "mp_overgrown": "compass_map_mp_overgrown_dlc",
+    "mp_ambush_sh": "compass_map_mp_convoy",
+}
 
 
 def map_entities(capture, map_name):

@@ -1079,6 +1079,7 @@ class ClientAssets {
             throw new Exception("invalid map check identity");
         string nativeMap=map.Substring(8,map.Length-15);
         string compass=nativeMap=="mp_crash_tropical"?"compass_map_mp_crash_dlc":
+            nativeMap=="mp_ambush_sh"?"compass_map_mp_convoy":
             nativeMap=="mp_overgrown"?"compass_map_mp_overgrown_dlc":"compass_map_"+nativeMap;
         uint entry,material=r.Find(5,compass,out entry);
         if(material==0)throw new Exception("map compass not loaded");

@@ -24,7 +24,9 @@ python3 tools/materialize_map_batch.py \
 
 执行顺序是：后台预检并隔离坏候选 → 自动完成资源准备尝试 → 后台批量检查 → 通过项的原生短局 → 正常会话恢复。资源阶段使用不变的、后台通过的采集目录，新候选不会阻断后续采集。完整资源捕获优先复用；旧碰撞缺少BSP世界根证明时只补采碰撞，保留其它输入，详见`WORLD_COLLISION_SCOPE.md`。只保留原始捕获时复用原始阶段，再初始化补采。`--cache`指定已有采集目录，`--maps`限定定向准备，`--native-maps`限定原生复核；`--native-new-only`只对本批新准备图跑原生短局，避免重复已有覆盖，不能与`--native-maps`同时指定。`--skip-collection`只验已有准备，`--skip-native`明确只做资源／后台检查。
 
-后台目录加载失败时自动拆成单图，继续其余图。原生失败保存`*-failure-state.json`、可用的map-check／replay诊断及服务日志；自动停止该诊断会话。尚未进入本图、仍处于前端的失败允许一次独立会话重试，保留首次证据；其它失败继续下一图，正常通过项复用当前客户端。结算返回必须确认真实12人房间，按钮过早未生效时最多再试两次。资源阶段失败保存该阶段状态和日志。没有盲点弹窗恢复、不自动截图、不写客户端内存。最后核对正常资料／准备文件哈希，恢复原catalog、时限、账号和背包，写`normal-restoration.json`；停止的诊断实验及证书恢复写`diagnostic-cleanup.json`。失败使执行返回非零；尚未准备项仍保留在`pending_resources`，不能把任务已配置或后台通过称为全地图原生通过。
+后台目录加载失败时自动拆成单图，继续其余图。原生失败保存`*-failure-state.json`、可用的map-check／replay诊断及服务日志；自动停止该诊断会话。尚未进入本图、仍处于前端的失败允许一次独立会话重试，保留首次证据；其它失败继续下一图，正常通过项复用当前客户端。结算返回必须确认真实12人房间及一次成功的原生箭头往返，恢复原地图后才复用；AAR保留的房主及12人名单不能单独证明已经返回。按钮过早未生效时最多再试两次。资源阶段失败保存该阶段状态和日志。没有盲点弹窗恢复、不自动截图、不写客户端内存。最后核对正常资料／准备文件哈希，恢复原catalog、时限、账号和背包，写`normal-restoration.json`；停止的诊断实验及证书恢复写`diagnostic-cleanup.json`。失败使执行返回非零；尚未准备项仍保留在`pending_resources`，不能把任务已配置或后台通过称为全地图原生通过。
+
+原生AAR的“返回大厅”可以实际退出频道。只有前端、有效库存、零人数、非房主、频道指针0及房间接收器0同时成立，工具才在同一客户端通过普通菜单输入重建房间，恢复刚结束的地图并验证12人和箭头往返。报告的`room_recreated_after_action`区分新建与保留的房间；频道已退出不再盲点结算按钮，也不因此冷启动客户端。保留12人但没有有效箭头响应仍判失败。
 
 `acceptance/result.json`分别记录`ready_server_passed`、每图`native_passed`、定向失败清单和未准备项。只有26张地图均有真实准备并通过原生检查时，`all_maps_passed`才为true。证据文件保留原始来源，不把准备目录当可迁移资源包。
 
@@ -87,4 +89,8 @@ macOS窗口输入在激活游戏后重新核对窗口边界，记录激活前／
 
 `map-expansion-next-batch`新增锈迹之地原生短局158.98秒。其余九张选图失败的状态／日志独立保留；航站楼原准备的后台错误由世界碰撞范围修正恢复，见`WORLD_COLLISION_SCOPE.md`。`world-collision-native-acceptance`同一客户端／房间完成核弹镇→货轮，151.74／143.03秒；`world-collision-terminal-native`完成航站楼161.70秒。三图均确认12人模型／结算、同生命周期移动、非默认小地图，AAR与服务日志一致。正常配置及账号恢复、四图准入证据见`world-collision-thirteen-map-admission.json`。完整代码检查`world-collision-final-check.log`通过444项Rust、80项Python及fmt／Clippy；只读探针构建见`world-collision-probe-build.log`。
 
-`map-selector-retry-batch`再次隔离九张选图阶段失败，后台13张正常图全部通过，结束后恢复正常客户端及6772库存。`map-input-receipt-diagnostic`确认暴风雨直接创建时未发送房主频道广播；其创建描述的地图／模式CRC、12人容量和build匹配。窗口重取与广播往返的工具回归通过81项Python；Swift构建见`map-window-focus-build.log`。这些工具检查尚未使九张待准备图通过原生验收，后续需继续定位提前加载旧图的触发条件。
+`map-selector-retry-batch`再次隔离九张选图阶段失败，后台13张正常图全部通过，结束后恢复正常客户端及6772库存。`map-input-receipt-diagnostic`确认暴风雨直接创建时未发送房主频道广播；其创建描述的地图／模式CRC、12人容量和build匹配。窗口重取与广播往返的工具回归通过81项Python；Swift构建见`map-window-focus-build.log`。这些工具检查未使九张待准备图通过原生验收。`input-coordinate-lab-v2`的定向房间画面及报文确认：11个Bot立即准备会启动原生自动开局倒计时；`room-ready-gating-live/idle-room.json`与`room-ready-gating-map-acceptance`的循环选图确认未准备Bot允许持续停留。Bot的DLC资源等级0还会使原生箭头过滤扩展地图；等级16的报文和字段依据见`MAP_SELECTION_PROGRESS.md`。地图通过状态仍分别以资源准备和原生验收报告为准。
+
+当前正常目录为16图。`room-dlc-map-acceptance`的暴风雨原生短局165.82秒，12人模型／结算、同生命周期移动264.81单位和本图1024小地图通过；AAR600:500与服务日志一致。伏击通过本图Convoy材质重新准备，靶场复用原始捕获补齐初始化资料；`room-return-native-recovery`在`client-1791807681924`同一客户端完成伏击→靶场219.8／111.5秒，两局12人角色、移动、小地图、交战及结算通过。伏击结束后原生退出频道，工具重建并验证房间；靶场保留房间。两图AAR分别700:1000／500:1000，与服务日志一致。三图准入及正常账号6772库存、资源哈希和证书清理见`room-storm-admission.json`、`room-sixteen-map-admission.json`及所引用恢复记录；正常7500分／600000ms保持不变。
+
+完整Rust／fmt／Clippy检查`room-map-gating-complete-check.log`通过445项Rust；包含房间重建边界的`room-return-recreation-check.log`通过85项Python。资源和原生批次没有自动截图，房间倒计时与AAR过渡另有少量定向画面用于定位。高楼和潜艇基地尚无真实小地图材质证明，其它待准备及模式边界见`MAP_COVERAGE.md`和`REVIEW_PENDING.md`，不标为全地图通过。

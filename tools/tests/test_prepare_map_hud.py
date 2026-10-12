@@ -81,6 +81,20 @@ class MinimapPreparation(unittest.TestCase):
         material['map']='maps/mp/mp_crash_tropical.d3dbsp'
         with self.assertRaises(ValueError):minimap(capture,'mp_overgrown',material)
 
+    def test_ambush_uses_captured_convoy_texture_with_ambush_corners(self):
+        capture=self.capture(yaw=0,corners=((180,220),(-140,-100)))
+        capture['maps'][0]['name']='maps/mp/mp_ambush_sh.d3dbsp'
+        material=dict(schema_version=1,read_only=True,client_sha256=CLIENT_SHA256,
+            map='maps/mp/mp_ambush_sh.d3dbsp',ncs_crc=789,
+            map_hud_materials={'compass_map_mp_convoy':dict(found=True,render_default=False,
+                textures=[dict(width=1024,height=1024)])})
+        result=minimap(capture,'mp_ambush_sh',material)
+        self.assertEqual(result['material'],'compass_map_mp_convoy')
+        self.assertEqual(result['upper_left'],[180,220])
+        self.assertEqual(result['lower_right'],[-140,-100])
+        material['map_hud_materials']['compass_map_mp_convoy']['render_default']=True
+        with self.assertRaises(ValueError):minimap(capture,'mp_ambush_sh',material)
+
 
 if __name__ == "__main__":
     unittest.main()
