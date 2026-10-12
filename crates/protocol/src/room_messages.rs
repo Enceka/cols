@@ -4,6 +4,9 @@
 use crate::lobby::LobbyError;
 
 pub const BOT_CLIENTS: u8 = 11;
+/// Installed resource level reported by the fixed 3.3.3.3 research client.
+/// Native 0x6dfae0 takes the minimum member +0x170 when filtering room maps.
+pub const BOT_DLC_LEVEL: u8 = 16;
 pub fn bot_id(client: u8) -> u64 {
     0x7fff_434f_444f_0000 + u64::from(client)
 }
@@ -227,7 +230,7 @@ pub fn bot_join(client: u8, publisher_version: u32) -> Result<Vec<u8>, LobbyErro
     w.bits(0, 32);
     w.bits(0, 64); // JoinRequest leaves identity for the host to assign from sender.
     w.bits(0, 8); // Native room team zero asks the host to assign/balance.
-    w.bits(1, 1); // Ready.
+    w.bits(0, 1); // The owner decides when local simulated peers become ready.
     w.bits(1000, 16);
     w.bits(0, 16); // Skill and rank.
     w.bits(0, 8);
@@ -240,15 +243,15 @@ pub fn bot_join(client: u8, publisher_version: u32) -> Result<Vec<u8>, LobbyErro
     for _ in 0..4 {
         w.bits(0, 16);
     }
-    w.bits(0, 8);
+    w.bits(u64::from(BOT_DLC_LEVEL), 8); // Member +0x170: installed DLC level.
     w.bits(0, 32);
     w.bits(0, 32);
     w.string(""); // Member +0x48 is the clan tag, not the display name.
     Ok(w.batch())
 }
-pub fn bot_ready() -> Vec<u8> {
+pub fn bot_ready(ready: bool) -> Vec<u8> {
     let mut w = Output::default().frame(16);
-    w.bits(1, 1);
+    w.bits(u64::from(ready), 1);
     w.batch()
 }
 
@@ -304,7 +307,8 @@ mod tests {
     }
     #[test]
     fn ready_matches_native_record_and_join_has_bounded_identity_and_version() {
-        assert_eq!(bot_ready(), [2, 0, 0, 0, 0x20, 0x02]);
+        assert_eq!(bot_ready(true), [2, 0, 0, 0, 0x20, 0x02]);
+        assert_eq!(bot_ready(false), [2, 0, 0, 0, 0x20, 0]);
         for client in 1..=11 {
             let data = bot_join(client, 7).unwrap();
             let mut r = Bits {
@@ -319,6 +323,19 @@ mod tests {
             assert_eq!(r.read(32).unwrap(), 7);
             assert_eq!(r.read(32).unwrap(), 0);
             assert_eq!(r.read(64).unwrap(), 0);
+            assert_eq!(r.read(8).unwrap(), 0); // Native team assignment.
+            assert_eq!(r.read(1).unwrap(), 0); // No admission countdown.
+            for bits in [16, 16, 8, 8, 64, 32, 1, 8, 8, 64] {
+                r.read(bits).unwrap();
+            }
+            let observed: serde_json::Value = serde_json::from_slice(include_bytes!(
+                "../../../fixtures/protocol/room-map-capabilities-3.3.3.3.json"
+            ))
+            .unwrap();
+            assert_eq!(
+                r.read(8).unwrap(),
+                observed["installed_dlc_level"].as_u64().unwrap()
+            );
             // Native member fields end at bit 499; the trailing string is
             // the clan tag. Nicknames arrive via the SDK channel sender.
             r.position = 499;

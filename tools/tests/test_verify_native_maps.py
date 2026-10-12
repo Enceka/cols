@@ -117,18 +117,55 @@ class NativeMapIsolation(unittest.TestCase):
 
     def test_after_action_return_waits_for_real_room_members_when_first_click_is_early(self):
         class ReturningClient(Client):
-            def __init__(self):self.clicks=0
-            def click(self,*args):self.clicks+=1
+            def __init__(self):self.clicks=0;self.current='mp_bog_sh'
+            def click(self,x,y,*args):
+                if y==.91:self.clicks+=1
+                elif self.clicks>=2:self.current='mp_crash_tropical' if x==.878 else 'mp_bog_sh'
+            def state(self):
+                return dict(connection_state=0,frontend_state=5,room_is_host=1,
+                           room_member_count=12,room_native_map=self.current,ui_scoreboard_row_count=12)
             def wait(self,predicate,seconds):
-                state=dict(connection_state=0,frontend_state=5,room_is_host=1,
-                           room_member_count=0 if self.clicks==1 else 12,ui_scoreboard_row_count=12)
+                state=self.state()
                 if predicate(state):return state
                 raise RuntimeError('button not ready')
         client=ReturningClient()
         with patch('verify_native_maps.time.sleep'):
             returned=client.return_to_room()
         self.assertEqual(returned['room_member_count'],12)
+        self.assertEqual(returned['room_native_map'],'mp_bog_sh')
         self.assertEqual(client.clicks,2)
+
+    def test_retained_after_action_members_do_not_prove_a_returned_room(self):
+        class AfterActionClient(Client):
+            def __init__(self):self.buttons=0
+            def click(self,x,y,*args):self.buttons+=int(y==.91)
+            def state(self):
+                return dict(connection_state=0,frontend_state=5,room_is_host=1,
+                            room_member_count=12,room_native_map='mp_bog_sh')
+        client=AfterActionClient()
+        with patch('verify_native_maps.time.sleep'),self.assertRaisesRegex(RuntimeError,'controls unavailable'):
+            client.return_to_room()
+        self.assertEqual(client.buttons,3)
+
+    def test_after_action_that_leaves_the_channel_recreates_a_verified_native_room(self):
+        class LobbyClient(Client):
+            def __init__(self):self.clicks=[];self.current='mp_bog_sh'
+            def click(self,x,y,*args):
+                self.clicks.append((x,y))
+                if y==.769:self.current='mp_crash_tropical' if x==.878 else 'mp_bog_sh'
+            def state(self):
+                created=len(self.clicks)>=4
+                return dict(connection_state=0,frontend_state=5,room_is_host=int(created),
+                    room_member_count=12 if created else 0,room_native_map=self.current,
+                    room_channel_pointer=123 if created else 0,
+                    room_join_request_handler=456 if created else 0,active_inventory_count=100)
+        client=LobbyClient()
+        with patch('verify_native_maps.time.sleep'):
+            result=client.return_to_room()
+        self.assertEqual(result['room_native_map'],'mp_bog_sh')
+        self.assertEqual(result['room_member_count'],12)
+        self.assertTrue(client.return_recreated_room)
+        self.assertNotIn((.765,.91),client.clicks)
 
     def test_loading_transition_stops_map_selector_before_more_room_inputs(self):
         class LeavingClient(Client):
@@ -163,6 +200,18 @@ class NativeMapIsolation(unittest.TestCase):
         client=InitialClient()
         self.assertEqual(client.select_map('mp_storm_spring','auto')['room_member_count'],12)
         self.assertEqual(client.clicks,2)
+
+    def test_admission_during_target_announcement_routes_from_the_changed_native_list(self):
+        class RebuiltClient(Client):
+            def __init__(self):self.index=0
+            def state(self):
+                name,count=[('mp_ambush_sh',1),('mp_cross_fire',12),
+                            ('mp_crash_tropical',12),('mp_ambush_sh',12)][self.index]
+                return dict(connection_state=0,room_native_map=name,room_member_count=count)
+            def click(self,*args):self.index+=1
+        client=RebuiltClient()
+        self.assertEqual(client.select_map('mp_ambush_sh','auto')['room_native_map'],'mp_ambush_sh')
+        self.assertEqual(client.index,3)
 
 
 if __name__ == '__main__':

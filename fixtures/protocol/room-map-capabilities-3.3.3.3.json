@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "client_sha256": "e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b",
+  "read_only": true,
+  "member_offset": "0x170",
+  "wire_width_bits": 8,
+  "installed_dlc_level": 16,
+  "room_minimum_function": "0x6dfae0",
+  "native_member_decoder": "0x6dbfc0",
+  "evidence": "research-output/room-ready-gating-live/inspect_members.py: client-1791804968484 packet-084, local member level16 and simulated member level0; research-output/room-map-dlc-filter-disassembly.json"
+}

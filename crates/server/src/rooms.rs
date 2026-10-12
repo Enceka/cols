@@ -16,6 +16,7 @@ struct Channel {
     room_info: Option<codol_protocol::room_messages::RoomInfo>,
     messages: VecDeque<Vec<u8>>,
     bots_announced: bool,
+    owner_ready: bool,
     roster_requested: bool,
     member_teams: HashMap<u64, u8>,
 }
@@ -94,6 +95,7 @@ fn bot_pushes(
     policy: &crate::room_bots::Policy,
     channel_id: u64,
     session: &Session,
+    ready: bool,
 ) -> Result<Vec<Vec<u8>>> {
     let mut pushes = Vec::new();
     for client in 1..=codol_protocol::room_messages::BOT_CLIENTS {
@@ -122,7 +124,7 @@ fn bot_pushes(
         pushes.push(joined.0);
         for record in [
             codol_protocol::room_messages::bot_join(client, policy.version)?,
-            codol_protocol::room_messages::bot_ready(),
+            codol_protocol::room_messages::bot_ready(ready),
         ] {
             let payload = codol_protocol::room_messages::to_member(&record, session.user_id)?;
             let mut push = Writer::default();
@@ -290,6 +292,7 @@ impl Rooms {
                             room_info: None,
                             messages: VecDeque::new(),
                             bots_announced: false,
+                            owner_ready: false,
                             roster_requested: false,
                             member_teams: HashMap::new(),
                         },
@@ -485,7 +488,7 @@ impl Rooms {
                         client,
                         id,
                         session.user_id,
-                        &codol_protocol::room_messages::bot_ready(),
+                        &codol_protocol::room_messages::bot_ready(channel.owner_ready),
                     )?);
                     if client == 11 && !channel.roster_requested {
                         result.pushes.push(bot_message(
@@ -588,13 +591,19 @@ impl Rooms {
                 // Map changes and returning from a match reset native ready
                 // flags. The human chooses when to start the next round;
                 // simulated peers then rejoin readiness for that room state.
-                if channel.bots_announced && updates.ready == Some(true) {
+                if updates.info.is_some() {
+                    channel.owner_ready = false;
+                }
+                if let Some(ready) = updates.ready {
+                    channel.owner_ready = ready;
+                }
+                if channel.bots_announced && (updates.ready.is_some() || updates.info.is_some()) {
                     for client in 1..=codol_protocol::room_messages::BOT_CLIENTS {
                         result.pushes.push(bot_message(
                             client,
                             id,
                             session.user_id,
-                            &codol_protocol::room_messages::bot_ready(),
+                            &codol_protocol::room_messages::bot_ready(channel.owner_ready),
                         )?);
                     }
                 }
@@ -608,7 +617,9 @@ impl Rooms {
                         .and_then(|e| e.bot_rooms.as_ref())
                     && let Some(map) = channel.bot_map(policy).map(str::to_owned)
                 {
-                    result.pushes.extend(bot_pushes(policy, id, session)?);
+                    result
+                        .pushes
+                        .extend(bot_pushes(policy, id, session, channel.owner_ready)?);
                     channel.bots_announced = true;
                     tracing::info!(
                         map,
@@ -646,7 +657,7 @@ mod tests {
             version: 7,
             maps: Default::default(),
         };
-        let pushes = bot_pushes(&policy, 123, &owner).unwrap();
+        let pushes = bot_pushes(&policy, 123, &owner, false).unwrap();
         assert_eq!(pushes.len(), 33);
         for (index, events) in pushes.chunks_exact(3).enumerate() {
             let client = index as u8 + 1;
@@ -693,6 +704,14 @@ mod tests {
                 );
                 assert_eq!(r.u32().unwrap(), 1);
                 assert!(r.remaining().is_empty());
+                if kind == 16 {
+                    assert_eq!(
+                        codol_protocol::room_messages::updates(batch, owner.user_id)
+                            .unwrap()
+                            .ready,
+                        Some(false)
+                    );
+                }
             }
         }
     }
@@ -800,7 +819,10 @@ mod tests {
             );
             let result = rooms.handle(&request, &owner, 1).unwrap();
             assert_eq!(result.pushes.len(), 1 + expected_joins, "{map}");
-            assert_eq!(rooms.handle(&request, &owner, 1).unwrap().pushes.len(), 1);
+            assert_eq!(
+                rooms.handle(&request, &owner, 1).unwrap().pushes.len(),
+                if expected_joins > 0 { 12 } else { 1 }
+            );
         }
     }
     #[test]
@@ -865,7 +887,8 @@ mod tests {
             let result = rooms
                 .handle(&Request::parse(&w.0).unwrap(), &owner, 1)
                 .unwrap();
-            assert_eq!(result.pushes.len(), if ready { 12 } else { 1 });
+            assert_eq!(result.pushes.len(), 12);
+            assert_eq!(rooms.channels[&id].owner_ready, ready);
             for push in &result.pushes[1..] {
                 let mut r = Reader::new(push);
                 assert_eq!(r.u32().unwrap(), 7);
@@ -876,9 +899,60 @@ mod tests {
                     codol_protocol::room_messages::updates(r.blob().unwrap(), owner.user_id)
                         .unwrap()
                         .ready,
-                    Some(true)
+                    Some(ready)
                 );
             }
+        }
+    }
+    #[test]
+    fn map_selection_clears_readiness_before_a_delayed_bot_join_reply() {
+        let mut rooms = Rooms::default();
+        let owner = session(42);
+        let (id, _) = create(&mut rooms, &owner);
+        let channel = rooms.channels.get_mut(&id).unwrap();
+        channel.bots_announced = true;
+        channel.owner_ready = true;
+        let payload = b"war\0mp_storm_spring\0\xff\x04\x0c";
+        let mut record = vec![0; payload.len() + 2];
+        record[0] = 15 << 1;
+        for (i, b) in payload.iter().enumerate() {
+            record[i + 1] |= b << 1;
+            record[i + 2] |= b >> 7;
+        }
+        let mut batch = (record.len() as u32).to_le_bytes().to_vec();
+        batch.extend(record);
+        let mut broadcast = Writer(vec![11, 3, 4]);
+        broadcast.u64(id);
+        broadcast.blob(&batch).unwrap();
+        broadcast.u32(1);
+        broadcast.0.push(0);
+        let result = rooms
+            .handle(&Request::parse(&broadcast.0).unwrap(), &owner, 1)
+            .unwrap();
+        assert_eq!(result.pushes.len(), 12);
+        assert!(!rooms.channels[&id].owner_ready);
+        let mut direct = Writer(vec![11, 3, 5]);
+        direct.u64(id);
+        direct.u64(codol_protocol::room_messages::bot_id(1));
+        direct.blob(&[6, 0, 0, 0, 10, 0, 0, 0, 0, 0]).unwrap();
+        direct.u32(1);
+        direct.0.push(0);
+        let reply = rooms
+            .handle(&Request::parse(&direct.0).unwrap(), &owner, 1)
+            .unwrap();
+        assert_eq!(reply.pushes.len(), 1);
+        for push in result.pushes[1..].iter().chain(&reply.pushes) {
+            let mut r = Reader::new(push);
+            assert_eq!(r.u32().unwrap(), 7);
+            r.u64().unwrap();
+            r.string(65).unwrap();
+            assert_eq!(r.u64().unwrap(), id);
+            assert_eq!(
+                codol_protocol::room_messages::updates(r.blob().unwrap(), owner.user_id)
+                    .unwrap()
+                    .ready,
+                Some(false)
+            );
         }
     }
     #[test]

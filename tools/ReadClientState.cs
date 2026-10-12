@@ -441,7 +441,8 @@ class ReadClientState {
                             Console.Write(new System.Web.Script.Serialization.JavaScriptSerializer().Serialize(new {
                                 slot=i, bot_client=uid>0x7fff434f444f0000UL && uid<=0x7fff434f444f000bUL ? (int)(uid-0x7fff434f444f0000UL) : 0,
                                 name=Encoding.ASCII.GetString(name,0,end), clan=Encoding.ASCII.GetString(clan,0,clanEnd),
-                                room_team=Read(process,checked(member+0x88),4), ready=Read(process,checked(member+0x8c),1), party=Read(process,checked(member+0xa8),4)
+                                room_team=Read(process,checked(member+0x88),4), ready=Read(process,checked(member+0x8c),1), party=Read(process,checked(member+0xa8),4),
+                                dlc_level=Read(process,checked(member+0x170),4)
                             }));
                         }
                         Console.WriteLine("],");

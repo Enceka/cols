@@ -76,15 +76,48 @@ class Client:
 
     def return_to_room(self):
         # Connection state0 arrives before the after-action button accepts input.
-        # Scoreboard rows are retained in the lobby, so they are not a menu flag.
+        # AAR also retains the host controller and its twelve members. Confirm
+        # the room's actual controls with an arrow round trip before reusing it.
+        def room(state):
+            return (state['connection_state']==0 and state['frontend_state']==5
+                    and state['room_is_host']==1 and state['room_member_count']==12)
+        def lobby(state):
+            return (state['connection_state']==0 and state['frontend_state']==5
+                    and state['room_is_host']==0 and state['room_member_count']==0
+                    and state.get('room_channel_pointer')==0
+                    and state.get('room_join_request_handler')==0
+                    and state.get('active_inventory_count',0)>0)
+        self.return_recreated_room=False
         time.sleep(2)
         for attempt in range(3):
-            self.click(.765,.91,False)
+            current=self.state()
+            if lobby(current):
+                selected=current['room_native_map']
+                self.click(.297,.05);self.click(.14,.125)
+                self.click(.437,.255);self.click(.763,.854)
+                self.wait(lambda s:s['connection_state']==0 and s['frontend_state']==5
+                          and s['room_is_host']==1 and s['room_member_count']>0,15)
+                self.select_map(selected,'auto')
+                self.return_recreated_room=True
+            else:
+                self.click(.765,.91,False)
             try:
-                return self.wait(lambda s:s['connection_state']==0 and s['frontend_state']==5
-                                 and s['room_is_host']==1 and s['room_member_count']==12,4)
+                before=self.wait(lambda s:room(s) or lobby(s),4)
             except RuntimeError:
                 if attempt==2:raise
+                continue
+            if lobby(before):continue
+            selected=before['room_native_map']
+            for outward,back in [(.878,.707),(.707,.878)]:
+                self.click(outward,.769)
+                after=self.state()
+                if not room(after):
+                    raise RuntimeError('native client left room while confirming after-action return')
+                if after['room_native_map']!=selected:
+                    self.click(back,.769)
+                    return self.wait(lambda s:room(s) and s['room_native_map']==selected,4)
+            time.sleep(2)
+        raise RuntimeError('native room controls unavailable after after-action return')
 
     def select_map(self, target, direction='right'):
         # Use the center of each native chevron, away from its narrow tips.
@@ -102,12 +135,15 @@ class Client:
         selected=direction
         reversed_once=False
         target_reannounced=False
+        selection_started=time.monotonic()
         trace=dict(target=target,direction=direction,screenshots=0,steps=[])
         trace_path=(self.experiment.parent/('map-selection-'+str(time.time_ns())+'.json')) if hasattr(self,'experiment') else None
         def record(state, event):
-            trace['steps'].append(dict(event=event,**{k:state.get(k) for k in
+            trace['steps'].append(dict(event=event,elapsed_seconds=round(time.monotonic()-selection_started,3),**{k:state.get(k) for k in
                 ('connection_state','frontend_state','room_native_map','room_native_mode','room_member_count','room_is_host',
                  'mouse_raw_x_0','mouse_raw_y_0','mouse_raw_x_1','mouse_raw_y_1','mouse_raw_bucket')},
+                members=[{k:m.get(k) for k in ('slot','bot_client','ready','dlc_level')}
+                         for m in state.get('room_members',[])],
                 last_click=getattr(self,'last_click',None)))
             if trace_path:trace_path.write_text(json.dumps(trace,indent=2)+'\n')
         for _ in range(80):
@@ -137,9 +173,12 @@ class Client:
                         if after['room_native_map']!=target:
                             self.click(arrows[back],.769)
                             after=self.state();record(after,'announce-return-'+back)
-                            if after.get('connection_state',0)!=0 or after['room_native_map']!=target:
-                                raise RuntimeError('native target map announcement did not restore the selection')
+                            if after.get('connection_state',0)!=0:
+                                raise RuntimeError('native client left room while returning to target map')
                             break
+                    # Admission can rebuild the native map list between the
+                    # outward and return inputs. Route from the actual result.
+                    continue
                 return self.wait(lambda s:s['room_native_map']==target
                                  and s['room_member_count']==12 and s.get('connection_state',0)==0,20)
             if current in seen:
@@ -323,6 +362,7 @@ def run(catalog_path, experiment, output, map_names=None, map_direction='right')
             if sum(r['kills'] for r in rows)==0:
                 raise RuntimeError('native after-action contains no combat kills')
             client.return_to_room()
+            row['room_recreated_after_action']=client.return_recreated_room
             row['passed']=True
         except (RuntimeError,ValueError,subprocess.SubprocessError,KeyError) as error:
             row['errors'].append(str(error))
