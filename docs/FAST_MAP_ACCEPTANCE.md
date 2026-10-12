@@ -2,6 +2,32 @@
 
 已准备地图采用后台批量模拟和原生短局两类检查。后台检查每次改动都可运行；新地图第一次接入必须补做原生加载、移动与结算实采。共享回放、名片、技能HUD和动作的完整体验按专项复核，不要求每张图都重新冷启动并跑十分钟长局。小时级稳定性和完整视觉／听感仍独立验收。
 
+## 一次配置与自动执行
+
+```sh
+python3 tools/prepare_map_batch.py prepare \
+  --catalog research-output/native-tdm-map-catalog.json \
+  --inventory research-output/full-map-coverage-audit.json \
+  --output research-output/map-batch-config-new
+
+python3 tools/materialize_map_batch.py \
+  --queue research-output/map-batch-config-new/queue.json \
+  --template research-output/tdm-crossfire-state.json \
+  --inventory research-output/full-map-coverage-audit.json \
+  --normal-experiment research-output/gamehub/client-EXPERIMENT/experiment.json \
+  --output research-output/map-batch-run-new
+```
+
+所有输出目录必须不存在；`--normal-experiment`必须是正在运行的正常游玩实验manifest，不能传`current-experiment.json`包装文件。脚本核对本版SHA、客户端PID及其父harness的真实命令后停止正常会话，等待证书清理；自动在`client-work/map-batch-<输出目录名>`建立独立服务资料副本。也可指定已有独立`--service-data-dir`。诊断目录不能指向正常资料或其子目录。
+
+26条地图身份一次生成共享7500分／600000ms配置和逐图任务；只有本图真实准备进入ready catalog。观察路径但尚无准备标为`needs_resources`，没有观察到有效路径标为`needs_resource_audit`。队列不会给缺资源图填写其它图的CRC或碰撞。
+
+执行顺序是：后台预检并隔离坏候选 → 自动完成资源准备尝试 → 后台批量检查 → 通过项的原生短局 → 正常会话恢复。资源阶段使用不变的、后台通过的采集目录，新候选不会阻断后续采集。完整资源捕获优先复用；只保留原始捕获时复用原始阶段，再初始化补采。`--cache`指定已有采集目录，`--maps`限定定向准备，`--native-maps`限定原生复核；`--skip-collection`只验已有准备，`--skip-native`明确只做资源／后台检查。
+
+后台目录加载失败时自动拆成单图，继续其余图。原生失败保存`*-failure-state.json`、可用的map-check／replay诊断及服务日志；自动停止该诊断会话。尚未进入本图、仍处于前端的失败允许一次独立会话重试，保留首次证据；其它失败继续下一图，正常通过项复用当前客户端。结算返回必须确认真实12人房间，按钮过早未生效时最多再试两次。资源阶段失败保存该阶段状态和日志。没有盲点弹窗恢复、不自动截图、不写客户端内存。最后核对正常资料／准备文件哈希，恢复原catalog、时限、账号和背包，写`normal-restoration.json`；停止的诊断实验及证书恢复写`diagnostic-cleanup.json`。失败使执行返回非零；尚未准备项仍保留在`pending_resources`，不能把任务已配置或后台通过称为全地图原生通过。
+
+`acceptance/result.json`分别记录`ready_server_passed`、每图`native_passed`、定向失败清单和未准备项。只有26张地图均有真实准备并通过原生检查时，`all_maps_passed`才为true。证据文件保留原始来源，不把准备目录当可迁移资源包。
+
 ## 后台批量检查
 
 ```sh
@@ -27,7 +53,7 @@ python3 tools/verify_native_maps.py \
   --prepare research-output/map-smoke-new
 ```
 
-诊断文件为1000分／60000ms。使用独立服务资料副本启动一次研究客户端，harness必须显式指定诊断catalog及`--service-data-dir`，不能使用正常`client-work/server-data`。原生批量工具不负责停止或重启客户端。
+诊断文件为1000分／60000ms。使用独立服务资料副本启动一次研究客户端，harness必须显式指定诊断catalog及`--service-data-dir`，不能使用正常`client-work/server-data`。单独运行该原生工具不负责停止或重启客户端；完整批量入口负责诊断会话及正常恢复。
 
 已有合适的运行实验时：
 
@@ -43,10 +69,14 @@ python3 tools/verify_native_maps.py \
 
 只读`--map-check`探针限定读取本图身份、12名角色的现有组合模型／动画树及本图小地图贴图；不遍历全部资源、不调用客户端函数。坠机使用真实`compass_map_mp_crash_dlc`。批量工具检查本图CRC、同一条命的玩家移动、人物资源和非默认贴图，并连续采样原生游戏／回放状态。输入前重新取可玩状态，W／D／S每次最多0.7秒，至少一次同生命周期移动8单位；不能把重生传送当成移动。结算必须是本图ID、12名参与者、单个本地玩家及非零击杀。读数切换期间最多重试三次；仍失败则保存失败报告，不标为通过。
 
-报告保存原始样本路径、普通游戏／回放／中场帧数和AAR。回放、前三名画面及声音的完整观感不是本工具的通过条件。选择循环、初始化失败、缺少模型或默认小地图都会中止本次原生批次，需先定位失败；不反复盲目重启整个目录。
+报告保存原始样本路径、普通游戏／回放／中场帧数和AAR。回放、前三名画面及声音的完整观感不是本工具的通过条件。单独原生工具遇到选择循环、初始化失败、缺少模型或默认小地图会保存失败并中止；完整批量入口隔离该会话并继续其余地图。
 
 快速验收实验、正常账号恢复及剩余边界见`MAP_RESOURCE_PREPARATION.md`和`REVIEW_PENDING.md`。
 
 `research-output/quick-native-podium-two-map-proof.json`记录`client-1791774867798`同一客户端／房间的Bog→坠机两局，合计271.91秒。Bog155.37秒含创建／选图，坠机116.54秒；两图均读到12名角色、非默认1024贴图、同生命周期移动112.62／133.37单位及12行结算。最终回放与PM_INTERMISSION6有原生采样，排名场景打开／ACK／关闭和结算有服务日志；两局AAR胜负／比分与服务端逐项一致。工具没有截图，不将这些状态样本当作完整演出验收。
 
 完整检查`fast-map-podium-final-check.log`通过444项Rust、61项Python及fmt／Clippy；优化构建见`fast-map-podium-release.log`。隔离诊断结束时证书已恢复，正常账号文件逐项哈希不变，见`fast-map-account-restoration-proof.json`。Afghan和安全屋未包含在这次原生两图批次中；四图后台检查及此前各图实机证据分别保留。
+
+批量配置证据为`map-batch-automation-queue/queue.json`，26项一次生成。`map-batch-automation-acceptance`复用杂草丛生完整采集，九图后台通过；贫民窟和杂草丛生原生通过，山景别墅首次因上一局前端返回而未进入地图。`map-batch-automation-native-v2`随后在同一客户端／房间完成山景别墅→贫民窟，合计362.65秒，两图12人角色／结算及同生命周期移动130.73／132.75单位；AAR与服务日志一致。首次失败保留，不能据其认定地图资源坏损。批量工具无截图；返回转换另有一次人工定向截图，捕获到过渡黑帧，不作为完整视觉验收。
+
+两批结束均自动恢复正常客户端，原账号／准备哈希一致，库存6772；正常重登仅允许用户设置文件自然更新。证据为各批的`normal-restoration.json`和`map-batch-nine-map-admission.json`。正常目录现有九张原生通过图，仍有17张待资源恢复或定向诊断；核弹镇出生、货轮无交战及高楼小地图错误独立保留，全地图尚未通过。

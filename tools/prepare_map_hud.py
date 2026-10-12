@@ -19,6 +19,8 @@ MATERIALS = {
     "mp_killhouse_sh": "compass_map_mp_killhouse_sh",
     "mp_crash_tropical": "compass_map_mp_crash_dlc",
 }
+# These aliases still require the current map's captured texture proof.
+CAPTURED_ALIASES = {"mp_overgrown": "compass_map_mp_overgrown_dlc"}
 
 
 def map_entities(capture, map_name):
@@ -53,7 +55,7 @@ def minimap(capture, map_name, material_capture=None, material_capture_sha256=No
                 material_capture.get('client_sha256') != CLIENT_SHA256 or
                 material_capture.get('map') != 'maps/mp/' + map_name + '.d3dbsp'):
             raise ValueError('new minimap requires this map\'s read-only material capture')
-        material = 'compass_map_' + map_name
+        material = CAPTURED_ALIASES.get(map_name, 'compass_map_' + map_name)
         record = material_capture.get('map_hud_materials', {}).get(material, {})
         dimensions = [[t['width'], t['height']] for t in record.get('textures', [])]
         if (record.get('found') is not True or record.get('render_default') is not False or

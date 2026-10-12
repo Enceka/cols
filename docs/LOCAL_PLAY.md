@@ -14,7 +14,7 @@ python3 tools/play.py
 
 当前本机准备目录：
 
-- `research-output/native-tdm-map-catalog.json`：Afghan、杀戮小屋/安全屋、坠机之地、mp_bog_sh 的独立地图准备。
+- `research-output/native-tdm-map-catalog.json`：Afghan、杀戮小屋/安全屋、坠机之地、Bog、交叉火力、庄园、贫民窟、山景别墅和杂草丛生的独立地图准备。
 - `research-output/tdm-afghan-hud-state.json`：快速人机入口的默认准备。
 - `client-work/wine10-throwables-20261011`：已验证的当前游戏环境；其它研究prefix保留。
 
@@ -22,7 +22,7 @@ python3 tools/play.py
 
 正常配置为7500分（每击杀100分）、10分钟，双方各6人。带`end-test`的准备文件是快速结算测试，不能当成正常对局配置。
 
-批量验收使用`codol-server verify-maps`及独立诊断catalog：后台四图实测约2～5.4秒，原生短局复用同一客户端和房间，正常账号／配置不参与诊断写入。命令、覆盖范围和证据见[地图快速验收](FAST_MAP_ACCEPTANCE.md)。
+批量验收使用`codol-server verify-maps`及独立诊断catalog：后台批量检查已覆盖九张候选图；26张图的配置队列可一次生成，随后自动准备资源、后台检查、原生短局和失败诊断，并恢复指定的正常客户端。正常账号／配置不参与诊断写入。命令、覆盖范围和证据见[地图快速验收](FAST_MAP_ACCEPTANCE.md)。
 
 正常游玩模式取消harness一小时、大厅1024帧和游戏快照帧数导致的主动结束；新连接仍验证票据和MAC，活动连接在每个通过MAC/序号校验的业务帧后续期本地房间与UDP对局租约（不复活过期或已撤销的连接）。达到采集预算后停止写逐包文件，继续处理游戏协议；单个运行日志达到64MiB后清空重写。它不保证操作系统、Wine或资源故障下永不退出。
 

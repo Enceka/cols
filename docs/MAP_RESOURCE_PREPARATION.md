@@ -12,7 +12,13 @@
 
 证据见`bog-resource-paths.json`、`bog-native-live-proof.json`、`bog-navigation-captured-proof.json`及引用实验。`bog-navigation-final-check.log`确认443项Rust、57项Python及fmt／Clippy通过；真实碰撞忽略测试另行通过，`bog-navigation-release.log`确认release构建通过。资料使用隔离副本，账号／库存／钱包恢复证明见`map-expansion-account-proof.json`。
 
-后续逐图覆盖其余19张已观察到资源路径的团队竞技地图，核对三张未观察到路径的地图，并验收各图完整小地图画面、模型／武器、交战、普通／最终回放、结算及长期稳定性。路径观察不能替代本图初始化和依赖验证。
+交叉火力CRC2280019615，17,283碰撞刷、34,653三角形、15+15出生点和非默认1024贴图已捕获；原生短局113.13秒通过，12名人物／结算、本图ID5、同生命周期移动123.32单位，AAR1000:700与服务日志一致。庄园CRC3023076187，原生短局166.24秒通过。证据为`crossfire-native-fast-proof-v3.json`及`native-map-eight-acceptance/acceptance/mp_estate_tropical-native.json`；两图已进入正常目录。
+
+杂草丛生实际使用`compass_map_mp_overgrown_dlc`。别名仍要求该图捕获SHA／CRC及非默认1024贴图证明；缺少或属于其它地图的证明继续拒绝。准备文件为`map-batch-automation-acceptance/mp_overgrown-state.json`，由保留采集重新准备，无需重启采集客户端。
+
+贫民窟CRC3314487911、山景别墅CRC78003556及杂草丛生CRC692567894已通过原生短局，并进入正常目录。山景别墅→贫民窟在`client-1791791475509`同一客户端／房间连续完成，两局198.65／164.00秒；杂草丛生157.38秒。三图均有12名角色、同生命周期移动、非默认小地图及12行结算；AAR胜负／比分与服务日志一致，见`map-batch-new-native-score-proof.json`。
+
+批量配置与自动准备／验收见`FAST_MAP_ACCEPTANCE.md`。正常九图、后台九张通过图与26条身份配置分别统计；核弹镇出生`[-1818,554,-24]`胶囊校验失败、货轮120秒无交战击杀、高楼缺少有效小地图材质，均保留定向错误证据。继续覆盖其余17图、核对三张未观察到路径的地图，并验收各图完整小地图画面、模型／武器、交战、普通／最终回放、结算及长期稳定性。路径观察不能替代本图初始化和依赖验证。
 
 准备后的日常验收见[地图快速验收](FAST_MAP_ACCEPTANCE.md)。`verify-maps`使用真实地图资料批量模拟移动／交战／重生，并生成前三名的地面人物场景；四图实测含资源加载约2～5.4秒。排名场景的镜头到人物查询使用玩家碰撞掩码，避免Bog的武器阻挡体把可放置人物的空间全部拒绝；射击／战斗视线掩码保持原样。场景仍要求三个位置贴地、相对高度差不超过12单位、真实参与者的模型／武器和固定镜头。后台通过不代表视觉／听感通过。
 

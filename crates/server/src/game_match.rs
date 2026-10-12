@@ -4,7 +4,7 @@ use crate::{
     game_combat::{self, Actor, ActorShot},
     game_motion::Collision,
 };
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
 use codol_protocol::{
     game_enemy::EnemySnapshot,
     game_events::EventQueue,
@@ -136,13 +136,18 @@ impl MatchConfig {
                 "invalid bot model registration"
             );
         }
-        for team in &self.spawns {
+        for (team_index, team) in self.spawns.iter().enumerate() {
             ensure!(
                 (6..=128).contains(&team.len()),
                 "TDM needs at least six map starts per team"
             );
-            for &spawn in team {
-                crate::game_bot::grounded_spawn(spawn, collision)?;
+            for (index, &spawn) in team.iter().enumerate() {
+                crate::game_bot::grounded_spawn(spawn, collision).with_context(|| {
+                    format!(
+                        "invalid TDM spawn: team={} index={index} origin={spawn:?}",
+                        team_index + 1
+                    )
+                })?;
             }
         }
         Ok(())

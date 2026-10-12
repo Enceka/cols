@@ -22,9 +22,12 @@ class Client:
         self.experiment = experiment.resolve()
 
     def state(self):
-        result = subprocess.check_output([sys.executable, str(REPO/'tools/client_state.py'),
-                                         '--experiment', str(self.experiment)], text=True)
-        return json.loads(result)['state']
+        result = subprocess.run([sys.executable, str(REPO/'tools/client_state.py'),
+                                 '--experiment', str(self.experiment)], text=True,capture_output=True)
+        if result.returncode:
+            raise subprocess.CalledProcessError(result.returncode,result.args,
+                                                output=result.stdout,stderr=result.stderr)
+        return json.loads(result.stdout)['state']
 
     def action(self, kind, *args):
         return json.loads(subprocess.check_output([str(REPO/'.tools/game-window'),
@@ -38,8 +41,18 @@ class Client:
 
     def wait(self, predicate, seconds):
         deadline = time.monotonic()+seconds
+        state={}
         while time.monotonic()<deadline:
-            state = self.state()
+            try:
+                state = self.state()
+            except subprocess.SubprocessError as error:
+                # Startup and map teardown release the probe's current context.
+                # The enclosing deadline bounds retries through those changes.
+                info=json.loads(self.experiment.read_text())
+                if info.get('finished_unix'):
+                    raise RuntimeError('owned client ended: '+str(info.get('harness_error','client exited'))) from error
+                time.sleep(.25)
+                continue
             if predicate(state):
                 return state
             time.sleep(.25)
@@ -63,27 +76,55 @@ class Client:
         # Connection state0 arrives before the after-action button accepts input.
         # Scoreboard rows are retained in the lobby, so they are not a menu flag.
         time.sleep(2)
-        self.click(.765,.91,False)
+        for attempt in range(3):
+            self.click(.765,.91,False)
+            try:
+                return self.wait(lambda s:s['connection_state']==0 and s['frontend_state']==5
+                                 and s['room_is_host']==1 and s['room_member_count']==12,4)
+            except RuntimeError:
+                if attempt==2:raise
 
-    def select_map(self, target):
+    def select_map(self, target, direction='right'):
+        arrows={'right':.886,'left':.698}
+        if direction not in (*arrows,'auto'):
+            raise ValueError('native map direction must be left, right or auto')
+        # Observed native room order. This is only a routing hint: actual map
+        # changes and membership are checked after every normal arrow input.
+        observed=['mp_firingrange','mp_cargoship','mp_subbase_sh','mp_bog_sh','mp_crash_tropical',
+                  'mp_cross_fire','mp_estate_tropical','mp_fav_tropical','mp_nuked','mp_killhouse_sh',
+                  'mp_overgrown','mp_rust_long','mp_highrise','mp_storm_spring','mp_mountain',
+                  'mp_terminal_cls','mp_abandon_sh_mk','mp_seatown','mp_ambush_sh','mp_afghan']
         seen=set()
+        member_count=None
+        selected=direction
         for _ in range(60):
             state=self.state()
             current=state['room_native_map']
+            if state['room_member_count']!=member_count:
+                # Room population changes during native Bot admission. A map
+                # seen before the join is not proof of a stable selector cycle.
+                seen.clear()
+                member_count=state['room_member_count']
             print('select',current,state['room_member_count'],flush=True)
-            if current==target and state['room_member_count']==12:
-                return state
+            if current==target:
+                return self.wait(lambda s:s['room_native_map']==target
+                                 and s['room_member_count']==12,20)
             if current in seen:
                 raise RuntimeError('map selector cycled without finding the prepared map')
             seen.add(current)
+            # Choose one direction for this cycle. Recomputing it from an
+            # incomplete order can bounce between adjacent maps forever.
+            if selected=='auto':
+                if current in observed and target in observed:
+                    a,b=observed.index(current),observed.index(target)
+                    selected='right' if (b-a)%len(observed)<=(a-b)%len(observed) else 'left'
+                else:selected='right'
             # A same-map result can be a pending UI transition, not a full cycle.
             for attempt in range(3):
-                self.click(.88,.765)
+                self.click(arrows[selected],.765)
                 after=self.state()
                 if after['room_native_map']!=current:
                     break
-                if attempt==0 and after['ui_scoreboard_row_count']==12:
-                    self.return_to_room()
             else:
                 raise RuntimeError('native map arrow did not change the room map')
         raise RuntimeError('native map selection incomplete')
@@ -135,7 +176,7 @@ def prepare(catalog_path, output):
     return path
 
 
-def run(catalog_path, experiment, output, map_names=None):
+def run(catalog_path, experiment, output, map_names=None, map_direction='right'):
     info = json.loads(experiment.read_text())
     argv = info['tls_argv']
     used = Path(argv[argv.index('--game-map-catalog')+1]).resolve()
@@ -180,10 +221,11 @@ def run(catalog_path, experiment, output, map_names=None):
             state=client.wait(lambda s:s['connection_state']==0 and s['frontend_state']==5
                 and s['active_inventory_count']>0,100)
             if state['room_member_count']==0:
-                client.click(.297,.05);client.click(.437,.255);client.click(.763,.854)
+                client.click(.297,.05);client.click(.14,.125)
+                client.click(.437,.255);client.click(.763,.854)
                 state=client.wait(lambda s:s['room_member_count']>0,15)
             print('room',state['room_native_map'],state['room_member_count'],flush=True)
-            client.select_map(entry['map'])
+            client.select_map(entry['map'],map_direction)
             client.click(.848,.916)
             live=client.wait(lambda s:s['connection_state']==10 and s['current_snapshot_valid']==1,60)
             if live['net_constants_crc']!=source['ncs_crc']:
@@ -260,6 +302,8 @@ def main():
     parser.add_argument('--experiment',type=Path,help='running owned client with the diagnostic catalog')
     parser.add_argument('--output',type=Path,help='new result JSON path')
     parser.add_argument('--maps',nargs='+',help='native room maps to run; other catalog maps stay unchecked')
+    parser.add_argument('--direction',choices=('right','left','auto'),default='auto',
+                        help='native arrow direction for the selected map sequence')
     args=parser.parse_args()
     if args.prepare:
         if args.experiment or args.output:parser.error('prepare is separate from native execution')
@@ -267,7 +311,7 @@ def main():
     else:
         if not args.experiment or not args.output or args.output.exists():
             parser.error('native run needs experiment and a new result path')
-        result=run(args.catalog.resolve(),args.experiment.resolve(),args.output.resolve(),args.maps)
+        result=run(args.catalog.resolve(),args.experiment.resolve(),args.output.resolve(),args.maps,args.direction)
         print(json.dumps({'maps':len(result['maps']),'passed':result['passed'],
                           'seconds':result['elapsed_seconds']}))
 

@@ -1013,7 +1013,8 @@ class ClientAssets {
         if(map==null||!map.StartsWith("maps/mp/",StringComparison.Ordinal)||!map.EndsWith(".d3dbsp",StringComparison.Ordinal))
             throw new Exception("invalid map check identity");
         string nativeMap=map.Substring(8,map.Length-15);
-        string compass=nativeMap=="mp_crash_tropical"?"compass_map_mp_crash_dlc":"compass_map_"+nativeMap;
+        string compass=nativeMap=="mp_crash_tropical"?"compass_map_mp_crash_dlc":
+            nativeMap=="mp_overgrown"?"compass_map_mp_overgrown_dlc":"compass_map_"+nativeMap;
         uint entry,material=r.Find(5,compass,out entry);
         if(material==0)throw new Exception("map compass not loaded");
         uint fallback=r.Word(0x00f31444);
@@ -1179,7 +1180,7 @@ class ClientAssets {
                 "entity_events_sequence",r.Word(entity+0xf0+0xac),"entity_event0",r.Word(entity+0xf0+0xb0),
                 "body",root>=0x10000?r.Name(root):null,"parts",parts,"animation_tree_ready",tree>=0x10000,
                 "dobj_slot",dobjSlot,"dobj_models",objModels,"ground_pose",r.GroundPose(entity,dobjSlot),
-                "entity_origin",r.EntityOrigin(entities+id*0x238+0xf0)));
+                "entity_origin",(r.Word(entity+0x204)&1)!=0?r.EntityOrigin(entity+0xf0):null));
         }
         var corpses=new List<object>();uint corpseEntitySlot=r.Word(0x07817bb0);
         if(corpseEntitySlot>=256)throw new Exception("corpse entity slot invalid");
@@ -1196,7 +1197,7 @@ class ClientAssets {
             }
             corpses.Add(Obj("entity",id,"type",r.Word(entity+0xf4),"flags",r.Word(entity+0xf8),
                 "donor",r.Word(entity+0xf0+0x9c),"legs",r.Word(entity+0xf0+0xd4),"torso",r.Word(entity+0xf0+0xd8),
-                "valid",corpseValid,"dobj_models",corpseModels,"dobj_slot",slotId,"origin",r.EntityOrigin(entity+0xf0),
+                "valid",corpseValid,"dobj_models",corpseModels,"dobj_slot",slotId,"origin",corpseValid?r.EntityOrigin(entity+0xf0):null,
                 "ground_pose",corpseValid?r.GroundPose(entity,slotId):null));
         }
         var serializer=new JavaScriptSerializer();serializer.MaxJsonLength=16*1024*1024;

@@ -4,6 +4,7 @@ import sys
 import struct
 import tempfile
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from clientlib import REPO
@@ -74,6 +75,60 @@ class NativeMapIsolation(unittest.TestCase):
         client=self.movement_client([(0,1),(200,2),(200,2),(400,3),(400,3),(600,4)])
         with self.assertRaisesRegex(RuntimeError,'same life'):
             client.movement()
+
+    def test_map_seen_before_bot_admission_does_not_end_the_new_selector_cycle(self):
+        class JoiningClient(Client):
+            def __init__(self):
+                self.index=0
+                self.maps=[('mp_bog_sh',1),('mp_crash_tropical',12),('mp_bog_sh',12),('mp_cross_fire',12)]
+
+            def state(self):
+                name,count=self.maps[self.index]
+                return dict(room_native_map=name,room_member_count=count,ui_scoreboard_row_count=0)
+
+            def click(self, *args):
+                self.index+=1
+
+        client=JoiningClient()
+        self.assertEqual(client.select_map('mp_cross_fire')['room_native_map'],'mp_cross_fire')
+
+    def test_target_waits_for_bot_admission_without_clicking_away(self):
+        class AdmittingClient(Client):
+            def __init__(self):self.samples=iter([1,1,12])
+            def state(self):
+                return dict(room_native_map='mp_cross_fire',room_member_count=next(self.samples))
+            def click(self,*args):raise AssertionError('target map must remain selected')
+        self.assertEqual(AdmittingClient().select_map('mp_cross_fire')['room_member_count'],12)
+
+    def test_auto_route_keeps_one_direction_when_observed_order_is_incomplete(self):
+        class ReorderedClient(Client):
+            def __init__(self):
+                self.index=0
+                self.maps=['mp_bog_sh','mp_mountain','mp_crash_tropical','mp_cross_fire']
+                self.arrows=[]
+            def state(self):
+                return dict(room_native_map=self.maps[self.index],room_member_count=12)
+            def click(self,x,y):
+                self.arrows.append(x)
+                self.index+=1
+        client=ReorderedClient()
+        self.assertEqual(client.select_map('mp_cross_fire','auto')['room_native_map'],'mp_cross_fire')
+        self.assertEqual(client.arrows,[.886,.886,.886])
+
+    def test_after_action_return_waits_for_real_room_members_when_first_click_is_early(self):
+        class ReturningClient(Client):
+            def __init__(self):self.clicks=0
+            def click(self,*args):self.clicks+=1
+            def wait(self,predicate,seconds):
+                state=dict(connection_state=0,frontend_state=5,room_is_host=1,
+                           room_member_count=0 if self.clicks==1 else 12,ui_scoreboard_row_count=12)
+                if predicate(state):return state
+                raise RuntimeError('button not ready')
+        client=ReturningClient()
+        with patch('verify_native_maps.time.sleep'):
+            returned=client.return_to_room()
+        self.assertEqual(returned['room_member_count'],12)
+        self.assertEqual(client.clicks,2)
 
 
 if __name__ == '__main__':

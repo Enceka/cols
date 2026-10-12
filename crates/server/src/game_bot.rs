@@ -57,7 +57,7 @@ pub fn grounded_spawn(origin: [f32; 3], collision: &Collision) -> Result<[f32; 3
             return Ok(grounded);
         }
     }
-    anyhow::bail!("no clear walkable standing capsule near bot spawn candidate")
+    anyhow::bail!("no clear walkable standing capsule near bot spawn candidate {origin:?}")
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

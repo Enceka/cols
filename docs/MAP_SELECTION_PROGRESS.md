@@ -22,10 +22,15 @@
 | 安全屋（本版显示“杀戮小屋”） | mp_killhouse_sh | 3852334052 |
 | 坠机之地 | mp_crash_tropical | 4159215889 |
 | Bog | mp_bog_sh | 3785594714 |
+| 交叉火力 | mp_cross_fire | 2280019615 |
+| 庄园 | mp_estate_tropical | 3023076187 |
+| 贫民窟 | mp_fav_tropical | 3314487911 |
+| 山景别墅 | mp_mountain | 78003556 |
+| 杂草丛生 | mp_overgrown | 692567894 |
 
-四图具有独立实体、碰撞、TDM出生点、HUD、武器与角色资料，正常准备为7500分／600000ms。原生箭头仍可选择其它地图，但未准备地图必须明确拒绝。赛单轮换按 publisher version／playlist／entry 顺序解析；自建房按描述和受限游戏请求识别地图，不执行 `mmstart` 文本。正常 publisher 为 version7。
+九图具有独立实体、碰撞、TDM出生点、HUD、武器与角色资料，正常准备为7500分／600000ms。原生箭头仍可选择其它地图，但未准备地图必须明确拒绝。赛单轮换按 publisher version／playlist／entry 顺序解析；自建房按描述和受限游戏请求识别地图，不执行 `mmstart` 文本。正常 publisher 为 version7。
 
-本版26条团队竞技地图的真实ID、模式和角色规则已从`coMapList.csv`生成身份表，运行时准备及结算不再局限于三个手写ID；仍逐图要求完整准备文件。资源列表中23张图观察到主图／load／const路径，当前完成上述四图的实际准备。覆盖及证据边界见 `MAP_COVERAGE.md`。
+本版26条团队竞技地图的真实ID、模式和角色规则已从`coMapList.csv`生成身份表，运行时准备及结算不再局限于三个手写ID；仍逐图要求完整准备文件。资源列表中23张图观察到主图／load／const路径，正常目录完成上述九图的原生实测。覆盖及证据边界见 `MAP_COVERAGE.md`。
 
 坠机小地图使用实际 `compass_map_mp_crash_dlc` 材质及1024×1024贴图，角点为 `(1976,2528)`／`(-1200,-2166)`。`compass_map_mp_crash_tropical` 在本版指向16×16默认贴图，不能用作底图。探针按 `0xaa3650` 的材质比较判断 `render_default`，不将资源表的其它布尔字段当作渲染默认判据。
 
@@ -47,6 +52,6 @@
 
 只读位置诊断应使用 `current_*`／`predicted_*`；`full_snapshot_*` 是初始完整基线，连续 delta 时不代表当前位置。AAR public buffer 开头有4字节CRC，字段读取必须包含这一偏移。
 
-尚需扩展更多模式／地图、自动资源准备和恢复、小时级稳定性及完整逐图演出验收。体验复核统一列于 `REVIEW_PENDING.md`。
+批量配置、自动资源准备／验收及正常客户端恢复见`FAST_MAP_ACCEPTANCE.md`。尚需扩展更多模式／地图、小时级稳定性及完整逐图演出验收。体验复核统一列于 `REVIEW_PENDING.md`。
 
 原始采集、账号和用户截图保存在忽略目录。研究副本的已知故障 IIPS／IFS 对象保留于 `blocked-resource-1791544530`、`blocked-resource-1791561992`；不要重新打开这些故障对象。替换副本的内容哈希与原始样本一致，原件保持不变。

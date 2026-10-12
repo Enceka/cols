@@ -14,7 +14,7 @@ from clientlib import REPO
 
 from prepare_game_state import CLIENT_SHA256, compute
 from prepare_bot_locomotion import actor_animations, prepare as prepare_locomotion
-from prepare_bot_roster import prepare as prepare_roster
+from prepare_bot_roster import NativeBotCharacters, prepare as prepare_roster
 from prepare_map_hud import map_entities, minimap
 
 
@@ -41,7 +41,8 @@ def native_maps():
     return [m['name'] for m in registry['maps']]
 
 
-def prepare(template, map_name, constants, entities, collision, arsenal, characters, material_capture_sha256=None):
+def prepare(template, map_name, constants, entities, collision, arsenal, characters,
+            material_capture_sha256=None, native_characters=None):
     if map_name not in native_maps() or template["client_sha256"] != CLIENT_SHA256:
         raise ValueError("unsupported map/template identity")
     summary = compute(constants, "m4_mp", True, True, "viewhands_tf141")
@@ -74,7 +75,8 @@ def prepare(template, map_name, constants, entities, collision, arsenal, charact
             raise ValueError("required human animation absent or ambiguous")
         animation[field] = next(iter(found))
     prepare_locomotion(state, characters, arsenal, CLIENT_SHA256)
-    result = prepare_roster(state, characters, arsenal, stream_outfits=True)
+    result = prepare_roster(state, characters, arsenal, stream_outfits=True,
+                            native_characters=native_characters)
     if state.get('appearance_file'):
         # Native inherited model slots differ by map. Player composition starts
         # after this map's inherited and explicitly registered Bot model IDs.
@@ -90,10 +92,14 @@ def main():
     parser.add_argument("--map", choices=native_maps(), required=True)
     for name in ("constants", "entities", "collision", "arsenal", "characters", "output"):
         parser.add_argument("--" + name, type=Path, required=True)
+    parser.add_argument("--native-characters", type=Path,
+                        help="retained native outfit bindings for Bot replay sleeves/gloves")
     args = parser.parse_args()
     loaded = {n: json.loads(getattr(args, n).read_text()) for n in ("constants", "entities", "collision", "arsenal", "characters")}
     state, result = prepare(json.loads(args.template.read_text()), args.map,
-        material_capture_sha256=hashlib.sha256(args.characters.read_bytes()).hexdigest(), **loaded)
+        material_capture_sha256=hashlib.sha256(args.characters.read_bytes()).hexdigest(),
+        native_characters=NativeBotCharacters(json.loads(args.native_characters.read_text()))
+                          if args.native_characters else None, **loaded)
     state["capture_sha256"] = hashlib.sha256(args.constants.read_bytes()).hexdigest()
     state["map_entities_sha256"] = hashlib.sha256(args.entities.read_bytes()).hexdigest()
     state["training_enemy"]["source_sha256"] = hashlib.sha256(args.characters.read_bytes()).hexdigest()

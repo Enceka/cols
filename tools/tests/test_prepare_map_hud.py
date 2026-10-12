@@ -68,6 +68,19 @@ class MinimapPreparation(unittest.TestCase):
             else:altered['map_hud_materials']['compass_map_mp_bog_sh']['textures']=[dict(width=16,height=16)]
             with self.subTest(change=change),self.assertRaises(ValueError):minimap(capture,'mp_bog_sh',altered)
 
+    def test_overgrown_dlc_alias_still_requires_its_own_map_and_texture_proof(self):
+        capture=self.capture(yaw=0,corners=((100,100),(-100,-100)))
+        capture['maps'][0]['name']='maps/mp/mp_overgrown.d3dbsp'
+        material=dict(schema_version=1,read_only=True,client_sha256=CLIENT_SHA256,
+            map='maps/mp/mp_overgrown.d3dbsp',ncs_crc=456,
+            map_hud_materials={'compass_map_mp_overgrown_dlc':dict(found=True,render_default=False,
+                textures=[dict(width=1024,height=1024)])})
+        result=minimap(capture,'mp_overgrown',material)
+        self.assertEqual(result['material'],'compass_map_mp_overgrown_dlc')
+        self.assertEqual(result['material_proof']['map'],'maps/mp/mp_overgrown.d3dbsp')
+        material['map']='maps/mp/mp_crash_tropical.d3dbsp'
+        with self.assertRaises(ValueError):minimap(capture,'mp_overgrown',material)
+
 
 if __name__ == "__main__":
     unittest.main()
