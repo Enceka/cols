@@ -13,3 +13,7 @@
 证据见`bog-resource-paths.json`、`bog-native-live-proof.json`、`bog-navigation-captured-proof.json`及引用实验。`bog-navigation-final-check.log`确认443项Rust、57项Python及fmt／Clippy通过；真实碰撞忽略测试另行通过，`bog-navigation-release.log`确认release构建通过。资料使用隔离副本，账号／库存／钱包恢复证明见`map-expansion-account-proof.json`。
 
 后续逐图覆盖其余19张已观察到资源路径的团队竞技地图，核对三张未观察到路径的地图，并验收各图完整小地图画面、模型／武器、交战、普通／最终回放、结算及长期稳定性。路径观察不能替代本图初始化和依赖验证。
+
+准备后的日常验收见[地图快速验收](FAST_MAP_ACCEPTANCE.md)。`verify-maps`使用真实地图资料批量模拟移动／交战／重生，并生成前三名的地面人物场景；四图实测含资源加载约2～5.4秒。排名场景的镜头到人物查询使用玩家碰撞掩码，避免Bog的武器阻挡体把可放置人物的空间全部拒绝；射击／战斗视线掩码保持原样。场景仍要求三个位置贴地、相对高度差不超过12单位、真实参与者的模型／武器和固定镜头。后台通过不代表视觉／听感通过。
+
+Bog与坠机的原生短局连续验收见`quick-native-podium-two-map-proof.json`：同一客户端／房间271.91秒，12人模型／名单、本图小地图、移动、最终回放／排名状态和结算有实采，AAR胜负／比分与服务日志一致。正常资料在隔离诊断期间逐文件哈希不变；复核边界和检查日志见快速验收文档。

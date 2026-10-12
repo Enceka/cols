@@ -1002,6 +1002,51 @@ class ClientAssets {
             "client_sha256","e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b",
             "ncs_crc",r.Word(0x02df7d90),"resources",resources,"frames",frames)));
     }
+    public static void ExportMapCheck(IntPtr process) {
+        var r=new ClientAssets(process);
+        if(r.Word(0x01a2e7ec)!=10||r.Word(0x02df9934)!=1)throw new Exception("enter native gameplay before map check");
+        uint crc=r.Word(0x02df7d90),slot=r.Word(0x07817ba8),entitySlot=r.Word(0x07817bb0);
+        if(slot>=256||entitySlot>=256)throw new Exception("invalid map check context");
+        uint cg=r.Word(0x01a19510+slot*4)^0xfbb2c97a;
+        uint entities=r.Word(0x01a19510+entitySlot*4)^0x2168f672;
+        string map=r.Name(r.Word(0x02dfb000));
+        if(map==null||!map.StartsWith("maps/mp/",StringComparison.Ordinal)||!map.EndsWith(".d3dbsp",StringComparison.Ordinal))
+            throw new Exception("invalid map check identity");
+        string nativeMap=map.Substring(8,map.Length-15);
+        string compass=nativeMap=="mp_crash_tropical"?"compass_map_mp_crash_dlc":"compass_map_"+nativeMap;
+        uint entry,material=r.Find(5,compass,out entry);
+        if(material==0)throw new Exception("map compass not loaded");
+        uint fallback=r.Word(0x00f31444);
+        bool isDefault=r.Word(material+0x58)==r.Word(fallback+0x58)
+            &&r.Word(material+0x5c)==r.Word(fallback+0x5c)&&r.Word(material+0x60)==r.Word(fallback+0x60);
+        int count=Count(r.Read(material+0x50,1)[0],32);uint textureTable=r.Word(material+0x5c);
+        var textures=new List<object>();
+        for(int t=0;t<count;t++) {
+            uint image=r.Word(textureTable+(uint)t*12+8);
+            textures.Add(Obj("name",r.Name(r.Word(image+0x30)),
+                "width",BitConverter.ToUInt16(r.Read(image+0x20,2),0),
+                "height",BitConverter.ToUInt16(r.Read(image+0x22,2),0),"texture",r.Word(image)));
+        }
+        var clients=new List<object>();
+        for(uint id=0;id<12;id++) {
+            uint ci=cg+0x15dea8+id*0x3b8,entity=entities+id*0x238;
+            uint dobjSlot=BitConverter.ToUInt16(r.Read(0x02ef4858+id*2,2),0);var models=new List<string>();
+            if(dobjSlot>0&&dobjSlot<2048) {
+                uint obj=0x02e8e850+dobjSlot*0xcc;int parts=Count(r.Read(obj+9,1)[0],32);
+                uint list=r.Word(obj+0xc0);
+                for(uint part=0;part<parts;part++)models.Add(r.Name(r.Word(r.Word(list+part*4))));
+            }
+            clients.Add(Obj("client",id,"dobj_models",models,"animation_tree_ready",r.Word(ci+0x320)>=0x10000,
+                "entity_weapon",r.Word(entity+0xf0+0xd0)&65535,"model_load_state",r.Word(ci+0x344),
+                "origin",r.EntityOrigin(entity+0xf0)));
+        }
+        if(r.Word(0x01a2e7ec)!=10||r.Word(0x02df7d90)!=crc)throw new Exception("map changed during check");
+        var serializer=new JavaScriptSerializer();serializer.MaxJsonLength=1024*1024;
+        Console.WriteLine(serializer.Serialize(Obj("schema_version",1,"read_only",true,
+            "client_sha256","e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b",
+            "map",map,"ncs_crc",crc,"clients",clients,
+            "compass_name",compass,"compass_material",Obj("found",true,"render_default",isDefault,"textures",textures))));
+    }
     public static void ExportCharacters(IntPtr process) {
         var r=new ClientAssets(process);
         var hudMaterials=new Dictionary<string,object>();

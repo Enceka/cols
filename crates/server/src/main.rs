@@ -25,6 +25,15 @@ struct Cli {
 // CLI arguments are parsed once at startup, outside gameplay frame processing.
 #[allow(clippy::large_enum_variant)]
 enum Command {
+    /// Quickly validate each prepared map's server movement, combat and respawns.
+    VerifyMaps {
+        #[arg(long)]
+        catalog: PathBuf,
+        #[arg(long)]
+        output: PathBuf,
+        #[arg(long, default_value_t = 60)]
+        seconds: u32,
+    },
     /// Prepare a real human training opponent from loaded models and animation evidence.
     PrepareTrainingEnemy {
         #[arg(long)]
@@ -188,6 +197,40 @@ async fn main() -> Result<()> {
         .with_writer(std::io::stderr)
         .init();
     match Cli::parse().command {
+        Command::VerifyMaps {
+            catalog,
+            output,
+            seconds,
+        } => {
+            let started = std::time::Instant::now();
+            let catalog = codol_server::game_map_catalog::GameMapCatalog::load(&catalog)?;
+            let catalog_load_msec = started.elapsed().as_millis();
+            let mut report = codol_server::game_map_verify::verify(
+                &catalog,
+                seconds
+                    .checked_mul(1000)
+                    .ok_or_else(|| anyhow::anyhow!("simulation duration overflow"))?,
+            )?;
+            report.catalog_load_msec = catalog_load_msec;
+            report.elapsed_msec = started.elapsed().as_millis();
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&output)?;
+            file.write_all(&serde_json::to_vec_pretty(&report)?)?;
+            file.write_all(b"\n")?;
+            println!(
+                "{} maps, {}ms, passed={}",
+                report.maps.len(),
+                report.elapsed_msec,
+                report.passed
+            );
+            ensure!(
+                report.passed,
+                "one or more map checks failed; see {}",
+                output.display()
+            );
+        }
         Command::PrepareTrainingEnemy {
             game_state,
             character_capture,

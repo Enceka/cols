@@ -41,6 +41,9 @@ pub struct GameMapCatalog {
     rotations: BTreeMap<(u32, u32), Vec<(String, String)>>,
 }
 impl GameMapCatalog {
+    pub(crate) fn preparations(&self) -> impl Iterator<Item = &Arc<PreparedGameState>> {
+        self.states.values()
+    }
     pub fn load(path: &Path) -> Result<Self> {
         ensure!(
             std::fs::metadata(path)?.len() <= 65536,

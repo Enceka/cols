@@ -223,6 +223,13 @@ pub(crate) struct TdmMatch {
     next_route_client: usize,
 }
 impl TdmMatch {
+    pub(crate) fn set_validation_seed(&mut self, seed: u64) {
+        for bot in &mut self.bots {
+            bot.random = seed
+                .wrapping_add(u64::from(bot.snapshot.client_index) * 0x9e3779b9)
+                .max(1);
+        }
+    }
     #[cfg(test)]
     pub fn new(
         config: MatchConfig,

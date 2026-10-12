@@ -1914,6 +1914,40 @@ impl PreparedGameState {
         );
         Ok(Some(tdm))
     }
+    pub(crate) fn for_bot_validation(&self) -> Result<Self> {
+        let mut state = self.clone();
+        let arsenal = self
+            .arsenal
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("map arsenal missing"))?;
+        let config = self
+            .match_config
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("TDM configuration missing"))?;
+        let first = arsenal.next_index();
+        let hands = self
+            .bootstrap_weapon
+            .as_ref()
+            .and_then(|w| w.viewmodel_index);
+        state.match_weapon = Some(Self::resolved_weapon(
+            arsenal.bot_rifle(first + 4)?,
+            &arsenal.source_sha256,
+            hands,
+        )?);
+        state.roster_weapons = config
+            .roster
+            .iter()
+            .enumerate()
+            .map(|(i, bot)| {
+                Self::resolved_weapon(
+                    arsenal.bot_weapon(&bot.weapon_name, first + 5 + i as u16)?,
+                    &arsenal.source_sha256,
+                    hands,
+                )
+            })
+            .collect::<Result<_>>()?;
+        Ok(state)
+    }
     pub(crate) fn match_bot_weapon(&self) -> Option<crate::game_bot::BotWeapon> {
         let weapon = self.match_weapon.as_ref()?;
         Some(crate::game_bot::BotWeapon {
