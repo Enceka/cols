@@ -245,7 +245,8 @@ pub fn player_frame_with_motion(
             prop_baselines: &[],
             view_offset: [0; 3],
             streaks: Default::default(),
-            reward_inventory: None,
+            radar_flags: None,
+            reward_inventory: [None; 4],
             nuke_hud: None,
             perk_display: false,
             local_abilities: None,
@@ -295,7 +296,8 @@ pub struct WorldSnapshot<'a> {
     /// Prediction adds this offset to raw usercmd angles (0x41af8e).
     pub view_offset: [u16; 3],
     pub streaks: crate::game_killstreaks::StreakSnapshot,
-    pub reward_inventory: Option<EquippedWeapon>,
+    pub radar_flags: Option<u8>,
+    pub reward_inventory: [Option<EquippedWeapon>; 4],
     pub nuke_hud: Option<crate::game_hit_feedback::NukeHudSnapshot>,
     pub destroyed_glass: &'a [u16],
     /// Native perk_sidebar_hud operator239 reads PS+0x4bc (hint2 field122).
@@ -402,6 +404,12 @@ pub fn player_frame_with_world(
             return Err(LobbyError("invalid passive skill state"));
         }
     }
+    if world
+        .radar_flags
+        .is_some_and(|f| f > 63 || world.motion.is_none())
+    {
+        return Err(LobbyError("invalid radar flags"));
+    }
     let inventory_weapon = equipment.and_then(|e| e.inventory_weapon).or(weapon);
     let alternate_weapon = equipment.and_then(|e| e.alternate_weapon);
     if alternate_weapon.is_some_and(|w| w == 0 || w >= 900)
@@ -422,10 +430,10 @@ pub fn player_frame_with_world(
         seen.extend(inventory_weapon);
         seen.extend(e.secondary.map(|w| w.weapon));
         seen.extend(e.offhands.into_iter().flatten().map(|w| w.weapon));
-        if let Some(reward) = world.reward_inventory
-            && (reward.weapon == 0 || reward.weapon >= 900 || !seen.insert(reward.weapon))
-        {
-            return Err(LobbyError("invalid reward inventory weapon"));
+        for reward in world.reward_inventory.into_iter().flatten() {
+            if reward.weapon == 0 || reward.weapon >= 900 || !seen.insert(reward.weapon) {
+                return Err(LobbyError("invalid reward inventory weapon"));
+            }
         }
         for other in e.alternates.into_iter().flatten() {
             if other.weapon == 0 || other.weapon >= 900 || !seen.insert(other.weapon) {
@@ -473,7 +481,13 @@ pub fn player_frame_with_world(
     let ammunition: Vec<Ammo> = ammo
         .into_iter()
         .chain(secondary.and_then(|other| other.ammo))
-        .chain(world.reward_inventory.and_then(|other| other.ammo))
+        .chain(
+            world
+                .reward_inventory
+                .into_iter()
+                .flatten()
+                .filter_map(|other| other.ammo),
+        )
         .chain(
             equipment
                 .into_iter()
@@ -802,6 +816,7 @@ pub fn player_frame_with_world(
             motion,
             shellshock,
             world.perk_display,
+            world.radar_flags,
         );
     }
     // 0x5a463d: stats presence, 4-bit mask, first stat is a short.
@@ -843,8 +858,8 @@ pub fn player_frame_with_world(
                 })
             } else if slot <= 5 {
                 equipment.unwrap().alternates[slot - 4]
-            } else if slot == 6 {
-                world.reward_inventory
+            } else if (6..10).contains(&slot) {
+                world.reward_inventory[slot - 6]
             } else {
                 None
             };
@@ -1164,10 +1179,11 @@ fn write_hint2_tail(
     motion: MotionSnapshot,
     shellshock: Option<ShellShockSnapshot>,
     perk_display: bool,
+    radar_flags: Option<u8>,
 ) {
     // 0x5a4541..0x5a458d: hint-2 fields strictly below the last ordinary
     // field, in table order. No gaps and no enclosing gate. Width0 denotes
-    // the single preserve gate at82 (-101) or the direct bool at122 (-57).
+    // the protected six-bit radar codec at82 (-101) or direct bool122 (-57).
     for (index, value, width) in [
         (82, 0, 0),
         (89, u32::from(motion.view_height_lerp_down), 1),
@@ -1184,6 +1200,13 @@ fn write_hint2_tail(
     ] {
         if index >= last_changed {
             break;
+        }
+        if index == 82 {
+            out.bits(u32::from(radar_flags.is_some()), 1);
+            if let Some(flags) = radar_flags {
+                out.bits(u32::from(flags), 6);
+            }
+            continue;
         }
         out.bits(u32::from(value != 0), 1);
         if width != 0 && value != 0 {
@@ -1311,8 +1334,11 @@ mod tests {
             let codec = entry[1].as_i64().unwrap();
             let value = match codec {
                 -101 => {
-                    assert_eq!(r.bits(1).unwrap(), 0);
-                    0
+                    if r.bits(1).unwrap() != 0 {
+                        r.bits(6).unwrap()
+                    } else {
+                        0
+                    }
                 }
                 -57 => r.bits(1).unwrap(),
                 _ => integer(r, codec.unsigned_abs() as usize),
@@ -1661,6 +1687,7 @@ mod tests {
                         duration_msec,
                     }),
                     false,
+                    None,
                 );
                 out.bits(1, 1); // stats gate immediately follows the hint-2 tail
                 out.bits(1, 4);
@@ -1725,12 +1752,54 @@ mod tests {
     }
 
     #[test]
+    fn protected_radar_flags_round_trip_and_clear_without_moving_later_sections() {
+        for alignment in 0..8 {
+            for flags in [0, 1, 2, 5, 7, 9, 11, 63] {
+                let mut out = Writer::default();
+                out.bits(0x55, alignment);
+                write_hint2_tail(
+                    &mut out,
+                    217,
+                    authoritative_motion(),
+                    None,
+                    true,
+                    Some(flags),
+                );
+                out.bytes.push(0xb6);
+                let mut r = Reader::new(&out.bytes);
+                r.bits(alignment).unwrap();
+                let table: serde_json::Value = serde_json::from_str(include_str!(
+                    "../../../fixtures/protocol/player-state-fields-3.3.3.3.json"
+                ))
+                .unwrap();
+                for (index, field) in table["fields"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .enumerate()
+                    .take(217)
+                {
+                    if field[2] != 2 {
+                        continue;
+                    }
+                    if index == 82 {
+                        assert_eq!(r.bits(1).unwrap(), 1);
+                        assert_eq!(r.bits(6).unwrap(), u32::from(flags));
+                    } else {
+                        assert_eq!(r.bits(1).unwrap(), u32::from(index == 122));
+                    }
+                }
+                assert_eq!(r.u8().unwrap(), 0xb6);
+            }
+        }
+    }
+    #[test]
     fn perk_sidebar_gate_is_a_direct_bool_in_the_native_hint2_tail() {
         for alignment in 0..8 {
             for display in [false, true] {
                 let mut out = Writer::default();
                 out.bits(0x55, alignment);
-                write_hint2_tail(&mut out, 217, authoritative_motion(), None, display);
+                write_hint2_tail(&mut out, 217, authoritative_motion(), None, display, None);
                 out.bytes.push(0xb6);
                 let mut r = Reader::new(&out.bytes);
                 r.bits(alignment).unwrap();

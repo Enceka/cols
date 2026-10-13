@@ -757,7 +757,7 @@ fn distance(a: [f32; 3], b: [f32; 3]) -> f32 {
     horizontal_distance(a, b).hypot(a[2] - b[2])
 }
 
-fn aim_angles(eye: [f32; 3], target: [f32; 3]) -> [u16; 3] {
+pub(crate) fn aim_angles(eye: [f32; 3], target: [f32; 3]) -> [u16; 3] {
     let delta = std::array::from_fn::<_, 3, _>(|i| f64::from(target[i]) - f64::from(eye[i]));
     let yaw = delta[1].atan2(delta[0]);
     let pitch = (-delta[2]).atan2(delta[0].hypot(delta[1]));

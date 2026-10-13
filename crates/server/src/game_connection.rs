@@ -106,6 +106,7 @@ pub(crate) struct Connection {
     match_leave_sequence: Option<u32>,
     nuke_banner: Option<(u32, u16)>,
     nuke_return_at: Option<u32>,
+    radio_return: Option<(u32, u16)>,
     nuke_tick_second: Option<u32>,
 }
 
@@ -314,6 +315,11 @@ impl Connection {
             self.replace_game_state(next);
             tracing::info!("applied deferred player backpack at respawn");
         }
+        if let (Some(tdm), Some(state)) = (&mut self.tdm, &self.game_state)
+            && state.radar_resources().is_some()
+        {
+            tdm.streaks.configure_radios(0, state.streak_previews());
+        }
     }
     /// Attach the captured enemy body pose to this connection's target.
     pub(crate) fn set_hit_regions(&mut self, regions: &Arc<crate::game_hit_location::HitRegions>) {
@@ -428,6 +434,7 @@ impl Connection {
             tdm.advance_clock(server_time);
         }
         self.consume_inputs(server_time);
+        self.advance_radios(server_time)?;
         self.advance_nuke(server_time)?;
         if !self.hud_rules_sent
             && self.player.is_some()
@@ -727,17 +734,44 @@ impl Connection {
         if self.tdm.as_ref().is_some_and(|m| !m.finished) {
             state.streak_previews().apply(&mut streaks);
         }
-        let mut reward_inventory = self.player.as_ref().and_then(|p| p.reward_inventory());
+        let mut radar_flags = state.radar_resources().and_then(|_| {
+            self.tdm.as_ref().map(|m| {
+                if m.finished {
+                    0
+                } else {
+                    let flags = m.streaks.radar_flags(m.teams()[0], server_time);
+                    if self
+                        .player
+                        .as_ref()
+                        .is_some_and(|p| p.counter_uav_protected())
+                    {
+                        flags & !2
+                    } else {
+                        flags
+                    }
+                }
+            })
+        });
+        if let (Some(m), Some(resources)) = (&self.tdm, state.radar_resources())
+            && !m.finished
+        {
+            m.streaks.radio_snapshot(0, resources, &mut streaks);
+        }
+        let mut reward_inventory = self
+            .player
+            .as_ref()
+            .map_or([None; 4], |p| p.reward_inventory());
         self.vitals.emp_jammed = self.emp.active(server_time);
         let mut snapshot_vitals = (self.bot.is_some() || self.tdm.is_some()).then_some(self.vitals);
         let mut hit_feedback = state
             .feedback_resources()
             .map(|r| self.hit_feedback.snapshot(server_time, r));
         if let Some(tdm) = self.tdm.as_ref().filter(|_| models_ready) {
-            let mut views = tdm.replay_views();
+            let mut views = tdm.replay_views(server_time);
             if let (Some(motion), Some(equipment)) = (self.motion.as_ref(), equipment) {
                 views.push(crate::game_replay::View {
                     streaks,
+                    radar_flags,
                     reward_inventory,
                     client: 0,
                     shellshock,
@@ -833,6 +867,7 @@ impl Connection {
             command_time = playback.view.motion.command_time;
             equipment = Some(playback.view.equipment);
             streaks = playback.view.streaks;
+            radar_flags = playback.view.radar_flags;
             reward_inventory = playback.view.reward_inventory;
             snapshot_motion = Some(playback.view.motion);
             snapshot_vitals = Some(playback.view.vitals);
@@ -922,6 +957,7 @@ impl Connection {
                 view_offset,
                 streaks,
                 reward_inventory,
+                radar_flags,
                 nuke_hud: self.tdm.as_ref().and_then(|m| {
                     let end = m.streaks.countdown_end();
                     let text = self
@@ -1961,6 +1997,59 @@ impl Connection {
         Ok(())
     }
 
+    fn advance_radios(&mut self, now: u32) -> Result<()> {
+        let Some(resources) = self
+            .game_state
+            .as_ref()
+            .and_then(|s| s.radar_resources())
+            .cloned()
+        else {
+            return Ok(());
+        };
+        let Some(tdm) = &mut self.tdm else {
+            return Ok(());
+        };
+        if self.vitals.health > 0
+            && !tdm.finished
+            && let Some(player) = &mut self.player
+        {
+            for (slot, id) in tdm.streaks.owned_radios(0) {
+                if let Some(r) = resources.radio(id) {
+                    player.grant_reward(slot + 1, r.weapon, r.switch, r.fire_interval_msec);
+                }
+            }
+        }
+        for event in tdm.streaks.drain_radios() {
+            match event {
+                crate::game_killstreaks::RadioEvent::Earned { actor, id, time } => {
+                    tracing::info!(actor, id, time, "radio reward earned")
+                }
+                crate::game_killstreaks::RadioEvent::Called {
+                    actor,
+                    id,
+                    team,
+                    time,
+                } => tracing::info!(
+                    actor,
+                    id,
+                    team,
+                    time,
+                    duration_msec = crate::game_killstreaks::RADAR_MSEC,
+                    "radio support called"
+                ),
+            }
+        }
+        if self.radio_return.is_some_and(|(time, _)| now >= time) {
+            let (_, id) = self.radio_return.take().unwrap();
+            if let Some(player) = &mut self.player {
+                player.remove_reward(id);
+                self.server_commands
+                    .push(format!("a {}", player.equipment().weapon).as_bytes())?;
+            }
+        }
+        Ok(())
+    }
+
     fn advance_nuke(&mut self, now: u32) -> Result<()> {
         let Some(resources) = self
             .game_state
@@ -2808,6 +2897,25 @@ impl Connection {
                 }
             }
             self.input_count += 1;
+            if let (Some(tdm), Some(player), Some(resources)) = (
+                &mut self.tdm,
+                &self.player,
+                self.game_state.as_ref().and_then(|s| s.radar_resources()),
+            ) && self.vitals.health > 0
+                && !tdm.finished
+                && !self.replay.pending()
+                && self.radio_return.is_none()
+                && let Some(radio) = resources
+                    .radios
+                    .iter()
+                    .find(|r| r.weapon == player.equipment().weapon)
+                && tdm
+                    .streaks
+                    .try_radio(0, tdm.teams()[0], radio.native_id, through)
+            {
+                self.radio_return =
+                    Some((through + u32::from(radio.switch.raise_msec), radio.weapon));
+            }
             if let (Some(tdm), Some(player), Some(resources)) = (
                 &mut self.tdm,
                 &self.player,

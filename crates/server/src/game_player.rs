@@ -260,6 +260,14 @@ impl Weapon {
 }
 
 #[derive(Debug, Clone)]
+struct RewardWeapon {
+    id: u16,
+    weapon: Weapon,
+    alternate: Option<Weapon>,
+    alternate_timing: Option<AlternateTiming>,
+}
+
+#[derive(Debug, Clone)]
 pub(crate) struct Player {
     offhands: [Option<crate::game_grenade::Equipped>; 2],
     selected_offhand: Option<usize>,
@@ -273,9 +281,8 @@ pub(crate) struct Player {
     secondary: Option<Weapon>,
     alternate: Option<Weapon>,
     secondary_alternate: Option<Weapon>,
-    reward: Option<Weapon>,
-    reward_alternate: Option<Weapon>,
-    reward_alternate_timing: Option<AlternateTiming>,
+    rewards: [Option<RewardWeapon>; 4],
+    active_reward: Option<usize>,
     alternate_timing: Option<AlternateTiming>,
     secondary_alternate_timing: Option<AlternateTiming>,
     last_time: u32,
@@ -361,9 +368,8 @@ impl Player {
             secondary: None,
             alternate: None,
             secondary_alternate: None,
-            reward: None,
-            reward_alternate: None,
-            reward_alternate_timing: None,
+            rewards: std::array::from_fn(|_| None),
+            active_reward: None,
             alternate_timing: None,
             secondary_alternate_timing: None,
             last_time: 1000,
@@ -400,8 +406,12 @@ impl Player {
             .chain(&self.secondary)
             .chain(&self.alternate)
             .chain(&self.secondary_alternate)
-            .chain(&self.reward)
-            .chain(&self.reward_alternate)
+            .chain(
+                self.rewards
+                    .iter()
+                    .flatten()
+                    .flat_map(|r| std::iter::once(&r.weapon).chain(&r.alternate)),
+            )
     }
     fn inventory(&self) -> impl Iterator<Item = &Weapon> {
         self.weapons().filter(|w| {
@@ -538,6 +548,9 @@ impl Player {
     pub fn hides_victim_death_icon(&self) -> bool {
         self.perks.has("modVictimNoDeadIcon")
     }
+    pub fn counter_uav_protected(&self) -> bool {
+        self.perks.has("modInvalidCounterUav")
+    }
 
     /// WeaponDef +0x48c. Target 0x424830 stops fire types 1/5 after one
     /// shot per trigger;0 is automatic;2/3/4 fire that many rounds.
@@ -659,13 +672,7 @@ impl Player {
     }
 
     pub fn owns_weapon(&self, requested: u16) -> bool {
-        std::iter::once(&self.current)
-            .chain(&self.secondary)
-            .chain(&self.alternate)
-            .chain(&self.secondary_alternate)
-            .chain(&self.reward)
-            .chain(&self.reward_alternate)
-            .any(|w| w.equipment.weapon == requested)
+        self.weapons().any(|w| w.equipment.weapon == requested)
     }
 
     fn sync_ammunition(&mut self) {
@@ -789,50 +796,67 @@ impl Player {
         equipment
     }
     pub fn grant_nuke(&mut self, resources: &crate::game_killstreaks::NukeResources) {
-        if self.owns_weapon(resources.weapon) {
+        self.grant_reward(
+            0,
+            resources.weapon,
+            resources.switch,
+            resources.fire_interval_msec,
+        );
+    }
+    pub fn grant_reward(&mut self, slot: usize, id: u16, switch: SwitchTiming, fire_interval: u16) {
+        if self.owns_weapon(id) || self.rewards[slot].is_some() {
             return;
         }
         let mut equipment = self.current.equipment;
-        equipment.weapon = resources.weapon;
+        equipment.weapon = id;
         equipment.inventory_weapon = None;
         equipment.alternate_weapon = None;
         equipment.alternates = [None; 2];
-        equipment.viewmodel = Some(resources.weapon);
+        equipment.viewmodel = Some(id);
         equipment.ammo = Some(codol_protocol::game_snapshot::Ammo {
-            clip_key: resources.weapon,
-            reserve_key: resources.weapon,
+            clip_key: id,
+            reserve_key: id,
             clip: 1,
             reserve: 0,
         });
-        let mut player = Self::new(equipment, Some(resources.fire_interval_msec), None, None);
-        player.set_switch_timing(resources.switch);
-        self.reward = Some(player.current);
+        let mut player = Self::new(equipment, Some(fire_interval), None, None);
+        player.set_switch_timing(switch);
+        self.rewards[slot] = Some(RewardWeapon {
+            id,
+            weapon: player.current,
+            alternate: None,
+            alternate_timing: None,
+        });
     }
-    pub fn reward_inventory(&self) -> Option<EquippedWeapon> {
-        self.reward.as_ref().map(|w| EquippedWeapon {
-            weapon: w.equipment.weapon,
-            ammo: w.equipment.ammo,
-            needs_rechamber: w.needs_rechamber,
+    pub fn reward_inventory(&self) -> [Option<EquippedWeapon>; 4] {
+        self.rewards.each_ref().map(|r| {
+            r.as_ref().map(|r| EquippedWeapon {
+                weapon: r.weapon.equipment.weapon,
+                ammo: r.weapon.equipment.ammo,
+                needs_rechamber: r.weapon.needs_rechamber,
+            })
         })
     }
     pub fn remove_nuke(&mut self, id: u16) {
-        if self.current.equipment.weapon == id && self.reward.is_some() {
-            std::mem::swap(&mut self.current, self.reward.as_mut().unwrap());
-            std::mem::swap(&mut self.alternate, &mut self.reward_alternate);
-            std::mem::swap(
-                &mut self.alternate_timing,
-                &mut self.reward_alternate_timing,
-            );
+        self.remove_reward(id);
+    }
+    fn restore_reward(&mut self) {
+        if let Some(slot) = self.active_reward.take() {
+            let other = self.rewards[slot].as_mut().unwrap();
+            std::mem::swap(&mut self.current, &mut other.weapon);
+            std::mem::swap(&mut self.alternate, &mut other.alternate);
+            std::mem::swap(&mut self.alternate_timing, &mut other.alternate_timing);
+        }
+    }
+    pub fn remove_reward(&mut self, id: u16) {
+        if self.current.equipment.weapon == id && self.active_reward.is_some() {
+            self.restore_reward();
             self.begin_raise();
         }
-        if self
-            .reward
-            .as_ref()
-            .is_some_and(|w| w.equipment.weapon == id)
-        {
-            self.reward = None;
-            self.reward_alternate = None;
-            self.reward_alternate_timing = None;
+        for reward in &mut self.rewards {
+            if reward.as_ref().is_some_and(|r| r.id == id) {
+                *reward = None;
+            }
         }
     }
 
@@ -1283,23 +1307,36 @@ impl Player {
                     .secondary
                     .as_ref()
                     .into_iter()
-                    .chain(self.reward.as_ref())
+                    .chain(
+                        self.rewards
+                            .iter()
+                            .flatten()
+                            .flat_map(|r| std::iter::once(&r.weapon).chain(&r.alternate)),
+                    )
                     .any(|other| other.equipment.weapon == cmd.weapons[0])
             {
                 self.switch_target = Some(cmd.weapons[0]);
             }
             if remaining == 0 {
                 let requested = self.switch_target.take();
-                if let Some(other) = self.reward.as_mut()
+                self.restore_reward();
+                if let Some(other) = self.alternate.as_mut()
                     && requested == Some(other.equipment.weapon)
                 {
                     self.current.ready();
                     std::mem::swap(&mut self.current, other);
-                    std::mem::swap(&mut self.alternate, &mut self.reward_alternate);
-                    std::mem::swap(
-                        &mut self.alternate_timing,
-                        &mut self.reward_alternate_timing,
-                    );
+                }
+                if let Some(slot) = self
+                    .rewards
+                    .iter()
+                    .position(|r| r.as_ref().is_some_and(|r| requested == Some(r.id)))
+                {
+                    let other = self.rewards[slot].as_mut().unwrap();
+                    self.current.ready();
+                    std::mem::swap(&mut self.current, &mut other.weapon);
+                    std::mem::swap(&mut self.alternate, &mut other.alternate);
+                    std::mem::swap(&mut self.alternate_timing, &mut other.alternate_timing);
+                    self.active_reward = Some(slot);
                 }
                 if let Some(other) = self.secondary.as_mut()
                     && requested == Some(other.equipment.weapon)
@@ -1343,7 +1380,12 @@ impl Player {
                 .secondary
                 .as_ref()
                 .into_iter()
-                .chain(self.reward.as_ref())
+                .chain(
+                    self.rewards
+                        .iter()
+                        .flatten()
+                        .flat_map(|r| std::iter::once(&r.weapon).chain(&r.alternate)),
+                )
                 .any(|other| other.equipment.weapon == cmd.weapons[0] && other.switch.is_some())
         {
             self.begin_drop(cmd.weapons[0]);
@@ -2071,6 +2113,45 @@ pub(crate) mod tests {
         )
     }
     #[test]
+    fn ordinary_radios_and_nuke_switch_without_overwriting_rewards_or_rifle_forms() {
+        let mut p = switchable_player(352, 0.9).with_alternate(
+            switchable_player(353, 0.9),
+            AlternateTiming {
+                drop_msec: 100,
+                raise_msec: 100,
+            },
+        );
+        let timing = crate::game_killstreaks::test_resources().switch;
+        p.grant_nuke(&crate::game_killstreaks::test_resources());
+        p.grant_reward(1, 301, timing, 800);
+        p.grant_reward(2, 302, timing, 800);
+        assert_eq!(
+            p.reward_inventory().map(|w| w.map(|w| w.weapon)),
+            [Some(323), Some(301), Some(302), None]
+        );
+        let mut time = 1000;
+        for id in [301, 302, 323, 353, 352, 302] {
+            for _ in 0..30 {
+                time += 100;
+                p.apply(&UserCommand {
+                    time,
+                    weapons: [id, 0, 0],
+                    ..Default::default()
+                });
+            }
+            assert_eq!(p.equipment().weapon, id);
+            for owned in [301, 302, 323, 352, 353] {
+                assert!(p.owns_weapon(owned));
+            }
+        }
+        p.remove_reward(302);
+        assert_eq!(p.equipment().weapon, 352);
+        assert!(!p.owns_weapon(302));
+        assert!(p.owns_weapon(301) && p.owns_weapon(323) && p.owns_weapon(353));
+        p.remove_reward(301);
+        assert!(p.owns_weapon(323));
+    }
+    #[test]
     fn nuclear_reward_switches_through_native_inventory_and_returns_the_original_weapon() {
         let mut p = player();
         p.set_switch_timing(SwitchTiming {
@@ -2083,7 +2164,7 @@ pub(crate) mod tests {
         let ammunition = p.equipment().ammo;
         p.grant_nuke(&resources);
         assert!(p.owns_weapon(323));
-        assert_eq!(p.reward_inventory().unwrap().ammo.unwrap().clip, 1);
+        assert_eq!(p.reward_inventory()[0].unwrap().ammo.unwrap().clip, 1);
         let mut command = cmd(1100, 0);
         command.weapons[0] = 323;
         p.apply(&command);
@@ -2091,7 +2172,7 @@ pub(crate) mod tests {
         command.time = 1333;
         p.apply(&command);
         assert_eq!(p.equipment().weapon, 323);
-        assert_eq!(p.reward_inventory().unwrap().weapon, 352);
+        assert_eq!(p.reward_inventory()[0].unwrap().weapon, 352);
         p.remove_nuke(323);
         assert_eq!(p.equipment().weapon, 352);
         assert_eq!(
@@ -2101,7 +2182,7 @@ pub(crate) mod tests {
             ammunition.map(|a| (a.clip_key, a.reserve_key, a.clip, a.reserve))
         );
         assert!(!p.owns_weapon(323));
-        assert!(p.reward_inventory().is_none());
+        assert!(p.reward_inventory().iter().all(Option::is_none));
     }
     fn cmd(time: u32, buttons: u32) -> UserCommand {
         UserCommand {

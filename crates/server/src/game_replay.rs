@@ -38,7 +38,8 @@ impl Resources {
 #[derive(Clone)]
 pub(crate) struct View {
     pub streaks: codol_protocol::game_killstreaks::StreakSnapshot,
-    pub reward_inventory: Option<codol_protocol::game_snapshot::EquippedWeapon>,
+    pub radar_flags: Option<u8>,
+    pub reward_inventory: [Option<codol_protocol::game_snapshot::EquippedWeapon>; 4],
     pub client: u8,
     pub motion: Motion,
     pub angles: [u16; 3],
@@ -370,7 +371,8 @@ mod tests {
             time,
             views: vec![View {
                 streaks: Default::default(),
-                reward_inventory: None,
+                radar_flags: None,
+                reward_inventory: [None; 4],
                 shellshock: None,
                 client: 7,
                 motion,

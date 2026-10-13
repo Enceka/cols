@@ -14,7 +14,8 @@ pub(crate) struct SnapshotWorld<'a> {
     pub prop_baselines: &'a [codol_protocol::game_props::PropSnapshot],
     pub view_offset: [u16; 3],
     pub streaks: codol_protocol::game_killstreaks::StreakSnapshot,
-    pub reward_inventory: Option<codol_protocol::game_snapshot::EquippedWeapon>,
+    pub radar_flags: Option<u8>,
+    pub reward_inventory: [Option<codol_protocol::game_snapshot::EquippedWeapon>; 4],
     pub nuke_hud: Option<codol_protocol::game_hit_feedback::NukeHudSnapshot>,
     pub perk_display: bool,
     pub bags: &'a [codol_protocol::game_scavenger::BagSnapshot],
@@ -148,6 +149,10 @@ pub struct PreparedGameState {
     #[serde(default)]
     nuke_file: Option<std::path::PathBuf>,
     #[serde(default)]
+    radar_file: Option<std::path::PathBuf>,
+    #[serde(skip)]
+    radar_resources: Option<Arc<crate::game_killstreaks::RadarResources>>,
+    #[serde(default)]
     props_file: Option<std::path::PathBuf>,
     #[serde(skip)]
     props_resources: Option<Arc<crate::game_props::Resources>>,
@@ -218,6 +223,9 @@ impl PreparedGameState {
     }
     pub(crate) fn nuke_resources(&self) -> Option<&crate::game_killstreaks::NukeResources> {
         self.nuke_resources.as_deref()
+    }
+    pub(crate) fn radar_resources(&self) -> Option<&crate::game_killstreaks::RadarResources> {
+        self.radar_resources.as_deref()
     }
     pub(crate) fn streak_previews(&self) -> crate::game_killstreaks::Previews {
         self.player_streak_previews
@@ -600,6 +608,13 @@ impl PreparedGameState {
         let directory = path.parent().unwrap_or(Path::new("."));
         if let Some(file) = &state.props_file {
             state.props_resources = Some(Arc::new(crate::game_props::Resources::load(
+                &directory.join(file),
+                &state.map,
+                state.ncs_crc,
+            )?));
+        }
+        if let Some(file) = &state.radar_file {
+            state.radar_resources = Some(Arc::new(crate::game_killstreaks::RadarResources::load(
                 &directory.join(file),
                 &state.map,
                 state.ncs_crc,
@@ -1849,6 +1864,7 @@ impl PreparedGameState {
                 prop_baselines: world.prop_baselines,
                 view_offset: world.view_offset,
                 streaks: world.streaks,
+                radar_flags: world.radar_flags,
                 reward_inventory: world.reward_inventory,
                 nuke_hud: world.nuke_hud,
                 destroyed_glass: &destroyed_glass,
@@ -2074,10 +2090,14 @@ impl PreparedGameState {
             tdm.props =
                 crate::game_props::Props::new(resources.clone(), self.collision.as_ref().unwrap());
         }
+        if self.radar_resources.is_some() {
+            tdm.streaks.configure_radios(0, self.player_streak_previews);
+        }
         if let Some(resources) = &self.nuke_resources {
             tdm.streaks.enable();
             tdm.streaks.acceptance_seed(resources.acceptance_seed);
             tdm.acceptance_stationary = resources.acceptance_stationary;
+            tdm.acceptance_fire_after_msec = resources.acceptance_fire_after_msec;
         }
         tdm.set_weapon_move_scale(
             self.match_weapon
@@ -2156,6 +2176,8 @@ pub(crate) fn synthetic() -> PreparedGameState {
         feedback_resources: None,
         voice_file: None,
         nuke_file: None,
+        radar_file: None,
+        radar_resources: None,
         props_file: None,
         props_resources: None,
         nuke_resources: None,

@@ -55,7 +55,7 @@ def main():
     extract.add_argument("--props-state", action="store_true", help="sample native map prop poses and effects read-only")
     extract.add_argument("--props-frame", action="store_true", help="read one native map prop frame")
     extract.add_argument("--props-assets", action="store_true", help="read registered map prop models and effects")
-    extract.add_argument("--nuke-assets", action="store_true", help="read the two fixed registered nuclear reward weapons")
+    extract.add_argument("--nuke-assets", action="store_true", help="read fixed registered nuclear, UAV and counter-UAV reward weapons")
     extract.add_argument("--nuke-state", action="store_true", help="sample native streak progress, action slots and inventory read-only")
     extract.add_argument("--nuke-frame", action="store_true", help="read one native nuclear HUD/inventory and actor frame")
     args = parser.parse_args()

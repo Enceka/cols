@@ -246,6 +246,7 @@ pub(crate) struct TdmMatch {
     pub(crate) props: crate::game_props::Props,
     forced_winner: Option<u8>,
     pub(crate) acceptance_stationary: bool,
+    pub(crate) acceptance_fire_after_msec: Option<u32>,
     scores: [i32; 4],
     kills: Vec<Kill>,
     pub dirty: bool,
@@ -364,6 +365,7 @@ impl TdmMatch {
             props: Default::default(),
             forced_winner: None,
             acceptance_stationary: false,
+            acceptance_fire_after_msec: None,
             scores: [0; 4],
             kills: Vec::new(),
             dirty: true,
@@ -403,7 +405,7 @@ impl TdmMatch {
     pub(crate) fn jump_count(&self) -> u32 {
         self.bots.iter().map(|b| b.controller.jump_count()).sum()
     }
-    pub fn replay_views(&self) -> Vec<crate::game_replay::View> {
+    pub fn replay_views(&self, now: u32) -> Vec<crate::game_replay::View> {
         self.bots
             .iter()
             .filter_map(|bot| {
@@ -411,10 +413,18 @@ impl TdmMatch {
                 Some(crate::game_replay::View {
                     streaks: self.streaks.snapshot(
                         bot.snapshot.client_index,
-                        weapon.reward_inventory().map_or(0, |w| w.weapon),
+                        weapon.reward_inventory()[0].map_or(0, |w| w.weapon),
+                    ),
+                    radar_flags: Some(
+                        self.streaks.radar_flags(bot.snapshot.team, now)
+                            & if weapon.counter_uav_protected() {
+                                !2
+                            } else {
+                                u8::MAX
+                            },
                     ),
                     reward_inventory: weapon.reward_inventory(),
-                    shellshock: bot.tactical.snapshot(bot.snapshot_time),
+                    shellshock: bot.tactical.snapshot(now),
                     client: bot.snapshot.client_index,
                     motion: bot.view_motion.clone(),
                     angles: bot.snapshot.angles,
@@ -423,7 +433,7 @@ impl TdmMatch {
                         health: bot.health,
                         damage_event: bot.damage_event,
                         damage_count: bot.damage_count,
-                        emp_jammed: bot.emp.active(bot.snapshot_time),
+                        emp_jammed: bot.emp.active(now),
                         spawn_count: (self.rows[usize::from(bot.snapshot.client_index)].deaths
                             + u32::from(bot.health > 0)) as u8,
                         ..Default::default()
@@ -1033,6 +1043,143 @@ impl TdmMatch {
         self.streaks.clear_owned();
         self.finish(now);
     }
+    /// Marked acceptance can stage ordinary enemy fire while keeping all
+    /// actors at their captured starts. Shots use the normal weapon, collision,
+    /// damage and replay paths; the diagnostic never writes client state.
+    fn stationary_shots(
+        &mut self,
+        now: u32,
+        local: EnemySnapshot,
+        health: u16,
+    ) -> Vec<(u8, u8, crate::game_bot::BotShot)> {
+        if health == 0
+            || !local.alive
+            || self
+                .acceptance_fire_after_msec
+                .is_none_or(|t| self.start.is_none_or(|start| now.saturating_sub(start) < t))
+        {
+            return Vec::new();
+        }
+        let Some(bot) = self.bots.iter_mut().find(|b| {
+            b.health > 0
+                && b.snapshot.team != local.team
+                && b.weapon
+                    .as_ref()
+                    .is_some_and(|w| !w.counter_uav_protected())
+        }) else {
+            return Vec::new();
+        };
+        let held = bot.weapon.as_mut().unwrap();
+        let eye = [
+            bot.snapshot.origin[0],
+            bot.snapshot.origin[1],
+            bot.snapshot.origin[2] + bot.view_motion.view_height,
+        ];
+        let angles = crate::game_bot::aim_angles(
+            eye,
+            [local.origin[0], local.origin[1], local.origin[2] + 40.0],
+        );
+        let reload = held
+            .equipment()
+            .ammo
+            .is_some_and(|a| a.clip == 0 && a.reserve > 0);
+        held.apply(&codol_protocol::game_usercmd::UserCommand {
+            time: now,
+            angles,
+            buttons: if reload {
+                16
+            } else if (now / 500).is_multiple_of(2) {
+                1
+            } else {
+                0
+            },
+            weapons: held.equipment().input_weapons(),
+            ..Default::default()
+        });
+        bot.snapshot.angles = angles;
+        bot.snapshot.events = held.equipment().events.unwrap();
+        bot.snapshot_time = now;
+        bot.view_motion.command_time = now;
+        held.take_shots()
+            .into_iter()
+            .map(|s| {
+                (
+                    bot.snapshot.client_index,
+                    bot.snapshot.team,
+                    crate::game_bot::BotShot {
+                        time: s.time,
+                        eye,
+                        angles: s.angles,
+                        weapon: s.weapon,
+                        ballistics: s.ballistics,
+                        generation: 0,
+                    },
+                )
+            })
+            .collect()
+    }
+    fn resolve_bot_shots(
+        &mut self,
+        now: u32,
+        player: (EnemySnapshot, f32, u16),
+        shots: Vec<(u8, u8, crate::game_bot::BotShot)>,
+        collision: &Collision,
+        tick: &mut Tick,
+    ) {
+        let (mut local, local_height, local_health) = player;
+        let mut player_health = local_health;
+        for (attacker, team, shot) in shots {
+            if self.finished {
+                break;
+            }
+            if self.bots[usize::from(attacker - 1)].health == 0 {
+                continue;
+            }
+            let outcome = game_combat::fire_at_actors(
+                shot.eye,
+                shot.angles,
+                now,
+                shot.ballistics,
+                (attacker, team),
+                game_combat::ActorScene {
+                    actors: &self.actors(local, local_height),
+                    regions: None,
+                    collision,
+                },
+            );
+            let mut feedback = self.damage_bots(now, attacker, shot.weapon, &outcome.damage, false);
+            for &(entity, damage) in &outcome.props_damage {
+                self.props
+                    .damage(now, entity, damage, attacker, false, collision);
+            }
+            for &(victim, damage, headshot) in &outcome.damage {
+                if victim == 0 && player_health > 0 {
+                    player_health = player_health.saturating_sub(damage);
+                    if player_health == 0 {
+                        feedback = Some(codol_protocol::game_hit_feedback::HitKind::Kill);
+                    } else {
+                        feedback.get_or_insert(codol_protocol::game_hit_feedback::HitKind::Hit);
+                    }
+                    tick.hits.push(PlayerHit {
+                        damage,
+                        attacker,
+                        weapon: shot.weapon,
+                        headshot,
+                    });
+                    local.alive = player_health > 0;
+                }
+            }
+            if let Some(kind) = feedback {
+                self.bots[usize::from(attacker - 1)].feedback = Some((now, kind));
+            }
+            tick.impacts.extend(
+                outcome
+                    .impacts
+                    .into_iter()
+                    .map(|impact| (shot.weapon, impact)),
+            );
+        }
+    }
     pub fn restore_nuke_rewards(&mut self, resources: &crate::game_killstreaks::NukeResources) {
         for bot in &mut self.bots {
             if bot.health > 0
@@ -1073,7 +1220,7 @@ impl TdmMatch {
     ) -> Result<Tick> {
         let started = std::time::Instant::now();
         let mut movement = std::time::Duration::ZERO;
-        let (mut local, local_height, local_health) = player;
+        let (local, local_height, local_health) = player;
         let mut tick = Tick::default();
         self.advance_clock(now);
         if self.finished {
@@ -1135,6 +1282,8 @@ impl TdmMatch {
         // Isolated acceptance keeps ordinary death/respawn and damage rules,
         // while the bots stay at their configured starts and never attack.
         if self.acceptance_stationary {
+            let shots = self.stationary_shots(now, local, local_health);
+            self.resolve_bot_shots(now, player, shots, collision, &mut tick);
             return Ok(tick);
         }
         let mut shots = Vec::new();
@@ -1488,58 +1637,7 @@ impl TdmMatch {
         }
         let routing = started.elapsed().saturating_sub(movement);
         let damage_started = std::time::Instant::now();
-        let mut player_health = local_health;
-        for (attacker, team, shot) in shots {
-            if self.finished {
-                break;
-            }
-            if self.bots[usize::from(attacker - 1)].health == 0 {
-                continue;
-            }
-            let outcome = game_combat::fire_at_actors(
-                shot.eye,
-                shot.angles,
-                now,
-                shot.ballistics,
-                (attacker, team),
-                game_combat::ActorScene {
-                    actors: &self.actors(local, local_height),
-                    regions: None,
-                    collision,
-                },
-            );
-            let mut feedback = self.damage_bots(now, attacker, shot.weapon, &outcome.damage, false);
-            for &(entity, damage) in &outcome.props_damage {
-                self.props
-                    .damage(now, entity, damage, attacker, false, collision);
-            }
-            for &(victim, damage, headshot) in &outcome.damage {
-                if victim == 0 && player_health > 0 {
-                    player_health = player_health.saturating_sub(damage);
-                    if player_health == 0 {
-                        feedback = Some(codol_protocol::game_hit_feedback::HitKind::Kill);
-                    } else {
-                        feedback.get_or_insert(codol_protocol::game_hit_feedback::HitKind::Hit);
-                    }
-                    tick.hits.push(PlayerHit {
-                        damage,
-                        attacker,
-                        weapon: shot.weapon,
-                        headshot,
-                    });
-                    local.alive = player_health > 0;
-                }
-            }
-            if let Some(kind) = feedback {
-                self.bots[usize::from(attacker - 1)].feedback = Some((now, kind));
-            }
-            tick.impacts.extend(
-                outcome
-                    .impacts
-                    .into_iter()
-                    .map(|impact| (shot.weapon, impact)),
-            );
-        }
+        self.resolve_bot_shots(now, player, shots, collision, &mut tick);
         if started.elapsed().as_millis() > 25 {
             tracing::warn!(
                 route_msec = routing.as_millis(),
@@ -1800,6 +1898,93 @@ mod tests {
         assert_eq!(game.player_spawn_angles(), angles[0][0]);
         config.spawn_angles.as_mut().unwrap()[0].pop();
         assert!(config.validate(&c).is_err());
+    }
+    #[test]
+    fn replay_support_expiry_uses_recording_time_even_when_an_actor_did_not_move() {
+        let c = world();
+        let mut m = TdmMatch::new(config(), template(), 190.0, &c).unwrap();
+        for bot in &mut m.bots {
+            bot.weapon = Some(crate::game_player::tests::scavenger_player(90, 180));
+        }
+        let mut profile = vec![0; codol_protocol::profile::SNAPSHOT_BYTES];
+        let layout: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../fixtures/protocol/killstreaks-3.3.3.3.json"
+        ))
+        .unwrap();
+        let offset = layout["class_offsets"][0][0].as_u64().unwrap() as usize;
+        profile[offset..offset + 4].copy_from_slice(&60079i32.to_le_bytes());
+        let previews =
+            crate::game_killstreaks::Previews::from_profile(&profile, 0, &[60078], 0.0).unwrap();
+        m.streaks.configure_radios(0, previews);
+        for n in 1..=4 {
+            m.streaks.spawn(1);
+            m.streaks.credit(n * 1000, 1, n, Some(0));
+        }
+        assert!(m.streaks.try_radio(0, m.teams()[0], 3, 5000));
+        let enemy = m
+            .bots
+            .iter()
+            .find(|b| b.snapshot.team != m.teams()[0])
+            .unwrap()
+            .snapshot
+            .client_index;
+        assert_eq!(
+            m.replay_views(5001)
+                .iter()
+                .find(|v| v.client == enemy)
+                .unwrap()
+                .radar_flags,
+            Some(2)
+        );
+        assert_eq!(
+            m.replay_views(35000)
+                .iter()
+                .find(|v| v.client == enemy)
+                .unwrap()
+                .radar_flags,
+            Some(0)
+        );
+    }
+    #[test]
+    fn staged_stationary_fire_uses_ordinary_weapons_and_damage_without_moving_actors() {
+        let collision = world();
+        let mut m = TdmMatch::new(config(), template(), 190.0, &collision).unwrap();
+        m.acceptance_stationary = true;
+        m.acceptance_fire_after_msec = Some(4000);
+        m.advance_clock(1000);
+        let mut held = crate::game_player::tests::scavenger_player(90, 180);
+        held.set_ballistics(game_combat::Ballistics {
+            damage: 33,
+            range: 8192.0,
+            near_range: 500.0,
+            location_multipliers: None,
+            falloff: None,
+            pellets: 1,
+            spread_degrees: 0.0,
+        });
+        for bot in &mut m.bots {
+            bot.weapon = Some(held.clone());
+            bot.initial_weapon = Some(held.clone());
+        }
+        let before = m.snapshots();
+        let mut local = template();
+        local.origin = [200.0, 0.0, 0.0];
+        assert!(m.stationary_shots(4999, local, 100).is_empty());
+        let mut tick = Tick::default();
+        for now in (5000..5200).step_by(50) {
+            let shots = m.stationary_shots(now, local, 100);
+            m.resolve_bot_shots(now, (local, 80.0, 100), shots, &collision, &mut tick);
+        }
+        assert!(
+            tick.hits
+                .iter()
+                .any(|h| h.damage > 0 && m.teams()[usize::from(h.attacker)] != local.team)
+        );
+        assert_eq!(
+            before.iter().map(|b| b.origin).collect::<Vec<_>>(),
+            m.snapshots().iter().map(|b| b.origin).collect::<Vec<_>>()
+        );
+        assert!(m.stationary_shots(5250, local, 0).is_empty());
     }
     #[test]
     fn stationary_acceptance_keeps_six_enemies_still_and_respawns_real_deaths() {
@@ -2335,7 +2520,7 @@ mod tests {
         assert!(!game.bots[ally].emp.active(2000));
         game.bots[enemy].snapshot_time = 2000;
         assert!(
-            game.replay_views()
+            game.replay_views(2000)
                 .iter()
                 .find(|v| v.client == game.bots[enemy].snapshot.client_index)
                 .unwrap()
@@ -2347,7 +2532,7 @@ mod tests {
         assert!(!game.bots[enemy].emp.active(2100));
         assert!(
             !game
-                .replay_views()
+                .replay_views(2100)
                 .iter()
                 .find(|v| v.client == victim.client_index)
                 .unwrap()
