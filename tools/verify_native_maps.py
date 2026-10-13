@@ -150,9 +150,14 @@ class Client:
                          for m in state.get('room_members',[])],
                 last_click=getattr(self,'last_click',None)))
             if trace_path:trace_path.write_text(json.dumps(trace,indent=2)+'\n')
+        def target_started(state):
+            return (state.get('room_native_map')==target
+                    and state.get('room_member_count')==12
+                    and 3<=state.get('connection_state',0)<=10)
         for _ in range(80):
             state=self.state()
             record(state,'room')
+            if target_started(state):return state
             if state.get('connection_state',0)!=0:
                 raise RuntimeError('native client left room during map selection: '+json.dumps(
                     {k:state.get(k) for k in ('connection_state','room_native_map','room_member_count')}))
@@ -177,6 +182,7 @@ class Client:
                         if after['room_native_map']!=target:
                             self.click(arrows[back],.769)
                             after=self.state();record(after,'announce-return-'+back)
+                            if target_started(after):return after
                             if after.get('connection_state',0)!=0:
                                 raise RuntimeError('native client left room while returning to target map')
                             break
@@ -184,7 +190,8 @@ class Client:
                     # outward and return inputs. Route from the actual result.
                     continue
                 return self.wait(lambda s:s['room_native_map']==target
-                                 and s['room_member_count']==12 and s.get('connection_state',0)==0,20)
+                                 and s['room_member_count']==12
+                                 and (s.get('connection_state',0)==0 or target_started(s)),20)
             if current in seen:
                 if direction!='auto' or reversed_once:
                     raise RuntimeError('map selector cycled without finding the prepared map')
@@ -205,6 +212,7 @@ class Client:
                 self.click(arrows[selected],.769)
                 after=self.state()
                 record(after,'arrow-'+selected)
+                if target_started(after):return after
                 if after.get('connection_state',0)!=0:
                     raise RuntimeError('native client left room during map selection: '+json.dumps(
                         {k:after.get(k) for k in ('connection_state','room_native_map','room_member_count')}))
@@ -306,7 +314,7 @@ def prepare(catalog_path, output):
         state = json.loads(source.read_text())
         if state['map'] != entry['map'] or state['mode'] != entry['mode']:
             raise ValueError('catalog map identity mismatch')
-        for key in ('arsenal_file','collision_file','appearance_file'):
+        for key in ('arsenal_file','collision_file','appearance_file','voice_file'):
             if state.get(key):
                 state[key] = str((source.parent/state[key]).resolve())
         state['match_config'].update(score_limit=1000, time_limit_msec=60000)
@@ -379,7 +387,7 @@ def run(catalog_path, experiment, output, map_names=None, map_direction='right',
                 state=client.wait(lambda s:s['room_member_count']>0,15)
             print('room',state['room_native_map'],state['room_member_count'],flush=True)
             if quick_playlist is None:
-                client.select_map(entry['map'],map_direction)
+                state=client.select_map(entry['map'],map_direction)
             if state['connection_state']==0:client.click(.848,.916)
             live=client.wait(lambda s:s['connection_state']==10 and s['current_snapshot_valid']==1,60)
             if live['net_constants_crc']!=source['ncs_crc']:

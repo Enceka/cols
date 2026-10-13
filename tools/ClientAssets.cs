@@ -1485,7 +1485,8 @@ partial class ClientAssets {
                     "torso_animation",r.Word(at+0xf0+0xd8),"torso_lerp_animation",r.Word(ci+0x1b0),
                     "torso_lerp_rate",BitConverter.ToSingle(r.Read(ci+0x1d4,4),0)));
             }
-            frames.Add(Obj("time",r.Word(cg+0xae4c8),"clients",clients));
+            frames.Add(Obj("time",r.Word(cg+0xae4c8),"replay_active",r.Word(cg+0xc6fe8),
+                "pm_type",r.Word(cg+4),"clients",clients));
             System.Threading.Thread.Sleep(50);
         }
         var serializer=new JavaScriptSerializer();serializer.MaxJsonLength=8*1024*1024;

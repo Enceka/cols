@@ -1045,6 +1045,10 @@ impl TdmMatch {
                         bot.route_target = (!bot.route.is_empty()).then_some(goal);
                         bot.route_time = now;
                         bot.steering = None;
+                        tracing::debug!(client=bot.snapshot.client_index, now, seed,
+                            origin=?origin, goal=?goal, nodes=bot.route.len(),
+                            jumps=bot.route.iter().filter(|p| p.jump_from.is_some()).count(),
+                            stuck_level=bot.stuck_level, "TDM bot route planned");
                     }
                 }
             }
@@ -1110,9 +1114,21 @@ impl TdmMatch {
                     alive: true,
                 })
             });
+            let was_traversing = bot.controller.traversing();
+            let previous_jumps = bot.controller.jump_count();
             let mut frame =
                 bot.controller
                     .step_route(now, target, bot.steering, active_weapon, collision);
+            if was_traversing
+                || bot.controller.traversing()
+                || previous_jumps != bot.controller.jump_count()
+            {
+                tracing::debug!(client=bot.snapshot.client_index, now,
+                    origin=?frame.motion.origin, velocity=?frame.motion.velocity,
+                    grounded=frame.motion.grounded(), traversing=bot.controller.traversing(),
+                    jumps=bot.controller.jump_count(), waypoint=?bot.steering,
+                    "TDM bot traversal sample");
+            }
             for landing in &frame.landings {
                 if let Some(event) = landing.event {
                     if let Some(held) = &mut bot.weapon {

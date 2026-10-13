@@ -41,7 +41,7 @@ class NativeMapIsolation(unittest.TestCase):
             state = root / 'normal.json'
             state.write_text(json.dumps(dict(map='mp_bog_sh', mode='war',
                 arsenal_file='resources/arsenal.json', collision_file='resources/collision.json',
-                appearance_file='resources/appearance.json',
+                appearance_file='resources/appearance.json', voice_file='resources/voice.json',
                 match_config=dict(score_limit=7500, time_limit_msec=600000))))
             catalog = root / 'normal-catalog.json'
             catalog.write_text(json.dumps(dict(schema_version=1,
@@ -50,7 +50,7 @@ class NativeMapIsolation(unittest.TestCase):
             prepared = prepare(catalog, root / 'diagnostic')
             diagnostic = json.loads((prepared.parent / 'mp_bog_sh.json').read_text())
             self.assertEqual(diagnostic['match_config'], dict(score_limit=1000, time_limit_msec=60000))
-            for key in ('arsenal_file', 'collision_file', 'appearance_file'):
+            for key in ('arsenal_file', 'collision_file', 'appearance_file', 'voice_file'):
                 self.assertEqual(Path(diagnostic[key]).parent, (root / 'resources').resolve())
             self.assertEqual([path.read_bytes() for path in (state, catalog)], original)
             with self.assertRaises(FileExistsError):
@@ -122,6 +122,26 @@ class NativeMapIsolation(unittest.TestCase):
                 return dict(room_native_map='mp_cross_fire',room_member_count=next(self.samples))
             def click(self,*args):raise AssertionError('target map must remain selected')
         self.assertEqual(AdmittingClient().select_map('mp_cross_fire')['room_member_count'],12)
+
+    def test_requested_map_autostart_after_arrow_finishes_selection_without_more_input(self):
+        class StartingClient(Client):
+            def __init__(self):self.clicked=False;self.clicks=0
+            def state(self):
+                return dict(room_native_map='mp_subbase_sh' if self.clicked else 'mp_cargoship',
+                            room_member_count=12,connection_state=3 if self.clicked else 0)
+            def click(self,*args):self.clicked=True;self.clicks+=1
+        client=StartingClient()
+        result=client.select_map('mp_subbase_sh','left')
+        self.assertEqual(result['connection_state'],3)
+        self.assertEqual(client.clicks,1)
+
+    def test_requested_map_already_loading_does_not_send_room_inputs(self):
+        class LoadingClient(Client):
+            def __init__(self):pass
+            def state(self):
+                return dict(room_native_map='mp_subbase_sh',room_member_count=12,connection_state=6)
+            def click(self,*args):raise AssertionError('loading map must not receive room inputs')
+        self.assertEqual(LoadingClient().select_map('mp_subbase_sh')['connection_state'],6)
 
     def test_auto_route_keeps_one_direction_when_observed_order_is_incomplete(self):
         class ReorderedClient(Client):
