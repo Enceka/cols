@@ -11,6 +11,26 @@ import gamehub_run
 
 
 class ClientProcessIdentity(unittest.TestCase):
+    def test_successful_wrapper_exit_still_waits_for_verified_detached_game(self):
+        launcher = SimpleNamespace(pid=10, poll=lambda: 0)
+        with patch.object(gamehub_run, 'client_pid', side_effect=[None, 20]) as resolve, \
+                patch.object(gamehub_run.time, 'sleep') as sleep:
+            self.assertEqual(gamehub_run.wait_client_pid(launcher, '/owned/game.exe', Path('/owned/prefix')), 20)
+        self.assertEqual(resolve.call_count, 2)
+        sleep.assert_called_once_with(0.25)
+
+    def test_failed_wrapper_and_missing_game_keep_bounded_startup_errors(self):
+        launcher = SimpleNamespace(pid=10, poll=lambda: 3)
+        with patch.object(gamehub_run, 'client_pid', return_value=None), \
+                self.assertRaisesRegex(RuntimeError, 'status 3'):
+            gamehub_run.wait_client_pid(launcher, '/owned/game.exe', Path('/owned/prefix'))
+        launcher.poll = lambda: 0
+        with patch.object(gamehub_run, 'client_pid', return_value=None), \
+                patch.object(gamehub_run.time, 'monotonic', side_effect=[0, 1, 91]), \
+                patch.object(gamehub_run.time, 'sleep'), \
+                self.assertRaisesRegex(RuntimeError, 'marked client process did not appear'):
+            gamehub_run.wait_client_pid(launcher, '/owned/game.exe', Path('/owned/prefix'))
+
     def test_dos_image_requires_the_exact_executable_and_root_drive_mapping(self):
         with tempfile.TemporaryDirectory() as name:
             prefix = Path(name)

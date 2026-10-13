@@ -121,6 +121,20 @@ def client_pid(launcher, executable, prefix):
     return None
 
 
+def wait_client_pid(launcher, executable, prefix, seconds=90):
+    """A successful start.exe can exit before its detached PE becomes visible."""
+    until = time.monotonic() + seconds
+    while time.monotonic() < until:
+        native_pid = client_pid(launcher.pid, executable, prefix)
+        if native_pid is not None:
+            return native_pid
+        exit_code = launcher.poll()
+        if exit_code is not None and exit_code != 0:
+            raise RuntimeError(f"client launcher exited with status {exit_code} before the marked game appeared")
+        time.sleep(0.25)
+    raise RuntimeError("marked client process did not appear")
+
+
 def stop_prefix(engine, env):
     stopped = subprocess.run([str(engine / "bin/wineserver"), "-k"], env=env,
                              capture_output=True, text=True, timeout=15)
@@ -406,16 +420,7 @@ def main():
                 cross = subprocess.Popen([wine, "CrossProxy.exe", "41c221af", "0", "0", "0", "5000002"], cwd=work / "Cross", env=env, stdout=cross_log, stderr=subprocess.STDOUT)
             native_pid = process.pid
             if args.action == "client":
-                until = time.monotonic() + 90
-                native_pid = None
-                while native_pid is None and time.monotonic() < until:
-                    native_pid = client_pid(process.pid, argv[1], prefix)
-                    if native_pid is None:
-                        if process.poll() is not None:
-                            raise RuntimeError("client launcher exited before the marked game appeared")
-                        time.sleep(0.25)
-                if native_pid is None:
-                    raise RuntimeError("marked client process did not appear")
+                native_pid = wait_client_pid(process, argv[1], prefix)
             state.update(pid=native_pid, launcher_pid=process.pid, harness_pid=os.getpid(), argv=argv)
             (output / "experiment.json").write_text(json.dumps(state, indent=2) + "\n")
             print(json.dumps({"output": str(output), "pid": native_pid}), flush=True)

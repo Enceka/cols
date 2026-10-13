@@ -30,7 +30,9 @@
 
 Harness捕获SIGTERM，使其同SIGINT一样进入finally，停止自己启动的进程并恢复客户端的临时证书。清理期间忽略第二个SIGINT/SIGTERM，防止在恢复中途被打断；SIGKILL无法触发证书清理。实际SIGTERM验证确认`finished_unix`和`lab_certificate_restored=true`。只读探针编译使用独立的项目prefix，避免与运行游戏争用构建环境。
 
-Wine11可能以`start.exe`作为启动器并将真实游戏进程交给PPID1。工具从精确客户端路径和本prefix环境或映射文件确认归属，manifest分别保存真实`pid`、`launcher_pid`和`harness_pid`。这项进程识别不等于Wine11完整渲染、输入和业务流程已经验收。
+Wine11可能以`start.exe`作为启动器并将真实游戏进程交给PPID1。工具从精确客户端路径和本prefix环境或映射文件确认归属，manifest分别保存真实`pid`、`launcher_pid`和`harness_pid`。启动器成功退出时继续在原90秒期限内等待已验证的真实游戏；非零退出立即报告实际状态码，没有真实游戏则明确超时。回归覆盖启动器先退出、游戏稍后出现和真正失败；这项进程识别不等于Wine11完整渲染、输入和业务流程已经验收。
+
+`client-1791868764186`的文件跟踪停在公共资源`ff_init_common_gfx_V43.ifs`的SetFileAttributes/NtCreateFile。当前文件的APFS克隆调用和`startup-preserved-1791586547`保留样本的普通读取均未完成，进程处于内核U状态，不能继续把该样本当作可读恢复来源；未写入替换资源，未重新打开已知`.blocked`对象。受阻读取、未完成克隆及其进程标识记录在`lava-sight-native-check/resource-read-blockage.json`。文件系统阻塞的根因与完整正常启动仍待解决。
 
 ## 文件对象替换的重复证据
 
