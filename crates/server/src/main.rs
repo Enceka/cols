@@ -25,6 +25,16 @@ struct Cli {
 // CLI arguments are parsed once at startup, outside gameplay frame processing.
 #[allow(clippy::large_enum_variant)]
 enum Command {
+    /// Open the local management panel for configuration, diagnostics and logs.
+    Admin {
+        #[arg(long, default_value = "127.0.0.1:39080")]
+        bind: std::net::SocketAddr,
+        #[arg(long, default_value = "configs/local.toml")]
+        config: PathBuf,
+        /// Optional existing backend log, such as a GameHub tls-status.log.
+        #[arg(long)]
+        log_file: Option<PathBuf>,
+    },
     /// Select captured TDM starts that fit the gameplay capsule, preserving rejected evidence.
     PrepareMapStarts {
         #[arg(long)]
@@ -212,6 +222,15 @@ async fn main() -> Result<()> {
         .with_writer(std::io::stderr)
         .init();
     match Cli::parse().command {
+        Command::Admin {
+            bind,
+            config,
+            log_file,
+        } => {
+            let admin = codol_server::admin::AdminServer::bind(bind, config, log_file).await?;
+            println!("CODOL Control: http://{}", admin.address());
+            admin.run().await?;
+        }
         Command::PrepareMapStarts {
             game_state,
             output,

@@ -4,6 +4,8 @@
 
 从 [docs/README.md](docs/README.md) 接续任务；运行细节见 [docs/FOUNDATION.md](docs/FOUNDATION.md)，静态发现见 [docs/BOOTSTRAP_FINDINGS.md](docs/BOOTSTRAP_FINDINGS.md)。
 
+本地 Web 管理面板提供服务概览、诊断终端、日志查看及 TOML 配置编辑：运行 `sh tools/cargo.sh run --locked -p codol-server -- admin`，访问 `http://127.0.0.1:39080`。日志接入与配置生效范围见 [docs/ADMIN_PANEL.md](docs/ADMIN_PANEL.md)。
+
 最新动态结果、GameHub 运行命令及 AUTH 响应逆向入口见 [docs/GAMEHUB_DEBUG.md](docs/GAMEHUB_DEBUG.md)。
 
 最新完成情况与可重现命令见 [docs/AUTH_LOBBY_PROGRESS.md](docs/AUTH_LOBBY_PROGRESS.md)。

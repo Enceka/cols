@@ -1,4 +1,5 @@
 //! Native research runtime. Observe mode records TCP bytes and sends no replies.
+pub mod admin;
 pub mod auth_server;
 pub mod capture;
 pub mod config;

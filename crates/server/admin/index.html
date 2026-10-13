@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#111c22">
+  <title>CODOL Control · 服务管理</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%23111c22'/%3E%3Cpath d='M43 19H23l-8 13 8 13h20l-8-13z' fill='none' stroke='%2378dfbf' stroke-width='5'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <svg class="icon-library" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <symbol id="i-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></symbol>
+    <symbol id="i-terminal" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="m7 9 3 3-3 3m6 0h4"/></symbol>
+    <symbol id="i-logs" viewBox="0 0 24 24"><path d="M8 3h9a3 3 0 0 1 3 3v15H8a3 3 0 0 1-3-3V6a3 3 0 0 1 3-3Zm2 5h6m-6 4h6m-6 4h4M3 7v11"/></symbol>
+    <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 7h3m4 0h9M4 17h9m4 0h3"/><circle cx="9" cy="7" r="2"/><circle cx="15" cy="17" r="2"/></symbol>
+    <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14m-6-6 6 6-6 6"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 7v5h-5M4 17v-5h5m-4-3a7 7 0 0 1 12-4l3 3M4 16l3 3a7 7 0 0 0 12-4"/></symbol>
+    <symbol id="i-server" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="7" rx="2"/><rect x="3" y="14" width="18" height="7" rx="2"/><path d="M7 6.5h.01M7 17.5h.01m5-11h5m-5 11h5"/></symbol>
+    <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
+    <symbol id="i-shield" viewBox="0 0 24 24"><path d="m12 3 8 3v6c0 5-8 9-8 9s-8-4-8-9V6l8-3Z"/><path d="m8 12 3 3 5-6"/></symbol>
+    <symbol id="i-file" viewBox="0 0 24 24"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9l-6-6Zm0 0v6h6M8 13h8m-8 4h5"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3v12m-5-5 5 5 5-5M4 16v4h16v-4"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v6m4-6v6"/></symbol>
+    <symbol id="i-expand" viewBox="0 0 24 24"><path d="M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5"/></symbol>
+    <symbol id="i-help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.5 8a2.6 2.6 0 1 1 4 3c-1.5 1-1.5 1-1.5 3m0 3h.01"/></symbol>
+    <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></symbol>
+    <symbol id="i-code" viewBox="0 0 24 24"><path d="m8 6-6 6 6 6m8-12 6 6-6 6M14 3l-4 18"/></symbol>
+  </svg>
+
+  <aside class="sidebar" id="sidebar">
+    <a class="brand" href="#overview" aria-label="CODOL Control 首页">
+      <svg class="brand-mark" viewBox="0 0 40 40" aria-hidden="true"><path d="M29 9H15L8 20l7 11h14l-7-11Z"/></svg>
+      <span>CODOL<span class="brand-subtitle">CONTROL CENTER</span></span>
+      <span class="brand-dot"></span>
+    </a>
+    <div class="workspace-picker"><span class="workspace-avatar">L</span><div><strong>本地开发环境</strong><span>Local workspace</span></div><span class="picker-mark">⌄</span></div>
+    <span class="nav-label">工作空间</span>
+    <nav aria-label="主导航">
+      <button class="nav-item active" data-view="overview" aria-current="page"><svg><use href="#i-grid"/></svg>服务概览</button>
+      <button class="nav-item" data-view="terminal"><svg><use href="#i-terminal"/></svg>终端<span class="nav-shortcut">⌘ K</span></button>
+      <button class="nav-item" data-view="logs"><svg><use href="#i-logs"/></svg>运行日志<span class="nav-count" id="nav-log-count">0</span></button>
+      <button class="nav-item" data-view="config"><svg><use href="#i-sliders"/></svg>服务配置</button>
+    </nav>
+    <div class="sidebar-bottom">
+      <div class="environment-card"><span class="status-dot"></span><strong>本地管理模式</strong><p>你的服务，一处掌控。</p><span class="mono" id="sidebar-address">127.0.0.1:39080</span></div>
+      <button class="sidebar-help" id="open-help"><svg><use href="#i-help"/></svg>控制台使用指南<svg class="help-arrow"><use href="#i-arrow"/></svg></button>
+      <div class="sidebar-version"><span>CODOL · Rust runtime</span><span id="sidebar-version">v0.1.0</span></div>
+    </div>
+  </aside>
+
+  <div class="app-shell">
+    <header class="topbar">
+      <button class="icon-button menu-toggle" id="menu-toggle" aria-label="展开导航"><svg><use href="#i-menu"/></svg></button>
+      <div class="breadcrumb"><svg><use href="#i-server"/></svg><span>工作空间</span><span class="breadcrumb-slash">/</span><strong id="breadcrumb-current">服务概览</strong></div>
+      <div class="topbar-actions"><span class="local-tag"><span class="status-dot"></span>LOCAL</span><button class="icon-button" id="refresh" aria-label="刷新数据" title="刷新数据"><svg><use href="#i-refresh"/></svg></button><span class="topbar-divider"></span><span class="user-avatar" title="本地管理员">AD</span></div>
+    </header>
+    <main>
+      <div class="page-heading"><div><p class="eyebrow">SERVER MANAGEMENT</p><h1 id="page-title">服务概览<span class="heading-dot">.</span></h1><p class="page-description" id="page-description">从这里了解运行环境，管理你的 CODOL 服务。</p></div><div class="heading-meta"><span class="connection-badge" id="connection-badge"><span class="status-dot"></span><span id="connection-text">连接中</span></span><span class="last-sync" id="last-sync">正在同步数据…</span></div></div>
+      <div class="connection-error" id="connection-error" role="alert" hidden></div>
+
+      <section class="view" id="view-overview" aria-label="服务概览">
+        <div class="metric-grid">
+          <article class="metric-card"><div class="metric-label">面板运行时间<svg><use href="#i-clock"/></svg></div><div class="metric-value mono" id="metric-uptime">—</div><div class="metric-foot"><span class="status-dot"></span>管理服务在线</div></article>
+          <article class="metric-card"><div class="metric-label">监听端点<svg><use href="#i-server"/></svg></div><div class="metric-value"><span id="metric-listeners">—</span><span class="metric-unit">个</span></div><div class="metric-foot">来自当前观察服务配置</div></article>
+          <article class="metric-card"><div class="metric-label">日志来源<svg><use href="#i-logs"/></svg></div><div class="metric-value metric-word" id="metric-log-source">面板日志</div><div class="metric-foot" id="metric-log-note">操作事件实时记录</div></article>
+          <article class="metric-card"><div class="metric-label">配置状态<svg><use href="#i-shield"/></svg></div><div class="metric-value metric-word" id="metric-config">待校验</div><div class="metric-foot">版本 <code id="metric-revision">—</code></div></article>
+        </div>
+        <div class="workspace-grid">
+          <div id="overview-terminal-slot">
+            <article class="terminal-card" id="terminal-card">
+              <div class="terminal-card-heading"><div><svg><use href="#i-terminal"/></svg><h2>交互终端</h2><span class="card-kicker">SERVICE CONSOLE</span></div><button class="terminal-icon" id="terminal-expand" aria-label="展开终端" title="展开终端"><svg><use href="#i-expand"/></svg></button></div>
+              <div class="terminal-tabbar"><span class="terminal-tab"><span class="status-dot"></span>codol@localhost<span class="tab-number">01</span></span><button class="terminal-icon" id="terminal-clear" aria-label="清空终端" title="清空终端"><svg><use href="#i-trash"/></svg></button></div>
+              <div class="terminal-output" id="terminal-output" role="log" aria-label="终端输出" aria-live="polite"><div class="terminal-welcome"><span class="terminal-ascii">CODOL <span>CONTROL</span></span><p>服务诊断控制台 <span class="terminal-version">v0.1.0</span></p><p class="terminal-muted">会话已就绪。输入 <span class="terminal-highlight">help</span> 查看可用命令。</p><p class="terminal-muted">↑ ↓ 历史命令 <span class="terminal-divider">/</span> Tab 自动补全</p></div></div>
+              <form class="terminal-input-row" id="terminal-form"><label class="terminal-prompt" for="terminal-input">❯</label><input id="terminal-input" name="command" aria-label="终端命令" placeholder="输入命令，例如 check-config" autocomplete="off" spellcheck="false" maxlength="256"><button type="submit" id="terminal-run" aria-label="执行命令">↵</button></form>
+              <div class="terminal-footer"><span><span class="status-dot"></span>本地诊断会话</span><span>UTF-8<span class="terminal-divider">/</span>内置命令</span></div>
+            </article>
+          </div>
+          <div class="overview-aside">
+            <article class="panel endpoints-panel"><div class="panel-heading"><h2>服务端点</h2><span class="subtle-badge" id="endpoint-count">— 个端点</span></div><div id="endpoint-list" class="endpoint-list"><div class="empty-state">正在读取监听配置…</div></div><div class="endpoint-note"><svg><use href="#i-shield"/></svg><span>展示配置地址；运行状态由服务日志确认。</span></div></article>
+            <article class="panel config-summary"><div class="panel-heading"><h2>配置快照</h2><button class="text-button" data-go="config">管理<svg><use href="#i-arrow"/></svg></button></div><dl><div><dt>最大连接数</dt><dd class="mono" id="summary-connections">—</dd></div><div><dt>空闲超时</dt><dd class="mono" id="summary-timeout">—</dd></div><div><dt>客户端版本</dt><dd class="mono">3.3.3.3</dd></div></dl><div class="config-file-label"><svg><use href="#i-file"/></svg><span id="config-filename">local.toml</span><span>TOML</span></div></article>
+          </div>
+        </div>
+        <article class="panel recent-logs"><div class="panel-heading"><div class="heading-with-note"><h2>最近日志</h2><span class="live-label"><span class="status-dot"></span>LIVE</span></div><button class="text-button" data-go="logs">查看全部<svg><use href="#i-arrow"/></svg></button></div><div class="table-scroll"><table class="log-table"><thead><tr><th>时间</th><th>级别</th><th>来源</th><th>消息</th></tr></thead><tbody id="recent-log-body"></tbody></table></div></article>
+      </section>
+
+      <section class="view" id="view-terminal" aria-label="交互终端" hidden>
+        <div id="terminal-full-slot"></div>
+        <div class="command-dock"><span>快速执行</span><button data-command="help">help</button><button data-command="status">status</button><button data-command="listeners">listeners</button><button data-command="check-config">check-config</button><button data-command="tail">tail</button></div>
+        <p class="view-footnote">终端提供内置诊断命令。输入 Tab 补全，使用方向键查看命令历史。</p>
+      </section>
+
+      <section class="view" id="view-logs" aria-label="运行日志" hidden>
+        <article class="panel full-logs"><div class="log-controls"><div class="search-field"><svg><use href="#i-search"/></svg><input id="log-search" type="search" aria-label="搜索日志" placeholder="搜索消息、来源或级别…"></div><div class="log-actions"><button class="button button-secondary" id="pause-logs">暂停更新</button><button class="button button-secondary" id="download-logs"><svg><use href="#i-download"/></svg>导出日志</button></div></div><div class="log-filterbar"><div class="filter-chips" role="group" aria-label="日志级别筛选"><button class="filter-chip active" data-level="ALL" aria-pressed="true">全部<span id="logs-total">0</span></button><button class="filter-chip" data-level="INFO" aria-pressed="false">INFO</button><button class="filter-chip" data-level="WARN" aria-pressed="false">WARN</button><button class="filter-chip" data-level="ERROR" aria-pressed="false">ERROR</button><button class="filter-chip" data-level="DEBUG" aria-pressed="false">DEBUG / TRACE</button></div><span class="live-label" id="logs-live"><span class="status-dot"></span>实时更新</span></div><div class="log-warning" id="log-warning" hidden></div><div class="table-scroll logs-scroll"><table class="log-table"><thead><tr><th>时间</th><th>级别</th><th>来源</th><th>消息</th></tr></thead><tbody id="log-body"></tbody></table></div><div class="table-footer"><span id="logs-showing">显示 0 条日志</span><span>服务日志最多保留最新 500 行</span></div></article>
+        <div class="source-note"><svg><use href="#i-file"/></svg><span id="logs-source-note">当前来源：面板操作日志</span></div>
+      </section>
+
+      <section class="view" id="view-config" aria-label="服务配置" hidden>
+        <div class="config-layout"><article class="panel editor-panel"><div class="panel-heading"><div class="heading-with-note"><svg class="file-icon"><use href="#i-file"/></svg><h2 id="editor-filename">local.toml</h2><span class="subtle-badge">TOML</span></div><span class="editor-state" id="editor-state">已保存</span></div><div class="editor-toolbar"><span class="mono" id="editor-path">configs/local.toml</span><button class="text-button" id="reload-config">重新加载<svg><use href="#i-refresh"/></svg></button></div><div class="code-editor"><div class="line-numbers" id="line-numbers" aria-hidden="true">1</div><textarea id="config-editor" aria-label="TOML 配置编辑器" spellcheck="false" wrap="off"></textarea></div><div class="editor-statusbar"><span id="editor-lines">0 行</span><span>UTF-8<span class="terminal-divider">/</span>TOML</span></div><div class="config-feedback" id="config-feedback" role="status" hidden></div><div class="editor-actions"><span>保存前自动校验，并备份原文件。</span><div><button class="button button-secondary" id="validate-config"><svg><use href="#i-check"/></svg>校验配置</button><button class="button button-primary" id="save-config" disabled>保存配置<svg><use href="#i-arrow"/></svg></button></div></div></article><aside class="config-guide"><div class="guide-icon"><svg><use href="#i-sliders"/></svg></div><p class="eyebrow">CONFIGURATION</p><h2>让服务按你的方式运行。</h2><p>这里管理观察服务的监听端点、连接限制与采集设置。</p><div class="guide-rule"></div><h3>修改与生效</h3><p>保存仅更新配置文件。通过原启动流程重新启动观察服务后，新配置才会生效。</p><h3>文件版本保护</h3><p>文件被其它操作修改时，保存会提示冲突。重新加载前，可以复制编辑内容保留草稿。</p><div class="guide-tip"><svg><use href="#i-shield"/></svg><span>原配置会备份到同一目录，方便手动恢复。</span></div></aside></div>
+      </section>
+      <footer class="page-footer"><span><span class="footer-logo">C</span>CODOL Control</span><span>本地环境<span class="footer-separator">·</span>Client 3.3.3.3<span class="footer-separator">·</span>Rust backend</span></footer>
+    </main>
+  </div>
+  <div class="toast" id="toast" role="status" hidden></div>
+  <dialog id="help-dialog"><div class="dialog-header"><h2>控制台使用指南</h2><button class="icon-button" id="close-help" aria-label="关闭指南">×</button></div><p>在终端中执行内置命令，快速查看服务配置与日志。</p><dl class="help-commands"><div><dt>help</dt><dd>显示可用命令</dd></div><div><dt>status</dt><dd>查看管理面板状态</dd></div><div><dt>listeners</dt><dd>查看配置中的监听端点</dd></div><div><dt>check-config</dt><dd>校验当前配置文件</dd></div><div><dt>show-config</dt><dd>显示 TOML 配置</dd></div><div><dt>tail</dt><dd>查看最近 20 条日志</dd></div><div><dt>clear</dt><dd>清空终端输出</dd></div></dl><p class="dialog-note">快捷键：⌘ / Ctrl + K 打开终端；↑ ↓ 浏览命令历史；Tab 补全命令。</p></dialog>
+  <dialog id="reload-dialog"><div class="dialog-header"><h2>重新加载配置？</h2></div><p>重新加载会替换当前未保存的编辑。可以先导出草稿，再加载磁盘中的最新配置。</p><div class="reload-dialog-actions"><button class="button button-secondary" id="export-draft">导出草稿</button><button class="button button-secondary" id="cancel-reload">继续编辑</button><button class="button button-primary" id="confirm-reload">丢弃草稿并加载</button></div></dialog>
+</body>
+</html>
