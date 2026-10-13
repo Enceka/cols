@@ -19,7 +19,7 @@ import subprocess
 import sys
 import time
 
-from clientlib import REPO
+from clientlib import REPO, matches_client_image
 from prepare_game_state import compute, CLIENT_SHA256
 from prepare_map_hud import minimap, minimap_geometry
 from prepare_map_batch import read, write, prepare as prepare_batch, verify
@@ -100,6 +100,8 @@ class Lab:
                  '--trust-lab-cert','--quiet-network','--service-data-dir',str(self.service),
                  '--game-state',str(initial_state),'--game-map-catalog',str(catalog)]
         if self.native_bot_rooms:command+=['--native-bot-rooms']
+        marker=REPO/'client-work'/self.prefix/'.codol-prefix.json'
+        if marker.is_file():command+=['--engine-id',read(marker)['engine_id']]
         if capture_playlist is not None and stage in ('native','restore'):
             raise ValueError('resource playlist is limited to isolated collection')
         if stage not in ('native','restore'):command+=['--resource-capture-map',name]
@@ -118,7 +120,7 @@ class Lab:
                 self.experiment=path
                 if not info.get('pid'):continue
                 actual=subprocess.run(['ps','-p',str(info['pid']),'-o','comm='],text=True,capture_output=True)
-                if actual.stdout.strip()!=info['argv'][1]:continue
+                if not matches_client_image(actual.stdout.strip(),info['argv'][1],Path(info['prefix'])):continue
                 self.experiment=path
                 write(self.directory/'current-experiment.json',dict(harness=self.process.pid,experiment=str(path),map=name,stage=stage))
                 return Client(path)
@@ -365,8 +367,9 @@ class NormalSession:
         if prefix.parent!=(REPO/'client-work').resolve():raise ValueError('normal prefix ownership mismatch')
         self.prefix=prefix.name
         actual=subprocess.check_output(['ps','-p',str(info['pid']),'-o','comm='],text=True).strip()
-        if actual!=info['argv'][1]:raise ValueError('normal client PID mismatch')
-        self.harness=int(subprocess.check_output(['ps','-p',str(info['pid']),'-o','ppid='],text=True))
+        if not matches_client_image(actual,info['argv'][1],prefix):raise ValueError('normal client PID mismatch')
+        self.harness=(info['harness_pid'] if info.get('harness_pid') else
+            int(subprocess.check_output(['ps','-p',str(info['pid']),'-o','ppid='],text=True)))
         self.suspended=False
 
     def suspend(self):

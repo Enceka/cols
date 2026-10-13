@@ -15,7 +15,7 @@ import subprocess
 import time
 from pathlib import Path
 
-from clientlib import DEFAULT_WORKSPACE, REPO, checked_sample, manifest, sha256
+from clientlib import DEFAULT_WORKSPACE, REPO, checked_sample, manifest, sha256, matches_client_image
 
 ENGINE_INDEX = Path.home() / "Library/Application Support/com.gamemac.www/wine-engine/container/wine_installations.json"
 LAB_MARKER = ".codol-research-copy.json"
@@ -51,6 +51,29 @@ def wait_backend_ready(output, server, tls, rust_auth=False, rust_game=False):
 def engines():
     data = json.loads(ENGINE_INDEX.read_text())
     return data["wine_installations"]
+
+
+def client_pid(launcher, executable, prefix):
+    """Resolve a Wine start.exe wrapper to the same prefix's marked PE."""
+    direct = subprocess.run(["ps", "-p", str(launcher), "-o", "comm="], text=True, capture_output=True)
+    if direct.returncode == 0 and matches_client_image(direct.stdout.strip(), executable, prefix):
+        return launcher
+    rows = subprocess.check_output(["ps", "-axo", "pid=,comm="], text=True)
+    for row in rows.splitlines():
+        parts = row.strip().split(maxsplit=1)
+        if len(parts) != 2 or not matches_client_image(parts[1], executable, prefix):
+            continue
+        pid = int(parts[0])
+        environment = subprocess.run(["ps", "e", "-p", str(pid), "-o", "command="], text=True, capture_output=True)
+        scope = re.search(r"(?:^|\s)WINEPREFIX=([^\s]+)", environment.stdout)
+        if environment.returncode == 0 and scope and Path(scope.group(1)).resolve() == Path(prefix).resolve():
+            return pid
+        # Wine's PE loader may remove WINEPREFIX from its Unix environment.
+        # Its mapped prefix files still identify the owning Wine instance.
+        files = subprocess.run(["lsof", "-p", str(pid), "-Fn"], text=True, capture_output=True)
+        if any(line.startswith("n" + str(Path(prefix).resolve()) + "/") for line in files.stdout.splitlines()):
+            return pid
+    return None
 
 
 def stop_prefix(engine, env):
@@ -329,11 +352,28 @@ def main():
             process = subprocess.Popen(argv, cwd=work if args.action == "client" else REPO, env=env, stdout=log, stderr=subprocess.STDOUT)
             if args.action == "client" and args.crossproxy:
                 cross = subprocess.Popen([wine, "CrossProxy.exe", "41c221af", "0", "0", "0", "5000002"], cwd=work / "Cross", env=env, stdout=cross_log, stderr=subprocess.STDOUT)
-            state.update(pid=process.pid, argv=argv)
+            native_pid = process.pid
+            if args.action == "client":
+                until = time.monotonic() + 90
+                native_pid = None
+                while native_pid is None and time.monotonic() < until:
+                    native_pid = client_pid(process.pid, argv[1], prefix)
+                    if native_pid is None:
+                        if process.poll() is not None:
+                            raise RuntimeError("client launcher exited before the marked game appeared")
+                        time.sleep(0.25)
+                if native_pid is None:
+                    raise RuntimeError("marked client process did not appear")
+            state.update(pid=native_pid, launcher_pid=process.pid, harness_pid=os.getpid(), argv=argv)
             (output / "experiment.json").write_text(json.dumps(state, indent=2) + "\n")
-            print(json.dumps({"output": str(output), "pid": process.pid}), flush=True)
+            print(json.dumps({"output": str(output), "pid": native_pid}), flush=True)
             deadline = time.monotonic() + args.seconds if args.seconds else float("inf")
-            while process.poll() is None and time.monotonic() < deadline:
+            def running_client():
+                if args.action != "client":
+                    return process.poll() is None
+                check = subprocess.run(["ps", "-p", str(native_pid), "-o", "comm="], text=True, capture_output=True)
+                return check.returncode == 0 and matches_client_image(check.stdout.strip(), argv[1], prefix)
+            while running_client() and time.monotonic() < deadline:
                 if server is not None and server.poll() is not None:
                     raise RuntimeError("observer stopped during the experiment")
                 if tls is not None and tls.poll() is not None:
@@ -360,6 +400,13 @@ def main():
             signal.signal(signal.SIGTERM, signal.SIG_IGN)
             # WINEPREFIX scopes wineserver -k to this project-owned environment.
             try:
+                if args.action == "client" and state.get("pid") and process is not None and state["pid"] != process.pid:
+                    current = subprocess.run(["ps", "-p", str(state["pid"]), "-o", "comm="], text=True, capture_output=True)
+                    if current.returncode == 0 and matches_client_image(current.stdout.strip(), state["argv"][1], prefix):
+                        try:
+                            os.kill(state["pid"], signal.SIGTERM)
+                        except ProcessLookupError:
+                            pass
                 stop_prefix(engine, env)
             finally:
                 for child in [process, cross]:

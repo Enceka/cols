@@ -34,3 +34,16 @@ def decode_config(data):
     if b"\0" in data[:64]:
         return data.decode("utf-16le")
     return data.decode("gb18030")
+
+
+def matches_client_image(actual, executable, prefix):
+    """Wine can report the PE's Unix path or its mapped DOS Z: path."""
+    expected = str(Path(executable).resolve())
+    if actual == expected:
+        return True
+    if not actual.startswith(("Z:\\", "z:\\")):
+        return False
+    drive = Path(prefix) / "dosdevices/z:"
+    if not drive.is_symlink() or drive.resolve() != Path("/"):
+        return False
+    return actual[2:].replace("\\", "/") == expected

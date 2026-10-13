@@ -36,7 +36,11 @@ guard executable.lastPathComponent == "codoMP_client_shipRetail.exe",
       FileManager.default.fileExists(atPath: executable.deletingLastPathComponent().appendingPathComponent(".codol-research-copy.json").path)
 else { fail("client must be a marked research copy") }
 let actual = try run("/bin/ps", ["-p", String(pidNumber), "-o", "comm="]).trimmingCharacters(in: .whitespacesAndNewlines)
-guard actual == executable.path else { fail("recorded PID no longer belongs to the research client") }
+let dosImage = "Z:" + executable.path.replacingOccurrences(of: "/", with: "\\")
+let driveZ = URL(fileURLWithPath: state["prefix"] as? String ?? "").appendingPathComponent("dosdevices/z:")
+let mappedZ = driveZ.resolvingSymlinksInPath().path == "/"
+guard actual == executable.path || (mappedZ && actual == dosImage)
+else { fail("recorded PID no longer belongs to the research client") }
 let pid = pid_t(pidNumber)
 func focusGame(_ app: NSRunningApplication) throws {
     if NSWorkspace.shared.frontmostApplication?.processIdentifier == pid { return }
