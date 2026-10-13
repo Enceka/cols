@@ -18,7 +18,7 @@
 
 Admission 按 title/UID/登录 seed 绑定；security ID 随机生成，密钥来自该会话实时 `21/1` 描述中的 16 字节 security key。重试保持 ID；新登录、key 变化、退出/删除房间或到期撤销旧分配。有效期不超过票据与 930 秒中的较早者，最多 32 个 admission/peer。尚未在异常大厅断线时立即撤销，仍由上述条件清理。
 
-剧情首关之前实测没有 `21/1`，目前明确返回 `game_allocation_requires_live_key`。后续需要恢复这个路径的密钥来源，不能用零密钥或 AUTH key 冒充。
+剧情首关既有实测没有 `21/1`，目前明确返回 `game_allocation_requires_live_key`。本版分配结果消费者会读取并保留回包中的16字节key，因此可以继续验证服务端随机生成并返回key的无`21/1`路径；当前尚未实测该路径的剧情DTLS，不能用零密钥或AUTH key代替。关卡、消费者证据与接入边界见[剧情接入研究](STORY_MODE_PREPARATION.md)。
 
 ## 3.3.3.3 握手与 DATA
 
