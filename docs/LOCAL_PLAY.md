@@ -16,7 +16,7 @@ python3 tools/play.py
 
 - `research-output/native-tdm-map-catalog.json`：22张独立地图准备，包括Afghan、杀戮小屋/安全屋、坠机之地、Bog、交叉火力、庄园、贫民窟、山景别墅、杂草丛生、锈迹之地、核弹镇、货轮、航站楼、暴风雨、伏击、靶场、废弃都市、滨海镇、潜艇基地、高楼及两个黑房。黑房通过“黑房人机”快速赛单进入，原生自建房禁止选择这两图。
 - `research-output/tdm-afghan-hud-state.json`：快速人机入口的默认准备。
-- `client-work/wine10-throwables-20261011`：已有对局验收证据的游戏环境，目前存在Wine server失联，不能直接视为可正常启动；当前恢复状态见[客户端启动](CLIENT_STARTUP_RECOVERY.md)。
+- `client-work/wine10-throwables-20261011`：系统重启后已恢复原生AUTH、大厅、阿富汗地图和熔岩ADS验收的游戏环境；文件访问阻塞的诊断及恢复证据见[客户端启动](CLIENT_STARTUP_RECOVERY.md)。
 
 可分别用`--map-catalog`、`--game-state`、`--prefix-name`指定替代路径。这些准备含本机实际资源引用，不是可直接带到其它机器的便携包。缺失时需先按本版资源采集/准备流程生成，不能复制其它地图CRC。
 

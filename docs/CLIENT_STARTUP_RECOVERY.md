@@ -2,9 +2,13 @@
 
 本机实际客户端为`server/client-work/CODOL`，工作区`CODOL`是兼容符号链接。关键EXE、版本、IIPS DLL及列表文件已按fixture核对完整SHA，原目录中不同的设置、日志和唯一`_co.tlg`保存在`research-output/client-single-copy/original-settings/`。没有完成全部资源文件的两份逐字节对照，不能把关键身份校验扩大为全目录内容一致证明。账号、库存和钱包仍在独立的`client-work/server-data`。
 
-当前完整原生启动仍待恢复；旧`wine10-throwables-20261011`环境报告Wine server失联，Wine11已取得真实游戏进程但尚无完整修复后对局验收。旧`map-experiment.txt`指向已结束实验，不能直接当作活动正常会话。已有AUTH、大厅和地图成功证据不代表这些环境当前均能再次启动。
+当前Wine10原生启动已在系统重启后恢复。`wine10-throwables-20261011`的`client-1791886330960`通过AUTH、大厅、6772条库存、阿富汗地图和熔岩ADS画面对照；诊断已正常结束且两处临时证书恢复。当前没有活动正常会话，旧`map-experiment.txt`仍指向已结束实验，不能直接据它暂停或恢复游戏。Wine11的完整对局路径仍未验收。
 
-全部Wine停止操作已按用户授权执行：91个Wine及Windows子进程收到SIGTERM／SIGKILL，其中51个退出，40个仍由`ps`显示为`?Es`且RSS为0。macOS本机`ps(1)`将E解释为正在退出；这40个进程在强制结束后仍残留，`proc_pidinfo`对其返回ESRCH，不能把它们当作可用游戏或服务实例。停止结果及进程记录在`lava-ads-after-wine-cleanup/wine-stop-result.json`和`remaining-kernel-processes.json`。当前尚未执行系统重启，重启后仍需重新验证文件打开和客户端启动。
+重启前，原生ARM64 Python的普通打开与Wine server的`open_fd`都卡在系统文件调用。当前资源`ff_init_common_gfx_V43.ifs`通过`O_EVTONLY`可打开并查询到无记录锁、无租约，实际读取仍阻塞；这些区别记录在`startup-root-cause/event-open-result.json`和`read-modes-result.json`。系统盘由约3.4GiB清至48GiB、工作区由约3.4GiB清至6.6GiB后，原有等待仍未解除。
+
+重启后，相同inode13261206的26504032字节资源在约15毫秒内完成普通读取，完整SHA保持`a4bac3f1…ff667`；没有替换资源文件。原有退出／U状态进程消失，游戏随后恢复。`lava-ads-after-reboot/resource-read-check.json`和`acceptance-proof.json`提供读取、实际对局及证书清理证明。证据支持本次直接阻塞位于系统文件访问／退出状态；尚无内核栈证明具体APFS内部成因，也不能仅凭重启恢复断言文件损坏、硬盘故障或某个Wine版本缺陷。
+
+重启前的停止证据：91个Wine及Windows子进程收到SIGTERM／SIGKILL，其中51个退出，40个仍由`ps`显示为`?Es`且RSS为0。macOS本机`ps(1)`将E解释为正在退出；这些进程在强制结束后仍残留，`proc_pidinfo`对其返回ESRCH，不能把它们当作可用游戏或服务实例。停止结果及进程记录在`lava-ads-after-wine-cleanup/wine-stop-result.json`和`remaining-kernel-processes.json`，本次系统重启后残留已消失。
 
 停止及容器清理后，干净的`wine11-lava-20261013`环境在`client-1791871854997`中启动真实游戏PID，但35秒内没有可见窗口，未运行状态探针或截图。该诊断已经结束，manifest确认临时证书恢复，正常服务资料全量哈希不变；熔岩ADS画面没有验收通过。证据在`lava-ads-after-wine-cleanup/result.json`和`diagnostic-cleanup.json`，本次release构建通过。
 
@@ -32,13 +36,13 @@
 
 `tools/gamehub_run.py --prefix-name NAME`支持选择`client-work`下具备同一engine marker的独立实验prefix。名称只允许简单字母、数字、下划线和连字符，不自动覆盖或重置已有容器。正常业务数据仍来自`client-work/server-data`，恢复正常会话前须确认实际进程、共享锁、精确manifest和原有地图catalog。已结束manifest不能用于暂停活动会话，也不能把包装启动器PID当作真实游戏PID。
 
-仅文件打开排查时使用`--file-trace`；它会较快触发64MiB日志上限，`client-1791309533210`因此由harness正常结束。正常游玩命令与配置见[LOCAL_PLAY.md](LOCAL_PLAY.md)，当前启动障碍未因离线检查通过而解除。
+仅文件打开排查时使用`--file-trace`；它会较快触发64MiB日志上限，`client-1791309533210`因此由harness正常结束。正常游玩命令与配置见[LOCAL_PLAY.md](LOCAL_PLAY.md)。代码检查不能替代原生运行，当前恢复依据为重启后的实际AUTH、大厅、地图及ADS验收。
 
 Harness捕获SIGTERM，使其同SIGINT一样进入finally，停止自己启动的进程并恢复客户端的临时证书。清理期间忽略第二个SIGINT/SIGTERM，防止在恢复中途被打断；SIGKILL无法触发证书清理。实际SIGTERM验证确认`finished_unix`和`lab_certificate_restored=true`。只读探针编译使用独立的项目prefix，避免与运行游戏争用构建环境。
 
 Wine11可能以`start.exe`作为启动器并将真实游戏进程交给PPID1。工具从精确客户端路径和本prefix环境或映射文件确认归属，manifest分别保存真实`pid`、`launcher_pid`和`harness_pid`。启动器成功退出时继续在原90秒期限内等待已验证的真实游戏；非零退出立即报告实际状态码，没有真实游戏则明确超时。回归覆盖启动器先退出、游戏稍后出现和真正失败；这项进程识别不等于Wine11完整渲染、输入和业务流程已经验收。
 
-`client-1791868764186`的文件跟踪停在公共资源`ff_init_common_gfx_V43.ifs`的SetFileAttributes/NtCreateFile。当前文件的APFS克隆调用和`startup-preserved-1791586547`保留样本的普通读取均未完成，进程处于内核U状态，不能继续把该样本当作可读恢复来源；未写入替换资源，未重新打开已知`.blocked`对象。受阻读取、未完成克隆及其进程标识记录在`lava-sight-native-check/resource-read-blockage.json`。文件系统阻塞的根因与完整正常启动仍待解决。
+`client-1791868764186`的文件跟踪停在公共资源`ff_init_common_gfx_V43.ifs`的SetFileAttributes/NtCreateFile。重启前，该文件的APFS克隆调用和`startup-preserved-1791586547`保留样本的普通读取均未完成，进程处于内核U状态；未写入替换资源，未重新打开已知`.blocked`对象。受阻读取、未完成克隆及其进程标识记录在`lava-sight-native-check/resource-read-blockage.json`。当前在相同资源对象上恢复正常启动，具体底层根因仍未确定。
 
 ## 文件对象替换的重复证据
 
