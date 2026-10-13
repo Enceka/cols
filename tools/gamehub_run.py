@@ -21,6 +21,51 @@ ENGINE_INDEX = Path.home() / "Library/Application Support/com.gamemac.www/wine-e
 LAB_MARKER = ".codol-research-copy.json"
 
 
+def existing_client_owner(work):
+    """Also recognize running harnesses started before the shared lock existed."""
+    executable = str(work.resolve() / "codoMP_client_shipRetail.exe")
+    images = (executable, "Z:" + executable.replace("/", "\\"))
+    harness = str(Path(__file__).resolve()) + " client"
+    rows = subprocess.check_output(["ps", "-axo", "pid=,command="], text=True, timeout=5)
+    for row in rows.splitlines():
+        parts = row.strip().split(maxsplit=1)
+        if len(parts) != 2 or int(parts[0]) == os.getpid():
+            continue
+        pid, command = int(parts[0]), parts[1]
+        if any(command == image or command.startswith(image + " ") for image in images):
+            return pid
+        if harness in command:
+            process = subprocess.run(["ps", "-p", str(pid), "-o", "comm="],
+                                     text=True, capture_output=True, timeout=5)
+            if process.returncode == 0 and re.fullmatch(
+                    r"python(?:\d+(?:\.\d+)*)?", Path(process.stdout.strip()).name.lower()):
+                return pid
+    return None
+
+
+def acquire_client_lock(work, prefix):
+    """One client tree shares configs, certificates and local service ports."""
+    lock = (work / ".codol-client-lock").open("a+")
+    try:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            lock.seek(0)
+            owner = lock.read(4096).strip()
+            raise RuntimeError("shared client is already in use; active harness " + owner) from error
+        owner = existing_client_owner(work)
+        if owner is not None:
+            raise RuntimeError(f"shared client is already in use by project process {owner}")
+        lock.seek(0)
+        lock.truncate()
+        json.dump({"harness_pid": os.getpid(), "prefix": str(prefix), "started_unix": time.time()}, lock)
+        lock.flush()
+        return lock
+    except BaseException:
+        lock.close()
+        raise
+
+
 def wait_backend_ready(output, server, tls, rust_auth=False, rust_game=False):
     """A bound AUTH port can precede blocking map preparation by a minute.
 
@@ -237,6 +282,13 @@ def main():
         context = int(value, 16)
     else:
         context = None
+    client_lock = None
+    if args.action == "client":
+        try:
+            client_lock = acquire_client_lock(work, prefix)
+        except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+            lock.close()
+            parser.error(str(error))
     output = REPO / "research-output/gamehub" / (args.action + "-" + str(int(time.time() * 1000)))
     output.mkdir(parents=True)
     env = os.environ.copy()
@@ -440,6 +492,8 @@ def main():
                 state["finished_unix"] = time.time()
                 (output / "experiment.json").write_text(json.dumps(state, indent=2) + "\n")
                 lock.close()
+                if client_lock is not None:
+                    client_lock.close()
     print(json.dumps(state, indent=2))
     return 0
 

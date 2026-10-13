@@ -1,6 +1,6 @@
 # 本地正常游玩
 
-本版为3.3.3.3客户端、GameHub Wine和纯Rust服务端。使用已标记的研究副本及原有本地账号。
+本版为3.3.3.3客户端、GameHub Wine和纯Rust服务端。使用已标记的客户端及原有本地账号。本机只保留`server/client-work/CODOL`一份实际客户端，工作区的`CODOL`是指向它的符号链接；Wine环境与服务资料独立保存。
 
 在`server/`运行：
 
@@ -16,9 +16,11 @@ python3 tools/play.py
 
 - `research-output/native-tdm-map-catalog.json`：22张独立地图准备，包括Afghan、杀戮小屋/安全屋、坠机之地、Bog、交叉火力、庄园、贫民窟、山景别墅、杂草丛生、锈迹之地、核弹镇、货轮、航站楼、暴风雨、伏击、靶场、废弃都市、滨海镇、潜艇基地、高楼及两个黑房。黑房通过“黑房人机”快速赛单进入，原生自建房禁止选择这两图。
 - `research-output/tdm-afghan-hud-state.json`：快速人机入口的默认准备。
-- `client-work/wine10-throwables-20261011`：已验证的当前游戏环境；其它研究prefix保留。
+- `client-work/wine10-throwables-20261011`：已有对局验收证据的游戏环境，目前存在Wine server失联，不能直接视为可正常启动；当前恢复状态见[客户端启动](CLIENT_STARTUP_RECOVERY.md)。
 
 可分别用`--map-catalog`、`--game-state`、`--prefix-name`指定替代路径。这些准备含本机实际资源引用，不是可直接带到其它机器的便携包。缺失时需先按本版资源采集/准备流程生成，不能复制其它地图CRC。
+
+同一客户端目录只允许一个受管运行会话，所有Wine环境共用其独占锁。第二次启动在修改配置、临时证书和启动本地服务前退出，并报告占用的harness或项目进程；不会替使用者关闭现有会话。正常退出与SIGTERM清理期间持续持锁，操作系统在进程退出时释放锁，残留锁文件不代表仍有会话。
 
 正常配置为7500分（每击杀100分）、10分钟，双方各6人。带`end-test`的准备文件是快速结算测试，不能当成正常对局配置。
 
