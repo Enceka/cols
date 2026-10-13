@@ -63,13 +63,20 @@ func focusGame(_ app: NSRunningApplication) throws {
     guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else {fail("research client did not become active")}
 }
 let windows = CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID) as? [[String: Any]] ?? []
-guard let window = windows.first(where: {
+let ownedWindows = windows.filter {
     ($0[kCGWindowOwnerPID as String] as? Int) == pidNumber && ($0[kCGWindowLayer as String] as? Int) == 0
-}), let number = window[kCGWindowNumber as String] as? Int,
+}
+func windowArea(_ window: [String: Any]) -> Double {
+    guard let bounds = window[kCGWindowBounds as String] as? [String: NSNumber] else { return 0 }
+    return (bounds["Width"]?.doubleValue ?? 0) * (bounds["Height"]?.doubleValue ?? 0)
+}
+// Wine also owns small title/menu panels. Ordinary game inputs target its
+// largest content window, independently of floating-panel z order.
+guard let window = ownedWindows.max(by: { windowArea($0) < windowArea($1) }), let number = window[kCGWindowNumber as String] as? Int,
     let rawBounds = window[kCGWindowBounds as String] as? [String: NSNumber],
     let x = rawBounds["X"]?.doubleValue, let y = rawBounds["Y"]?.doubleValue,
     let width = rawBounds["Width"]?.doubleValue, let height = rawBounds["Height"]?.doubleValue,
-    width > 0, height > 0
+    width >= 320, height >= 200
 else { fail("research client has no visible window") }
 var result: [String: Any] = ["pid": pidNumber, "window": number, "bounds": rawBounds, "action": args[2]]
 switch args[2] {

@@ -35,7 +35,7 @@ partial class ClientAssets {
         foreach(byte c in b)if(c<32||c>126)throw new Exception("non-ASCII asset identifier; check layout");
         return Encoding.ASCII.GetString(b);
     }
-    uint Find(uint kind,string name,out uint entryAddress) {
+    uint Find(uint kind,string name,out uint entryAddress,bool requireLoaded=true) {
         uint hash=kind;foreach(char c in name.ToLowerInvariant())hash=unchecked(hash*31+(c=='\\'?47u:c));
         uint index=Word(0x01bc9f20+(hash%80000)*4);
         var seen=new HashSet<uint>();
@@ -45,7 +45,7 @@ partial class ClientAssets {
             if(U(raw,0)==kind) {
                 uint header=U(raw,8);
                 if(String.Equals(Name(Word(header+(kind==5?0x10u:0u))),name,StringComparison.OrdinalIgnoreCase)) {
-                    if((raw[17]&5)==0)throw new Exception("asset is not loaded");
+                    if(requireLoaded&&(raw[17]&5)==0)throw new Exception("asset is not loaded");
                     entryAddress=entry;return header;
                 }
             }
@@ -109,8 +109,8 @@ partial class ClientAssets {
         for(int i=0;i<count;i++)defs.Add(Definition(checked(U(s,8)+(uint)i*60)));
         return Obj("found",true,"entry",entry,"address",at,"name",Name(U(s,0)),"definitions",defs);
     }
-    object Table(string name) {
-        uint entry;uint at=Find(37,name,out entry);if(at==0)return Obj("found",false);
+    object Table(string name,bool requireLoaded=true) {
+        uint entry;uint at=Find(37,name,out entry,requireLoaded);if(at==0)return Obj("found",false);
         byte[] t=Read(at,16);int cols=Count(U(t,4),256),rows=Count(U(t,8),30000);
         if(cols<1||rows<1||cols*(long)rows>200000)throw new Exception("string table dimensions outside budget");
         // CODOL StringTable cells contain a string pointer and hash (8 bytes).

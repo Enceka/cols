@@ -259,6 +259,8 @@ pub fn player_frame_with_motion(
             shellshock: None,
             target: None,
             impacts: &[],
+            sounds: &[],
+            sound_baselines: &[],
             enemy: None,
             enemy_baseline: None,
             players: &[],
@@ -302,6 +304,8 @@ pub struct WorldSnapshot<'a> {
     pub shellshock: Option<ShellShockSnapshot>,
     pub target: Option<crate::game_target::TargetSnapshot>,
     pub impacts: &'a [crate::game_impact::ImpactSnapshot],
+    pub sounds: &'a [crate::game_sound::SoundSnapshot],
+    pub sound_baselines: &'a [crate::game_sound::SoundSnapshot],
     pub enemy: Option<crate::game_enemy::EnemySnapshot>,
     pub enemy_baseline: Option<crate::game_enemy::EnemySnapshot>,
     pub players: &'a [crate::game_enemy::EnemySnapshot],
@@ -996,15 +1000,6 @@ pub fn player_frame_with_world(
     }
     if world.delta_distance == 0 {
         crate::game_impact::write_impacts(&mut out, world.impacts, establish_baseline)?;
-        crate::game_missile::write(
-            &mut out,
-            world.missiles,
-            if establish_baseline {
-                &[]
-            } else {
-                world.missile_baselines
-            },
-        )?;
     } else {
         crate::game_impact::write_impacts_with_baselines(
             &mut out,
@@ -1012,8 +1007,22 @@ pub fn player_frame_with_world(
             world.impact_baselines,
             establish_baseline,
         )?;
-        crate::game_missile::write(&mut out, world.missiles, world.missile_baselines)?;
     }
+    crate::game_sound::write_sounds(
+        &mut out,
+        world.sounds,
+        world.sound_baselines,
+        establish_baseline,
+    )?;
+    crate::game_missile::write(
+        &mut out,
+        world.missiles,
+        if world.delta_distance == 0 && establish_baseline {
+            &[]
+        } else {
+            world.missile_baselines
+        },
+    )?;
     crate::game_smoke::write(
         &mut out,
         world.smokes,

@@ -126,12 +126,13 @@ impl ImpactEvents {
         let normal_byte = codol_protocol::game_impact::normal_byte(hit.normal).ok()?;
         self.expire(now);
         let first = codol_protocol::game_held_weapon::END_ENTITY;
-        let entity_number = if !(first..1700).contains(&self.next_entity) {
+        let end = codol_protocol::game_sound::FIRST_SOUND_ENTITY;
+        let entity_number = if !(first..end).contains(&self.next_entity) {
             first
         } else {
             self.next_entity
         };
-        self.next_entity = if entity_number == 1699 {
+        self.next_entity = if entity_number == end - 1 {
             first
         } else {
             entity_number + 1
@@ -194,7 +195,7 @@ mod tests {
     #[test]
     fn clock_wrap_and_entity_wrap_keep_events_bounded_and_sorted() {
         let mut events = ImpactEvents {
-            next_entity: 1699,
+            next_entity: codol_protocol::game_sound::FIRST_SOUND_ENTITY - 1,
             ..ImpactEvents::default()
         };
         let now = u32::MAX - 20;
@@ -203,7 +204,7 @@ mod tests {
         let frame = events.snapshot(now.wrapping_add(199));
         assert_eq!(
             frame.iter().map(|e| e.entity_number).collect::<Vec<_>>(),
-            [54, 1699]
+            [54, codol_protocol::game_sound::FIRST_SOUND_ENTITY - 1]
         );
         assert!(events.snapshot(now.wrapping_add(210)).is_empty());
         for i in 0..100 {

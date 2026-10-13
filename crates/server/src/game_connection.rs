@@ -45,6 +45,10 @@ pub(crate) struct Connection {
     impacts: crate::game_impact::ImpactEvents,
     marks_command_sent: bool,
     hit_feedback: crate::game_feedback::Feedback,
+    voices: crate::game_voice::Speech,
+    voice_deaths: VecDeque<(u32, u8, u8)>,
+    voice_throws: VecDeque<&'static str>,
+    voice_damage_event: u8,
     death_waypoints: crate::game_death_waypoints::DeathWaypoints,
     replay: crate::game_replay::Replay,
     last_kill: Option<crate::game_match::Kill>,
@@ -101,6 +105,7 @@ pub(crate) struct Connection {
 
 #[derive(Clone)]
 struct WorldHistory {
+    sounds: Vec<codol_protocol::game_sound::SoundSnapshot>,
     bags: Vec<codol_protocol::game_scavenger::BagSnapshot>,
     smokes: Vec<codol_protocol::game_smoke::SmokeSnapshot>,
     missiles: Vec<codol_protocol::game_missile::MissileSnapshot>,
@@ -529,6 +534,7 @@ impl Connection {
             }
         }
         self.advance_match_summary(server_time)?;
+        self.advance_voices(server_time)?;
         if !self.scoreboard_sent
             && self
                 .game_state
@@ -609,6 +615,7 @@ impl Connection {
             .map_or(1000, |cmd| cmd.time)
             .min(server_time);
         let mut impacts = self.impacts.snapshot(server_time);
+        let sounds = self.voices.snapshots();
         let mut missiles = self.grenades.snapshots();
         let mut smokes = self.smoke.snapshots(server_time);
         let mut bags = self.scavenger.snapshots();
@@ -890,6 +897,8 @@ impl Connection {
                     None
                 },
                 impacts: &impacts,
+                sounds: &sounds,
+                sound_baselines: previous.as_ref().map_or(&[], |h| h.sounds.as_slice()),
                 enemy: if self.tdm.is_some() { None } else { enemy },
                 enemy_baseline: self.enemy_baseline,
                 players: &match_players,
@@ -955,6 +964,7 @@ impl Connection {
         }
         if self.tdm.is_some() {
             self.world_history.push_back(WorldHistory {
+                sounds: if full { Vec::new() } else { sounds },
                 bags,
                 smokes,
                 missiles,
@@ -1254,6 +1264,99 @@ impl Connection {
         }
         self.pending_inputs.entry(input.time).or_insert(input);
     }
+    fn advance_voices(&mut self, now: u32) -> Result<()> {
+        let Some(state) = self.game_state.clone() else {
+            return Ok(());
+        };
+        let Some(resources) = state.voice_resources() else {
+            self.voice_deaths.clear();
+            self.voice_throws.clear();
+            return Ok(());
+        };
+        let lives: std::collections::BTreeMap<_, _> = self
+            .tdm
+            .as_ref()
+            .map_or_else(Vec::new, |m| m.scoreboard(self.owner_id).rows)
+            .into_iter()
+            .map(|r| (r.client_number, r.deaths))
+            .collect();
+        let mut actors: Vec<_> = self
+            .tdm
+            .as_ref()
+            .map_or_else(Vec::new, |m| m.snapshots())
+            .into_iter()
+            .map(|s| {
+                let mut actor = state.voice_actor(s);
+                actor.life = lives.get(&actor.client).copied().unwrap_or(0);
+                actor
+            })
+            .collect();
+        if let Some(mut local) = state.local_player_snapshot(self.vitals.health > 0) {
+            if let Some(motion) = &self.motion {
+                local.origin = motion.origin;
+            }
+            if let Some(events) = self.player.as_ref().and_then(|p| p.equipment().events) {
+                local.events = events;
+            }
+            let mut actor = state.voice_actor(local);
+            actor.life = self.player_birth;
+            actors.push(actor);
+        }
+        let ready = !self.resource_collection
+            && self.hud_rules_sent
+            && self.server_commands.acknowledged() >= self.hud_rules_sequence
+            && self
+                .snapshot_first_sequence
+                .is_some_and(|first| self.native_ack >= first);
+        let gameplay = !self.replay.pending() && !self.tdm.as_ref().is_some_and(|m| m.finished);
+        // Bind committed kills to the cached prior life before observing
+        // respawns in this frame; delayed speech must not switch owners.
+        for &(time, victim, attacker) in &self.voice_deaths {
+            if ready && gameplay && victim != attacker {
+                self.voices.killed(time, attacker);
+            }
+        }
+        self.voices.advance(
+            now,
+            resources,
+            &actors,
+            ready,
+            gameplay,
+            &mut self.server_commands,
+        )?;
+        let local = actors.iter().find(|a| a.client == 0);
+        for (time, victim, _attacker) in self.voice_deaths.drain(..) {
+            if ready
+                && (gameplay || victim == 0)
+                && now.wrapping_sub(time) < 200
+                && let Some(actor) = actors.iter().find(|a| a.client == victim)
+            {
+                self.voices
+                    .role(now, resources, *actor, "mp_death", local, false);
+            }
+        }
+        for suffix in self.voice_throws.drain(..) {
+            if ready
+                && gameplay
+                && let Some(local) = local
+            {
+                self.voices
+                    .role(now, resources, *local, suffix, Some(local), true);
+            }
+        }
+        if self.vitals.damage_event != self.voice_damage_event {
+            self.voice_damage_event = self.vitals.damage_event;
+            if ready
+                && gameplay
+                && let Some(local) = local.filter(|a| a.alive)
+            {
+                self.voices
+                    .role(now, resources, *local, "mp_pain", Some(local), false);
+            }
+        }
+        Ok(())
+    }
+
     fn hud_equipment(
         &self,
         mut equipment: codol_protocol::game_snapshot::Equipment,
@@ -1303,6 +1406,7 @@ impl Connection {
                 attacker,
             },
         ));
+        self.voice_deaths.push_back((now, victim, attacker));
         if cause.headshot && attacker < 2 {
             self.headshots[usize::from(attacker)] += 1;
         }
@@ -1542,6 +1646,18 @@ impl Connection {
         if self.replay.pending() {
             return Ok(());
         }
+        if !self.resource_collection
+            && let Some(state) = &self.game_state
+            && let Some(resources) = state.voice_resources()
+            && let Some(tdm) = &self.tdm
+        {
+            self.voices.finish(
+                resources,
+                tdm.teams()[0],
+                tdm.winning_team(),
+                &mut self.server_commands,
+            )?;
+        }
         self.vitals.intermission = true;
         if let Some(motion) = &mut self.motion {
             motion.cancel_melee_charge();
@@ -1776,8 +1892,16 @@ impl Connection {
         let eye = [origin[0], origin[1], origin[2] + motion.view_height];
         if let Some(player) = &mut self.player {
             for request in player.take_throws() {
-                self.grenades
-                    .launch(request, eye, motion.velocity, collision);
+                let cue = (!request.in_hand && !request.dropped)
+                    .then(|| crate::game_voice::throw_suffix(&request.definition.name))
+                    .flatten();
+                if self
+                    .grenades
+                    .launch(request, eye, motion.velocity, collision)
+                    && let Some(cue) = cue
+                {
+                    self.voice_throws.push_back(cue);
+                }
             }
         }
         let mut local = state.local_player_snapshot(self.vitals.health > 0).unwrap();
@@ -2226,8 +2350,16 @@ impl Connection {
                     ];
                     let origin = motion.origin;
                     for request in throws {
-                        self.grenades
-                            .launch(request, eye, motion.velocity, &collision);
+                        let cue = (!request.in_hand && !request.dropped)
+                            .then(|| crate::game_voice::throw_suffix(&request.definition.name))
+                            .flatten();
+                        if self
+                            .grenades
+                            .launch(request, eye, motion.velocity, &collision)
+                            && let Some(cue) = cue
+                        {
+                            self.voice_throws.push_back(cue);
+                        }
                     }
                     for strike in melee_strikes {
                         if let Some(tdm) = &mut self.tdm {

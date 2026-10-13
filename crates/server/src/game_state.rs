@@ -27,6 +27,8 @@ pub(crate) struct SnapshotWorld<'a> {
     pub motion: Option<&'a crate::game_motion::Motion>,
     pub target: Option<codol_protocol::game_target::TargetSnapshot>,
     pub impacts: &'a [codol_protocol::game_impact::ImpactSnapshot],
+    pub sounds: &'a [codol_protocol::game_sound::SoundSnapshot],
+    pub sound_baselines: &'a [codol_protocol::game_sound::SoundSnapshot],
     pub enemy: Option<codol_protocol::game_enemy::EnemySnapshot>,
     pub enemy_baseline: Option<codol_protocol::game_enemy::EnemySnapshot>,
     pub players: &'a [codol_protocol::game_enemy::EnemySnapshot],
@@ -135,6 +137,10 @@ pub struct PreparedGameState {
     resource_compass_probe: Option<crate::game_minimap::Minimap>,
     #[serde(default)]
     feedback_resources: Option<crate::game_feedback::Resources>,
+    #[serde(default)]
+    voice_file: Option<std::path::PathBuf>,
+    #[serde(skip)]
+    voice_resources: Option<Arc<crate::game_voice::Resources>>,
     #[serde(default)]
     replay_resources: Option<crate::game_replay::Resources>,
     #[serde(default)]
@@ -555,6 +561,14 @@ impl PreparedGameState {
         );
         let mut state: Self = serde_json::from_slice(&std::fs::read(path)?)?;
         let directory = path.parent().unwrap_or(Path::new("."));
+        if let Some(file) = &state.voice_file {
+            state.voice_resources = Some(Arc::new(crate::game_voice::Resources::load(
+                &directory.join(file),
+                &state.map,
+                &state.mode,
+                state.ncs_crc,
+            )?));
+        }
         if let Some(file) = &state.arsenal_file {
             state.arsenal = Some(Arc::new(crate::game_arsenal::Arsenal::load(
                 directory.join(file),
@@ -1016,6 +1030,32 @@ impl PreparedGameState {
     }
     pub(crate) fn feedback_resources(&self) -> Option<&crate::game_feedback::Resources> {
         self.feedback_resources.as_ref()
+    }
+    pub(crate) fn voice_resources(&self) -> Option<&crate::game_voice::Resources> {
+        self.voice_resources.as_deref()
+    }
+    pub(crate) fn voice_actor(
+        &self,
+        snapshot: codol_protocol::game_enemy::EnemySnapshot,
+    ) -> crate::game_voice::Actor {
+        let character = if snapshot.client_index == 0 {
+            self.player_appearance.as_ref().and_then(|a| a.character)
+        } else {
+            self.match_config
+                .as_ref()
+                .and_then(|c| c.roster.get(usize::from(snapshot.client_index - 1)))
+                .and_then(|b| b.outfits.as_ref())
+                .and_then(|outfits| outfits[usize::from(snapshot.team - 1)].character)
+        };
+        crate::game_voice::Actor {
+            life: 0,
+            client: snapshot.client_index,
+            team: snapshot.team,
+            origin: snapshot.origin,
+            alive: snapshot.alive,
+            events: snapshot.events,
+            prefix: character.and_then(|c| self.voice_resources().and_then(|r| r.prefix(c))),
+        }
     }
     pub(crate) fn replay_resources(&self) -> Option<&crate::game_replay::Resources> {
         self.replay_resources.as_ref()
@@ -1761,6 +1801,8 @@ impl PreparedGameState {
                 obituary_baselines: world.obituary_baselines,
                 target: world.target,
                 impacts: world.impacts,
+                sounds: world.sounds,
+                sound_baselines: world.sound_baselines,
                 enemy: world.enemy,
                 enemy_baseline: world.enemy_baseline,
                 players: world.players,
@@ -2036,6 +2078,8 @@ pub(crate) fn synthetic() -> PreparedGameState {
         minimap: None,
         resource_compass_probe: None,
         feedback_resources: None,
+        voice_file: None,
+        voice_resources: None,
         replay_resources: None,
         top_players: None,
         bootstrap_weapon: None,
@@ -2067,6 +2111,47 @@ pub(crate) fn synthetic() -> PreparedGameState {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    #[ignore = "requires captured local preparations via COOL_VOICE_MAPS"]
+    fn captured_voice_map_preparations_load_with_matching_banks() {
+        let path = std::path::PathBuf::from(
+            std::env::var_os("COOL_VOICE_MAPS").expect("set COOL_VOICE_MAPS"),
+        );
+        let path = if path.is_absolute() {
+            path
+        } else {
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../..")
+                .join(path)
+        };
+        let catalog: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let entries = catalog["entries"].as_array().unwrap();
+        assert!(!entries.is_empty());
+        for entry in entries {
+            let file = path.parent().unwrap().join(entry["file"].as_str().unwrap());
+            let state = super::PreparedGameState::load(&file).unwrap();
+            assert_eq!(state.map(), entry["map"].as_str().unwrap());
+            let resources = state.voice_resources().expect("voice-enabled preparation");
+            for faction in 0..=1 {
+                for gender in 0..=1 {
+                    let character = codol_protocol::game_character::Character {
+                        groups: [0; 11],
+                        bits: [0; 11],
+                        skin: 0,
+                        faction,
+                        gender,
+                    };
+                    assert!(
+                        resources.prefix(character).is_some(),
+                        "{} missing faction{faction}/gender{gender}",
+                        state.map()
+                    );
+                }
+            }
+        }
+        println!("loaded {} voice-enabled map preparations", entries.len());
+    }
     #[test]
     fn compass_candidate_remains_metadata_only_and_checks_the_initialized_crc() {
         let probe = crate::game_minimap::CompassProbe {

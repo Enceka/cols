@@ -4,6 +4,60 @@ using System.Collections.Generic;
 using System.Web.Script.Serialization;
 
 partial class ClientAssets {
+    public static void ExportVoicePlayback(IntPtr process) {
+        var r=new ClientAssets(process);var frames=new List<object>();var clock=System.Diagnostics.Stopwatch.StartNew();
+        var aliases=new Dictionary<uint,string>();
+        uint initialState=r.Word(0x01a2e7ec);
+        Console.Error.WriteLine("sample_ready=voice-playback");Console.Error.Flush();
+        while(clock.ElapsedMilliseconds<20000) {
+            uint state=r.Word(0x01a2e7ec),time=0,entities=0;
+            if(state==10) {
+                uint cgSlot=r.Word(0x07817ba8),entitySlot=r.Word(0x07817bb0);
+                if(cgSlot>=256||entitySlot>=256)throw new Exception("invalid voice context slot");
+                uint cg=r.Word(0x01a19510+cgSlot*4)^0xfbb2c97a;time=r.Word(cg+0xae4c8);
+                entities=r.Word(0x01a19510+entitySlot*4)^0x2168f672;
+            }
+            byte[] channels=r.Read(0x07810d58,53*0xa8);var sounds=new List<object>();
+            for(int channel=0;channel<53;channel++) {
+                int at=channel*0xa8;uint alias=U(channels,at+0x68);
+                if(alias<0x10000)continue;
+                string name;
+                if(!aliases.TryGetValue(alias,out name)) {
+                    try{name=r.Name(r.Word(alias));}catch(Exception){continue;}
+                    aliases[alias]=name;
+                }
+                if(!VoiceName(name))continue;
+                var fileInfo=new Dictionary<string,object>();
+                try {
+                    uint file=r.Word(alias+0x14);byte[] header=r.Read(file,12);
+                    fileInfo["type"]=header[0];fileInfo["exists"]=header[1];
+                    if(header[0]==2||header[0]==3) {
+                        fileInfo["directory"]=r.Name(U(header,4));fileInfo["name"]=r.Name(U(header,8));
+                    } else if(header[0]==1&&U(header,4)!=0) {
+                        fileInfo["name"]=r.Name(r.Word(U(header,4)));
+                    }
+                } catch(Exception e) {fileInfo["error"]=e.Message;}
+                sounds.Add(Obj("slot",channel,"alias",name,"source",U(channels,at+0xc),
+                    "handle",U(channels,at+0x20),"status_word",U(channels,at+0x10),
+                    "active_byte",channels[at+0x94],"sample_handle",r.Word(0x07813854+(uint)channel*4),
+                    "origin",Floats(channels,at+0x74,3),"sound_file",fileInfo,"alias_header_base64",Convert.ToBase64String(r.Read(alias,0x6c))));
+            }
+            var events=new List<object>();
+            if(entities!=0)for(uint id=1668;id<1700;id++) {
+                uint entity=entities+id*0x238;
+                if((r.Word(entity+0x204)&1)==0)continue;
+                events.Add(Obj("entity",id,"type",r.Word(entity+0xf4),"source",r.Word(entity+0xf0+0x80),
+                    "selector",r.Word(entity+0xf0+0xa8),"latch",r.Word(entity+0x20c),"origin",r.EntityOrigin(entity+0xf0)));
+            }
+            frames.Add(Obj("elapsed",clock.ElapsedMilliseconds,"state",state,"time",time,
+                "audio_initialized",r.Read(0x0780a488,1)[0],"channels",sounds,"events",events));
+            System.Threading.Thread.Sleep(20);
+        }
+        var serializer=new JavaScriptSerializer();serializer.MaxJsonLength=32*1024*1024;
+        Console.WriteLine(serializer.Serialize(Obj("schema_version",1,"read_only",true,
+            "client_sha256","e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b",
+            "initial_state",initialState,"frames",frames)));
+    }
     static bool VoiceName(string name) {
         if(name==null)return false;
         string n=name.ToLowerInvariant();
@@ -46,7 +100,10 @@ partial class ClientAssets {
                     if(related) {
                         if(rawfiles.Count+tables.Count>=64)throw new Exception("voice script/table budget exceeded");
                         if(kind==36&&!rawfiles.ContainsKey(name))try{rawfiles[name]=r.AnimationRules(name);}catch(Exception e){rawfiles[name]=Obj("error",e.Message);}
-                        if(kind==37&&!tables.ContainsKey(name))try{tables[name]=r.Table(name);}catch(Exception e){tables[name]=Obj("error",e.Message);}
+                        // Active hash identities with flags0/2 still have valid
+                        // tables and aliases in this build. Capture their data
+                        // without treating the flag word as playback evidence.
+                        if(kind==37&&!tables.ContainsKey(name))try{tables[name]=r.Table(name,false);}catch(Exception e){tables[name]=Obj("error",e.Message);}
                     }
                 }
                 index=U(entries,at+20);

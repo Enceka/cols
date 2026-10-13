@@ -72,7 +72,8 @@ class ReadClientState {
             bool tacticalAssets=args.Length==1 && args[0]=="--tactical-assets";
             bool hudAssets=args.Length==1 && args[0]=="--hud-assets";
             bool voiceAssets=args.Length==1 && args[0]=="--voice-assets";
-            if(args.Length!=0 && !voiceAssets && !frontendAssets && !glass && !mapCheck && !hudAssets && !tacticalAssets && !appearanceLoad && !outfits && !grounding && !replay && !feedback && !hitRegions && !assets && !profiles && !netConstants && !mapEntities && !bootstrapWeapon && !weaponModels && !arsenal && !collision && !weaponRegistry && !trainingTarget && !bulletImpacts && !characters) throw new Exception("only fixed extraction modes are supported");
+            bool voicePlayback=args.Length==1 && args[0]=="--voice-playback";
+            if(args.Length!=0 && !voicePlayback && !voiceAssets && !frontendAssets && !glass && !mapCheck && !hudAssets && !tacticalAssets && !appearanceLoad && !outfits && !grounding && !replay && !feedback && !hitRegions && !assets && !profiles && !netConstants && !mapEntities && !bootstrapWeapon && !weaponModels && !arsenal && !collision && !weaponRegistry && !trainingTarget && !bulletImpacts && !characters) throw new Exception("only fixed extraction modes are supported");
             IntPtr snapshot=CreateToolhelp32Snapshot(2,0); uint found=0;
             if(snapshot==new IntPtr(-1)) throw new Exception("process snapshot failed");
             try {
@@ -123,6 +124,7 @@ class ReadClientState {
                 if(tacticalAssets) { ClientAssets.ExportTacticalAssets(process);return 0; }
                 if(hudAssets) { ClientAssets.ExportHudAssets(process);return 0; }
                 if(voiceAssets) { ClientAssets.ExportVoiceAssets(process);return 0; }
+                if(voicePlayback) { ClientAssets.ExportVoicePlayback(process);return 0; }
                 Console.WriteLine("{");
                 Field(process,"connection_state",0x01a2e7ec,4);
                 Field(process,"player_card_visible",0x0b5f3024,1);

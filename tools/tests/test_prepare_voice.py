@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 import struct
 import sys
+import subprocess
+import tempfile
 import unittest
 import zlib
 
@@ -43,9 +45,32 @@ def encode(value):
 
 
 class VoicePreparation(unittest.TestCase):
+    def test_state_output_preserves_source_and_resolves_existing_resource_paths(self):
+        data, state = inputs()
+        state["collision_file"] = "collision.json"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); source = root / "source"; source.mkdir()
+            ncs = source / "ncs.json"; ncs.write_bytes(encode(data))
+            game = source / "game.json"; game.write_bytes(encode(state)); before = game.read_bytes()
+            catalog = root / "diagnostic" / "voices.json"
+            prepared = root / "diagnostic" / "map.json"
+            script = Path(__file__).resolve().parents[1] / "prepare_voice.py"
+            command = [sys.executable, str(script), str(ncs), "--game-state", str(game),
+                       "--output", str(catalog), "--state-output", str(prepared), "--voice-variant", "2"]
+            subprocess.run(command, check=True, capture_output=True)
+            result = json.loads(prepared.read_bytes())
+            self.assertEqual(game.read_bytes(), before)
+            self.assertEqual((prepared.parent / result["voice_file"]).resolve(), catalog.resolve())
+            self.assertEqual(result["collision_file"], str((source / "collision.json").resolve()))
+            self.assertEqual(json.loads(catalog.read_bytes())["voice_variant"], 2)
+            failed = subprocess.run(command, capture_output=True)
+            self.assertNotEqual(failed.returncode, 0)
+            self.assertEqual(game.read_bytes(), before)
+
     def test_constant_offset_zero_and_dynamic_countdown_use_separate_banks(self):
         data, state = inputs()
         catalog = prepare(encode(data), encode(state))
+        self.assertEqual(catalog["mode_intro_gap_msec"], 3000)
         self.assertEqual(catalog["constant_sound_count"], 3)
         self.assertEqual(catalog["announcers"]["sc"]["match_start"]["play_command"], "p 512")
         self.assertEqual(catalog["announcers"]["tf"]["match_start"]["play_command"], "p 513")
@@ -64,10 +89,13 @@ class VoicePreparation(unittest.TestCase):
                      aliases=[dict(name="UK_F2_MP_PAIN", entry_flags=1, count=4)])
         catalog = prepare(encode(data), encode(state), encode(voice))
         cue = catalog["characters"]["uk_f2_"]["events"]["pain"]
-        self.assertEqual(cue["resource_status"], "loaded_alias")
+        self.assertEqual(cue["resource_status"], "captured_alias")
         self.assertEqual(cue["variant_count"], 4)
         self.assertIn("audio acceptance pending", catalog["evidence"])
         self.assertEqual(len(catalog["sources_sha256"]), 3)
+        voice["map"] = "maps/mp/mp_test.d3dbsp"
+        voice["aliases"][0]["entry_flags"] = 2
+        self.assertEqual(prepare(encode(data), encode(state), encode(voice))["characters"]["uk_f2_"]["events"]["pain"]["resource_status"], "captured_alias")
         voice["map"] = "mp_another"
         with self.assertRaises(ValueError): prepare(encode(data), encode(state), encode(voice))
 
@@ -93,6 +121,16 @@ class VoicePreparation(unittest.TestCase):
         data["category_layout_base64"] = base64.b64encode(layout).decode()
         with self.assertRaisesRegex(ValueError, "layout"):
             prepare(encode(data), encode(state))
+
+    def test_mode_intro_interval_is_bounded_without_reassigning_resource_indices(self):
+        data, state = inputs()
+        normal = prepare(encode(data), encode(state))
+        changed = prepare(encode(data), encode(state), mode_intro_gap_msec=4000)
+        self.assertEqual(changed["all_constant_sounds"], normal["all_constant_sounds"])
+        self.assertEqual(changed["mode_intro_gap_msec"], 4000)
+        for invalid in [0, 999, 10001, True, 3000.0]:
+            with self.assertRaisesRegex(ValueError, "interval"):
+                prepare(encode(data), encode(state), mode_intro_gap_msec=invalid)
 
 
 if __name__ == "__main__":

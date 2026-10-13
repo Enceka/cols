@@ -22,12 +22,28 @@
     "dynamic_slots": 512,
     "dynamic_reserved": 1,
     "constant_category": 5,
-    "constant_category_layout": [7058, 0, 0],
+    "constant_category_layout": [
+      7058,
+      0,
+      0
+    ],
     "constant_selector_offset": 512,
     "constant_index_reserved": 0,
     "spatial_event": 3,
     "spatial_parameter_bits": 14,
-    "alias_record_stride": 108
+    "alias_record_stride": 108,
+    "spatial_entity_type": 25,
+    "spatial_descriptor_va": "0xc52888",
+    "spatial_selector_field": [
+      168,
+      -93,
+      0
+    ],
+    "spatial_source_field": [
+      128,
+      11,
+      0
+    ]
   },
   "automatic_voice_handles": {
     "sprint": "0x01a1f7f4",
@@ -35,7 +51,16 @@
     "sniper_breathout": "0x01a1be00",
     "sniper_breathgasp": "0x01a1be04"
   },
-  "multiplayer_voice_families": ["UK_M1_", "UK_M2_", "UK_F1_", "UK_F2_", "AB_M1_", "AB_M2_", "AB_F1_", "AB_F2_"],
+  "multiplayer_voice_families": [
+    "UK_M1_",
+    "UK_M2_",
+    "UK_F1_",
+    "UK_F2_",
+    "AB_M1_",
+    "AB_M2_",
+    "AB_F1_",
+    "AB_F2_"
+  ],
   "examples": {
     "map": "mp_afghan",
     "ncs_crc": 523897474,
@@ -53,5 +78,26 @@
       "uk_spawn_music": 1991
     }
   },
-  "acceptance": "Native consumers and CRC-verified identities; new voice playback and official trigger policy remain unverified"
+  "acceptance": "Native channels, one-shot entities, application-only audio and match results verified on Killhouse/Crash for TF/SC; user confirmed mode introduction, opening instruction and reload hearing; official voice-variant/GSC policy remains incomplete",
+  "server_entity_allocation": {
+    "sound_first": 1668,
+    "sound_end_exclusive": 1700,
+    "impact_first": 54,
+    "impact_end_exclusive": 1668,
+    "hold_msec": 200,
+    "source": "Rust allocation; not a fixed native range"
+  },
+  "native_faction_voice_prefixes": {
+    "taskforce_141": "UK_",
+    "shadow_company": "AB_"
+  },
+  "mode_introduction": {
+    "tf_alias": "uk_1mc_tm_deathmatch",
+    "sc_alias": "ab_1mc_tm_deathmatch",
+    "opening_alias_suffix": "boost",
+    "ack_delay_msec": 3000,
+    "verified_sc_mode_channel_msec": 2642,
+    "verified_sc_gap_before_boost_msec": 488,
+    "official_gsc_timing_restored": false
+  }
 }

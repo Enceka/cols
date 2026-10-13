@@ -8,6 +8,7 @@ import argparse
 import base64
 import hashlib
 import json
+import os
 import re
 import struct
 from pathlib import Path
@@ -78,7 +79,12 @@ def constant_bank(capture, category):
     return names
 
 
-def prepare(ncs_bytes, prepared_bytes, voice_bytes=None):
+def prepare(ncs_bytes, prepared_bytes, voice_bytes=None, voice_variant=1, hear_self_chatter=False,
+            mode_intro_gap_msec=3000):
+    if type(voice_variant) is not int or voice_variant not in (1, 2):
+        raise ValueError("unsupported configured voice variant")
+    if type(mode_intro_gap_msec) is not int or not 1000 <= mode_intro_gap_msec <= 10000:
+        raise ValueError("invalid mode introduction interval")
     capture = json.loads(ncs_bytes)
     state = json.loads(prepared_bytes)
     if capture.get("initialized") != 1 or capture.get("connection_state") not in (9, 10):
@@ -106,7 +112,7 @@ def prepare(ncs_bytes, prepared_bytes, voice_bytes=None):
         if (voice.get("schema_version") != 1 or voice.get("read_only") is not True or
                 voice.get("client_sha256") != CLIENT_SHA256 or
                 voice.get("connection_state") != 10 or voice.get("ncs_crc") != state["ncs_crc"] or
-                voice.get("map") != state["map"]):
+                voice.get("map") not in (state["map"], f"maps/mp/{state['map']}.d3dbsp")):
             raise ValueError("voice alias capture identity/state mismatch")
         for alias in voice["aliases"]:
             name = alias["name"].lower()
@@ -129,11 +135,12 @@ def prepare(ncs_bytes, prepared_bytes, voice_bytes=None):
             return dict(alias=name, available=False)
         record = dict(sound, available=True, play_command="p " + str(sound["selector"]))
         resource = loaded.get(name.lower())
-        record["resource_status"] = ("loaded_alias" if resource is not None and
-                                     resource["entry_flags"] & 5 and resource.get("count", 0) > 0
+        record["resource_status"] = ("captured_alias" if resource is not None and
+                                     resource.get("count", 0) > 0
                                      else "constant_only")
         if resource is not None:
             record["variant_count"] = resource.get("count", 0)
+            record["asset_entry_flags"] = resource["entry_flags"]
         return record
 
     announcers = {faction: {event: cue(prefix + "_1mc_" + suffix)
@@ -153,7 +160,9 @@ def prepare(ncs_bytes, prepared_bytes, voice_bytes=None):
                     aliases=[cue(n) for n in constants if n.lower().startswith(prefix)])
     return dict(schema_version=1, client_sha256=CLIENT_SHA256, sources_sha256=sources,
                 map=state["map"], mode=state["mode"], ncs_crc=verified["ncs_crc"],
-                constant_sound_count=len(constants), dynamic_sound_count=len(dynamics),
+                constant_sound_count=len(constants), dynamic_sound_count=len(dynamics), voice_variant=voice_variant,
+                hear_self_chatter=hear_self_chatter,
+                mode_intro_gap_msec=mode_intro_gap_msec,
                 evidence="CRC-verified native resource identities; trigger and audio acceptance pending",
                 announcers=announcers, music=music, characters=characters,
                 countdown=cue("ui_mp_timer_countdown"),
@@ -167,11 +176,34 @@ def main():
     parser.add_argument("--game-state", type=Path, required=True, help="prepared map to bind by CRC")
     parser.add_argument("--voice-assets", type=Path, help="optional same-map --voice-assets capture")
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--voice-variant", type=int, choices=(1, 2), default=1,
+                        help="explicit shared variant; no official per-package mapping is assumed")
+    parser.add_argument("--hear-self-chatter", action="store_true", help="also hear the local player's team chatter; reference default excludes the speaker")
+    parser.add_argument("--mode-intro-gap-msec", type=int, default=3000,
+                        help="1000..10000 ms after mode command acknowledgement before the opening instruction")
+    parser.add_argument("--state-output", type=Path, help="write a separate prepared map with voice_file enabled")
     args = parser.parse_args()
+    inputs = {args.capture.resolve(), args.game_state.resolve()}
+    if args.voice_assets:
+        inputs.add(args.voice_assets.resolve())
+    if args.output.resolve() in inputs:
+        parser.error("output must differ from input captures and source map")
+    if args.state_output and (args.state_output.resolve() in inputs or
+                              args.state_output.resolve() == args.output.resolve() or args.state_output.exists()):
+        parser.error("state-output must be a new preparation distinct from the catalog and inputs")
     result = prepare(args.capture.read_bytes(), args.game_state.read_bytes(),
-                     args.voice_assets.read_bytes() if args.voice_assets else None)
+                     args.voice_assets.read_bytes() if args.voice_assets else None, args.voice_variant,
+                     args.hear_self_chatter, args.mode_intro_gap_msec)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n")
+    if args.state_output:
+        state = json.loads(args.game_state.read_bytes())
+        for field in ("arsenal_file", "collision_file", "appearance_file"):
+            if state.get(field):
+                state[field] = str((args.game_state.parent / state[field]).resolve())
+        state["voice_file"] = os.path.relpath(args.output.resolve(), args.state_output.parent.resolve())
+        args.state_output.parent.mkdir(parents=True, exist_ok=True)
+        args.state_output.write_text(json.dumps(state, indent=2) + "\n")
     print(json.dumps(dict(output=str(args.output), map=result["map"], ncs_crc=result["ncs_crc"],
                           constant_sound_count=result["constant_sound_count"],
                           character_families=len(result["characters"]))))

@@ -1,11 +1,105 @@
 //! 3.3.3.3 sound selectors: CG local sound at VA0x57b500/0x444910.
 //! Dynamic selectors use CS3107+slot; selectors >=512 use zero-based NCS
 //! category5. The reliable command accepts 1..=16000, including selector512.
-use crate::{game_events::Event, lobby::LobbyError};
+use crate::{game_events::Event, game_state::Writer, lobby::LobbyError};
 
 pub const DYNAMIC_SOUND_BASE: u16 = 3107;
 pub const CONSTANT_SOUND_OFFSET: u16 = 512;
 pub const MAX_SOUND_SELECTOR: u16 = 16000;
+pub const FIRST_SOUND_ENTITY: u16 = 1668;
+pub const END_SOUND_ENTITY: u16 = 1700;
+
+/// Source player and temporary one-shot playback latch have separate identities.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SoundSnapshot {
+    pub entity_number: u16,
+    pub source: u8,
+    pub origin: [f32; 3],
+    pub selector: SoundSelector,
+}
+
+pub(crate) fn write_sounds(
+    out: &mut Writer,
+    sounds: &[SoundSnapshot],
+    baselines: &[SoundSnapshot],
+    establish_baseline: bool,
+) -> Result<(), LobbyError> {
+    for list in [sounds, baselines] {
+        for (i, sound) in list.iter().enumerate() {
+            if !(FIRST_SOUND_ENTITY..END_SOUND_ENTITY).contains(&sound.entity_number)
+                || sound.source > 18
+                || sound
+                    .origin
+                    .iter()
+                    .any(|v| !v.is_finite() || !(-32768.0..=32767.0).contains(v))
+                || (i > 0 && list[i - 1].entity_number >= sound.entity_number)
+            {
+                return Err(LobbyError("invalid spatial sound snapshot"));
+            }
+        }
+    }
+    if establish_baseline {
+        return Ok(());
+    }
+    let numbers: std::collections::BTreeSet<_> = sounds
+        .iter()
+        .chain(baselines)
+        .map(|s| s.entity_number)
+        .collect();
+    for number in numbers {
+        let current = sounds.iter().find(|s| s.entity_number == number);
+        let base = baselines.iter().find(|s| s.entity_number == number);
+        if current == base {
+            continue;
+        }
+        out.bits(0, 1);
+        out.bits(1, 1);
+        out.bits(u32::from(number), 11);
+        let Some(sound) = current else {
+            out.bits(1, 1);
+            continue;
+        };
+        out.bits(0, 1);
+        out.bits(1, 1);
+        out.bits(1, 1);
+        out.bits(9, 6);
+        gap(out, 1);
+        out.bytes.push(25); // ET_EVENTS22 + EV_SOUND_ALIAS3
+        let mut previous = 0;
+        for (index, axis) in [(2, 0), (3, 1), (4, 2)] {
+            gap(out, index - previous);
+            previous = index;
+            out.bits(1, 1);
+            out.bits(
+                u32::from(sound.origin[axis].round_ties_even() as i16 as u16),
+                16,
+            );
+        }
+        gap(out, 5 - previous);
+        // Descriptor22 field5: codec-93 uses the event's 14-bit parameter.
+        out.bits(u32::from(sound.selector.value()), 14);
+        gap(out, 4); // field9: ES+0x80, positive-width11 source entity
+        out.bits(u32::from(sound.source != 0), 1);
+        if sound.source != 0 {
+            let value = sound.source ^ base.map_or(0, |b| b.source);
+            out.bits(u32::from(value) & 7, 3);
+            out.bytes.push(value >> 3);
+        }
+    }
+    Ok(())
+}
+
+fn gap(out: &mut Writer, distance: u32) {
+    out.bits(u32::from(distance == 1), 1);
+    if distance != 1 {
+        let mut remaining = distance - 1;
+        while remaining >= 7 {
+            out.bits(7, 3);
+            remaining -= 7;
+        }
+        out.bits(remaining, 3);
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SoundSelector(u16);
@@ -123,6 +217,84 @@ impl VoicePrefix {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn spatial_sound_uses_descriptor22_parameter_and_source_and_removes_expired_latch() {
+        use crate::game_wire::Reader;
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../fixtures/protocol/bullet-impact-3.3.3.3.json"
+        ))
+        .unwrap();
+        assert_eq!(fixture["fields"][5], serde_json::json!([168, -93, 0]));
+        assert_eq!(fixture["fields"][9], serde_json::json!([128, 11, 0]));
+        let sound = SoundSnapshot {
+            entity_number: FIRST_SOUND_ENTITY,
+            source: 7,
+            origin: [-3.0, 12.0, 90.0],
+            selector: SoundSelector::constant(1126).unwrap(),
+        };
+        let mut out = Writer::default();
+        write_sounds(&mut out, &[sound], &[], false).unwrap();
+        let mut r = Reader::new(&out.bytes);
+        assert_eq!(r.bits(2).unwrap(), 2);
+        assert_eq!(r.bits(11).unwrap(), u32::from(FIRST_SOUND_ENTITY));
+        assert_eq!(r.bits(3).unwrap(), 6);
+        let last = r.bits(6).unwrap();
+        assert_eq!(last, 9);
+        let mut index = -1i32;
+        let mut values = std::collections::BTreeMap::new();
+        while index < last as i32 {
+            let mut gap = 1;
+            if r.bits(1).unwrap() == 0 {
+                loop {
+                    let part = r.bits(3).unwrap();
+                    gap += part;
+                    if part != 7 {
+                        break;
+                    }
+                }
+            }
+            index += gap as i32;
+            let row = &fixture["fields"][index as usize];
+            let offset = row[0].as_u64().unwrap();
+            let value = match row[1].as_i64().unwrap() {
+                -77 => u32::from(r.u8().unwrap()),
+                -83..=-81 => {
+                    assert_eq!(r.bits(1).unwrap(), 1);
+                    r.bits(16).unwrap()
+                }
+                -93 => r.bits(14).unwrap(),
+                11 => {
+                    if r.bits(1).unwrap() == 0 {
+                        0
+                    } else {
+                        r.bits(3).unwrap() | (u32::from(r.u8().unwrap()) << 3)
+                    }
+                }
+                _ => panic!("unexpected sound field"),
+            };
+            values.insert(offset, value);
+        }
+        assert_eq!(values[&4], 25);
+        assert_eq!(values[&168], 1638);
+        assert_eq!(values[&128], 7);
+        assert_eq!(values[&24], u32::from((-3i16) as u16));
+        let mut same = Writer::default();
+        write_sounds(&mut same, &[sound], &[sound], false).unwrap();
+        assert!(same.bytes.is_empty());
+        let mut removal = Writer::default();
+        write_sounds(&mut removal, &[], &[sound], false).unwrap();
+        let mut r = Reader::new(&removal.bytes);
+        assert_eq!(r.bits(2).unwrap(), 2);
+        assert_eq!(r.bits(11).unwrap(), u32::from(FIRST_SOUND_ENTITY));
+        assert_eq!(r.bits(1).unwrap(), 1);
+        let mut full = Writer::default();
+        write_sounds(&mut full, &[sound], &[], true).unwrap();
+        assert!(full.bytes.is_empty());
+        let mut invalid = sound;
+        invalid.entity_number = 1700;
+        assert!(write_sounds(&mut Writer::default(), &[invalid], &[], false).is_err());
+    }
 
     #[test]
     fn dynamic_and_constant_banks_meet_at_512_without_shifting_index_zero() {
