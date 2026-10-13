@@ -37,6 +37,8 @@ impl Resources {
 
 #[derive(Clone)]
 pub(crate) struct View {
+    pub streaks: codol_protocol::game_killstreaks::StreakSnapshot,
+    pub reward_inventory: Option<codol_protocol::game_snapshot::EquippedWeapon>,
     pub client: u8,
     pub motion: Motion,
     pub angles: [u16; 3],
@@ -115,6 +117,9 @@ pub(crate) struct Replay {
     pub last_sound: Option<u32>,
 }
 impl Replay {
+    pub fn cancel(&mut self, reason: &str) {
+        self.finish(reason);
+    }
     pub fn record(&mut self, frame: Frame) {
         if self.frames.back().is_some_and(|p| frame.time <= p.time) {
             return;
@@ -362,6 +367,8 @@ mod tests {
             missiles: vec![],
             time,
             views: vec![View {
+                streaks: Default::default(),
+                reward_inventory: None,
                 shellshock: None,
                 client: 7,
                 motion,

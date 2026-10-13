@@ -19,6 +19,7 @@ mod game_handshake;
 mod game_health;
 pub mod game_hit_location;
 mod game_impact;
+mod game_killstreaks;
 mod game_landing;
 pub mod game_map_catalog;
 mod game_map_registry;

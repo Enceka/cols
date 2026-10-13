@@ -73,7 +73,10 @@ class ReadClientState {
             bool hudAssets=args.Length==1 && args[0]=="--hud-assets";
             bool voiceAssets=args.Length==1 && args[0]=="--voice-assets";
             bool voicePlayback=args.Length==1 && args[0]=="--voice-playback";
-            if(args.Length!=0 && !voicePlayback && !voiceAssets && !frontendAssets && !glass && !mapCheck && !hudAssets && !tacticalAssets && !appearanceLoad && !outfits && !grounding && !replay && !feedback && !hitRegions && !assets && !profiles && !netConstants && !mapEntities && !bootstrapWeapon && !weaponModels && !arsenal && !collision && !weaponRegistry && !trainingTarget && !bulletImpacts && !characters) throw new Exception("only fixed extraction modes are supported");
+            bool nukeAssets=args.Length==1 && args[0]=="--nuke-assets";
+            bool nukeState=args.Length==1 && args[0]=="--nuke-state";
+            bool nukeFrame=args.Length==1 && args[0]=="--nuke-frame";
+            if(args.Length!=0 && !nukeAssets && !nukeState && !nukeFrame && !voicePlayback && !voiceAssets && !frontendAssets && !glass && !mapCheck && !hudAssets && !tacticalAssets && !appearanceLoad && !outfits && !grounding && !replay && !feedback && !hitRegions && !assets && !profiles && !netConstants && !mapEntities && !bootstrapWeapon && !weaponModels && !arsenal && !collision && !weaponRegistry && !trainingTarget && !bulletImpacts && !characters) throw new Exception("only fixed extraction modes are supported");
             IntPtr snapshot=CreateToolhelp32Snapshot(2,0); uint found=0;
             if(snapshot==new IntPtr(-1)) throw new Exception("process snapshot failed");
             try {
@@ -100,6 +103,9 @@ class ReadClientState {
                     if(hash!="e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b")
                         throw new Exception("target executable hash differs from the recovered version");
                 }
+                if(nukeAssets) { ClientAssets.ExportNukeAssets(process);return 0; }
+                if(nukeState) { ClientAssets.ExportNukeState(process);return 0; }
+                if(nukeFrame) { ClientAssets.ExportNukeState(process,true);return 0; }
                 if(assets) { ClientAssets.Export(process);return 0; }
                 if(feedback) { ClientAssets.ExportFeedback(process);return 0; }
                 if(replay) { ClientAssets.ExportReplay(process);return 0; }

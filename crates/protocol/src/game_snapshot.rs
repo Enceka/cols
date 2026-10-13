@@ -241,6 +241,9 @@ pub fn player_frame_with_motion(
         equipment,
         angles,
         WorldSnapshot {
+            streaks: Default::default(),
+            reward_inventory: None,
+            nuke_hud: None,
             perk_display: false,
             local_abilities: None,
             destroyed_glass: &[],
@@ -283,6 +286,9 @@ pub fn player_frame_with_motion(
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct WorldSnapshot<'a> {
+    pub streaks: crate::game_killstreaks::StreakSnapshot,
+    pub reward_inventory: Option<EquippedWeapon>,
+    pub nuke_hud: Option<crate::game_hit_feedback::NukeHudSnapshot>,
     pub destroyed_glass: &'a [u16],
     /// Native perk_sidebar_hud operator239 reads PS+0x4bc (hint2 field122).
     pub perk_display: bool,
@@ -408,6 +414,11 @@ pub fn player_frame_with_world(
         seen.extend(inventory_weapon);
         seen.extend(e.secondary.map(|w| w.weapon));
         seen.extend(e.offhands.into_iter().flatten().map(|w| w.weapon));
+        if let Some(reward) = world.reward_inventory
+            && (reward.weapon == 0 || reward.weapon >= 900 || !seen.insert(reward.weapon))
+        {
+            return Err(LobbyError("invalid reward inventory weapon"));
+        }
         for other in e.alternates.into_iter().flatten() {
             if other.weapon == 0 || other.weapon >= 900 || !seen.insert(other.weapon) {
                 return Err(LobbyError("invalid alternate inventory weapon"));
@@ -454,6 +465,7 @@ pub fn player_frame_with_world(
     let ammunition: Vec<Ammo> = ammo
         .into_iter()
         .chain(secondary.and_then(|other| other.ammo))
+        .chain(world.reward_inventory.and_then(|other| other.ammo))
         .chain(
             equipment
                 .into_iter()
@@ -703,6 +715,15 @@ pub fn player_frame_with_world(
             }
         }
     }
+    if motion.is_some() {
+        fields.extend(
+            world
+                .streaks
+                .fields()?
+                .into_iter()
+                .map(|(f, v, b)| (f, v, b as usize)),
+        );
+    }
     fields.sort_by_key(|f| f.0);
     let last_changed = fields.last().map_or(0, |f| f.0);
     let mut out = Writer::default();
@@ -811,6 +832,8 @@ pub fn player_frame_with_world(
                 })
             } else if slot <= 5 {
                 equipment.unwrap().alternates[slot - 4]
+            } else if slot == 6 {
+                world.reward_inventory
             } else {
                 None
             };
@@ -837,18 +860,38 @@ pub fn player_frame_with_world(
         // HUD; four final indexed lists. 3.3.3.3 has fourteen gates in total.
         out.bits(0, 8);
     }
-    if world.hit_feedback.is_some() || world.death_waypoints.is_some() || world.replay.is_some() {
-        crate::game_hit_feedback::write_hud(
-            &mut out,
-            world.hit_feedback,
-            world.death_waypoints.unwrap_or(&[]),
-            world
-                .replay
-                .map(|r| crate::game_hit_feedback::ReplayHudSnapshot {
-                    end_time: r.end_time,
-                    skip_text: r.skip_text,
-                }),
-        )?;
+    if world.hit_feedback.is_some()
+        || world.death_waypoints.is_some()
+        || world.replay.is_some()
+        || world.nuke_hud.is_some()
+    {
+        let replay_hud = world
+            .replay
+            .map(|r| crate::game_hit_feedback::ReplayHudSnapshot {
+                end_time: r.end_time,
+                skip_text: r.skip_text,
+            });
+        if world.nuke_hud.is_some() {
+            crate::game_hit_feedback::write_hud_with_nuke(
+                &mut out,
+                world.hit_feedback,
+                world.death_waypoints.unwrap_or(&[]),
+                replay_hud,
+                world.nuke_hud,
+            )?;
+        } else {
+            crate::game_hit_feedback::write_hud(
+                &mut out,
+                world.hit_feedback,
+                world.death_waypoints.unwrap_or(&[]),
+                world
+                    .replay
+                    .map(|r| crate::game_hit_feedback::ReplayHudSnapshot {
+                        end_time: r.end_time,
+                        skip_text: r.skip_text,
+                    }),
+            )?;
+        }
     } else {
         out.bits(0, 1); // HUD
     }
@@ -2044,6 +2087,73 @@ mod tests {
         }
     }
 
+    #[test]
+    fn native_streak_slots_decode_and_clear_in_full_and_acknowledged_frames() {
+        use crate::game_killstreaks::StreakSnapshot;
+        for distance in [0, 1, 7] {
+            for streaks in [
+                StreakSnapshot {
+                    progress: 25,
+                    ids: [15, 1, 5, 8, 0],
+                    targets: [25, 3, 5, 7, 0],
+                    action_types: [1, 0, 0, 0, 0],
+                    action_weapons: [323, 0, 0, 0, 0],
+                },
+                StreakSnapshot::default(),
+            ] {
+                let body = player_frame_with_world(
+                    1000,
+                    950,
+                    Some([0.0; 3]),
+                    distance == 0,
+                    None,
+                    [0; 3],
+                    WorldSnapshot {
+                        streaks,
+                        motion: Some(authoritative_motion()),
+                        delta_distance: distance,
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+                let mut r = Reader::new(&body);
+                assert_eq!(r.u8().unwrap(), 0);
+                assert_eq!(r.u32().unwrap(), 1000);
+                r.u8().unwrap();
+                r.u8().unwrap();
+                assert_eq!(r.bits(2).unwrap(), 2); // Every PS starts from zero.
+                let (fields, _) = read_fields(&mut r);
+                assert_eq!(
+                    fields.get(&88).copied().unwrap_or(0),
+                    u32::from(streaks.progress)
+                );
+                for slot in 0..5 {
+                    assert_eq!(
+                        fields.get(&(126 + slot)).copied().unwrap_or(0),
+                        u32::from(streaks.ids[slot])
+                    );
+                    assert_eq!(
+                        fields.get(&(131 + slot)).copied().unwrap_or(0),
+                        u32::from(streaks.targets[slot])
+                    );
+                    assert_eq!(
+                        fields
+                            .get(&[139, 187, 100, 174, 222][slot])
+                            .copied()
+                            .unwrap_or(0),
+                        u32::from(streaks.action_types[slot])
+                    );
+                    assert_eq!(
+                        fields
+                            .get(&[144, 203, 141, 173, 221][slot])
+                            .copied()
+                            .unwrap_or(0),
+                        u32::from(streaks.action_weapons[slot])
+                    );
+                }
+            }
+        }
+    }
     #[test]
     fn movement_events_and_two_weapons_decode_with_the_target_field_and_array_layout() {
         let mut events = EventQueue::default();

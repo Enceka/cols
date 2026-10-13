@@ -39,6 +39,10 @@ pub struct ImpactSnapshot {
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ImpactEvent {
+    /// EV_PLAY_FX100: 9-bit selector, independently verified at0xc56d70.
+    PlayFx {
+        selector: u16,
+    },
     #[default]
     Bullet,
     GrenadeExplosion,
@@ -80,7 +84,9 @@ impl ImpactSnapshot {
                 .any(|v| !v.is_finite() || !(-32768.0..=32767.0).contains(v))
             || self.normal_byte >= 162
             || self.surface > 30
-            || !(1..900).contains(&self.weapon)
+            || (!matches!(self.event, ImpactEvent::PlayFx { .. })
+                && !(1..900).contains(&self.weapon))
+            || matches!(self.event, ImpactEvent::PlayFx { selector } if !(1..=399).contains(&selector))
             || self
                 .event
                 .custom_time()
@@ -90,6 +96,43 @@ impl ImpactSnapshot {
         }
         Ok(())
     }
+}
+
+#[cfg(test)]
+#[test]
+fn native_play_fx_uses_the_event_specific_nine_bit_selector() {
+    let mut out = Writer::default();
+    write_impacts(
+        &mut out,
+        &[ImpactSnapshot {
+            event: ImpactEvent::PlayFx { selector: 399 },
+            entity_number: 100,
+            origin: [0.0; 3],
+            normal_byte: 0,
+            surface: 0,
+            weapon: 0,
+        }],
+        false,
+    )
+    .unwrap();
+    let mut reader = crate::game_wire::Reader::new(&out.bytes);
+    assert_eq!(reader.bits(2).unwrap(), 2);
+    assert_eq!(reader.bits(11).unwrap(), 100);
+    assert_eq!(reader.bits(3).unwrap(), 6);
+    assert_eq!(reader.bits(6).unwrap(), 22);
+    assert_eq!(reader.bits(1).unwrap(), 1);
+    assert_eq!(reader.u8().unwrap(), 122);
+    assert_eq!(reader.bits(1).unwrap(), 0);
+    assert_eq!(reader.bits(3).unwrap(), 1);
+    for i in 0..3 {
+        if i != 0 {
+            assert_eq!(reader.bits(1).unwrap(), 1);
+        }
+        assert_eq!(reader.bits(1).unwrap(), 1);
+        assert_eq!(reader.bits(16).unwrap(), 0);
+    }
+    assert_eq!(reader.bits(1).unwrap(), 1);
+    assert_eq!(reader.bits(9).unwrap(), 399);
 }
 
 #[cfg(test)]
@@ -181,6 +224,7 @@ pub(crate) fn write_impacts_with_baselines(
         out.bits(if custom_fields { 40 } else { 22 }, 6);
         gap(out, 1);
         out.bytes.push(match impact.event {
+            ImpactEvent::PlayFx { .. } => 122,
             ImpactEvent::Bullet => 96,
             ImpactEvent::GrenadeExplosion => 109,
             ImpactEvent::FlashExplosion => 114, // EV_FLASHBANG_EXPLODE92
@@ -198,7 +242,11 @@ pub(crate) fn write_impacts_with_baselines(
             out.bits(u32::from(value.round_ties_even() as i16 as u16), 16);
         }
         gap(out, 5 - previous);
-        out.bits(u32::from(impact.normal_byte), 8); // -93: no generic gate
+        if let ImpactEvent::PlayFx { selector } = impact.event {
+            out.bits(u32::from(selector), 9);
+        } else {
+            out.bits(u32::from(impact.normal_byte), 8); // -93: no generic gate
+        }
         previous = 5;
         if impact.surface != 0 || base.is_some_and(|b| b.surface != 0) {
             gap(out, 6 - previous);

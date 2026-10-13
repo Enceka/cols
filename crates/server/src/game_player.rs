@@ -273,6 +273,9 @@ pub(crate) struct Player {
     secondary: Option<Weapon>,
     alternate: Option<Weapon>,
     secondary_alternate: Option<Weapon>,
+    reward: Option<Weapon>,
+    reward_alternate: Option<Weapon>,
+    reward_alternate_timing: Option<AlternateTiming>,
     alternate_timing: Option<AlternateTiming>,
     secondary_alternate_timing: Option<AlternateTiming>,
     last_time: u32,
@@ -358,6 +361,9 @@ impl Player {
             secondary: None,
             alternate: None,
             secondary_alternate: None,
+            reward: None,
+            reward_alternate: None,
+            reward_alternate_timing: None,
             alternate_timing: None,
             secondary_alternate_timing: None,
             last_time: 1000,
@@ -394,6 +400,8 @@ impl Player {
             .chain(&self.secondary)
             .chain(&self.alternate)
             .chain(&self.secondary_alternate)
+            .chain(&self.reward)
+            .chain(&self.reward_alternate)
     }
     fn inventory(&self) -> impl Iterator<Item = &Weapon> {
         self.weapons().filter(|w| {
@@ -655,6 +663,8 @@ impl Player {
             .chain(&self.secondary)
             .chain(&self.alternate)
             .chain(&self.secondary_alternate)
+            .chain(&self.reward)
+            .chain(&self.reward_alternate)
             .any(|w| w.equipment.weapon == requested)
     }
 
@@ -777,6 +787,53 @@ impl Player {
         });
         equipment.events = Some(self.events);
         equipment
+    }
+    pub fn grant_nuke(&mut self, resources: &crate::game_killstreaks::NukeResources) {
+        if self.owns_weapon(resources.weapon) {
+            return;
+        }
+        let mut equipment = self.current.equipment;
+        equipment.weapon = resources.weapon;
+        equipment.inventory_weapon = None;
+        equipment.alternate_weapon = None;
+        equipment.alternates = [None; 2];
+        equipment.viewmodel = Some(resources.weapon);
+        equipment.ammo = Some(codol_protocol::game_snapshot::Ammo {
+            clip_key: resources.weapon,
+            reserve_key: resources.weapon,
+            clip: 1,
+            reserve: 0,
+        });
+        let mut player = Self::new(equipment, Some(resources.fire_interval_msec), None, None);
+        player.set_switch_timing(resources.switch);
+        self.reward = Some(player.current);
+    }
+    pub fn reward_inventory(&self) -> Option<EquippedWeapon> {
+        self.reward.as_ref().map(|w| EquippedWeapon {
+            weapon: w.equipment.weapon,
+            ammo: w.equipment.ammo,
+            needs_rechamber: w.needs_rechamber,
+        })
+    }
+    pub fn remove_nuke(&mut self, id: u16) {
+        if self.current.equipment.weapon == id && self.reward.is_some() {
+            std::mem::swap(&mut self.current, self.reward.as_mut().unwrap());
+            std::mem::swap(&mut self.alternate, &mut self.reward_alternate);
+            std::mem::swap(
+                &mut self.alternate_timing,
+                &mut self.reward_alternate_timing,
+            );
+            self.begin_raise();
+        }
+        if self
+            .reward
+            .as_ref()
+            .is_some_and(|w| w.equipment.weapon == id)
+        {
+            self.reward = None;
+            self.reward_alternate = None;
+            self.reward_alternate_timing = None;
+        }
     }
 
     pub fn apply(&mut self, cmd: &UserCommand) {
@@ -1225,12 +1282,25 @@ impl Player {
                 && self
                     .secondary
                     .as_ref()
-                    .is_some_and(|other| other.equipment.weapon == cmd.weapons[0])
+                    .into_iter()
+                    .chain(self.reward.as_ref())
+                    .any(|other| other.equipment.weapon == cmd.weapons[0])
             {
                 self.switch_target = Some(cmd.weapons[0]);
             }
             if remaining == 0 {
                 let requested = self.switch_target.take();
+                if let Some(other) = self.reward.as_mut()
+                    && requested == Some(other.equipment.weapon)
+                {
+                    self.current.ready();
+                    std::mem::swap(&mut self.current, other);
+                    std::mem::swap(&mut self.alternate, &mut self.reward_alternate);
+                    std::mem::swap(
+                        &mut self.alternate_timing,
+                        &mut self.reward_alternate_timing,
+                    );
+                }
                 if let Some(other) = self.secondary.as_mut()
                     && requested == Some(other.equipment.weapon)
                 {
@@ -1269,9 +1339,12 @@ impl Player {
         }
         if Self::input_allowed(cmd)
             && self.current.switch.is_some()
-            && self.secondary.as_ref().is_some_and(|other| {
-                other.equipment.weapon == cmd.weapons[0] && other.switch.is_some()
-            })
+            && self
+                .secondary
+                .as_ref()
+                .into_iter()
+                .chain(self.reward.as_ref())
+                .any(|other| other.equipment.weapon == cmd.weapons[0] && other.switch.is_some())
         {
             self.begin_drop(cmd.weapons[0]);
             return;
@@ -1996,6 +2069,39 @@ pub(crate) mod tests {
             None,
             None,
         )
+    }
+    #[test]
+    fn nuclear_reward_switches_through_native_inventory_and_returns_the_original_weapon() {
+        let mut p = player();
+        p.set_switch_timing(SwitchTiming {
+            drop_msec: 233,
+            raise_msec: 300,
+            empty_drop_msec: 233,
+            empty_raise_msec: 300,
+        });
+        let resources = crate::game_killstreaks::test_resources();
+        let ammunition = p.equipment().ammo;
+        p.grant_nuke(&resources);
+        assert!(p.owns_weapon(323));
+        assert_eq!(p.reward_inventory().unwrap().ammo.unwrap().clip, 1);
+        let mut command = cmd(1100, 0);
+        command.weapons[0] = 323;
+        p.apply(&command);
+        assert_eq!(p.equipment().weapon, 352);
+        command.time = 1333;
+        p.apply(&command);
+        assert_eq!(p.equipment().weapon, 323);
+        assert_eq!(p.reward_inventory().unwrap().weapon, 352);
+        p.remove_nuke(323);
+        assert_eq!(p.equipment().weapon, 352);
+        assert_eq!(
+            p.equipment()
+                .ammo
+                .map(|a| (a.clip_key, a.reserve_key, a.clip, a.reserve)),
+            ammunition.map(|a| (a.clip_key, a.reserve_key, a.clip, a.reserve))
+        );
+        assert!(!p.owns_weapon(323));
+        assert!(p.reward_inventory().is_none());
     }
     fn cmd(time: u32, buttons: u32) -> UserCommand {
         UserCommand {

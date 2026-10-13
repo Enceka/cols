@@ -101,6 +101,9 @@ pub(crate) struct Connection {
     match_ui_sequence: Option<u32>,
     match_summary_opened: Option<u32>,
     match_leave_sequence: Option<u32>,
+    nuke_banner: Option<(u32, u16)>,
+    nuke_return_at: Option<u32>,
+    nuke_tick_second: Option<u32>,
 }
 
 #[derive(Clone)]
@@ -299,6 +302,9 @@ impl Connection {
         self.game_state = Some(state);
     }
     fn equip_spawn_loadout(&mut self) {
+        if let Some(tdm) = &mut self.tdm {
+            tdm.streaks.spawn(0);
+        }
         if let Some(next) = self.next_spawn_loadout.take() {
             self.replace_game_state(next);
             tracing::info!("applied deferred player backpack at respawn");
@@ -414,6 +420,7 @@ impl Connection {
             tdm.advance_clock(server_time);
         }
         self.consume_inputs(server_time);
+        self.advance_nuke(server_time)?;
         if !self.hud_rules_sent
             && self.player.is_some()
             && self
@@ -695,6 +702,18 @@ impl Connection {
             enemy = None;
         }
         let mut snapshot_motion = self.snapshot_motion();
+        let mut streaks = self.tdm.as_ref().map_or(Default::default(), |m| {
+            if m.finished {
+                Default::default()
+            } else {
+                m.streaks
+                    .snapshot(0, state.nuke_resources().map_or(0, |r| r.weapon))
+            }
+        });
+        if self.tdm.as_ref().is_some_and(|m| !m.finished) {
+            state.streak_previews().apply(&mut streaks);
+        }
+        let mut reward_inventory = self.player.as_ref().and_then(|p| p.reward_inventory());
         self.vitals.emp_jammed = self.emp.active(server_time);
         let mut snapshot_vitals = (self.bot.is_some() || self.tdm.is_some()).then_some(self.vitals);
         let mut hit_feedback = state
@@ -704,6 +723,8 @@ impl Connection {
             let mut views = tdm.replay_views();
             if let (Some(motion), Some(equipment)) = (self.motion.as_ref(), equipment) {
                 views.push(crate::game_replay::View {
+                    streaks,
+                    reward_inventory,
                     client: 0,
                     shellshock,
                     motion: motion.clone(),
@@ -793,6 +814,8 @@ impl Connection {
             angles = playback.view.angles;
             command_time = playback.view.motion.command_time;
             equipment = Some(playback.view.equipment);
+            streaks = playback.view.streaks;
+            reward_inventory = playback.view.reward_inventory;
             snapshot_motion = Some(playback.view.motion);
             snapshot_vitals = Some(playback.view.vitals);
             local_player = playback.frame.local;
@@ -876,6 +899,21 @@ impl Connection {
             angles,
             equipment,
             crate::game_state::SnapshotWorld {
+                streaks,
+                reward_inventory,
+                nuke_hud: self.tdm.as_ref().and_then(|m| {
+                    let end = m.streaks.countdown_end();
+                    let text = self
+                        .nuke_banner
+                        .filter(|(until, _)| server_time < *until)
+                        .map(|(_, text)| text);
+                    (end.is_some() || text.is_some()).then_some(
+                        codol_protocol::game_hit_feedback::NukeHudSnapshot {
+                            end_time: end,
+                            text,
+                        },
+                    )
+                }),
                 perk_display: perk_display && replay_wire.is_none() && !top_players_scene,
                 bags: &bags,
                 bag_baselines: previous.as_ref().map_or(&[], |h| h.bags.as_slice()),
@@ -1437,6 +1475,9 @@ impl Connection {
         let state = self.game_state.as_ref().unwrap();
         if respawning {
             self.player_death = None;
+            if let Some(tdm) = &mut self.tdm {
+                tdm.streaks.spawn(0);
+            }
             self.hit_feedback.clear();
             self.player_birth = now;
             self.health_recovery = Default::default();
@@ -1569,21 +1610,29 @@ impl Connection {
     fn drain_match_kills(&mut self, now: u32) {
         let kills = self.tdm.as_mut().unwrap().take_kills();
         for kill in kills {
-            if let Some(bag) = self.scavenger.drop_for_kill(
-                kill,
-                self.game_state
-                    .as_ref()
-                    .unwrap()
-                    .collision
-                    .as_ref()
-                    .unwrap(),
-            ) {
+            let nuclear = self
+                .game_state
+                .as_ref()
+                .and_then(|s| s.nuke_resources())
+                .is_some_and(|r| r.damage_weapon == kill.weapon);
+            if !nuclear
+                && let Some(bag) = self.scavenger.drop_for_kill(
+                    kill,
+                    self.game_state
+                        .as_ref()
+                        .unwrap()
+                        .collision
+                        .as_ref()
+                        .unwrap(),
+                )
+            {
                 tracing::info!(time = kill.time, entity = bag.entity_number, victim = kill.victim.client_index, origin = ?bag.origin, "scavenger bag dropped");
             }
-            if !kill.falling {
+            if !kill.falling && !nuclear {
                 self.last_kill = Some(kill);
             }
             if kill.victim.client_index == 0
+                && !nuclear
                 && kill.attacker != 0
                 && !self.tdm.as_ref().unwrap().finished
             {
@@ -1816,6 +1865,12 @@ impl Connection {
             |snapshot, frame, firing, toggle| state.animate_enemy(snapshot, frame, firing, toggle),
         )?;
         for hit in tick.hits {
+            if state
+                .nuke_resources()
+                .is_some_and(|r| r.acceptance_seed != 0)
+            {
+                continue;
+            }
             if self.vitals.health == 0 {
                 break;
             }
@@ -1851,6 +1906,129 @@ impl Connection {
                 msec = elapsed.as_millis(),
                 "TDM simulation exceeded frame budget"
             );
+        }
+        Ok(())
+    }
+
+    fn advance_nuke(&mut self, now: u32) -> Result<()> {
+        let Some(resources) = self
+            .game_state
+            .as_ref()
+            .and_then(|s| s.nuke_resources())
+            .cloned()
+        else {
+            return Ok(());
+        };
+        let Some(tdm) = &mut self.tdm else {
+            return Ok(());
+        };
+        if self.vitals.health > 0
+            && tdm.streaks.owned(0)
+            && !tdm.finished
+            && let Some(player) = &mut self.player
+        {
+            player.grant_nuke(&resources);
+        }
+        tdm.restore_nuke_rewards(&resources);
+        tdm.streaks.advance(now);
+        let events = tdm.streaks.drain();
+        for event in events {
+            use crate::game_killstreaks::Event;
+            match event {
+                Event::Earned { actor, time } => {
+                    tracing::info!(actor, time, weapon = resources.weapon, "nuke reward earned");
+                    if actor == 0 {
+                        self.nuke_banner = Some((now + 2500, resources.earned_text));
+                        let team = self.tdm.as_ref().unwrap().teams()[0];
+                        if let Some(sound) = self
+                            .game_state
+                            .as_ref()
+                            .unwrap()
+                            .voice_resources()
+                            .and_then(|r| r.nuke_announcement(team, false, true))
+                        {
+                            self.server_commands.push(sound.play_command().as_bytes())?;
+                        }
+                    }
+                }
+                Event::Called { actor, time } => {
+                    self.nuke_banner = Some((time + 11500, resources.called_text));
+                    self.server_commands
+                        .push(format!("p {}", resources.music_sound).as_bytes())?;
+                    let team = self.tdm.as_ref().unwrap().teams()[usize::from(actor)];
+                    let enemy = self.tdm.as_ref().unwrap().teams()[0] != team;
+                    if let Some(sound) = self
+                        .game_state
+                        .as_ref()
+                        .unwrap()
+                        .voice_resources()
+                        .and_then(|r| r.nuke_announcement(team, enemy, false))
+                    {
+                        self.server_commands.push(sound.play_command().as_bytes())?;
+                    }
+                    tracing::info!(actor, time, countdown_msec = 10000, "nuke called");
+                }
+                Event::Explosion { actor, time } => {
+                    let motion = self.motion.as_ref().unwrap();
+                    let yaw = f32::from(self.view_angles()[1]) * std::f32::consts::TAU / 65536.0;
+                    let point = [
+                        motion.origin[0] + yaw.cos() * 5000.0,
+                        motion.origin[1] + yaw.sin() * 5000.0,
+                        motion.origin[2] + 60.0,
+                    ];
+                    ensure!(
+                        self.impacts.fx(now, resources.flash_fx, point).is_some(),
+                        "nuke flash placement invalid"
+                    );
+                    ensure!(
+                        self.impacts.fx(now, resources.blast_fx, point).is_some(),
+                        "nuke blast placement invalid"
+                    );
+                    tracing::info!(actor, time, flash = resources.flash_fx, blast = resources.blast_fx, origin = ?point, "nuke explosion FX emitted");
+                }
+                Event::End { actor, time } => {
+                    let state = self.game_state.as_ref().unwrap();
+                    let mut local = state.local_player_snapshot(self.vitals.health > 0).unwrap();
+                    local.origin = self.motion.as_ref().unwrap().origin;
+                    local.angles = self.view_angles();
+                    local.weapon = self.player.as_ref().unwrap().equipment().weapon;
+                    self.tdm.as_mut().unwrap().finish_nuke(
+                        time,
+                        actor,
+                        resources.damage_weapon,
+                        local,
+                    );
+                    self.vitals.health = 0;
+                    self.player_death = Some(time);
+                    self.health_recovery = Default::default();
+                    self.nuke_banner = None;
+                    self.replay.cancel("nuclear end of match");
+                    self.final_replay_considered = true;
+                    self.last_kill = None;
+                    self.impacts.fx(now, resources.aftermath_fx, local.origin);
+                    self.drain_match_kills(now);
+                    tracing::info!(
+                        actor,
+                        time,
+                        winner = self.tdm.as_ref().unwrap().winning_team(),
+                        "nuke match end"
+                    );
+                }
+            }
+        }
+        if let Some(end) = self.tdm.as_ref().unwrap().streaks.countdown_end() {
+            let second = end.saturating_sub(now).div_ceil(1000);
+            if self.nuke_tick_second != Some(second) {
+                self.nuke_tick_second = Some(second);
+                self.server_commands
+                    .push(format!("p {}", resources.tick_sound).as_bytes())?;
+            }
+        }
+        if self.nuke_return_at.is_some_and(|time| now >= time) {
+            self.nuke_return_at = None;
+            if let Some(player) = &mut self.player {
+                player.remove_nuke(resources.weapon);
+            }
         }
         Ok(())
     }
@@ -2479,6 +2657,18 @@ impl Connection {
                 }
             }
             self.input_count += 1;
+            if let (Some(tdm), Some(player), Some(resources)) = (
+                &mut self.tdm,
+                &self.player,
+                self.game_state.as_ref().and_then(|s| s.nuke_resources()),
+            ) && self.vitals.health > 0
+                && !tdm.finished
+                && !self.replay.pending()
+                && player.equipment().weapon == resources.weapon
+                && tdm.streaks.try_use(0, through)
+            {
+                self.nuke_return_at = Some(through + u32::from(resources.switch.raise_msec));
+            }
             self.last_input = Some(input);
         }
     }

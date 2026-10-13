@@ -118,6 +118,21 @@ impl Resources {
     fn sound(&self, alias: &str) -> Option<SoundSelector> {
         self.sounds.get(&alias.to_ascii_lowercase()).copied()
     }
+    pub fn nuke_announcement(&self, team: u8, enemy: bool, earned: bool) -> Option<SoundSelector> {
+        let prefix = match team {
+            1 => "ab",
+            2 => "uk",
+            _ => return None,
+        };
+        let suffix = if earned {
+            "achieve_moab"
+        } else if enemy {
+            "enemy_moab"
+        } else {
+            "use_moab"
+        };
+        self.sound(&format!("{prefix}_{}mc_{suffix}", self.variant))
+    }
     pub fn prefix(&self, character: Character) -> Option<VoicePrefix> {
         let faction = match character.faction {
             0 => VoiceFaction::TaskForce,

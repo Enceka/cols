@@ -12,6 +12,18 @@ pub(crate) struct ImpactEvents {
 }
 
 impl ImpactEvents {
+    pub fn fx(&mut self, now: u32, selector: u16, origin: [f32; 3]) -> Option<ImpactSnapshot> {
+        self.push_event(
+            now,
+            0,
+            crate::game_combat::WorldImpact {
+                origin,
+                normal: [0.0, 0.0, 1.0],
+                surface: 0,
+            },
+            codol_protocol::game_impact::ImpactEvent::PlayFx { selector },
+        )
+    }
     pub fn push(
         &mut self,
         now: u32,
@@ -114,7 +126,10 @@ impl ImpactEvents {
         hit: crate::game_combat::WorldImpact,
         event: codol_protocol::game_impact::ImpactEvent,
     ) -> Option<ImpactSnapshot> {
-        if !(1..900).contains(&weapon)
+        if (!matches!(
+            event,
+            codol_protocol::game_impact::ImpactEvent::PlayFx { .. }
+        ) && !(1..900).contains(&weapon))
             || hit.surface > 30
             || hit
                 .origin

@@ -73,6 +73,9 @@ struct LocalInventory {
 const MAX_INVENTORY_FILE_BYTES: usize = 256 * 1024;
 
 impl LocalServices {
+    pub(crate) fn permits_nuke_diagnostics(&self) -> bool {
+        self.root.join(".codol-nuke-acceptance").is_file()
+    }
     pub(crate) async fn renew_play_session(&self, session: &Session, now: u32) -> Result<()> {
         self.rooms.lock().await.renew_session(session, now)
     }

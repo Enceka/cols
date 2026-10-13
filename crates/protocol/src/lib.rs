@@ -11,6 +11,7 @@ pub mod game_glass;
 pub mod game_held_weapon;
 pub mod game_hit_feedback;
 pub mod game_impact;
+pub mod game_killstreaks;
 pub mod game_obituary;
 pub mod game_player_card;
 pub mod game_scavenger;

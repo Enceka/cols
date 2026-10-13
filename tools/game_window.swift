@@ -159,21 +159,24 @@ case "look":
           let event = CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: point, mouseButton: .left)
     else { fail("look would leave the game window") }
     guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else { fail("research client lost focus") }
+    event.setIntegerValueField(.mouseEventDeltaX, value: Int64(dx.rounded()))
+    event.setIntegerValueField(.mouseEventDeltaY, value: Int64(dy.rounded()))
     event.post(tap: .cghidEventTap)
     result["delta"] = [dx, dy]
 case "hold":
-    let keys: [String: CGKeyCode] = ["w":13,"s":1,"a":0,"d":2,"q":12,"e":14,"r":15,"f":3,"g":5,"space":49,"shift":56,"ctrl":59,"c":8,"x":7,"b":11,"v":9,"3":20,"4":21,"5":23,"6":22,"1":18,"2":19,"escape":53]
+    let keys: [String: CGKeyCode] = ["w":13,"s":1,"a":0,"d":2,"q":12,"e":14,"r":15,"f":3,"g":5,"space":49,"shift":56,"ctrl":59,"c":8,"x":7,"b":11,"v":9,"3":20,"4":21,"5":23,"6":22,"7":26,"8":28,"1":18,"2":19,"escape":53]
     let sprintChord = args.count == 5 && args[3] == "w+shift"
     let adsChord = args.count == 5 && args[3] == "w+ads"
+    let fireAdsChord = args.count == 5 && args[3] == "fire+ads"
     guard args.count == 5, let seconds = Double(args[4]), seconds.isFinite,
           (0.03...(sprintChord ? 8.0 : args[3] == "g" ? 6.0 : 3.0)).contains(seconds),
-          sprintChord || adsChord || keys[args[3]] != nil || ["fire","ads"].contains(args[3])
+          sprintChord || adsChord || fireAdsChord || keys[args[3]] != nil || ["fire","ads"].contains(args[3])
     else { fail("hold requires an allowlisted gameplay key and a bounded duration (sprint chord:8 seconds; grenade:6; others:3)") }
     guard let app = NSRunningApplication(processIdentifier:pid), app.activate(options:[.activateAllWindows]), CGPreflightPostEventAccess()
     else { fail("unable to focus game or post gameplay key") }
     try focusGame(app)
     let pointer = CGEvent(source: nil)?.location ?? CGPoint(x: x + width / 2, y: y + height / 2)
-    if adsChord || ["fire", "ads"].contains(args[3]) {
+    if adsChord || fireAdsChord || ["fire", "ads"].contains(args[3]) {
         guard pointer.x >= x && pointer.x < x + width && pointer.y >= y && pointer.y < y + height
         else { fail("gameplay mouse button requires the pointer inside the game") }
     }
@@ -182,7 +185,18 @@ case "hold":
         let right=args[3]=="ads" || adsChord
         return CGEvent(mouseEventSource:nil,mouseType:right ? (down ? .rightMouseDown : .rightMouseUp) : (down ? .leftMouseDown : .leftMouseUp),mouseCursorPosition:pointer,mouseButton:right ? .right : .left)
     }
-    if sprintChord || adsChord {
+    if fireAdsChord {
+        guard let rightDown = CGEvent(mouseEventSource:nil,mouseType:.rightMouseDown,mouseCursorPosition:pointer,mouseButton:.right),
+              let rightUp = CGEvent(mouseEventSource:nil,mouseType:.rightMouseUp,mouseCursorPosition:pointer,mouseButton:.right),
+              let leftDown = CGEvent(mouseEventSource:nil,mouseType:.leftMouseDown,mouseCursorPosition:pointer,mouseButton:.left),
+              let leftUp = CGEvent(mouseEventSource:nil,mouseType:.leftMouseUp,mouseCursorPosition:pointer,mouseButton:.left)
+        else { fail("cannot construct ADS fire chord") }
+        rightDown.post(tap:.cghidEventTap)
+        Thread.sleep(forTimeInterval:min(0.5,seconds / 2))
+        leftDown.post(tap:.cghidEventTap)
+        defer { leftUp.post(tap:.cghidEventTap); rightUp.post(tap:.cghidEventTap) }
+        Thread.sleep(forTimeInterval:seconds)
+    } else if sprintChord || adsChord {
         guard let forwardDown=CGEvent(keyboardEventSource:nil,virtualKey:13,keyDown:true),
               let forwardUp=CGEvent(keyboardEventSource:nil,virtualKey:13,keyDown:false),
               let modifierDown=adsChord ? gameplayEvent(true) : CGEvent(keyboardEventSource:nil,virtualKey:56,keyDown:true),

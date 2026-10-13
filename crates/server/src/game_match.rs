@@ -233,6 +233,9 @@ pub(crate) struct TdmMatch {
     bots: Vec<Bot>,
     baselines: Vec<EnemySnapshot>,
     rows: [ScoreboardRow; 12],
+    pub(crate) streaks: crate::game_killstreaks::Streaks,
+    forced_winner: Option<u8>,
+    pub(crate) acceptance_stationary: bool,
     scores: [i32; 4],
     kills: Vec<Kill>,
     pub dirty: bool,
@@ -344,6 +347,9 @@ impl TdmMatch {
             bots,
             baselines,
             rows,
+            streaks: Default::default(),
+            forced_winner: None,
+            acceptance_stationary: false,
             scores: [0; 4],
             kills: Vec::new(),
             dirty: true,
@@ -389,6 +395,11 @@ impl TdmMatch {
             .filter_map(|bot| {
                 let weapon = bot.weapon.as_ref()?;
                 Some(crate::game_replay::View {
+                    streaks: self.streaks.snapshot(
+                        bot.snapshot.client_index,
+                        weapon.reward_inventory().map_or(0, |w| w.weapon),
+                    ),
+                    reward_inventory: weapon.reward_inventory(),
                     shellshock: bot.tactical.snapshot(bot.snapshot_time),
                     client: bot.snapshot.client_index,
                     motion: bot.view_motion.clone(),
@@ -432,6 +443,9 @@ impl TdmMatch {
         }
     }
     pub fn result(&self) -> &'static str {
+        if let Some(team) = self.forced_winner {
+            return if team == 2 { "Allies win" } else { "Axis win" };
+        }
         match self.scores[2].cmp(&self.scores[1]) {
             std::cmp::Ordering::Greater => "Allies win",
             std::cmp::Ordering::Less => "Axis win",
@@ -439,6 +453,9 @@ impl TdmMatch {
         }
     }
     pub fn winning_team(&self) -> u8 {
+        if let Some(team) = self.forced_winner {
+            return team;
+        }
         match self.scores[2].cmp(&self.scores[1]) {
             std::cmp::Ordering::Greater => 2,
             std::cmp::Ordering::Less => 1,
@@ -456,7 +473,7 @@ impl TdmMatch {
             return;
         }
         let start = *self.start.get_or_insert(now);
-        if now.saturating_sub(start) >= self.config.time_limit_msec {
+        if !self.streaks.incoming() && now.saturating_sub(start) >= self.config.time_limit_msec {
             self.finish(now);
         }
     }
@@ -517,6 +534,16 @@ impl TdmMatch {
             self.bots[usize::from(victim.client_index - 1)].emp.clear();
         }
         self.rows[usize::from(victim.client_index)].deaths += 1;
+        let death = self.rows[usize::from(victim.client_index)].deaths;
+        let opposing = self.config.teams[usize::from(attacker)]
+            != self.config.teams[usize::from(victim.client_index)];
+        self.streaks.credit(
+            now,
+            victim.client_index,
+            death,
+            opposing.then_some(attacker),
+        );
+        self.rows[usize::from(attacker)].killstreak = u32::from(self.streaks.best(attacker));
         let row = &mut self.rows[usize::from(attacker)];
         let suicide = attacker == victim.client_index;
         row.kills += u32::from(!suicide);
@@ -526,7 +553,7 @@ impl TdmMatch {
         // Reference war.onNormalDeath awards team points only for opposing
         // player kills. Self-grenade penalties affect the personal row only.
         self.scores[team] += if suicide { 0 } else { 100 };
-        if self.scores[team] >= self.config.score_limit as i32 {
+        if !self.streaks.incoming() && self.scores[team] >= self.config.score_limit as i32 {
             self.finish(now);
         }
         self.kills.push(Kill {
@@ -559,6 +586,12 @@ impl TdmMatch {
         // A world fall has no attacker. Reference handleWorldDeath does not
         // apply suicidepointloss or invoke war.onNormalDeath in that case.
         self.rows[usize::from(victim.client_index)].deaths += 1;
+        self.streaks.credit(
+            now,
+            victim.client_index,
+            self.rows[usize::from(victim.client_index)].deaths,
+            None,
+        );
         self.kills.push(Kill {
             falling: true,
             time: now,
@@ -860,6 +893,62 @@ impl TdmMatch {
     pub fn take_kills(&mut self) -> Vec<Kill> {
         std::mem::take(&mut self.kills)
     }
+    pub fn finish_nuke(&mut self, now: u32, owner: u8, weapon: u16, local: EnemySnapshot) {
+        if self.finished {
+            return;
+        }
+        let team = self.config.teams[usize::from(owner)];
+        let victims: Vec<_> = std::iter::once(local)
+            .filter(|s| s.alive)
+            .chain(
+                self.bots
+                    .iter()
+                    .filter(|b| b.health > 0)
+                    .map(|b| b.snapshot),
+            )
+            .collect();
+        for victim in victims {
+            let index = usize::from(victim.client_index);
+            self.rows[index].deaths += 1;
+            self.streaks
+                .credit(now, victim.client_index, self.rows[index].deaths, None);
+            if victim.team != team {
+                self.rows[usize::from(owner)].kills += 1;
+                self.rows[usize::from(owner)].score += 100;
+                self.scores[usize::from(team)] += 100;
+            }
+            if index != 0 {
+                let bot = &mut self.bots[index - 1];
+                bot.health = 0;
+                bot.death = Some(now);
+                bot.snapshot.alive = false;
+            }
+            self.kills.push(Kill {
+                falling: false,
+                time: now,
+                victim,
+                attacker: owner,
+                weapon,
+                headshot: false,
+                melee: false,
+                sequence: self.rows[index].deaths,
+            });
+        }
+        self.forced_winner = Some(team);
+        self.streaks.clear_owned();
+        self.finish(now);
+    }
+    pub fn restore_nuke_rewards(&mut self, resources: &crate::game_killstreaks::NukeResources) {
+        for bot in &mut self.bots {
+            if bot.health > 0
+                && self.streaks.owned(bot.snapshot.client_index)
+                && !self.finished
+                && let Some(weapon) = &mut bot.weapon
+            {
+                weapon.grant_nuke(resources);
+            }
+        }
+    }
     #[cfg(test)]
     pub fn step(
         &mut self,
@@ -910,6 +999,7 @@ impl TdmMatch {
                 bot.snapshot.alive = true;
                 bot.snapshot.events = EventQueue::default();
                 bot.health = 100;
+                self.streaks.spawn(bot.snapshot.client_index);
                 bot.damage_event = 0;
                 bot.damage_count = 0;
                 bot.feedback = None;
@@ -933,6 +1023,11 @@ impl TdmMatch {
                 bot.recent_route.clear();
                 bot.stuck_level = 0;
             }
+        }
+        // Isolated acceptance keeps ordinary death/respawn and damage rules,
+        // while the bots stay at their configured starts and never attack.
+        if self.acceptance_stationary {
+            return Ok(tick);
         }
         let mut shots = Vec::new();
         let mut falling_deaths = Vec::new();
@@ -1566,6 +1661,98 @@ mod tests {
             roster: Vec::new(),
             models: Vec::new(),
         }
+    }
+    #[test]
+    fn stationary_acceptance_keeps_six_enemies_still_and_respawns_real_deaths() {
+        let c = world();
+        let mut game = TdmMatch::new(config(), template(), 190.0, &c).unwrap();
+        game.acceptance_stationary = true;
+        game.streaks.enable();
+        assert_eq!(
+            game.bots
+                .iter()
+                .filter(|b| b.snapshot.team != game.teams()[0])
+                .count(),
+            6
+        );
+        let before = game.snapshots();
+        let fallback = BotWeapon {
+            weapon: 352,
+            fire_interval_msec: 80,
+            ballistics: game_combat::Ballistics {
+                damage: 33,
+                range: 8192.0,
+                near_range: 500.0,
+                location_multipliers: None,
+                falloff: None,
+                pellets: 1,
+                spread_degrees: 0.0,
+            },
+        };
+        for now in (1000..=5000).step_by(50) {
+            let tick = game
+                .step(now, (template(), 70.0, 100), fallback, &c, |_, _, _, _| {
+                    panic!("stationary bots must not animate an AI step")
+                })
+                .unwrap();
+            assert!(tick.hits.is_empty());
+        }
+        assert_eq!(game.snapshots(), before);
+        let enemy = game
+            .bots
+            .iter()
+            .position(|b| b.snapshot.team != game.teams()[0])
+            .unwrap();
+        let client = game.bots[enemy].snapshot.client_index;
+        game.damage_bots(5100, 0, 352, &[(client, 100, false)], false);
+        assert_eq!(game.streaks.snapshot(0, 323).progress, 1);
+        assert!(!game.bots[enemy].snapshot.alive);
+        game.step(8100, (template(), 70.0, 100), fallback, &c, |s, _, _, _| s)
+            .unwrap();
+        assert!(game.bots[enemy].snapshot.alive);
+        assert_eq!(game.bots[enemy].health, 100);
+        assert_eq!(game.scoreboard(1).rows[0].kills, 1);
+    }
+    #[test]
+    fn nuclear_end_kills_live_actors_atomically_and_overrides_a_losing_team_score() {
+        let mut m = TdmMatch::new(config(), template(), 190.0, &world()).unwrap();
+        m.streaks.enable();
+        let enemy = m
+            .bots
+            .iter()
+            .position(|b| b.snapshot.team != m.teams()[0])
+            .unwrap();
+        for n in 1..=25 {
+            let victim = m.bots[enemy].snapshot;
+            m.streaks.spawn(victim.client_index);
+            m.credit(n * 1000, victim, 0, 352, false, false);
+        }
+        assert_eq!(m.rows[0].kills, 25);
+        assert_eq!(m.rows[0].killstreak, 25);
+        assert!(m.streaks.owned(0));
+        assert!(m.streaks.try_use(0, 26000));
+        m.scores[1] = 5000;
+        m.advance_clock(1000);
+        m.advance_clock(601000);
+        assert!(!m.finished);
+        let mut local = template();
+        local.client_index = 0;
+        local.team = m.teams()[0];
+        local.alive = true;
+        m.finish_nuke(37500, 0, 334, local);
+        assert!(m.finished);
+        assert_eq!(m.winning_team(), local.team);
+        assert_eq!(m.result(), "Allies win");
+        assert_eq!(m.rows[0].deaths, 1);
+        assert_eq!(m.rows[0].killstreak, 25);
+        assert!(m.bots.iter().all(|b| b.health == 0));
+        let board = m.scoreboard(42);
+        m.finish_nuke(40000, 0, 334, local);
+        assert_eq!(m.scoreboard(42), board);
+        assert_eq!(
+            m.take_kills().iter().filter(|k| k.weapon == 334).count(),
+            12
+        );
     }
     #[test]
     fn four_player_world_keeps_only_its_active_actors_and_preserves_full_roster_requirements() {

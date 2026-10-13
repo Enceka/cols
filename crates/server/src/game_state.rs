@@ -10,6 +10,9 @@ mod loadout;
 
 #[derive(Default)]
 pub(crate) struct SnapshotWorld<'a> {
+    pub streaks: codol_protocol::game_killstreaks::StreakSnapshot,
+    pub reward_inventory: Option<codol_protocol::game_snapshot::EquippedWeapon>,
+    pub nuke_hud: Option<codol_protocol::game_hit_feedback::NukeHudSnapshot>,
     pub perk_display: bool,
     pub bags: &'a [codol_protocol::game_scavenger::BagSnapshot],
     pub bag_baselines: &'a [codol_protocol::game_scavenger::BagSnapshot],
@@ -139,6 +142,10 @@ pub struct PreparedGameState {
     feedback_resources: Option<crate::game_feedback::Resources>,
     #[serde(default)]
     voice_file: Option<std::path::PathBuf>,
+    #[serde(default)]
+    nuke_file: Option<std::path::PathBuf>,
+    #[serde(skip)]
+    nuke_resources: Option<Arc<crate::game_killstreaks::NukeResources>>,
     #[serde(skip)]
     voice_resources: Option<Arc<crate::game_voice::Resources>>,
     #[serde(default)]
@@ -186,6 +193,8 @@ pub struct PreparedGameState {
     #[serde(skip)]
     player_perks: crate::game_perks::Perks,
     #[serde(skip)]
+    player_streak_previews: crate::game_killstreaks::Previews,
+    #[serde(skip)]
     player_grenades: [Option<crate::game_grenade::Equipped>; 2],
     #[serde(skip)]
     registry_strings: Vec<(u16, String)>,
@@ -195,6 +204,17 @@ pub struct PreparedGameState {
     snapshot_frames: u32,
 }
 impl PreparedGameState {
+    pub(crate) fn has_nuke_diagnostics(&self) -> bool {
+        self.nuke_resources
+            .as_ref()
+            .is_some_and(|r| r.acceptance_seed != 0 || r.acceptance_stationary)
+    }
+    pub(crate) fn nuke_resources(&self) -> Option<&crate::game_killstreaks::NukeResources> {
+        self.nuke_resources.as_deref()
+    }
+    pub(crate) fn streak_previews(&self) -> crate::game_killstreaks::Previews {
+        self.player_streak_previews
+    }
     pub(crate) fn for_connection(&self) -> Self {
         let mut state = self.clone();
         state.collision = self.collision.as_ref().map(|c| Arc::new(c.fresh_session()));
@@ -561,6 +581,13 @@ impl PreparedGameState {
         );
         let mut state: Self = serde_json::from_slice(&std::fs::read(path)?)?;
         let directory = path.parent().unwrap_or(Path::new("."));
+        if let Some(file) = &state.nuke_file {
+            state.nuke_resources = Some(Arc::new(crate::game_killstreaks::NukeResources::load(
+                &directory.join(file),
+                &state.map,
+                state.ncs_crc,
+            )?));
+        }
         if let Some(file) = &state.voice_file {
             state.voice_resources = Some(Arc::new(crate::game_voice::Resources::load(
                 &directory.join(file),
@@ -1187,6 +1214,12 @@ impl PreparedGameState {
             loadout.class_index(),
             owned,
         )?;
+        state.player_streak_previews = crate::game_killstreaks::Previews::from_profile(
+            &loadout.profile_snapshot(public)?,
+            loadout.class_index(),
+            owned,
+            state.player_perks.value("modKillstreakShift", 0.0),
+        )?;
         tracing::info!(slots=?state.player_perks.slots, masks=?state.player_perks.abilities.masks,
             "resolved saved passive skills");
         if let Some(catalog) = &self.appearance_catalog
@@ -1635,6 +1668,7 @@ impl PreparedGameState {
         };
         self.selected_weapon_names() == selected.selected_weapon_names()
             && self.player_perks.slots == selected.player_perks.slots
+            && self.player_streak_previews == selected.player_streak_previews
             && offhands(self) == offhands(selected)
     }
     pub(crate) fn register_history(
@@ -1784,6 +1818,9 @@ impl PreparedGameState {
             equipment,
             angles,
             codol_protocol::game_snapshot::WorldSnapshot {
+                streaks: world.streaks,
+                reward_inventory: world.reward_inventory,
+                nuke_hud: world.nuke_hud,
                 destroyed_glass: &destroyed_glass,
                 perk_display: world.perk_display,
                 bags: world.bags,
@@ -2003,6 +2040,11 @@ impl PreparedGameState {
                 .clone(),
         )?;
         tdm.configure_roster(self.roster_weapons.iter().map(Self::make_player).collect())?;
+        if let Some(resources) = &self.nuke_resources {
+            tdm.streaks.enable();
+            tdm.streaks.acceptance_seed(resources.acceptance_seed);
+            tdm.acceptance_stationary = resources.acceptance_stationary;
+        }
         tdm.set_weapon_move_scale(
             self.match_weapon
                 .as_ref()
@@ -2079,6 +2121,8 @@ pub(crate) fn synthetic() -> PreparedGameState {
         resource_compass_probe: None,
         feedback_resources: None,
         voice_file: None,
+        nuke_file: None,
+        nuke_resources: None,
         voice_resources: None,
         replay_resources: None,
         top_players: None,
@@ -2102,6 +2146,7 @@ pub(crate) fn synthetic() -> PreparedGameState {
         profile_hash: None,
         player_card: None,
         player_perks: Default::default(),
+        player_streak_previews: Default::default(),
         player_grenades: [None, None],
         registry_strings: Vec::new(),
         snapshot_probe: false,

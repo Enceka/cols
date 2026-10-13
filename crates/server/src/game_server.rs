@@ -722,6 +722,14 @@ impl GameServer {
                             };
                             let resource_collection =
                                 self.resource_capture_map.as_deref() == Some(state.map());
+                            ensure!(
+                                !state.has_nuke_diagnostics()
+                                    || self
+                                        .services
+                                        .as_ref()
+                                        .is_some_and(|s| s.permits_nuke_diagnostics()),
+                                "nuclear diagnostics require marked isolated service data"
+                            );
                             connection.connection =
                                 crate::game_connection::Connection::with_game_state(state);
                             if resource_collection {

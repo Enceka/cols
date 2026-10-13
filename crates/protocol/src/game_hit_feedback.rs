@@ -52,6 +52,11 @@ pub struct DeathWaypointSnapshot {
     pub material: u16,
     pub origin: [f32; 3],
 }
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct NukeHudSnapshot {
+    pub end_time: Option<u32>,
+    pub text: Option<u16>,
+}
 impl DeathWaypointSnapshot {
     pub fn valid(self) -> bool {
         (1..1024).contains(&self.material)
@@ -72,6 +77,15 @@ pub(crate) fn write_hud(
     deaths: &[DeathWaypointSnapshot],
     replay: Option<ReplayHudSnapshot>,
 ) -> Result<(), LobbyError> {
+    write_hud_with_nuke(out, feedback, deaths, replay, None)
+}
+pub(crate) fn write_hud_with_nuke(
+    out: &mut Writer,
+    feedback: Option<HitFeedbackSnapshot>,
+    deaths: &[DeathWaypointSnapshot],
+    replay: Option<ReplayHudSnapshot>,
+    nuke: Option<NukeHudSnapshot>,
+) -> Result<(), LobbyError> {
     let feedback = feedback.unwrap_or_default();
     if feedback.visible && !(1..1024).contains(&feedback.material) {
         return Err(LobbyError("invalid hit feedback material"));
@@ -91,7 +105,11 @@ pub(crate) fn write_hud(
         write_hit(out, feedback);
     }
     out.bits(
-        deaths.len() as u32 + u32::from(replay.is_some()) + u32::from(skip_text.is_some()),
+        deaths.len() as u32
+            + u32::from(replay.is_some())
+            + u32::from(skip_text.is_some())
+            + u32::from(nuke.is_some_and(|h| h.end_time.is_some()))
+            + u32::from(nuke.is_some_and(|h| h.text.is_some())),
         5,
     );
     for death in deaths {
@@ -102,6 +120,19 @@ pub(crate) fn write_hud(
     }
     if let Some(text) = skip_text {
         write_replay_skip(out, text);
+    }
+    if let Some(nuke) = nuke {
+        if nuke.text.is_some_and(|t| !(1..1023).contains(&t))
+            || nuke.end_time.is_some_and(|t| t > i32::MAX as u32)
+        {
+            return Err(LobbyError("invalid nuclear HUD"));
+        }
+        if let Some(end) = nuke.end_time {
+            write_replay_timer(out, end);
+        }
+        if let Some(text) = nuke.text {
+            write_replay_skip(out, text);
+        }
     }
     Ok(())
 }
@@ -380,6 +411,33 @@ mod tests {
             elements.push(fields);
         }
         elements
+    }
+    #[test]
+    fn nuclear_clock_and_localized_banner_decode_with_the_native_hud_layout() {
+        let mut out = Writer::default();
+        write_hud_with_nuke(
+            &mut out,
+            None,
+            &[],
+            None,
+            Some(NukeHudSnapshot {
+                end_time: Some(12345),
+                text: Some(556),
+            }),
+        )
+        .unwrap();
+        let mut reader = Reader::new(&out.bytes);
+        assert_eq!(reader.bits(1).unwrap(), 1);
+        assert!(read_array(&mut reader).is_empty());
+        let hud = read_array(&mut reader);
+        assert_eq!(hud.len(), 2);
+        let layout = fixture();
+        let offset = |index: usize| layout["fields"][index][0].as_u64().unwrap() as u32;
+        assert_eq!(hud[0][&offset(3)], 8);
+        assert_eq!(hud[0][&offset(34)], 12345);
+        assert_eq!(hud[1][&offset(3)], 1);
+        assert_eq!(hud[1][&offset(22)], 556);
+        reader.finish().unwrap();
     }
 
     #[test]
