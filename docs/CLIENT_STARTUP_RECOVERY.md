@@ -4,6 +4,12 @@
 
 当前完整原生启动仍待恢复；旧`wine10-throwables-20261011`环境报告Wine server失联，Wine11已取得真实游戏进程但尚无完整修复后对局验收。旧`map-experiment.txt`指向已结束实验，不能直接当作活动正常会话。已有AUTH、大厅和地图成功证据不代表这些环境当前均能再次启动。
 
+全部Wine停止操作已按用户授权执行：91个Wine及Windows子进程收到SIGTERM／SIGKILL，其中51个退出，40个仍由`ps`显示为`?Es`且RSS为0。macOS本机`ps(1)`将E解释为正在退出；这40个进程在强制结束后仍残留，`proc_pidinfo`对其返回ESRCH，不能把它们当作可用游戏或服务实例。停止结果及进程记录在`lava-ads-after-wine-cleanup/wine-stop-result.json`和`remaining-kernel-processes.json`。当前尚未执行系统重启，重启后仍需重新验证文件打开和客户端启动。
+
+停止及容器清理后，干净的`wine11-lava-20261013`环境在`client-1791871854997`中启动真实游戏PID，但35秒内没有可见窗口，未运行状态探针或截图。该诊断已经结束，manifest确认临时证书恢复，正常服务资料全量哈希不变；熔岩ADS画面没有验收通过。证据在`lava-ads-after-wine-cleanup/result.json`和`diagnostic-cleanup.json`，本次release构建通过。
+
+工作区已删除21个结束的旧Wine容器，保留7个环境：`wine10-prefix`、`wine10-loadout-build-20261007`、`wine10-probe-roster-20261010`、`wine10-throwables-20261011`、`wine10-lava-20261013`、`wine11-lava-20261013`和`wine11-weapon-native-20261013`。小体积注册表／标记记录保存在`lava-ads-after-wine-cleanup/removed-prefix-metadata/`，实际客户端、账号服务资料和原生采集证据保留；旧容器的历史manifest不能当作仍存在的可运行prefix。清理实际释放806006784字节，见`prefix-cleanup.json`，逻辑目录总大小与APFS实际回收空间不同。
+
 干净的`wine10-lava-20261013`环境在`client-1791868486206`中启动真实游戏进程，但没有可见窗口，只读探针30秒超时，未到大厅。OS采样见`lava-sight-native-check/client-startup.txt`，游戏线程的栈集中在Wine syscall dispatcher；这不能直接归因于IFS，也不证明其底层成因。该诊断已结束，manifest确认临时证书恢复，正常服务资料全量哈希保持一致，新增截图数0。其服务端使用`0eb7fe5`的已构建release基线，不作为其它正在修改功能的验收。
 
 `gamehub_run.py`对全部Wine环境使用客户端目录中的共享独占锁，先于配置、证书和本地服务变更获取；同时识别尚未使用该锁的原有项目harness或精确游戏路径。第二个会话明确退出，不关闭已运行会话。锁持续到本次停止进程、恢复证书并写入结束manifest，进程退出后由操作系统释放。Wine环境自身的锁继续限制同一prefix内的管理操作。
