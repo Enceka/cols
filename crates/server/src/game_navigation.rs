@@ -1,14 +1,114 @@
-//! Capsule walking and bounded one-way drops against captured map collision.
+//! Capsule walking, directed drops and physics-verified jumps on captured maps.
 use crate::game_motion::{Collision, Motion, WORLD};
 use std::collections::{BTreeMap, BinaryHeap};
 const CELL: f32 = 48.0;
 const HEIGHT: f32 = 70.0;
 type V3 = [f32; 3];
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Waypoint {
+    pub origin: V3,
+    /// A jump must approach this departure and finish its landing before the
+    /// path can be shortened. Walking shortcuts cannot erase this action.
+    pub jump_from: Option<V3>,
+    pub runup_msec: u16,
+}
+impl Waypoint {
+    pub fn walk(origin: V3) -> Self {
+        Self {
+            origin,
+            jump_from: None,
+            runup_msec: 0,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug)]
+struct Edge {
+    to: usize,
+    jump: Option<u16>,
+}
+
+pub(crate) fn next_random(random: &mut u64) -> u64 {
+    *random = (*random).max(1);
+    *random ^= *random << 13;
+    *random ^= *random >> 7;
+    *random ^= *random << 17;
+    *random
+}
+
+/// The planner and live controller issue exactly the same released jump edge,
+/// forward commands and endpoint braking. Never author a ballistic teleport.
+pub(crate) fn jump_command(
+    motion: &mut Motion,
+    goal: V3,
+    dt: u32,
+    launch: bool,
+) -> codol_protocol::game_usercmd::UserCommand {
+    let dx = goal[0] - motion.origin[0];
+    let dy = goal[1] - motion.origin[1];
+    let moving = dx.hypot(dy) > 6.0;
+    if !moving {
+        motion.velocity[0] = 0.0;
+        motion.velocity[1] = 0.0;
+    }
+    let yaw = (dy.atan2(dx) * 65536.0 / std::f32::consts::TAU).round() as i32 as u16;
+    codol_protocol::game_usercmd::UserCommand {
+        time: motion.command_time + dt,
+        direction: u8::from(moving),
+        angles: [0, yaw, 0],
+        buttons: if launch { 0x400 } else { 0 },
+        ..Default::default()
+    }
+}
+pub(crate) fn jump_landed(motion: &Motion, goal: V3) -> bool {
+    motion.ground_entity == WORLD
+        && (motion.origin[0] - goal[0]).hypot(motion.origin[1] - goal[1]) <= 8.0
+        && (motion.origin[2] - goal[2]).abs() <= 1.0
+}
+pub(crate) fn jump_reachable(
+    mut motion: Motion,
+    goal: V3,
+    scale: f32,
+    runup_msec: u16,
+    collision: &Collision,
+) -> bool {
+    // Start from rest; build real ground acceleration during the checked run-up.
+    motion.velocity[0] = 0.0;
+    motion.velocity[1] = 0.0;
+    // Initialise support and a released button using the ordinary Pmove path.
+    motion.apply(
+        &codol_protocol::game_usercmd::UserCommand {
+            time: motion.command_time + 1,
+            ..Default::default()
+        },
+        scale,
+        false,
+        collision,
+    );
+    if !motion.grounded() || motion.command_time.saturating_sub(motion.jump_time) < 500 {
+        return false;
+    }
+    for step in 0..24 {
+        let launch = step * 50 == u32::from(runup_msec);
+        let command = jump_command(&mut motion, goal, 50, launch);
+        motion.apply(&command, scale, false, collision);
+        if launch && motion.jump_time != motion.command_time {
+            return false;
+        }
+        if step * 50 > u32::from(runup_msec) && jump_landed(&motion, goal) {
+            return true;
+        }
+        if motion.origin[2] < goal[2] - 128.0 {
+            break;
+        }
+    }
+    false
+}
+
 #[derive(Debug)]
 pub(crate) struct Navigation {
     positions: Vec<V3>,
-    links: Vec<Vec<usize>>,
+    links: Vec<Vec<Edge>>,
     cells: BTreeMap<(i32, i32), Vec<usize>>,
 }
 impl Navigation {
@@ -92,20 +192,58 @@ impl Navigation {
         let mut links = vec![Vec::new(); positions.len()];
         for (&(x, y), indices) in &cells {
             for &index in indices {
-                for (dx, dy) in [(1, 0), (0, 1), (1, 1), (1, -1)] {
+                for (dx, dy) in [
+                    (1, 0),
+                    (0, 1),
+                    (1, 1),
+                    (1, -1),
+                    (2, 0),
+                    (0, 2),
+                    (2, 1),
+                    (2, -1),
+                    (1, 2),
+                    (1, -2),
+                    (3, 0),
+                    (0, 3),
+                ] {
                     if let Some(others) = cells.get(&(x + dx, y + dy)) {
                         for &other in others {
                             let a = positions[index];
                             let b = positions[other];
+                            let local = dx.abs() <= 1 && dy.abs() <= 1;
                             if (a[2] - b[2]).abs() <= CELL * 1.1 && Self::clear(a, b, collision) {
-                                links[index].push(other);
-                                links[other].push(index);
-                            } else {
-                                if Self::can_drop(a, b, collision) {
-                                    links[index].push(other);
+                                if local {
+                                    links[index].push(Edge {
+                                        to: other,
+                                        jump: None,
+                                    });
+                                    links[other].push(Edge {
+                                        to: index,
+                                        jump: None,
+                                    });
                                 }
-                                if Self::can_drop(b, a, collision) {
-                                    links[other].push(index);
+                            } else {
+                                if local && Self::can_drop(a, b, collision) {
+                                    links[index].push(Edge {
+                                        to: other,
+                                        jump: None,
+                                    });
+                                } else if let Some(runup) = Self::can_jump(a, b, collision) {
+                                    links[index].push(Edge {
+                                        to: other,
+                                        jump: Some(runup),
+                                    });
+                                }
+                                if local && Self::can_drop(b, a, collision) {
+                                    links[other].push(Edge {
+                                        to: index,
+                                        jump: None,
+                                    });
+                                } else if let Some(runup) = Self::can_jump(b, a, collision) {
+                                    links[other].push(Edge {
+                                        to: index,
+                                        jump: Some(runup),
+                                    });
                                 }
                             }
                         }
@@ -116,7 +254,8 @@ impl Navigation {
         tracing::info!(
             nodes = positions.len(),
             edges = links.iter().map(Vec::len).sum::<usize>(),
-            "built bot walkable navigation"
+            jumps = links.iter().flatten().filter(|e| e.jump.is_some()).count(),
+            "built bot navigation"
         );
         Self {
             positions,
@@ -131,10 +270,7 @@ impl Navigation {
             return None;
         }
         for _ in 0..12 {
-            *random ^= *random << 13;
-            *random ^= *random >> 7;
-            *random ^= *random << 17;
-            let p = self.positions[*random as usize % self.positions.len()];
+            let p = self.positions[next_random(random) as usize % self.positions.len()];
             if distance(origin, p) > 256.0 && occupied.iter().all(|&q| distance(q, p) > 160.0) {
                 return Some(p);
             }
@@ -167,6 +303,24 @@ impl Navigation {
                 && support.fraction < 1.0
                 && support.normal[2] >= 0.7
         })
+    }
+    fn can_jump(a: V3, b: V3, collision: &Collision) -> Option<u16> {
+        let horizontal = (a[0] - b[0]).hypot(a[1] - b[1]);
+        // Native Pmove's jump rises39 units. Higher negotiation animations
+        // require a separate mantle implementation, not a larger impulse.
+        if !(24.0..=144.0).contains(&horizontal) || !(-128.0..=39.0).contains(&(b[2] - a[2])) {
+            return None;
+        }
+        // Cheap conservative rejection of walls/ceilings before simulation.
+        let trace = collision.trace([a[0], a[1], a[2] + 40.0], [b[0], b[1], b[2] + 40.0], HEIGHT);
+        if trace.start_solid || trace.all_solid || trace.fraction < 1.0 {
+            return None;
+        }
+        let mut motion = Motion::new(a);
+        motion.command_time = 1000;
+        [0, 50, 100, 150, 200]
+            .into_iter()
+            .find(|&runup| jump_reachable(motion.clone(), b, 1.0, runup, collision))
     }
     /// A falling connection has different reachability from its reverse.
     /// Keep it local and bounded; a clear sweep alone cannot admit a gap.
@@ -241,13 +395,24 @@ impl Navigation {
             .find(|(i, _)| Self::clear(position, self.positions[*i], collision))
             .map(|(i, _)| i)
     }
-    pub fn route(&self, start: V3, goal: V3, collision: &Collision) -> Vec<V3> {
+    #[cfg(test)]
+    pub fn route(&self, start: V3, goal: V3, collision: &Collision) -> Vec<Waypoint> {
+        self.route_varied(start, goal, collision, 0, &[])
+    }
+    pub fn route_varied(
+        &self,
+        start: V3,
+        goal: V3,
+        collision: &Collision,
+        seed: u64,
+        recent: &[V3],
+    ) -> Vec<Waypoint> {
         let planning = collision.navigation_view();
         let collision = &planning;
         // A long capsule sweep's broadphase covers much of the map. Use the
         // precomputed graph for distant goals instead of tracing through it.
         if distance(start, goal) <= CELL * 4.0 && Self::clear(start, goal, collision) {
-            return vec![goal];
+            return vec![Waypoint::walk(goal)];
         }
         let (Some(start_index), Some(goal_index)) = (
             self.closest(start, collision),
@@ -257,7 +422,9 @@ impl Navigation {
         };
         let mut best = vec![f32::INFINITY; self.positions.len()];
         let mut parent = vec![usize::MAX; best.len()];
+        let mut jumps = vec![None; best.len()];
         let mut visited = vec![false; best.len()];
+        let mut weights = vec![0.0; best.len()];
         let mut open = BinaryHeap::new();
         best[start_index] = 0.0;
         open.push((std::cmp::Reverse(0u32), start_index));
@@ -267,21 +434,50 @@ impl Navigation {
             }
             visited[index] = true;
             if index == goal_index {
-                let mut path = vec![goal];
+                let mut path = vec![Waypoint::walk(goal)];
                 let mut node = index;
                 while node != start_index {
-                    path.push(self.positions[node]);
+                    path.push(Waypoint {
+                        origin: self.positions[node],
+                        jump_from: jumps[node].map(|_| self.positions[parent[node]]),
+                        runup_msec: jumps[node].unwrap_or(0),
+                    });
                     node = parent[node];
                 }
-                path.push(self.positions[start_index]);
+                path.push(Waypoint::walk(self.positions[start_index]));
                 path.reverse();
                 return path;
             }
-            for &next in &self.links[index] {
-                let cost = best[index] + distance(self.positions[index], self.positions[next]);
+            for edge in &self.links[index] {
+                let next = edge.to;
+                let p = self.positions[next];
+                if weights[next] == 0.0 {
+                    // Spatially coherent preferences pick different corridors,
+                    // rather than zigzagging between neighbouring grid nodes.
+                    let region = ((p[0] / 192.0).floor() as i32 as u64)
+                        .wrapping_mul(0x9e3779b97f4a7c15)
+                        ^ ((p[1] / 192.0).floor() as i32 as u64).wrapping_mul(0xbf58476d1ce4e5b9)
+                        ^ ((p[2] / 96.0).floor() as i32 as u64).wrapping_mul(0x94d049bb133111eb);
+                    let mut noise = seed ^ region;
+                    let preference = if seed == 0 {
+                        0.0
+                    } else {
+                        (next_random(&mut noise) % 1000) as f32 * 0.001
+                    };
+                    let revisit = if recent.iter().any(|&q| distance(p, q) < 96.0) {
+                        1.0
+                    } else {
+                        0.0
+                    };
+                    weights[next] = 1.0 + preference * 0.8 + revisit;
+                }
+                let cost = best[index]
+                    + distance(self.positions[index], p) * weights[next]
+                    + if edge.jump.is_some() { 64.0 } else { 0.0 };
                 if cost < best[next] {
                     best[next] = cost;
                     parent[next] = index;
+                    jumps[next] = edge.jump;
                     let priority =
                         cost + distance(self.positions[next], self.positions[goal_index]);
                     open.push((std::cmp::Reverse((priority * 100.0) as u32), next));
@@ -293,16 +489,38 @@ impl Navigation {
     pub fn steering(
         &self,
         start: V3,
-        path: &mut std::collections::VecDeque<V3>,
+        path: &mut std::collections::VecDeque<Waypoint>,
         collision: &Collision,
-    ) -> Option<V3> {
+    ) -> Option<Waypoint> {
         let planning = collision.navigation_view();
         let collision = &planning;
-        while path.front().is_some_and(|p| distance(start, *p) < 36.0) {
+        while path.front().is_some_and(|p| {
+            if p.jump_from.is_some() {
+                if (start[0] - p.origin[0]).hypot(start[1] - p.origin[1]) > 8.0
+                    || (start[2] - p.origin[2]).abs() > 1.0
+                {
+                    return false;
+                }
+                let floor = collision.trace(start, [start[0], start[1], start[2] - 0.25], HEIGHT);
+                return !floor.start_solid
+                    && !floor.all_solid
+                    && floor.fraction < 1.0
+                    && floor.normal[2] >= 0.7;
+            }
+            let radius = if path.get(1).is_some_and(|q| q.jump_from.is_some()) {
+                6.0
+            } else {
+                36.0
+            };
+            distance(start, p.origin) < radius
+        }) {
             path.pop_front();
         }
         for index in (1..path.len().min(4)).rev() {
-            if Self::clear(start, path[index], collision) {
+            if path.iter().take(index + 1).any(|p| p.jump_from.is_some()) {
+                continue;
+            }
+            if Self::clear(start, path[index].origin, collision) {
                 path.drain(..index);
                 break;
             }
@@ -317,6 +535,206 @@ fn distance(a: V3, b: V3) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn jump_scene(landing: bool, wall: bool, ceiling: bool) -> Collision {
+        let mut brushes = vec![serde_json::json!({
+            "center":[-1000,0,-100],"half":[1000,500,100],"contents":1,"planes":[]
+        })];
+        if landing {
+            brushes.push(serde_json::json!({
+                "center":[1064,0,-100],"half":[1000,500,100],"contents":1,"planes":[]
+            }));
+        }
+        if wall {
+            brushes.push(serde_json::json!({
+                "center":[32,0,100],"half":[4,500,100],"contents":1,"planes":[]
+            }));
+        }
+        if ceiling {
+            brushes.push(serde_json::json!({
+                "center":[0,0,100],"half":[500,500,5],"contents":1,"planes":[]
+            }));
+        }
+        let data = serde_json::json!({
+            "schema_version":1,"read_only":true,"client_sha256":codol_protocol::CLIENT_SHA256,
+            "map":"maps/mp/test.d3dbsp","ncs_crc":0,"brushes":brushes,"triangles":[]
+        });
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), serde_json::to_vec(&data).unwrap()).unwrap();
+        Collision::load(file.path()).unwrap()
+    }
+    #[test]
+    fn jumping_crosses_a_gap_and_requires_clearance_and_supported_landing() {
+        let a = [-48.0, 0.0, 0.03125];
+        let b = [96.0, 0.0, 0.03125];
+        let collision = jump_scene(true, false, false);
+        assert!(!Navigation::clear(a, b, &collision));
+        assert!(Navigation::can_jump(a, b, &collision).is_some());
+        assert!(Navigation::can_jump(a, b, &jump_scene(false, false, false)).is_none());
+        assert!(Navigation::can_jump(a, b, &jump_scene(true, true, false)).is_none());
+        assert!(Navigation::can_jump(a, b, &jump_scene(true, false, true)).is_none());
+        assert!(Navigation::can_jump(a, [96.0, 0.0, 80.0], &collision).is_none());
+        assert!(Navigation::can_jump(a, [240.0, 0.0, 0.03125], &collision).is_none());
+        let nav = Navigation::build([a, b].into_iter(), &collision);
+        let path = nav.route(a, b, &collision);
+        assert!(path.iter().any(|p| p.jump_from.is_some()));
+        let mut path = path.into();
+        let waypoint = nav.steering(a, &mut path, &collision).unwrap();
+        assert!(waypoint.jump_from.is_some(), "must retain the jump action");
+        let mut bot = crate::game_bot::BotController::new(a, [0; 3], 190.0).unwrap();
+        bot.set_match_engagement();
+        let weapon = crate::game_bot::BotWeapon {
+            weapon: 352,
+            fire_interval_msec: 79,
+            ballistics: crate::game_combat::Ballistics {
+                damage: 33,
+                range: 8192.0,
+                near_range: 500.0,
+                location_multipliers: None,
+                falloff: None,
+                pellets: 1,
+                spread_degrees: 0.0,
+            },
+        };
+        let mut position = a;
+        let mut airborne = false;
+        let mut landed = false;
+        for now in (1000..5000).step_by(50) {
+            let waypoint = nav.steering(position, &mut path, &collision);
+            let frame = bot.step_route(now, None, waypoint, weapon, &collision);
+            position = frame.motion.origin;
+            airborne |= frame.motion.flags & 0x2000 != 0 && position[2] > 10.0;
+            if airborne && jump_landed(&frame.motion, b) {
+                landed = true;
+                break;
+            }
+        }
+        assert!(
+            airborne && landed,
+            "jump failed: position={position:?}, path={path:?}"
+        );
+        assert_eq!(bot.jump_count(), 1);
+    }
+    #[test]
+    fn jump_approaches_a_low_platform_and_keeps_steering_through_clock_wrap_and_enemy_acquisition()
+    {
+        let data = serde_json::json!({"schema_version":1,"read_only":true,"client_sha256":codol_protocol::CLIENT_SHA256,
+            "map":"maps/mp/test.d3dbsp","ncs_crc":0,"brushes":[
+            {"center":[-1000,0,-100],"half":[1032,500,100],"contents":1,"planes":[]},
+            {"center":[1032,0,-70],"half":[1000,500,100],"contents":1,"planes":[]}],"triangles":[]});
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), serde_json::to_vec(&data).unwrap()).unwrap();
+        let collision = Collision::load(file.path()).unwrap();
+        let a = [0.0, 0.0, 0.03125];
+        let b = [96.0, 0.0, 30.03125];
+        let runup =
+            Navigation::can_jump(a, b, &collision).expect("low platform should be jumpable");
+        let waypoint = Waypoint {
+            origin: b,
+            jump_from: Some(a),
+            runup_msec: runup,
+        };
+        let weapon = crate::game_bot::BotWeapon {
+            weapon: 352,
+            fire_interval_msec: 79,
+            ballistics: crate::game_combat::Ballistics {
+                damage: 33,
+                range: 8192.0,
+                near_range: 500.0,
+                location_multipliers: None,
+                falloff: None,
+                pellets: 1,
+                spread_degrees: 0.0,
+            },
+        };
+        let mut bot = crate::game_bot::BotController::new(a, [0; 3], 190.0).unwrap();
+        bot.set_match_engagement();
+        let start = u32::MAX - 800;
+        let mut landed = false;
+        let mut airborne = false;
+        for step in 0..80 {
+            let now = start.wrapping_add(step * 50);
+            let enemy = airborne.then_some(crate::game_bot::BotTarget {
+                origin: a,
+                eye: [a[0], a[1], a[2] + 60.0],
+                alive: true,
+            });
+            let frame = bot.step_route(now, enemy, Some(waypoint), weapon, &collision);
+            airborne |= frame.motion.flags & 0x2000 != 0;
+            let duplicate = bot.step_route(now, enemy, Some(waypoint), weapon, &collision);
+            assert_eq!(duplicate.motion.origin, frame.motion.origin);
+            assert!(duplicate.landings.is_empty());
+            if airborne && jump_landed(&frame.motion, b) {
+                landed = true;
+                break;
+            }
+        }
+        assert!(
+            landed,
+            "jump should complete despite an enemy appearing and authority clock wrapping"
+        );
+        assert_eq!(bot.jump_count(), 1);
+        let now = start.wrapping_add(4000);
+        assert!(bot.kill(now));
+        assert!(!bot.traversing());
+        let dead = bot.step_route(
+            now.wrapping_add(50),
+            None,
+            Some(waypoint),
+            weapon,
+            &collision,
+        );
+        assert_eq!(dead.phase, crate::game_bot::BotPhase::Dead);
+        bot.respawn(now.wrapping_add(100), a, [0; 3]).unwrap();
+        assert!(!bot.traversing());
+        let fresh = bot.step_route(now.wrapping_add(150), None, None, weapon, &collision);
+        assert_eq!(fresh.motion.jump_time, 0);
+    }
+    #[test]
+    fn regional_route_preferences_are_repeatable_and_use_both_corridors() {
+        let data = serde_json::json!({"schema_version":1,"read_only":true,"client_sha256":codol_protocol::CLIENT_SHA256,
+            "map":"maps/mp/test.d3dbsp","ncs_crc":0,"brushes":[
+            {"center":[0,0,-10],"half":[2000,2000,10],"contents":1,"planes":[]},
+            {"center":[0,0,100],"half":[20,200,100],"contents":1,"planes":[]}],"triangles":[]});
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), serde_json::to_vec(&data).unwrap()).unwrap();
+        let collision = Collision::load(file.path()).unwrap();
+        let a = [-300.0, 0.0, 0.125];
+        let b = [300.0, 0.0, 0.125];
+        let nav = Navigation::build([a, b].into_iter(), &collision);
+        let mut sides = std::collections::BTreeSet::new();
+        for seed in 1..=32 {
+            let route = nav.route_varied(a, b, &collision, seed, &[]);
+            assert_eq!(route, nav.route_varied(a, b, &collision, seed, &[]));
+            let crossing = route
+                .iter()
+                .min_by(|p, q| p.origin[0].abs().total_cmp(&q.origin[0].abs()))
+                .unwrap();
+            sides.insert(crossing.origin[1] > 0.0);
+            let length: f32 = std::iter::once(a)
+                .chain(route.iter().map(|p| p.origin))
+                .zip(route.iter().map(|p| p.origin))
+                .map(|(p, q)| distance(p, q))
+                .sum();
+            assert!(length < 1300.0, "excessive detour: {length}");
+        }
+        assert_eq!(
+            sides.len(),
+            2,
+            "different seeds should use both sides of the wall"
+        );
+        let first = nav.route(a, b, &collision);
+        let recent: Vec<_> = first.iter().map(|p| p.origin).collect();
+        let alternate = nav.route_varied(a, b, &collision, 0, &recent);
+        let side =
+            |r: &[Waypoint]| r.iter().find(|p| p.origin[0].abs() < 24.0).unwrap().origin[1] > 0.0;
+        assert_ne!(
+            side(&first),
+            side(&alternate),
+            "recent corridor should be avoided"
+        );
+        let mut zero = 0;
+        assert_ne!(next_random(&mut zero), 0);
+    }
     #[test]
     fn bounded_drop_routes_are_one_way_and_require_real_landing_support() {
         let scene = |lower: bool, wall: bool| {
@@ -406,7 +824,10 @@ mod tests {
             !path.is_empty(),
             "opposing spawn areas must connect across player-walkable terrain"
         );
-        for (&start, &end) in std::iter::once(&a).chain(path.iter()).zip(path.iter()) {
+        for (start, end) in std::iter::once(a)
+            .chain(path.iter().map(|p| p.origin))
+            .zip(path.iter().map(|p| p.origin))
+        {
             assert!(Navigation::clear(start, end, &collision));
         }
         std::fs::write(root.join("bog-navigation-captured-proof.json"),serde_json::to_vec_pretty(&serde_json::json!({
@@ -435,12 +856,15 @@ mod tests {
         let nav = Navigation::build([a, b].into_iter(), &collision);
         let path = nav.route(a, b, &collision);
         assert!(path.len() > 2);
-        assert!(path.iter().all(|p| p[2] > -1.0));
-        assert!(path.iter().any(|p| p[1].abs() >= 96.0));
+        assert!(path.iter().all(|p| p.origin[2] > -1.0));
+        assert!(
+            path.iter()
+                .any(|p| p.origin[1].abs() >= 96.0 || p.jump_from.is_some())
+        );
         let mut queue = path.into();
         let steering = nav.steering(a, &mut queue, &collision).unwrap();
-        assert!(Navigation::clear(a, steering, &collision));
-        assert_ne!(steering, b);
+        assert!(Navigation::clear(a, steering.origin, &collision) || steering.jump_from.is_some());
+        assert_ne!(steering.origin, b);
     }
     #[test]
     fn walking_support_checks_preserve_stairs_and_sloping_terrain() {
@@ -467,6 +891,102 @@ mod tests {
             assert!(Navigation::clear(a, b, &collision), "{a:?} -> {b:?}");
             assert!(Navigation::clear(b, a, &collision), "{b:?} -> {a:?}");
         }
+    }
+    #[test]
+    #[ignore = "requires locally captured Highrise collision"]
+    fn captured_highrise_jumps_land_with_the_live_bot_controller() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../research-output");
+        let state: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(root.join("tdm-highrise-state.json")).unwrap())
+                .unwrap();
+        let starts: [Vec<V3>; 2] =
+            serde_json::from_value(state["match_config"]["spawns"].clone()).unwrap();
+        let collision = Collision::load(std::path::Path::new(
+            state["collision_file"].as_str().unwrap(),
+        ))
+        .unwrap();
+        let before = std::time::Instant::now();
+        let nav = Navigation::build(starts.iter().flatten().copied(), &collision);
+        let build_msec = before.elapsed().as_millis();
+        let jump_edges = nav
+            .links
+            .iter()
+            .flatten()
+            .filter(|e| e.jump.is_some())
+            .count();
+        let weapon = crate::game_bot::BotWeapon {
+            weapon: 352,
+            fire_interval_msec: 79,
+            ballistics: crate::game_combat::Ballistics {
+                damage: 33,
+                range: 8192.0,
+                near_range: 500.0,
+                location_multipliers: None,
+                falloff: None,
+                pellets: 1,
+                spread_degrees: 0.0,
+            },
+        };
+        let mut landed = Vec::new();
+        for (index, edges) in nav.links.iter().enumerate() {
+            for edge in edges {
+                let Some(runup) = edge.jump else {
+                    continue;
+                };
+                let a = nav.positions[index];
+                let b = nav.positions[edge.to];
+                let mut motion = Motion::new(a);
+                motion.command_time = 1000;
+                if !jump_reachable(motion, b, 1.0, runup, &collision) {
+                    continue;
+                }
+                let mut bot = crate::game_bot::BotController::new(a, [0; 3], 190.0).unwrap();
+                bot.set_match_engagement();
+                let waypoint = Waypoint {
+                    origin: b,
+                    jump_from: Some(a),
+                    runup_msec: runup,
+                };
+                let mut end = a;
+                let mut peak = a[2];
+                let mut success = false;
+                for now in (1000..4000).step_by(50) {
+                    let frame = bot.step_route(now, None, Some(waypoint), weapon, &collision);
+                    end = frame.motion.origin;
+                    peak = peak.max(end[2]);
+                    if bot.jump_count() > 0 && jump_landed(&frame.motion, b) {
+                        success = true;
+                        break;
+                    }
+                }
+                assert!(
+                    success,
+                    "checked Highrise jump failed: {a:?} -> {b:?}, runup={runup}, end={end:?}"
+                );
+                landed.push(serde_json::json!({"departure":a,"goal":b,"landed":end,"runup_msec":runup,"peak_z":peak,"jumps":bot.jump_count()}));
+                if landed.len() >= 12 {
+                    break;
+                }
+            }
+            if landed.len() >= 12 {
+                break;
+            }
+        }
+        assert!(
+            !landed.is_empty(),
+            "Highrise should have physically executable jumps"
+        );
+        let output = root.join("bot-navigation-20261013");
+        std::fs::create_dir_all(&output).unwrap();
+        std::fs::write(output.join("highrise-jumps.json"), serde_json::to_vec_pretty(&serde_json::json!({
+            "map":"mp_highrise","ncs_crc":state["ncs_crc"],"native_client_used":false,
+            "nodes":nav.positions.len(),"jump_edges":jump_edges,"build_msec":build_msec,"landed":landed
+        })).unwrap()).unwrap();
+        eprintln!(
+            "Highrise: nodes={} jumps={jump_edges} landed={} build_ms={build_msec}",
+            nav.positions.len(),
+            landed.len()
+        );
     }
     #[test]
     #[ignore = "requires local three-map collision preparations"]
@@ -532,7 +1052,7 @@ mod tests {
         }
         while let Some(node) = pending.pop() {
             if reached.insert(node) {
-                pending.extend(&nav.links[node]);
+                pending.extend(nav.links[node].iter().map(|e| e.to));
             }
         }
         println!(
@@ -577,7 +1097,7 @@ mod tests {
         let mut fired = false;
         for time in (1000..121000).step_by(50) {
             let waypoint = nav.steering(position, &mut route, &collision);
-            let frame = bot.step_navigated(time, Some(target), waypoint, weapon, &collision);
+            let frame = bot.step_route(time, Some(target), waypoint, weapon, &collision);
             position = frame.motion.origin;
             if frame.shot.is_some() {
                 fired = true;
@@ -604,8 +1124,11 @@ mod tests {
         let nav = Navigation::build([a, b].into_iter(), &collision);
         let path = nav.route(a, b, &collision);
         assert!(path.len() > 2);
-        assert!(path.iter().any(|p| p[1].abs() > 220.0));
-        for (&a, &b) in std::iter::once(&a).chain(path.iter()).zip(path.iter()) {
+        assert!(path.iter().any(|p| p.origin[1].abs() > 220.0));
+        for (a, b) in std::iter::once(a)
+            .chain(path.iter().map(|p| p.origin))
+            .zip(path.iter().map(|p| p.origin))
+        {
             assert!(Navigation::clear(a, b, &collision));
         }
     }

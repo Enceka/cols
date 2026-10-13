@@ -183,6 +183,8 @@ struct Bot {
     random: u64,
     progress_origin: [f32; 3],
     progress_time: u32,
+    recent_route: std::collections::VecDeque<[f32; 3]>,
+    stuck_level: u8,
 
     tactical: crate::game_tactical::State,
     poison: crate::game_gas::Poison,
@@ -195,10 +197,10 @@ struct Bot {
     fire_time: Option<u32>,
     fire_toggle: bool,
     reload_animation: crate::game_enemy::ReloadAnimation,
-    route: std::collections::VecDeque<[f32; 3]>,
+    route: std::collections::VecDeque<crate::game_navigation::Waypoint>,
     route_target: Option<[f32; 3]>,
     route_time: u32,
-    steering: Option<[f32; 3]>,
+    steering: Option<crate::game_navigation::Waypoint>,
     steering_time: u32,
 }
 
@@ -307,6 +309,8 @@ impl TdmMatch {
                     ^ (u64::from(client) * 0x9e3779b9),
                 progress_origin: origin,
                 progress_time: 1000,
+                recent_route: Default::default(),
+                stuck_level: 0,
                 tactical: Default::default(),
                 poison: Default::default(),
                 emp: Default::default(),
@@ -375,6 +379,9 @@ impl TdmMatch {
     }
     pub fn snapshots(&self) -> Vec<EnemySnapshot> {
         self.bots.iter().map(|bot| bot.snapshot).collect()
+    }
+    pub(crate) fn jump_count(&self) -> u32 {
+        self.bots.iter().map(|b| b.controller.jump_count()).sum()
     }
     pub fn replay_views(&self) -> Vec<crate::game_replay::View> {
         self.bots
@@ -923,6 +930,8 @@ impl TdmMatch {
                 bot.perception_time = 0;
                 bot.progress_origin = origin;
                 bot.progress_time = now;
+                bot.recent_route.clear();
+                bot.stuck_level = 0;
             }
         }
         let mut shots = Vec::new();
@@ -975,18 +984,37 @@ impl TdmMatch {
                 .visible_target
                 .filter(|_| !bot.tactical.blind(now))
                 .filter(|t| smoke.visible(now, bot.controller.eye(), t.eye));
-            let remembered = bot.memory.map(|(_, t, _)| t.origin);
-            if i == self.next_route_client {
+            let remembered = bot
+                .memory
+                .map(|(_, t, _)| t.origin)
+                .filter(|_| bot.stuck_level < 2);
+            if bot
+                .recent_route
+                .back()
+                .is_none_or(|&p| distance(origin, p) > 48.0 * 48.0)
+            {
+                bot.recent_route.push_back(origin);
+                if bot.recent_route.len() > 32 {
+                    bot.recent_route.pop_front();
+                }
+            }
+            if i == self.next_route_client && !bot.controller.traversing() {
                 let stuck = now.wrapping_sub(bot.progress_time) >= 2500
                     && distance(origin, bot.progress_origin) < 24.0 * 24.0
-                    && !bot.route.is_empty();
+                    && !bot.route.is_empty()
+                    && bot.controller.has_move_intent();
                 if now.wrapping_sub(bot.progress_time) >= 2500 {
+                    if distance(origin, bot.progress_origin) >= 96.0 * 96.0 {
+                        bot.stuck_level = 0;
+                    }
                     bot.progress_origin = origin;
                     bot.progress_time = now;
                 }
                 if stuck {
+                    bot.stuck_level = bot.stuck_level.saturating_add(1);
                     bot.route.clear();
                     bot.route_target = None;
+                    bot.steering = None;
                 }
                 let arrived = bot
                     .route_target
@@ -1001,13 +1029,19 @@ impl TdmMatch {
                     || (chasing && now.wrapping_sub(bot.route_time) >= 2000)
                 {
                     let goal = remembered
+                        .filter(|_| bot.stuck_level < 2)
                         .filter(|p| distance(origin, *p) > 96.0 * 96.0)
                         .or_else(|| {
                             self.navigation
                                 .roam_goal(origin, &occupied, &mut bot.random)
                         });
                     if let Some(goal) = goal {
-                        bot.route = self.navigation.route(origin, goal, collision).into();
+                        let seed = crate::game_navigation::next_random(&mut bot.random);
+                        let recent: Vec<_> = bot.recent_route.iter().copied().collect();
+                        bot.route = self
+                            .navigation
+                            .route_varied(origin, goal, collision, seed, &recent)
+                            .into();
                         bot.route_target = (!bot.route.is_empty()).then_some(goal);
                         bot.route_time = now;
                         bot.steering = None;
@@ -1019,7 +1053,7 @@ impl TdmMatch {
                 || now.wrapping_sub(bot.steering_time) >= 250
                 || bot
                     .steering
-                    .is_some_and(|p| distance(origin, p) < 36.0 * 36.0)
+                    .is_some_and(|p| distance(origin, p.origin) < 36.0 * 36.0)
             {
                 bot.steering = self.navigation.steering(origin, &mut bot.route, collision);
                 bot.steering_time = now;
@@ -1058,7 +1092,7 @@ impl TdmMatch {
                 if bot.tactical.blind(now) {
                     return None;
                 }
-                let waypoint = bot.steering?;
+                let waypoint = bot.steering?.origin;
                 let eye = bot.controller.eye();
                 let end = [waypoint[0], waypoint[1], waypoint[2] + 60.0];
                 let hit = collision.raycast(eye, end);
@@ -1078,7 +1112,7 @@ impl TdmMatch {
             });
             let mut frame =
                 bot.controller
-                    .step_navigated(now, target, bot.steering, active_weapon, collision);
+                    .step_route(now, target, bot.steering, active_weapon, collision);
             for landing in &frame.landings {
                 if let Some(event) = landing.event {
                     if let Some(held) = &mut bot.weapon {
@@ -1400,7 +1434,7 @@ mod tests {
             // This fixture guides the actor over the captured ledge; it does
             // not validate navigation's preferred route or native visuals.
             game.next_route_client = 1;
-            game.bots[0].steering = Some(end);
+            game.bots[0].steering = Some(crate::game_navigation::Waypoint::walk(end));
             game.bots[0].steering_time = now;
             game.step(
                 now,

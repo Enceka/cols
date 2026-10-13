@@ -9,6 +9,7 @@ use codol_protocol::game_usercmd::UserCommand;
 use crate::{
     game_combat::Ballistics,
     game_motion::{Collision, Motion},
+    game_navigation::{Waypoint, jump_command, jump_landed, jump_reachable},
 };
 
 const HALF_CLOCK: u32 = 0x8000_0000;
@@ -127,6 +128,15 @@ pub(crate) enum Locomotion {
 }
 
 #[derive(Debug)]
+struct JumpDrive {
+    goal: [f32; 3],
+    start: u32,
+    scale: f32,
+    runup_msec: u16,
+    launched: bool,
+}
+
+#[derive(Debug)]
 pub struct BotController {
     landings: Vec<crate::game_landing::Landing>,
     motion: Motion,
@@ -148,6 +158,10 @@ pub struct BotController {
     locomotion: Locomotion,
     control_move_scale: f32,
     control_turn_limit: Option<[f32; 2]>,
+    jump_goal: Option<JumpDrive>,
+    jump_check_time: u32,
+    jumps: u32,
+    travel_requested: bool,
 }
 
 impl BotController {
@@ -180,6 +194,10 @@ impl BotController {
             locomotion: Locomotion::Walk,
             control_move_scale: 1.0,
             control_turn_limit: None,
+            jump_goal: None,
+            jump_check_time: 0,
+            jumps: 0,
+            travel_requested: false,
         })
     }
 
@@ -255,6 +273,16 @@ impl BotController {
         weapon: BotWeapon,
         collision: &Collision,
     ) -> BotFrame {
+        self.step_route(now, target, waypoint.map(Waypoint::walk), weapon, collision)
+    }
+    pub(crate) fn step_route(
+        &mut self,
+        now: u32,
+        target: Option<BotTarget>,
+        waypoint: Option<Waypoint>,
+        weapon: BotWeapon,
+        collision: &Collision,
+    ) -> BotFrame {
         let delta = match self.last_tick {
             Some(previous) => {
                 let elapsed = now.wrapping_sub(previous);
@@ -272,6 +300,8 @@ impl BotController {
         }
         let target =
             target.filter(|t| t.alive && valid_position(t.origin) && valid_position(t.eye));
+        let waypoint =
+            waypoint.filter(|p| p.jump_from.is_none() || !jump_landed(&self.motion, p.origin));
         if self.equipped_weapon != Some(weapon.weapon) {
             self.equipped_weapon = Some(weapon.weapon);
             self.last_shot = None;
@@ -295,7 +325,9 @@ impl BotController {
             });
         let hold = visible_before
             && target.is_some_and(|t| horizontal_distance(self.motion.origin, t.origin) <= spacing);
-        let mode = if self.engagement.is_none()
+        let mode = if self.jump_goal.is_some() {
+            Locomotion::Run
+        } else if self.engagement.is_none()
             || (visible_before
                 && target
                     .is_some_and(|t| distance(self.eye(), t.eye) <= self.engagement.unwrap().0))
@@ -309,24 +341,41 @@ impl BotController {
             Locomotion::Run
         };
         self.locomotion = mode;
-        let travel = if hold {
+        let mut travel = if hold {
             None
         } else {
             waypoint
-                .map(|origin| BotTarget {
-                    origin,
-                    eye: [origin[0], origin[1], origin[2] + 60.0],
-                    alive: true,
+                .map(|p| {
+                    let origin = p.jump_from.unwrap_or(p.origin);
+                    BotTarget {
+                        origin,
+                        eye: [origin[0], origin[1], origin[2] + 60.0],
+                        alive: true,
+                    }
                 })
                 .or(target)
         };
+        self.travel_requested = travel.is_some() || self.jump_goal.is_some();
         self.move_toward(
             delta,
             travel,
-            if waypoint.is_some() { 24.0 } else { spacing },
+            if waypoint.is_some() { 4.0 } else { spacing },
             collision,
             mode,
+            if hold {
+                None
+            } else {
+                waypoint.filter(|p| p.jump_from.is_some())
+            },
         );
+        if let Some(drive) = &self.jump_goal {
+            let origin = drive.goal;
+            travel = Some(BotTarget {
+                origin,
+                eye: [origin[0], origin[1], origin[2] + 60.0],
+                alive: true,
+            });
+        }
         let Some(target) = target else {
             if let Some(travel) = travel {
                 self.angles = self.control_turn(aim_angles(self.eye(), travel.eye), delta);
@@ -453,6 +502,7 @@ impl BotController {
         spacing: f32,
         collision: &Collision,
         mode: Locomotion,
+        jump: Option<Waypoint>,
     ) {
         while remaining > 0 {
             let dt = remaining.min(self.physics_chop_msec);
@@ -460,17 +510,27 @@ impl BotController {
             let moving =
                 target.is_some_and(|t| horizontal_distance(self.motion.origin, t.origin) > spacing);
             let angles = target.map_or(self.angles, |t| aim_angles(self.eye(), t.eye));
-            if !moving {
+            if !moving && self.jump_goal.is_none() {
                 // Prevent the last chase velocity from carrying through the
                 // desired separation. Vertical gravity still uses real motion.
                 self.motion.velocity[0] = 0.0;
                 self.motion.velocity[1] = 0.0;
             }
             if self.motion.command_time > u32::MAX - dt {
-                // This controller never jumps or changes stance; only these
-                // otherwise dormant time fields need rebasing for its clock.
-                self.motion.command_time = 0;
-                self.motion.jump_time = 0;
+                // Keep jump cooldowns and traversal deadlines relative to the
+                // private clock when it is rebased, including an airborne bot.
+                let old = self.motion.command_time;
+                let base = 1000;
+                self.motion.jump_time = base - old.saturating_sub(self.motion.jump_time).min(base);
+                if let Some(drive) = &mut self.jump_goal {
+                    drive.start = base - old.saturating_sub(drive.start).min(base);
+                }
+                self.jump_check_time = base;
+                self.motion.sprint.last_start =
+                    base - old.saturating_sub(self.motion.sprint.last_start).min(base);
+                self.motion.sprint.last_end =
+                    base - old.saturating_sub(self.motion.sprint.last_end).min(base);
+                self.motion.command_time = base;
                 self.motion.view_height_lerp_time = 0;
             }
             let command = UserCommand {
@@ -488,12 +548,87 @@ impl BotController {
             } else {
                 self.move_speed / f32::from(self.motion.speed)
             };
-            self.motion.apply(
-                &command,
-                speed_scale * self.control_move_scale,
-                ads,
-                collision,
-            );
+            let jump_scale = if self.engagement.is_some() {
+                self.match_move_scale
+            } else {
+                self.move_speed / f32::from(self.motion.speed)
+            } * self.control_move_scale;
+            let finished_goal = self
+                .jump_goal
+                .as_ref()
+                .filter(|drive| {
+                    (drive.launched && jump_landed(&self.motion, drive.goal))
+                        || self.motion.command_time.saturating_sub(drive.start) >= 1200
+                })
+                .map(|drive| drive.goal);
+            if finished_goal.is_some() {
+                self.jump_goal = None;
+            }
+            let attempt = self.jump_goal.is_none()
+                && jump.is_some_and(|p| {
+                    distance(self.motion.origin, p.jump_from.unwrap()) <= 8.0
+                        && self.motion.command_time >= self.jump_check_time
+                        && self
+                            .motion
+                            .command_time
+                            .saturating_sub(self.motion.jump_time)
+                            >= 500
+                });
+            let begin = attempt
+                && jump_reachable(
+                    self.motion.clone(),
+                    jump.unwrap().origin,
+                    jump_scale,
+                    jump.unwrap().runup_msec,
+                    collision,
+                );
+            if begin {
+                let waypoint = jump.unwrap();
+                self.motion.velocity[0] = 0.0;
+                self.motion.velocity[1] = 0.0;
+                self.jump_goal = Some(JumpDrive {
+                    goal: waypoint.origin,
+                    start: self.motion.command_time,
+                    scale: jump_scale,
+                    runup_msec: waypoint.runup_msec,
+                    launched: false,
+                });
+            }
+            if attempt && !begin {
+                self.jump_check_time = self.motion.command_time + 250;
+            }
+            let (command, speed_scale, ads) = if let Some(drive) = &mut self.jump_goal {
+                let launch = !drive.launched
+                    && self.motion.command_time.saturating_sub(drive.start)
+                        >= u32::from(drive.runup_msec);
+                if launch {
+                    drive.launched = true;
+                }
+                // Retain landing steering even if an enemy appears or a path
+                // changes in midair. Sprint/ADS do not alter the checked arc.
+                (
+                    jump_command(&mut self.motion, drive.goal, dt, launch),
+                    drive.scale.min(jump_scale),
+                    false,
+                )
+            } else if finished_goal.is_some_and(|goal| jump.is_some_and(|p| p.origin == goal)) {
+                self.motion.velocity[0] = 0.0;
+                self.motion.velocity[1] = 0.0;
+                (
+                    UserCommand {
+                        direction: 0,
+                        ..command
+                    },
+                    speed_scale * self.control_move_scale,
+                    ads,
+                )
+            } else {
+                (command, speed_scale * self.control_move_scale, ads)
+            };
+            self.motion.apply(&command, speed_scale, ads, collision);
+            if command.buttons & 0x400 != 0 && self.motion.jump_time == command.time {
+                self.jumps = self.jumps.saturating_add(1);
+            }
             // A controller tick can contain several physics commands. Retain
             // a landing from any substep until the single public frame drains it.
             self.landings.extend(self.motion.take_landings());
@@ -520,6 +655,8 @@ impl BotController {
         self.phase = BotPhase::Dead;
         self.landings.clear();
         self.motion.velocity = [0.0; 3];
+        self.jump_goal = None;
+        self.travel_requested = false;
         self.reset_engagement();
         self.generation = self.generation.wrapping_add(1);
         true
@@ -533,6 +670,9 @@ impl BotController {
             "bot respawn time goes backwards"
         );
         self.motion = Motion::new(origin);
+        self.jump_goal = None;
+        self.jump_check_time = 0;
+        self.travel_requested = false;
         self.landings.clear();
         self.motion.speed = if self.engagement.is_some() {
             crate::game_motion::SPEED
@@ -558,6 +698,9 @@ impl BotController {
             && self.last_shot == Some(shot.time)
     }
     pub fn separate_from(&mut self, client: u8, peers: &[(u8, [f32; 3])], collision: &Collision) {
+        if self.jump_goal.is_some() || !self.motion.grounded() {
+            return;
+        }
         let mut shift = [0.0f32; 2];
         for &(other, position) in peers {
             if other == client || (position[2] - self.motion.origin[2]).abs() > 40.0 {
@@ -584,6 +727,15 @@ impl BotController {
             self.motion
                 .move_separation([shift[0] * scale, shift[1] * scale], collision);
         }
+    }
+    pub(crate) fn traversing(&self) -> bool {
+        self.jump_goal.is_some()
+    }
+    pub(crate) fn has_move_intent(&self) -> bool {
+        self.travel_requested
+    }
+    pub(crate) fn jump_count(&self) -> u32 {
+        self.jumps
     }
 }
 
@@ -770,6 +922,27 @@ mod tests {
         }
     }
 
+    #[test]
+    fn visible_opponents_only_suppress_stuck_recovery_when_the_bot_is_holding_range() {
+        let world = collision(false);
+        let mut bot = BotController::new([0.0; 3], [0; 3], 190.0).unwrap();
+        bot.set_match_engagement();
+        let far = BotTarget {
+            origin: [1200.0, 0.0, 0.0],
+            eye: [1200.0, 0.0, 60.0],
+            alive: true,
+        };
+        bot.step(1000, Some(far), weapon(), &world);
+        let advancing = bot.step(1050, Some(far), weapon(), &world);
+        assert!(bot.has_move_intent() && advancing.moving());
+        let close = BotTarget {
+            origin: [100.0, 0.0, 0.0],
+            eye: [100.0, 0.0, 60.0],
+            alive: true,
+        };
+        let holding = bot.step(1100, Some(close), weapon(), &world);
+        assert!(!bot.has_move_intent() && !holding.moving());
+    }
     #[test]
     fn match_bot_engages_a_visible_rifle_target_beyond_the_training_distance() {
         let open_world = collision(false);
