@@ -33,6 +33,22 @@ def team_spawns(capture, map_name, minimum=6):
     return teams
 
 
+def team_spawn_angles(capture, map_name, minimum=6):
+    teams = [[], []]
+    classes = [b"mp_tdm_spawn_axis_start", b"mp_tdm_spawn_allies_start"]
+    for fields in map_entities(capture, map_name):
+        if fields.get(b"classname") not in classes:
+            continue
+        angles = ([float(v) for v in fields[b"angles"].split()] if b"angles" in fields
+                  else [0.0, float(fields.get(b"angle", b"0")), 0.0])
+        if len(angles) != 3 or any(not math.isfinite(v) or abs(v) > 360000 for v in angles):
+            raise ValueError("invalid map spawn angles")
+        teams[classes.index(fields[b"classname"])].append([int(v * 65536 / 360) & 65535 for v in angles])
+    if any(not minimum <= len(t) <= 128 for t in teams):
+        raise ValueError("map needs a captured heading for every active player")
+    return teams
+
+
 def native_maps():
     registry = json.loads((REPO / 'fixtures/protocol/map-registry-3.3.3.3.json').read_text())
     if (registry['schema_version'] != 1 or registry['client_sha256'] != CLIENT_SHA256 or
@@ -64,7 +80,8 @@ def prepare(template, map_name, constants, entities, collision, arsenal, charact
     state.update(summary)
     state.update(map=map_name, mode="war", zone="mp", playlist=0, spawn_origin=teams[1][0])
     state["minimap"] = minimap(entities, map_name, characters, material_capture_sha256)
-    state["match_config"].update(spawns=teams, roster=[], models=[], player_count=player_count,
+    state["match_config"].update(spawns=teams, spawn_angles=team_spawn_angles(entities, map_name, player_count // 2),
+        roster=[], models=[], player_count=player_count,
         teams=[2]*(player_count//2)+[1]*(player_count//2)+[0]*(12-player_count))
     # Rebind the human skeleton and generic nodes by names in this capture.
     models = {m["name"]: m for m in characters["models"]}

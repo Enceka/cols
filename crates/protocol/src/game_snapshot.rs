@@ -241,6 +241,7 @@ pub fn player_frame_with_motion(
         equipment,
         angles,
         WorldSnapshot {
+            view_offset: [0; 3],
             streaks: Default::default(),
             reward_inventory: None,
             nuke_hud: None,
@@ -286,6 +287,9 @@ pub fn player_frame_with_motion(
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct WorldSnapshot<'a> {
+    /// PS+0xa0..0xa8, fields70/45/191, native short-angle codec -100.
+    /// Prediction adds this offset to raw usercmd angles (0x41af8e).
+    pub view_offset: [u16; 3],
     pub streaks: crate::game_killstreaks::StreakSnapshot,
     pub reward_inventory: Option<EquippedWeapon>,
     pub nuke_hud: Option<crate::game_hit_feedback::NukeHudSnapshot>,
@@ -716,6 +720,9 @@ pub fn player_frame_with_world(
         }
     }
     if motion.is_some() {
+        for (field, angle) in [70, 45, 191].into_iter().zip(world.view_offset) {
+            fields.push((field, u32::from(angle), 101));
+        }
         fields.extend(
             world
                 .streaks
@@ -2152,6 +2159,40 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+    #[test]
+    fn view_offset_uses_native_angle_fields_and_clears_with_zero_ps_baselines() {
+        for offset in [[1820, 32768, 0], [0, 49152, 0], [0; 3]] {
+            let body = player_frame_with_world(
+                1000,
+                950,
+                Some([0.0; 3]),
+                false,
+                None,
+                [0, 5461, 0],
+                WorldSnapshot {
+                    view_offset: offset,
+                    motion: Some(authoritative_motion()),
+                    delta_distance: 1,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let mut r = Reader::new(&body);
+            r.u8().unwrap();
+            r.u32().unwrap();
+            r.u8().unwrap();
+            r.u8().unwrap();
+            assert_eq!(r.bits(2).unwrap(), 2);
+            let (fields, _) = read_fields(&mut r);
+            for (index, angle) in [70, 45, 191].into_iter().zip(offset) {
+                assert_eq!(
+                    fields[&index],
+                    (f32::from(angle as i16) * (360.0 / 65536.0)).to_bits()
+                );
+            }
+            assert_eq!(fields[&18], 5461);
         }
     }
     #[test]

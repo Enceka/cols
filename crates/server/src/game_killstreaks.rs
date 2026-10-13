@@ -198,6 +198,23 @@ pub(crate) const NUKE_KILLS: u16 = 25;
 pub(crate) const COUNTDOWN_MSEC: u32 = 10_000;
 pub(crate) const AFTER_FLASH_MSEC: u32 = 1500;
 
+/// Native e -> 0x5141f0 -> 0x5fbee0 expands a localized segment and its
+/// literal argument. A bare HUD text slot cannot supply the caller's name.
+pub(crate) fn called_message(name: &str) -> Vec<u8> {
+    let name: String = name
+        .chars()
+        .filter(|c| !c.is_control())
+        .map(|c| match c {
+            '"' => '\'',
+            '\\' => '/',
+            _ => c,
+        })
+        .take(64)
+        .collect();
+    let name = if name.is_empty() { "Player" } else { &name };
+    format!("e \"\u{14}MP_TACTICAL_NUKE_CALLED\u{15}\u{16}{name}\"").into_bytes()
+}
+
 #[derive(Clone, Copy)]
 struct Actor {
     count: u16,
@@ -373,6 +390,15 @@ impl Streaks {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn nuclear_called_text_has_a_literal_caller_argument_and_cannot_split_commands() {
+        let command = called_message("A\"B\\C\n\u{15}");
+        assert_eq!(command, b"e \"\x14MP_TACTICAL_NUKE_CALLED\x15\x16A'B/C\"");
+        assert_eq!(
+            called_message(""),
+            b"e \"\x14MP_TACTICAL_NUKE_CALLED\x15\x16Player\""
+        );
+    }
     #[test]
     fn seeded_and_stationary_resources_require_the_diagnostic_marker() {
         let directory = tempfile::tempdir().unwrap();

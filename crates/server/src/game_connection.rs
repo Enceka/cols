@@ -33,6 +33,8 @@ pub(crate) struct Connection {
     server_commands: ReliableCommands,
     game_state: Option<Arc<crate::game_state::PreparedGameState>>,
     player: Option<crate::game_player::Player>,
+    view_offset: [u16; 3],
+    spawn_view_anchor: Option<([u16; 3], u32)>,
     grenades: crate::game_grenade::Grenades,
     smoke: crate::game_smoke::Smoke,
     scavenger: crate::game_scavenger::Bags,
@@ -136,6 +138,7 @@ impl Connection {
                 .selected_backpack_class()
                 .map(|i| i % crate::game_class_selection::BACKPACKS_PER_CHARACTER),
             player: state.player(),
+            view_offset: state.spawn_angles(),
             motion: state.motion(),
             combat: state.combat(),
             bot: state.bot(),
@@ -702,6 +705,7 @@ impl Connection {
             enemy = None;
         }
         let mut snapshot_motion = self.snapshot_motion();
+        let mut view_offset = self.view_offset;
         let mut streaks = self.tdm.as_ref().map_or(Default::default(), |m| {
             if m.finished {
                 Default::default()
@@ -769,6 +773,7 @@ impl Connection {
         let live_players = match_players.clone();
         let top_players_scene = self.top_players.scene.is_some();
         if let Some(scene) = &self.top_players.scene {
+            view_offset = [0; 3];
             angles = scene.angles;
             command_time = server_time;
             let mut camera = scene.camera.clone();
@@ -812,6 +817,7 @@ impl Connection {
             }
             shellshock = playback.view.shellshock;
             angles = playback.view.angles;
+            view_offset = [0; 3];
             command_time = playback.view.motion.command_time;
             equipment = Some(playback.view.equipment);
             streaks = playback.view.streaks;
@@ -899,6 +905,7 @@ impl Connection {
             angles,
             equipment,
             crate::game_state::SnapshotWorld {
+                view_offset,
                 streaks,
                 reward_inventory,
                 nuke_hud: self.tdm.as_ref().and_then(|m| {
@@ -1035,7 +1042,13 @@ impl Connection {
             base.weapons = equipment.input_weapons();
         }
         // 0x5a18e0 copies pitch/yaw only; the default command's roll stays0.
-        base.angles = [angles[0], angles[1], 0];
+        // 0x5a192c..55 subtracts PS.delta_angles before forming the raw
+        // usercmd baseline. Movement and combat use corrected world angles.
+        base.angles = [
+            angles[0].wrapping_sub(view_offset[0]),
+            angles[1].wrapping_sub(view_offset[1]),
+            0,
+        ];
         // 0x5a18e0 sets BUTTON_ADS whenever the acknowledged PS fraction is
         // nonzero, including the exit transition after the physical release.
         if equipment
@@ -1116,7 +1129,21 @@ impl Connection {
         })
     }
     pub fn view_angles(&self) -> [u16; 3] {
-        self.last_input.as_ref().map_or([0; 3], |c| c.angles)
+        self.last_input
+            .as_ref()
+            .map_or(self.view_offset, |c| c.angles)
+    }
+    fn reset_spawn_view(&mut self, angles: [u16; 3]) {
+        let raw = self.last_input.as_ref().map_or([0; 3], |c| {
+            std::array::from_fn(|i| c.angles[i].wrapping_sub(self.view_offset[i]))
+        });
+        self.view_offset = std::array::from_fn(|i| angles[i].wrapping_sub(raw[i]));
+        // Native respawn resets prediction's input history. Rebase once more
+        // from its first command acknowledging the new life snapshot.
+        self.spawn_view_anchor = Some((angles, self.native_sent + 1));
+        if let Some(input) = &mut self.last_input {
+            input.angles = angles;
+        }
     }
     fn input_base_for(&self, ack: u32) -> Result<codol_protocol::game_usercmd::UserCommand> {
         self.snapshot_input_bases
@@ -1471,6 +1498,7 @@ impl Connection {
             .is_some_and(|death| now.wrapping_sub(death) >= 3000);
         if respawning {
             self.equip_spawn_loadout();
+            self.reset_spawn_view(self.game_state.as_ref().unwrap().spawn_angles());
         }
         let state = self.game_state.as_ref().unwrap();
         if respawning {
@@ -1813,6 +1841,8 @@ impl Connection {
             && !self.replay.pending()
         {
             self.equip_spawn_loadout();
+            let angles = self.tdm.as_ref().unwrap().player_spawn_angles();
+            self.reset_spawn_view(angles);
             let state = self.game_state.as_ref().unwrap();
             let origin = self
                 .tdm
@@ -1952,7 +1982,14 @@ impl Connection {
                     }
                 }
                 Event::Called { actor, time } => {
-                    self.nuke_banner = Some((time + 11500, resources.called_text));
+                    self.nuke_banner = None;
+                    let name = if actor == 0 {
+                        self.display_name.as_deref().unwrap_or("Player").to_owned()
+                    } else {
+                        codol_protocol::room_messages::bot_name(actor)
+                    };
+                    self.server_commands
+                        .push(&crate::game_killstreaks::called_message(&name))?;
                     self.server_commands
                         .push(format!("p {}", resources.music_sound).as_bytes())?;
                     let team = self.tdm.as_ref().unwrap().teams()[usize::from(actor)];
@@ -2028,6 +2065,10 @@ impl Connection {
             self.nuke_return_at = None;
             if let Some(player) = &mut self.player {
                 player.remove_nuke(resources.weapon);
+                // PS weapon correction does not reset CG's selected weapon;
+                // native command a -> 0x562260 returns its HUD/ammo selection.
+                self.server_commands
+                    .push(format!("a {}", player.equipment().weapon).as_bytes())?;
             }
         }
         Ok(())
@@ -2400,6 +2441,23 @@ impl Connection {
                 input.buttons = 0;
                 input.direction = 0;
             }
+            let raw_angles = input.angles;
+            if let Some((angles, sequence)) = self.spawn_view_anchor {
+                if input.time >= self.player_birth && self.native_ack >= sequence {
+                    self.view_offset =
+                        std::array::from_fn(|i| angles[i].wrapping_sub(raw_angles[i]));
+                    self.spawn_view_anchor = None;
+                } else {
+                    input.angles = angles;
+                }
+            }
+            input.angles = if input.time < self.player_birth {
+                self.view_angles()
+            } else if let Some((angles, _)) = self.spawn_view_anchor {
+                angles
+            } else {
+                std::array::from_fn(|i| input.angles[i].wrapping_add(self.view_offset[i]))
+            };
             if let Some(motion) = &mut self.motion
                 && let Some(collision) = self.game_state.as_ref().and_then(|s| s.collision.as_ref())
             {
@@ -2842,6 +2900,74 @@ fn decode_connect_name(name: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn spawn_view_resets_heading_without_accumulating_the_raw_input_offset() {
+        let mut c = super::Connection {
+            last_input: Some(codol_protocol::game_usercmd::UserCommand {
+                angles: [2000, 16000, 0],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        c.reset_spawn_view([0, 32768, 0]);
+        assert_eq!(c.view_angles(), [0, 32768, 0]);
+        assert_eq!(c.view_offset, [0u16.wrapping_sub(2000), 16768, 0]);
+        for desired in [[0, 49152, 0], [0, 5461, 0], [0, 32768, 0]] {
+            // Ordinary mouse movement remains an input change after a reset.
+            let raw = [2000u16, 17000, 0];
+            c.last_input.as_mut().unwrap().angles =
+                std::array::from_fn(|i| raw[i].wrapping_add(c.view_offset[i]));
+            c.reset_spawn_view(desired);
+            assert_eq!(c.view_angles(), desired);
+            assert_eq!(
+                std::array::from_fn::<_, 3, _>(|i| desired[i].wrapping_sub(c.view_offset[i])),
+                raw
+            );
+        }
+    }
+    #[test]
+    fn respawn_waits_for_new_life_ack_then_anchors_once_and_preserves_mouse_turns() {
+        let mut c = super::Connection {
+            player_birth: 2000,
+            native_sent: 9,
+            native_ack: 9,
+            ..Default::default()
+        };
+        c.reset_spawn_view([0, 32768, 0]);
+        c.pending_inputs.insert(
+            2050,
+            codol_protocol::game_usercmd::UserCommand {
+                time: 2050,
+                angles: [100, 5000, 0],
+                ..Default::default()
+            },
+        );
+        c.consume_inputs(2050);
+        assert!(c.spawn_view_anchor.is_some());
+        assert_eq!(c.view_angles(), [0, 32768, 0]);
+        c.native_ack = 10;
+        c.pending_inputs.insert(
+            2100,
+            codol_protocol::game_usercmd::UserCommand {
+                time: 2100,
+                angles: [200, 6000, 0],
+                ..Default::default()
+            },
+        );
+        c.consume_inputs(2100);
+        assert!(c.spawn_view_anchor.is_none());
+        assert_eq!(c.view_angles(), [0, 32768, 0]);
+        c.pending_inputs.insert(
+            2150,
+            codol_protocol::game_usercmd::UserCommand {
+                time: 2150,
+                angles: [250, 6500, 0],
+                ..Default::default()
+            },
+        );
+        c.consume_inputs(2150);
+        assert_eq!(c.view_angles(), [50, 33268, 0]);
+    }
     use super::*;
     #[test]
     fn glass_authority_survives_backpack_respawn_and_is_isolated_from_new_connections() {

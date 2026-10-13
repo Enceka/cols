@@ -10,6 +10,7 @@ mod loadout;
 
 #[derive(Default)]
 pub(crate) struct SnapshotWorld<'a> {
+    pub view_offset: [u16; 3],
     pub streaks: codol_protocol::game_killstreaks::StreakSnapshot,
     pub reward_inventory: Option<codol_protocol::game_snapshot::EquippedWeapon>,
     pub nuke_hud: Option<codol_protocol::game_hit_feedback::NukeHudSnapshot>,
@@ -214,6 +215,16 @@ impl PreparedGameState {
     }
     pub(crate) fn streak_previews(&self) -> crate::game_killstreaks::Previews {
         self.player_streak_previews
+    }
+    pub(crate) fn spawn_angles(&self) -> [u16; 3] {
+        self.match_config
+            .as_ref()
+            .and_then(|c| {
+                c.spawn_angles
+                    .as_ref()
+                    .map(|a| a[usize::from(c.teams[0] - 1)][0])
+            })
+            .unwrap_or([0; 3])
     }
     pub(crate) fn for_connection(&self) -> Self {
         let mut state = self.clone();
@@ -1818,6 +1829,7 @@ impl PreparedGameState {
             equipment,
             angles,
             codol_protocol::game_snapshot::WorldSnapshot {
+                view_offset: world.view_offset,
                 streaks: world.streaks,
                 reward_inventory: world.reward_inventory,
                 nuke_hud: world.nuke_hud,

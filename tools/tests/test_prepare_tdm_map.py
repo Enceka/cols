@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from prepare_tdm_map import team_spawns
+from prepare_tdm_map import team_spawns, team_spawn_angles
 from prepare_game_state import CLIENT_SHA256
 
 
@@ -54,6 +54,24 @@ class TdmMapPreparation(unittest.TestCase):
         teams=team_spawns(capture,"mp_crash_tropical")
         self.assertEqual([len(team) for team in teams],[6,6])
         self.assertTrue(all(p[2]==56 for team in teams for p in team))
+
+    def test_spawn_headings_keep_team_and_record_order_and_wrap_negative_angles(self):
+        capture = self.capture()
+        record = capture['maps'][0]
+        raw = base64.b64decode(record['entity_string_base64'])
+        raw = raw.replace(b'4000 0 56"}', b'4000 0 56" "angles" "0 180 0"}')
+        raw = raw.replace(b'4000 1 56"}', b'4000 1 56" "angle" "-90"}')
+        raw = raw.replace(b'3000 0 56"}', b'3000 0 56" "angles" "10 30 0"}')
+        record.update(byte_count=len(raw), entity_string_base64=base64.b64encode(raw).decode())
+        angles = team_spawn_angles(capture, 'mp_killhouse_sh')
+        self.assertEqual(angles[0][:3], [[0,32768,0], [0,49152,0], [0,0,0]])
+        self.assertEqual(angles[1][0], [1820,5461,0])
+        self.assertEqual([len(t) for t in angles], [len(t) for t in team_spawns(capture, 'mp_killhouse_sh')])
+        for value in [b'NaN 90 0', b'0 90', b'0 999999 0']:
+            bad = copy.deepcopy(capture)
+            source = raw.replace(b'0 180 0', value)
+            bad['maps'][0].update(byte_count=len(source), entity_string_base64=base64.b64encode(source).decode())
+            with self.assertRaises(ValueError): team_spawn_angles(bad, 'mp_killhouse_sh')
 
 
 if __name__ == "__main__":

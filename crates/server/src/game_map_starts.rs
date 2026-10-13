@@ -25,6 +25,25 @@ impl Selection {
             .iter()
             .all(|team| (minimum..=128).contains(&team.len()))
     }
+    fn headings(&self, headings: [Vec<[u16; 3]>; 2]) -> Result<[Vec<[u16; 3]>; 2]> {
+        ensure!(
+            headings.each_ref().map(|a| a.len()) == self.original_counts,
+            "spawn headings do not match captured coordinates"
+        );
+        Ok(std::array::from_fn(|team| {
+            headings[team]
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| {
+                    !self
+                        .rejected
+                        .iter()
+                        .any(|r| r.team == team + 1 && r.index == *index)
+                })
+                .map(|(_, angle)| *angle)
+                .collect()
+        }))
+    }
 }
 
 fn select(starts: [Vec<[f32; 3]>; 2], collision: &crate::game_motion::Collision) -> Selection {
@@ -123,6 +142,10 @@ pub fn prepare(source: &Path, output: &Path, report: &Path) -> Result<()> {
         );
     }
     json["match_config"]["spawns"] = serde_json::to_value(&selection.retained)?;
+    if !json["match_config"]["spawn_angles"].is_null() {
+        let headings = serde_json::from_value(json["match_config"]["spawn_angles"].clone())?;
+        json["match_config"]["spawn_angles"] = serde_json::to_value(selection.headings(headings)?)?;
+    }
     json["spawn_origin"] = serde_json::to_value(selection.retained[1][0])?;
     if json["training_enemy"].is_object() {
         json["training_enemy"]["origin"] = serde_json::to_value(selection.retained[0][0])?;
@@ -136,6 +159,33 @@ pub fn prepare(source: &Path, output: &Path, report: &Path) -> Result<()> {
     write_new(report, &evidence)?;
     checked.context("validate map after selecting captured starts")?;
     Ok(())
+}
+
+#[cfg(test)]
+mod heading_tests {
+    #[test]
+    fn rejected_starts_remove_their_own_headings_without_changing_team_order() {
+        let selection = super::Selection {
+            original_counts: [3, 2],
+            retained: Default::default(),
+            rejected: vec![super::Rejected {
+                team: 1,
+                index: 1,
+                origin: [0.0; 3],
+                error: "blocked".into(),
+            }],
+        };
+        assert_eq!(
+            selection
+                .headings([
+                    vec![[0, 10, 0], [0, 20, 0], [0, 30, 0]],
+                    vec![[0, 40, 0], [0, 50, 0]]
+                ])
+                .unwrap(),
+            [vec![[0, 10, 0], [0, 30, 0]], vec![[0, 40, 0], [0, 50, 0]]]
+        );
+        assert!(selection.headings([vec![[0; 3]], vec![[0; 3]; 2]]).is_err());
+    }
 }
 
 #[cfg(test)]

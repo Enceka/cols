@@ -54,6 +54,7 @@ partial class ClientAssets {
             frames.Add(Obj("time",r.Word(cg+0xae4c8),"pm_type",r.Word(cg+4),"health",r.Word(cg+0x190),
                 "progress",r.Word(cg+0x64),"ids",ids,"targets",targets,"action_types",types,"action_weapons",weapons,
                 "weapon",r.Word(cg+0x340),"weapon_state",r.Word(cg+0x27c),"weapon_animation",r.Word(cg+0x26c),
+                "selected_weapon",r.Word(cg+0xbd00c),"view_offset",Floats(r.Read(cg+0xa0,12),0,3),
                 "inventory",inventory,"replay_active",r.Word(cg+0xc6fe8),"actors",actors,
                 "hud_actor_valid",r.Word(cg+0x15dea8+r.Word(cg+0x3558)*0x3b8),
                 "action_opacity",r.Read(0x07837fd4,20),

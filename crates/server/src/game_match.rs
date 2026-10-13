@@ -19,6 +19,8 @@ pub(crate) struct MatchConfig {
     pub player_count: u8,
     /// Axis and allies starts from this map's captured entity string.
     pub spawns: [Vec<[f32; 3]>; 2],
+    #[serde(default)]
+    pub spawn_angles: Option<[Vec<[u16; 3]>; 2]>,
     pub score_limit: u32,
     pub time_limit_msec: u32,
     #[serde(default = "default_teams")]
@@ -68,6 +70,13 @@ impl BotLoadout {
 }
 impl MatchConfig {
     pub fn validate(&self, collision: &Collision) -> Result<()> {
+        ensure!(
+            self.spawn_angles.as_ref().is_none_or(|angles| angles
+                .iter()
+                .zip(&self.spawns)
+                .all(|(a, p)| a.len() == p.len())),
+            "TDM spawn headings must match every captured start"
+        );
         ensure!(
             matches!(self.player_count, 4 | 12)
                 && self.teams[..usize::from(self.player_count)]
@@ -292,6 +301,9 @@ impl TdmMatch {
             snapshot.client_index = client;
             snapshot.team = team;
             snapshot.origin = origin;
+            if let Some(angles) = &config.spawn_angles {
+                snapshot.angles = angles[usize::from(team - 1)][ordinal];
+            }
             snapshot.events = EventQueue::default();
             let mut controller = BotController::new(origin, snapshot.angles, speed)?;
             controller.set_match_engagement();
@@ -494,6 +506,14 @@ impl TdmMatch {
         let starts = &self.config.spawns[usize::from(self.config.teams[0] - 1)];
         let index = self.rows[0].deaths as usize % starts.len();
         crate::game_bot::grounded_spawn(starts[index], collision)
+    }
+    pub fn player_spawn_angles(&self) -> [u16; 3] {
+        let team = usize::from(self.config.teams[0] - 1);
+        let index = self.rows[0].deaths as usize % self.config.spawns[team].len();
+        self.config
+            .spawn_angles
+            .as_ref()
+            .map_or([0; 3], |angles| angles[team][index])
     }
     fn actors(&self, local: EnemySnapshot, local_height: f32) -> Vec<Actor> {
         std::iter::once(local)
@@ -992,9 +1012,22 @@ impl TdmMatch {
                 let team = usize::from(self.bots[i].snapshot.team - 1);
                 let starts = &self.config.spawns[team];
                 let index = (i + self.rows[i + 1].deaths as usize) % starts.len();
-                let origin = crate::game_bot::grounded_spawn(starts[index], collision)?;
+                let origin = if self.acceptance_stationary {
+                    self.baselines[i].origin
+                } else {
+                    crate::game_bot::grounded_spawn(starts[index], collision)?
+                };
                 let bot = &mut self.bots[i];
-                bot.controller.respawn(now, origin, bot.snapshot.angles)?;
+                let angles = if self.acceptance_stationary {
+                    self.baselines[i].angles
+                } else {
+                    self.config
+                        .spawn_angles
+                        .as_ref()
+                        .map_or(bot.snapshot.angles, |angles| angles[team][index])
+                };
+                bot.controller.respawn(now, origin, angles)?;
+                bot.snapshot.angles = angles;
                 bot.snapshot.origin = origin;
                 bot.snapshot.alive = true;
                 bot.snapshot.events = EventQueue::default();
@@ -1650,6 +1683,7 @@ mod tests {
     }
     fn config() -> MatchConfig {
         MatchConfig {
+            spawn_angles: None,
             player_count: 12,
             spawns: [
                 (0..6).map(|i| [300.0, i as f32 * 100.0, 0.0]).collect(),
@@ -1661,6 +1695,32 @@ mod tests {
             roster: Vec::new(),
             models: Vec::new(),
         }
+    }
+    #[test]
+    fn map_headings_follow_team_and_death_selected_spawn_for_players_and_bots() {
+        let c = world();
+        let mut config = config();
+        let angles: [Vec<_>; 2] = std::array::from_fn(|team| {
+            (0..6)
+                .map(|index| [0, (team * 20000 + index * 1000) as u16, 0])
+                .collect()
+        });
+        config.spawn_angles = Some(angles.clone());
+        let mut game = TdmMatch::new(config.clone(), template(), 190.0, &c).unwrap();
+        assert_eq!(game.player_spawn_angles(), angles[1][0]);
+        game.rows[0].deaths = 2;
+        assert_eq!(game.player_spawn_angles(), angles[1][2]);
+        let mut ordinal = [0, 1];
+        for bot in &game.bots {
+            let team = usize::from(bot.snapshot.team - 1);
+            assert_eq!(bot.snapshot.angles, angles[team][ordinal[team]]);
+            ordinal[team] += 1;
+        }
+        config.teams = config.teams.map(|t| 3 - t);
+        let game = TdmMatch::new(config.clone(), template(), 190.0, &c).unwrap();
+        assert_eq!(game.player_spawn_angles(), angles[0][0]);
+        config.spawn_angles.as_mut().unwrap()[0].pop();
+        assert!(config.validate(&c).is_err());
     }
     #[test]
     fn stationary_acceptance_keeps_six_enemies_still_and_respawns_real_deaths() {
@@ -1711,6 +1771,7 @@ mod tests {
             .unwrap();
         assert!(game.bots[enemy].snapshot.alive);
         assert_eq!(game.bots[enemy].health, 100);
+        assert_eq!(game.bots[enemy].snapshot.origin, before[enemy].origin);
         assert_eq!(game.scoreboard(1).rows[0].kills, 1);
     }
     #[test]
