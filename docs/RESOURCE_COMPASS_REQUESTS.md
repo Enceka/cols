@@ -1,5 +1,7 @@
 # 原生小地图资源请求
 
+2026-10-13高楼／潜艇基地的底图投影比例缺项已修复并原生核对，见[小地图投影](MINIMAP_PROJECTION_PROGRESS.md)。真实材质加载与投影正确性分别验收，不能仅凭1024尺寸判定底图比例正确。
+
 高楼和潜艇基地的原始初始化采集仅看到4×4默认小地图材质，资源列表却有本图贴图路径。`--resource-compass-probe`让客户端通过正常gamestate的CS2037／2038请求本图候选材质，随后只读采集真实材质及贴图；不调用客户端函数、不改内存、不生成或替换客户端资源。
 
 该选项必须与`--resource-capture-map`使用。当前接受`mp_highrise`、`mp_subbase_sh`、`mp_dr_box`、`mp_dr_cistern`和`za_coliseum`；候选JSON核对固定客户端SHA、地图、CRC、实体捕获SHA格式、本图`compass_map_<map>`名称和有效投影角点。角点由本图捕获实体的`northyaw`及两个`minimap_corner`计算。服务器还核对初始化元数据的地图／CRC，并拒绝带出生位置、武器、碰撞、Bot或其它玩法世界的准备文件。该路径无玩法快照，`resource-capture.json`明确记录`compass_candidate_requested`；候选不包含材质证明，不能作为正式游戏准备。

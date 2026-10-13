@@ -81,7 +81,7 @@ def minimap(capture, map_name, material_capture=None, material_capture_sha256=No
     return result
 
 
-def minimap_geometry(capture,map_name):
+def minimap_geometry(capture,map_name,required_aspect_ratio=1.0):
     entities = map_entities(capture, map_name)
     worlds = [e for e in entities if e.get(b"classname") == b"worldspawn"]
     corners = [e for e in entities if e.get(b"targetname") == b"minimap_corner"]
@@ -103,6 +103,21 @@ def minimap_geometry(capture,map_name):
     high = [max(p[i] for p in projected) for i in range(2)]
     if any(high[i] - low[i] <= 1 for i in range(2)):
         raise ValueError("degenerate minimap bounds")
+    if (not math.isfinite(required_aspect_ratio)
+            or not 0 <= required_aspect_ratio <= 16):
+        raise ValueError("invalid required minimap aspect ratio")
+    # The two entities mark opposite playable corners, not the complete image
+    # rectangle. Preserve their centre and expand the shorter projected axis
+    # to the map image aspect. The standard MP setup uses1;0 permits the
+    # explicitly unrestricted case. Shrinking would remove captured terrain.
+    if required_aspect_ratio > 0:
+        north_span, west_span = (high[i] - low[i] for i in range(2))
+        if west_span / north_span < required_aspect_ratio:
+            axis, span = 1, north_span * required_aspect_ratio
+        else:
+            axis, span = 0, west_span / required_aspect_ratio
+        centre = (high[axis] + low[axis]) * 0.5
+        low[axis], high[axis] = centre - span * 0.5, centre + span * 0.5
     point = lambda p: [round(p[0] * north[i] + p[1] * west[i], 5) for i in range(2)]
     return dict(north_yaw=yaw,upper_left=point(high),lower_right=point(low))
 
