@@ -193,7 +193,7 @@ partial class ClientAssets {
             try{schemas[name]=reader.Schema(name);}catch(Exception e){schemas[name]=Obj("error",e.Message);}
         }
         foreach(string name in new string[]{"mp/coGameTypesTable.csv","mp/coMapList.csv","mp/coMarketplaceItems.csv","mp/coCharacterDefTable.csv","mp/cogroupdefs.csv","mp/coWeapSlotDefs.csv","mp/coCharItemStatsTable.csv","mp/coCharItems/cha.csv","mp/coKnifeStatsTable.csv","mp/uiNotifications.csv","mp/functionalUnlockTable.csv","mp/unlockFlags.csv","mp/rankTable.csv",
-            "mp/coPerkStatsTable.csv","mp/coAbilityModifiersTable.csv",
+            "mp/coPerkStatsTable.csv","mp/coAbilityModifiersTable.csv","mp/coKillstreakStatsTable.csv",
             "mp/coWeapItems/ast.csv","mp/coWeapItems/pst.csv","mp/coWeapItems/cam.csv","mp/coWeapItems/oth.csv","mp/coWeapItems/ret.csv","mp/coItemDependency.csv",
             "mp/coWeaponPrimaryRankTable.csv","mp/coWeaponSecondaryRankTable.csv",
             "mp/callsignTitle.csv","mp/callsignIcon.csv","mp/callsignBackground.csv","mp/callsignNameplate.csv"}) {
@@ -216,7 +216,7 @@ partial class ClientAssets {
                 if(kind==25||kind==26) {
                     if(menus.Count>=4096)throw new Exception("HUD menu budget");
                     string name=r.Name(r.Word(header));
-                    bool selected=kind==26&&(name=="perk_sidebar_hud"||name=="perk_gained"||name=="hud_fullscreen"||name=="loadsprite"||name=="splash"||name=="extra_info"||name=="announcer_line"||name=="weaponbar_hd"||name=="weaponbar_hd_extend"||name=="kd_rate_bar"||name=="combat_performance"||name=="scorebar_hd"||name=="exp_bar");
+                    bool selected=kind==26&&(name=="perk_sidebar_hud"||name=="perk_gained"||name=="hud_fullscreen"||name=="loadsprite"||name=="splash"||name=="extra_info"||name=="announcer_line"||name=="weaponbar_hd"||name=="weaponbar_hd_extend"||name=="kd_rate_bar"||name=="combat_performance"||name=="scorebar_hd"||name=="exp_bar"||name=="killstreaks_hd2"||name=="killstreak"||name=="killstreak_pickup"||name=="killstreak_hint");
                     menus.Add(Obj("type",kind,"name",name,"header_base64",Convert.ToBase64String(r.Read(header,64)),
                         "full_header_base64",selected?Convert.ToBase64String(r.Read(header,0x194)):null,
                         "visible_expression",selected?r.HudExpression(r.Word(header+0xe8)):null,

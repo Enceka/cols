@@ -22,3 +22,5 @@
 `death-waypoint-hud-3.3.3.3.json`固定本版HUD两组读取位置、waypoint绘制器、坐标codec/零中心、旗标与材质采集身份。发送顺序为archival后current；死亡标识属于current，命中反馈属于archival。
 
 `voice-3.3.3.3.json`记录本版声音选择器、播放／停止、角色前缀消费者及阿富汗CRC核对的资源例子。完整声音目录由`tools/prepare_voice.py`按各图采集生成，不能把例子编号或参考脚本时机当作已通过实机听感验收。
+
+`killstreaks-3.3.3.3.json`由`tools/prepare_killstreaks.py`核对本版原程序、只读资源表／schema及原生HUD采集生成，仅含必要奖励身份、成本和资源标识、60项背包四槽偏移、PS字段／消费者摘要及来源哈希。完整29×33资源表与HUD表达式保留在忽略目录；44个商城条目中23项精确匹配，21项Pro未匹配，没有升级版别名映射。`evidence_only=true`／`gameplay_verified=false`明确不代表发奖、调用或效果验收；接入方案见`docs/KILLSTREAK_PREPARATION.md`。

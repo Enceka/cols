@@ -1,0 +1,1174 @@
+{
+  "schema_version": 1,
+  "client_sha256": "e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b",
+  "evidence_only": true,
+  "gameplay_verified": false,
+  "capture_sha256": "5079edf0cd80467a65b7c4143e5cbcea9d5b168fc4b253c280055842fef5dea6",
+  "profile_version": 233,
+  "class_offsets": [
+    [
+      4402,
+      4406,
+      4410,
+      4414
+    ],
+    [
+      4516,
+      4520,
+      4524,
+      4528
+    ],
+    [
+      4630,
+      4634,
+      4638,
+      4642
+    ],
+    [
+      4744,
+      4748,
+      4752,
+      4756
+    ],
+    [
+      4858,
+      4862,
+      4866,
+      4870
+    ],
+    [
+      4972,
+      4976,
+      4980,
+      4984
+    ],
+    [
+      5086,
+      5090,
+      5094,
+      5098
+    ],
+    [
+      5200,
+      5204,
+      5208,
+      5212
+    ],
+    [
+      5314,
+      5318,
+      5322,
+      5326
+    ],
+    [
+      5428,
+      5432,
+      5436,
+      5440
+    ],
+    [
+      5542,
+      5546,
+      5550,
+      5554
+    ],
+    [
+      5656,
+      5660,
+      5664,
+      5668
+    ],
+    [
+      5770,
+      5774,
+      5778,
+      5782
+    ],
+    [
+      5884,
+      5888,
+      5892,
+      5896
+    ],
+    [
+      5998,
+      6002,
+      6006,
+      6010
+    ],
+    [
+      6112,
+      6116,
+      6120,
+      6124
+    ],
+    [
+      6226,
+      6230,
+      6234,
+      6238
+    ],
+    [
+      6340,
+      6344,
+      6348,
+      6352
+    ],
+    [
+      6454,
+      6458,
+      6462,
+      6466
+    ],
+    [
+      6568,
+      6572,
+      6576,
+      6580
+    ],
+    [
+      6682,
+      6686,
+      6690,
+      6694
+    ],
+    [
+      6796,
+      6800,
+      6804,
+      6808
+    ],
+    [
+      6910,
+      6914,
+      6918,
+      6922
+    ],
+    [
+      7024,
+      7028,
+      7032,
+      7036
+    ],
+    [
+      7138,
+      7142,
+      7146,
+      7150
+    ],
+    [
+      7252,
+      7256,
+      7260,
+      7264
+    ],
+    [
+      7366,
+      7370,
+      7374,
+      7378
+    ],
+    [
+      7480,
+      7484,
+      7488,
+      7492
+    ],
+    [
+      7594,
+      7598,
+      7602,
+      7606
+    ],
+    [
+      7708,
+      7712,
+      7716,
+      7720
+    ],
+    [
+      7822,
+      7826,
+      7830,
+      7834
+    ],
+    [
+      7936,
+      7940,
+      7944,
+      7948
+    ],
+    [
+      8050,
+      8054,
+      8058,
+      8062
+    ],
+    [
+      8164,
+      8168,
+      8172,
+      8176
+    ],
+    [
+      8278,
+      8282,
+      8286,
+      8290
+    ],
+    [
+      8392,
+      8396,
+      8400,
+      8404
+    ],
+    [
+      9888,
+      9892,
+      9896,
+      9900
+    ],
+    [
+      10023,
+      10027,
+      10031,
+      10035
+    ],
+    [
+      10158,
+      10162,
+      10166,
+      10170
+    ],
+    [
+      10293,
+      10297,
+      10301,
+      10305
+    ],
+    [
+      10428,
+      10432,
+      10436,
+      10440
+    ],
+    [
+      10563,
+      10567,
+      10571,
+      10575
+    ],
+    [
+      10698,
+      10702,
+      10706,
+      10710
+    ],
+    [
+      10833,
+      10837,
+      10841,
+      10845
+    ],
+    [
+      10968,
+      10972,
+      10976,
+      10980
+    ],
+    [
+      11103,
+      11107,
+      11111,
+      11115
+    ],
+    [
+      11238,
+      11242,
+      11246,
+      11250
+    ],
+    [
+      11373,
+      11377,
+      11381,
+      11385
+    ],
+    [
+      11508,
+      11512,
+      11516,
+      11520
+    ],
+    [
+      11643,
+      11647,
+      11651,
+      11655
+    ],
+    [
+      11778,
+      11782,
+      11786,
+      11790
+    ],
+    [
+      11913,
+      11917,
+      11921,
+      11925
+    ],
+    [
+      12048,
+      12052,
+      12056,
+      12060
+    ],
+    [
+      12183,
+      12187,
+      12191,
+      12195
+    ],
+    [
+      12318,
+      12322,
+      12326,
+      12330
+    ],
+    [
+      12453,
+      12457,
+      12461,
+      12465
+    ],
+    [
+      12588,
+      12592,
+      12596,
+      12600
+    ],
+    [
+      12723,
+      12727,
+      12731,
+      12735
+    ],
+    [
+      12858,
+      12862,
+      12866,
+      12870
+    ],
+    [
+      12993,
+      12997,
+      13001,
+      13005
+    ]
+  ],
+  "rewards": [
+    {
+      "physical_row": 0,
+      "native_id": 0,
+      "name": "none",
+      "cost_c4": null,
+      "column5_raw": null,
+      "weapon_token_c13": "",
+      "hud_icon_c15": "specialty_ks_null",
+      "hint_icon_c17": "specialty_null"
+    },
+    {
+      "physical_row": 1,
+      "native_id": 1,
+      "name": "uav",
+      "cost_c4": 3,
+      "column5_raw": null,
+      "weapon_token_c13": "killstreak_uav_mp",
+      "hud_icon_c15": "specialty_uav",
+      "hint_icon_c17": "dpad_killstreak_uav"
+    },
+    {
+      "physical_row": 2,
+      "native_id": 2,
+      "name": "airdrop",
+      "cost_c4": 5,
+      "column5_raw": "7",
+      "weapon_token_c13": "airdrop_marker_mp",
+      "hud_icon_c15": "specialty_carepackage",
+      "hint_icon_c17": "dpad_killstreak_carepackage"
+    },
+    {
+      "physical_row": 3,
+      "native_id": 3,
+      "name": "counter_uav",
+      "cost_c4": 4,
+      "column5_raw": null,
+      "weapon_token_c13": "killstreak_counter_uav_mp",
+      "hud_icon_c15": "specialty_counter_uav",
+      "hint_icon_c17": "dpad_killstreak_counter_uav"
+    },
+    {
+      "physical_row": 4,
+      "native_id": 4,
+      "name": "airdrop_sentry_minigun",
+      "cost_c4": 5,
+      "column5_raw": null,
+      "weapon_token_c13": "airdrop_sentry_marker_mp",
+      "hud_icon_c15": "specialty_airdrop_sentry_minigun",
+      "hint_icon_c17": "dpad_killstreak_sentry_gun"
+    },
+    {
+      "physical_row": 5,
+      "native_id": 5,
+      "name": "predator_missile",
+      "cost_c4": 5,
+      "column5_raw": "7",
+      "weapon_token_c13": "killstreak_predator_missile_mp",
+      "hud_icon_c15": "specialty_predator_missile",
+      "hint_icon_c17": "dpad_killstreak_hellfire_missile"
+    },
+    {
+      "physical_row": 6,
+      "native_id": 6,
+      "name": "precision_airstrike",
+      "cost_c4": 6,
+      "column5_raw": "8",
+      "weapon_token_c13": "killstreak_precision_airstrike_mp",
+      "hud_icon_c15": "specialty_precision_airstrike",
+      "hint_icon_c17": "dpad_killstreak_precision_airstrike"
+    },
+    {
+      "physical_row": 7,
+      "native_id": 7,
+      "name": "harrier_airstrike",
+      "cost_c4": 7,
+      "column5_raw": null,
+      "weapon_token_c13": "killstreak_harrier_airstrike_mp",
+      "hud_icon_c15": "specialty_harrier_strike",
+      "hint_icon_c17": "dpad_killstreak_harrier"
+    },
+    {
+      "physical_row": 8,
+      "native_id": 8,
+      "name": "helicopter",
+      "cost_c4": 7,
+      "column5_raw": "10",
+      "weapon_token_c13": "killstreak_helicopter_mp",
+      "hud_icon_c15": "specialty_helicopter_support",
+      "hint_icon_c17": "dpad_killstreak_helicopter_support"
+    },
+    {
+      "physical_row": 9,
+      "native_id": 9,
+      "name": "airdrop_mega",
+      "cost_c4": 8,
+      "column5_raw": null,
+      "weapon_token_c13": "airdrop_mega_marker_mp",
+      "hud_icon_c15": "specialty_airdrop_emergency",
+      "hint_icon_c17": "dpad_killstreak_emergency_airdrop"
+    },
+    {
+      "physical_row": 10,
+      "native_id": 10,
+      "name": "helicopter_flares",
+      "cost_c4": 9,
+      "column5_raw": "13",
+      "weapon_token_c13": "killstreak_helicopter_flares_mp",
+      "hud_icon_c15": "specialty_helicopter_flares",
+      "hint_icon_c17": "dpad_killstreak_helicopter_flares"
+    },
+    {
+      "physical_row": 11,
+      "native_id": 11,
+      "name": "stealth_airstrike",
+      "cost_c4": 9,
+      "column5_raw": null,
+      "weapon_token_c13": "killstreak_stealth_airstrike_mp",
+      "hud_icon_c15": "specialty_stealth_bomber",
+      "hint_icon_c17": "dpad_killstreak_stealth_bomber"
+    },
+    {
+      "physical_row": 12,
+      "native_id": 12,
+      "name": "helicopter_minigun",
+      "cost_c4": 11,
+      "column5_raw": "16",
+      "weapon_token_c13": "killstreak_helicopter_minigun_mp",
+      "hud_icon_c15": "specialty_cobra_gunner",
+      "hint_icon_c17": "dpad_killstreak_cobra_gunner"
+    },
+    {
+      "physical_row": 13,
+      "native_id": 13,
+      "name": "ac130",
+      "cost_c4": 12,
+      "column5_raw": "18",
+      "weapon_token_c13": "killstreak_ac130_mp",
+      "hud_icon_c15": "specialty_ac130",
+      "hint_icon_c17": "dpad_killstreak_ac130"
+    },
+    {
+      "physical_row": 14,
+      "native_id": 14,
+      "name": "emp",
+      "cost_c4": 15,
+      "column5_raw": null,
+      "weapon_token_c13": "killstreak_emp_mp",
+      "hud_icon_c15": "specialty_emp",
+      "hint_icon_c17": "dpad_killstreak_emp"
+    },
+    {
+      "physical_row": 15,
+      "native_id": 15,
+      "name": "nuke",
+      "cost_c4": 25,
+      "column5_raw": null,
+      "weapon_token_c13": "killstreak_nuke_mp",
+      "hud_icon_c15": "specialty_nuke",
+      "hint_icon_c17": "dpad_killstreak_nuke"
+    },
+    {
+      "physical_row": 16,
+      "native_id": 16,
+      "name": "sentry",
+      "cost_c4": 5,
+      "column5_raw": "7",
+      "weapon_token_c13": "killstreak_sentry_mp",
+      "hud_icon_c15": "specialty_airdrop_sentry_minigun",
+      "hint_icon_c17": "dpad_killstreak_sentry_gun"
+    },
+    {
+      "physical_row": 17,
+      "native_id": 17,
+      "name": "mortar_mp",
+      "cost_c4": 6,
+      "column5_raw": null,
+      "weapon_token_c13": "mortar_mp",
+      "hud_icon_c15": "hud_mortarshell",
+      "hint_icon_c17": "dpad_mortar_shell"
+    },
+    {
+      "physical_row": 18,
+      "native_id": 18,
+      "name": "rcbomb_mp",
+      "cost_c4": 25,
+      "column5_raw": null,
+      "weapon_token_c13": "rcbomb_mp",
+      "hud_icon_c15": "hud_icon_rcbomb_32x32",
+      "hint_icon_c17": "dpad_rcbomb"
+    },
+    {
+      "physical_row": 19,
+      "native_id": 19,
+      "name": "sr71_mp",
+      "cost_c4": 8,
+      "column5_raw": null,
+      "weapon_token_c13": "radardirection_mp",
+      "hud_icon_c15": "hud_icon_spy_sat",
+      "hint_icon_c17": "dpad_spy_sat"
+    },
+    {
+      "physical_row": 20,
+      "native_id": 20,
+      "name": "dogs_mp",
+      "cost_c4": 10,
+      "column5_raw": null,
+      "weapon_token_c13": "dogs_mp",
+      "hud_icon_c15": "hud_icon_dogs",
+      "hint_icon_c17": "dpad_dogs"
+    },
+    {
+      "physical_row": 21,
+      "native_id": 21,
+      "name": "sam_turret",
+      "cost_c4": 4,
+      "column5_raw": null,
+      "weapon_token_c13": "auto_tow_mp",
+      "hud_icon_c15": "hud_ks_sam_turret",
+      "hint_icon_c17": "dpad_sam_turret"
+    },
+    {
+      "physical_row": 22,
+      "native_id": 22,
+      "name": "airdrop_sam_turret",
+      "cost_c4": 4,
+      "column5_raw": null,
+      "weapon_token_c13": "airdrop_sam_marker_mp",
+      "hud_icon_c15": "hud_ks_sam_turret",
+      "hint_icon_c17": "dpad_sam_turret"
+    },
+    {
+      "physical_row": 23,
+      "native_id": 23,
+      "name": "juggernaut",
+      "cost_c4": 11,
+      "column5_raw": null,
+      "weapon_token_c13": "killstreak_juggernaut_mp",
+      "hud_icon_c15": "specialty_juggernaut",
+      "hint_icon_c17": "dpad_killstreak_airdrop_juggernaut"
+    },
+    {
+      "physical_row": 24,
+      "native_id": 24,
+      "name": "juggernaut_kingpin",
+      "cost_c4": 11,
+      "column5_raw": null,
+      "weapon_token_c13": "killstreak_juggernaut_kingpin_mp",
+      "hud_icon_c15": "specialty_juggernaut_kingpin",
+      "hint_icon_c17": "dpad_killstreak_airdrop_juggernaut"
+    },
+    {
+      "physical_row": 25,
+      "native_id": 25,
+      "name": "locker",
+      "cost_c4": 0,
+      "column5_raw": null,
+      "weapon_token_c13": "killstreak_locker_mp",
+      "hud_icon_c15": "hud_ks_locker",
+      "hint_icon_c17": "dpad_killstreak_locker"
+    },
+    {
+      "physical_row": 26,
+      "native_id": 26,
+      "name": "missile_drone",
+      "cost_c4": 4,
+      "column5_raw": null,
+      "weapon_token_c13": "killstreak_missile_drone",
+      "hud_icon_c15": "specialty_missile_drone",
+      "hint_icon_c17": "specialty_missile_drone"
+    },
+    {
+      "physical_row": 27,
+      "native_id": 27,
+      "name": "consumable",
+      "cost_c4": 0,
+      "column5_raw": null,
+      "weapon_token_c13": "killstreak_consumable_mp",
+      "hud_icon_c15": "specialty_uav",
+      "hint_icon_c17": "dpad_killstreak_uav"
+    },
+    {
+      "physical_row": 28,
+      "native_id": 50,
+      "name": "super_katana",
+      "cost_c4": 0,
+      "column5_raw": null,
+      "weapon_token_c13": "super_katana_mp",
+      "hud_icon_c15": "specialty_super_katana",
+      "hint_icon_c17": "specialty_super_katana"
+    }
+  ],
+  "marketplace": [
+    {
+      "item_id": 60076,
+      "name": "uav",
+      "native_id": 1
+    },
+    {
+      "item_id": 60077,
+      "name": "airdrop",
+      "native_id": 2
+    },
+    {
+      "item_id": 60078,
+      "name": "counter_uav",
+      "native_id": 3
+    },
+    {
+      "item_id": 60079,
+      "name": "airdrop_sentry_minigun",
+      "native_id": 4
+    },
+    {
+      "item_id": 60080,
+      "name": "predator_missile",
+      "native_id": 5
+    },
+    {
+      "item_id": 60081,
+      "name": "precision_airstrike",
+      "native_id": 6
+    },
+    {
+      "item_id": 60082,
+      "name": "harrier_airstrike",
+      "native_id": 7
+    },
+    {
+      "item_id": 60083,
+      "name": "helicopter",
+      "native_id": 8
+    },
+    {
+      "item_id": 60084,
+      "name": "airdrop_mega",
+      "native_id": 9
+    },
+    {
+      "item_id": 60085,
+      "name": "helicopter_flares",
+      "native_id": 10
+    },
+    {
+      "item_id": 60086,
+      "name": "stealth_airstrike",
+      "native_id": 11
+    },
+    {
+      "item_id": 60087,
+      "name": "helicopter_minigun",
+      "native_id": 12
+    },
+    {
+      "item_id": 60088,
+      "name": "ac130",
+      "native_id": 13
+    },
+    {
+      "item_id": 60089,
+      "name": "emp",
+      "native_id": 14
+    },
+    {
+      "item_id": 60090,
+      "name": "sentry",
+      "native_id": 16
+    },
+    {
+      "item_id": 60091,
+      "name": "mortar_mp",
+      "native_id": 17
+    },
+    {
+      "item_id": 60092,
+      "name": "rcbomb_mp",
+      "native_id": 18
+    },
+    {
+      "item_id": 60093,
+      "name": "sr71_mp",
+      "native_id": 19
+    },
+    {
+      "item_id": 60094,
+      "name": "dogs_mp",
+      "native_id": 20
+    },
+    {
+      "item_id": 60095,
+      "name": "airdrop_sam_turret",
+      "native_id": 22
+    },
+    {
+      "item_id": 60096,
+      "name": "sam_turret",
+      "native_id": 21
+    },
+    {
+      "item_id": 60097,
+      "name": "uav_pro",
+      "native_id": null
+    },
+    {
+      "item_id": 60098,
+      "name": "counter_uav_pro",
+      "native_id": null
+    },
+    {
+      "item_id": 60099,
+      "name": "rcbomb_pro_mp",
+      "native_id": null
+    },
+    {
+      "item_id": 60100,
+      "name": "airdrop_pro",
+      "native_id": null
+    },
+    {
+      "item_id": 60101,
+      "name": "airdrop_mega_pro",
+      "native_id": null
+    },
+    {
+      "item_id": 60102,
+      "name": "airdrop_sam_turret_pro",
+      "native_id": null
+    },
+    {
+      "item_id": 60103,
+      "name": "airdrop_sentry_minigun_pro",
+      "native_id": null
+    },
+    {
+      "item_id": 60104,
+      "name": "sam_turret_pro",
+      "native_id": null
+    },
+    {
+      "item_id": 60105,
+      "name": "sentry_pro",
+      "native_id": null
+    },
+    {
+      "item_id": 60106,
+      "name": "mortar_pro_mp",
+      "native_id": null
+    },
+    {
+      "item_id": 60107,
+      "name": "precision_airstrike_pro",
+      "native_id": null
+    },
+    {
+      "item_id": 60108,
+      "name": "predator_missile_pro",
+      "native_id": null
+    },
+    {
+      "item_id": 60109,
+      "name": "helicopter_pro",
+      "native_id": null
+    },
+    {
+      "item_id": 60110,
+      "name": "harrier_airstrike_pro",
+      "native_id": null
+    },
+    {
+      "item_id": 60111,
+      "name": "sr71_pro_mp",
+      "native_id": null
+    },
+    {
+      "item_id": 60112,
+      "name": "helicopter_flares_pro",
+      "native_id": null
+    },
+    {
+      "item_id": 60113,
+      "name": "stealth_airstrike_pro",
+      "native_id": null
+    },
+    {
+      "item_id": 60114,
+      "name": "helicopter_minigun_pro",
+      "native_id": null
+    },
+    {
+      "item_id": 60115,
+      "name": "dogs_pro_mp",
+      "native_id": null
+    },
+    {
+      "item_id": 60116,
+      "name": "ac130_pro",
+      "native_id": null
+    },
+    {
+      "item_id": 60117,
+      "name": "emp_pro",
+      "native_id": null
+    },
+    {
+      "item_id": 60131,
+      "name": "juggernaut",
+      "native_id": 23
+    },
+    {
+      "item_id": 60138,
+      "name": "missile_drone",
+      "native_id": 26
+    }
+  ],
+  "unmatched_marketplace": [
+    "uav_pro",
+    "counter_uav_pro",
+    "rcbomb_pro_mp",
+    "airdrop_pro",
+    "airdrop_mega_pro",
+    "airdrop_sam_turret_pro",
+    "airdrop_sentry_minigun_pro",
+    "sam_turret_pro",
+    "sentry_pro",
+    "mortar_pro_mp",
+    "precision_airstrike_pro",
+    "predator_missile_pro",
+    "helicopter_pro",
+    "harrier_airstrike_pro",
+    "sr71_pro_mp",
+    "helicopter_flares_pro",
+    "stealth_airstrike_pro",
+    "helicopter_minigun_pro",
+    "dogs_pro_mp",
+    "ac130_pro",
+    "emp_pro"
+  ],
+  "rewards_without_marketplace": [
+    "nuke",
+    "juggernaut_kingpin",
+    "locker",
+    "consumable",
+    "super_katana"
+  ],
+  "native": {
+    "address_kind": "preferred-image VA; playerState-relative offsets",
+    "field_fixture_sha256": "8559e5090528b0aa241465ba5e2275f7f80726f517df5739f12b4f292c60c1c0",
+    "field_table_sha256": "56b46d3430513982131602b42ce6a8f9c376320b2de8e383627676c88d9c2495",
+    "consumers": [
+      {
+        "name": "count_getter",
+        "va": 5347360,
+        "bytes": 55,
+        "sha256": "75437095c457df60cb10933a0b49796230529dfc0f47073eb914ca036449a938"
+      },
+      {
+        "name": "next_target_getter",
+        "va": 5347424,
+        "bytes": 222,
+        "sha256": "b6b3851a8d8dbbe9e427cf84a9b2a5d788ebf1fab5e9570d53cb5f7b0538008d"
+      },
+      {
+        "name": "id_getter",
+        "va": 5347648,
+        "bytes": 56,
+        "sha256": "cccb67b2b6cb1bc64442cffe554766f7093491f2f8f501821a0239678887f556"
+      },
+      {
+        "name": "target_getter",
+        "va": 5347712,
+        "bytes": 56,
+        "sha256": "c6d74ebd61b7be00912b7b9fe5f45f68a4cef5589916b0cf822d18d8c04975d0"
+      },
+      {
+        "name": "action_state_getter",
+        "va": 4401104,
+        "bytes": 88,
+        "sha256": "6165b3099b7ab84a784d83c11d9ea211211c0307081b0a7213de1455fdd730e1"
+      },
+      {
+        "name": "action_dispatch",
+        "va": 5625104,
+        "bytes": 269,
+        "sha256": "831ba533dd562eb096510a98b2e6b18ee43a356cd40a2b5b03bc314d31d1eab9"
+      },
+      {
+        "name": "profile_item_decode",
+        "va": 5845056,
+        "bytes": 309,
+        "sha256": "61dd1940a81a890d8f8e03eba1496aba61d3a627a790d3ade643084fce48587f"
+      },
+      {
+        "name": "cost_c4_lookup",
+        "va": 7082608,
+        "bytes": 104,
+        "sha256": "9191b8618010fcf45193a4ea6072580abaf33340e1aeaed775ee29fc9abb5fd3"
+      }
+    ],
+    "count": {
+      "offset": 100,
+      "field": 88,
+      "bits": 8,
+      "hint": 0
+    },
+    "ids": [
+      {
+        "offset": 104,
+        "field": 126,
+        "bits": 8,
+        "hint": 0
+      },
+      {
+        "offset": 108,
+        "field": 127,
+        "bits": 8,
+        "hint": 0
+      },
+      {
+        "offset": 112,
+        "field": 128,
+        "bits": 8,
+        "hint": 0
+      },
+      {
+        "offset": 116,
+        "field": 129,
+        "bits": 8,
+        "hint": 0
+      },
+      {
+        "offset": 120,
+        "field": 130,
+        "bits": 8,
+        "hint": 0
+      }
+    ],
+    "targets": [
+      {
+        "offset": 124,
+        "field": 131,
+        "bits": 5,
+        "hint": 0
+      },
+      {
+        "offset": 128,
+        "field": 132,
+        "bits": 5,
+        "hint": 0
+      },
+      {
+        "offset": 132,
+        "field": 133,
+        "bits": 5,
+        "hint": 0
+      },
+      {
+        "offset": 136,
+        "field": 134,
+        "bits": 5,
+        "hint": 0
+      },
+      {
+        "offset": 140,
+        "field": 135,
+        "bits": 5,
+        "hint": 0
+      }
+    ],
+    "action_types": [
+      {
+        "offset": 1376,
+        "field": 139,
+        "bits": 2,
+        "hint": 0
+      },
+      {
+        "offset": 1380,
+        "field": 187,
+        "bits": 2,
+        "hint": 0
+      },
+      {
+        "offset": 1384,
+        "field": 100,
+        "bits": 2,
+        "hint": 0
+      },
+      {
+        "offset": 1388,
+        "field": 174,
+        "bits": 2,
+        "hint": 0
+      },
+      {
+        "offset": 1392,
+        "field": 222,
+        "bits": 2,
+        "hint": 0
+      }
+    ],
+    "action_weapons": [
+      {
+        "offset": 1396,
+        "field": 144,
+        "bits": 11,
+        "hint": 0
+      },
+      {
+        "offset": 1400,
+        "field": 203,
+        "bits": 11,
+        "hint": 0
+      },
+      {
+        "offset": 1404,
+        "field": 141,
+        "bits": 11,
+        "hint": 0
+      },
+      {
+        "offset": 1408,
+        "field": 173,
+        "bits": 11,
+        "hint": 0
+      },
+      {
+        "offset": 1412,
+        "field": 221,
+        "bits": 11,
+        "hint": 0
+      }
+    ],
+    "input_bindings": [
+      "+actionslot 1",
+      "+actionslot 2",
+      "+actionslot 3",
+      "+actionslot 4",
+      "+actionslot 5"
+    ]
+  },
+  "hud": {
+    "capture_sha256": "2a2c0a0638927c95174d745da34a139372e99cc24165fd7ac76a9a11d71e3897",
+    "connection_state": 10,
+    "menus": [
+      {
+        "name": "killstreaks_hd2",
+        "expanded": true,
+        "item_count": 124
+      },
+      {
+        "name": "killstreak_pickup",
+        "expanded": true,
+        "item_count": 3
+      },
+      {
+        "name": "killstreak_hint",
+        "expanded": true,
+        "item_count": 1
+      },
+      {
+        "name": "killstreak",
+        "expanded": true,
+        "item_count": 3
+      }
+    ],
+    "table_lookups": [
+      {
+        "menu": "killstreak",
+        "search_column": 1,
+        "result_column": 15
+      },
+      {
+        "menu": "killstreak_hint",
+        "search_column": 1,
+        "result_column": 17
+      },
+      {
+        "menu": "killstreaks_hd2",
+        "search_column": 0,
+        "result_column": 15
+      }
+    ],
+    "streak_queries": [
+      "killstreak",
+      "killstreakID0",
+      "killstreakID1",
+      "killstreakID2",
+      "killstreakID3",
+      "killstreakID4",
+      "killstreakTarget1",
+      "killstreakTarget2",
+      "killstreakTarget3",
+      "killstreak_ac130_mp",
+      "killstreak_helicopter_minigun_mp",
+      "killstreak_predator_missile_mp"
+    ],
+    "input_bindings": [
+      "+actionslot 1",
+      "+actionslot 2",
+      "+actionslot 3",
+      "+actionslot 4",
+      "+actionslot 5"
+    ]
+  }
+}
