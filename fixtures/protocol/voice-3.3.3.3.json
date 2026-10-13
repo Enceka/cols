@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "client_sha256": "e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b",
+  "address_type": "VA",
+  "consumers": {
+    "server_command": "0x57d560",
+    "local_play": "0x57b500",
+    "local_stop": "0x57b560",
+    "sound_selector_lookup": "0x444910",
+    "alias_variant_selection": "0x62dd90",
+    "voice_prefix_dispatch": "0x57b690",
+    "voice_prefix_initialization": "0x4555c0",
+    "uppercase_female_test": "0x45567f",
+    "entity_event_dispatch": "0x50e850"
+  },
+  "transport": {
+    "play_command": "p <selector>",
+    "stop_command": "h <selector>",
+    "selector_min": 1,
+    "selector_max": 16000,
+    "dynamic_sound_base": 3107,
+    "dynamic_slots": 512,
+    "dynamic_reserved": 1,
+    "constant_category": 5,
+    "constant_category_layout": [7058, 0, 0],
+    "constant_selector_offset": 512,
+    "constant_index_reserved": 0,
+    "spatial_event": 3,
+    "spatial_parameter_bits": 14,
+    "alias_record_stride": 108
+  },
+  "automatic_voice_handles": {
+    "sprint": "0x01a1f7f4",
+    "sniper_breathin": "0x01a1bdfc",
+    "sniper_breathout": "0x01a1be00",
+    "sniper_breathgasp": "0x01a1be04"
+  },
+  "multiplayer_voice_families": ["UK_M1_", "UK_M2_", "UK_F1_", "UK_F2_", "AB_M1_", "AB_M2_", "AB_F1_", "AB_F2_"],
+  "examples": {
+    "map": "mp_afghan",
+    "ncs_crc": 523897474,
+    "capture_sha256": "d551f582aad7f759ce074a3a777d71cc71bf72cf3bb84a12ff95aae53164b20f",
+    "constant_sound_count": 1494,
+    "dynamic_sound_count": 8,
+    "selectors": {
+      "ab_1mc_boost": 558,
+      "ab_1mc_tm_deathmatch": 797,
+      "uk_1mc_boost": 1216,
+      "uk_1mc_tm_deathmatch": 1443,
+      "uk_m1_inform_reloading_generic": 1638,
+      "uk_m1_mp_sprint": 1663,
+      "ab_spawn_music": 1931,
+      "uk_spawn_music": 1991
+    }
+  },
+  "acceptance": "Native consumers and CRC-verified identities; new voice playback and official trigger policy remain unverified"
+}

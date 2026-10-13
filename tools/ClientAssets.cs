@@ -5,7 +5,7 @@ using System.Collections.Generic;
 using System.Text;
 using System.Web.Script.Serialization;
 
-class ClientAssets {
+partial class ClientAssets {
     readonly IntPtr process;
     readonly Dictionary<uint,byte[]> strings=new Dictionary<uint,byte[]>();
     static uint U(byte[] b,int at) { return BitConverter.ToUInt32(b,at); }

@@ -50,6 +50,7 @@ def main():
     extract.add_argument("--appearance-load", action="store_true", help="sample native actor models and loader state across map startup for twenty-five seconds")
     extract.add_argument("--tactical-assets", action="store_true", help="read native shock files, status tables, NCS order and parameter blocks")
     extract.add_argument("--hud-assets", action="store_true", help="read loaded native HUD/menu identities and fixed HUD rawfiles")
+    extract.add_argument("--voice-assets", action="store_true", help="read loaded native announcer/character voice aliases and related tables")
     args = parser.parse_args()
     if args.weapon_models_target and (not args.weapon_models or not args.experiment):
         parser.error("weapon-models-target requires weapon-models and a running experiment")
@@ -61,7 +62,7 @@ def main():
             parser.error("sample-ready must be a new file in this experiment directory")
     if args.prefix_name and (not args.build or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", args.prefix_name)):
         parser.error("prefix-name requires build and a simple project directory name")
-    if args.build and (args.frontend_assets or args.glass or args.map_check or args.tactical_assets or args.appearance_load or args.outfits or args.grounding or args.replay or args.feedback or args.assets or args.profiles or args.net_constants or args.map_entities or args.bootstrap_weapon or args.weapon_models or args.arsenal or args.collision or args.weapon_registry or args.training_target or args.bullet_impacts or args.characters or args.hit_regions):
+    if args.build and (args.voice_assets or args.hud_assets or args.frontend_assets or args.glass or args.map_check or args.tactical_assets or args.appearance_load or args.outfits or args.grounding or args.replay or args.feedback or args.assets or args.profiles or args.net_constants or args.map_entities or args.bootstrap_weapon or args.weapon_models or args.arsenal or args.collision or args.weapon_registry or args.training_target or args.bullet_impacts or args.characters or args.hit_regions):
         parser.error("extraction options require a running experiment")
     state = json.loads(args.experiment.read_text()) if args.experiment else None
     engine_id = state["engine_id"] if state else "10000033"
@@ -72,7 +73,7 @@ def main():
     marker = prefix / ".codol-prefix.json"
     if not marker.is_file() or json.loads(marker.read_text())["engine_id"] != engine_id:
         parser.error("prefix ownership marker mismatch")
-    sources = [REPO / "tools/ReadClientState.cs", REPO / "tools/ClientAssets.cs", REPO / "tools/HitRegions.cs"]
+    sources = [REPO / "tools/ReadClientState.cs", REPO / "tools/ClientAssets.cs", REPO / "tools/HitRegions.cs", REPO / "tools/ClientVoice.cs"]
     source_hashes = {p.name: sha256(p) for p in sources}
     binary = REPO / ".tools/ReadClientState.exe"
     stamp = binary.with_suffix(".build.json")
@@ -113,7 +114,7 @@ def main():
         hashes = json.loads(stamp.read_text())
         if hashes != {"sources_sha256": source_hashes, "binary_sha256": sha256(binary)}:
             parser.error("probe changed; rebuild it")
-        command = [wine, str(binary)] + (["--frontend-assets"] if args.frontend_assets else ["--glass"] if args.glass else ["--map-check"] if args.map_check else ["--hud-assets"] if args.hud_assets else ["--tactical-assets"] if args.tactical_assets else ["--appearance-load"] if args.appearance_load else ["--outfits"] if args.outfits else ["--grounding"] if args.grounding else ["--replay"] if args.replay else ["--feedback"] if args.feedback else ["--assets"] if args.assets else ["--profiles"] if args.profiles else ["--net-constants"] if args.net_constants else ["--map-entities"] if args.map_entities else ["--bootstrap-weapon"] if args.bootstrap_weapon else ["--weapon-models"] if args.weapon_models else ["--arsenal"] if args.arsenal else ["--collision"] if args.collision else ["--weapon-registry"] if args.weapon_registry else ["--training-target"] if args.training_target else ["--bullet-impacts"] if args.bullet_impacts else ["--characters"] if args.characters else ["--hit-regions"] if args.hit_regions else [])
+        command = [wine, str(binary)] + (["--voice-assets"] if args.voice_assets else ["--frontend-assets"] if args.frontend_assets else ["--glass"] if args.glass else ["--map-check"] if args.map_check else ["--hud-assets"] if args.hud_assets else ["--tactical-assets"] if args.tactical_assets else ["--appearance-load"] if args.appearance_load else ["--outfits"] if args.outfits else ["--grounding"] if args.grounding else ["--replay"] if args.replay else ["--feedback"] if args.feedback else ["--assets"] if args.assets else ["--profiles"] if args.profiles else ["--net-constants"] if args.net_constants else ["--map-entities"] if args.map_entities else ["--bootstrap-weapon"] if args.bootstrap_weapon else ["--weapon-models"] if args.weapon_models else ["--arsenal"] if args.arsenal else ["--collision"] if args.collision else ["--weapon-registry"] if args.weapon_registry else ["--training-target"] if args.training_target else ["--bullet-impacts"] if args.bullet_impacts else ["--characters"] if args.characters else ["--hit-regions"] if args.hit_regions else [])
         if args.weapon_models_target:
             command.append(args.weapon_models_target)
         if args.sample_ready:
@@ -143,12 +144,17 @@ def main():
         if result.returncode:
             raise RuntimeError((result.stdout + result.stderr)[-2000:])
         decoded = json.loads(result.stdout)
-        output = args.experiment.parent / (("frontend-assets-" if args.frontend_assets else "glass-" if args.glass else "map-check-" if args.map_check else "hud-assets-" if args.hud_assets else "tactical-assets-" if args.tactical_assets else "appearance-load-" if args.appearance_load else "outfits-" if args.outfits else "grounding-" if args.grounding else "replay-" if args.replay else "feedback-" if args.feedback else "client-assets-" if args.assets else "client-profiles-" if args.profiles else "net-constants-" if args.net_constants else "map-entities-" if args.map_entities else "bootstrap-weapon-" if args.bootstrap_weapon else "weapon-models-" if args.weapon_models else "arsenal-" if args.arsenal else "collision-" if args.collision else "weapon-registry-" if args.weapon_registry else "training-target-" if args.training_target else "bullet-impacts-" if args.bullet_impacts else "characters-" if args.characters else "hit-regions-" if args.hit_regions else "client-state-") + str(int(time.time() * 1000)) + ".json")
+        output = args.experiment.parent / (("voice-assets-" if args.voice_assets else "frontend-assets-" if args.frontend_assets else "glass-" if args.glass else "map-check-" if args.map_check else "hud-assets-" if args.hud_assets else "tactical-assets-" if args.tactical_assets else "appearance-load-" if args.appearance_load else "outfits-" if args.outfits else "grounding-" if args.grounding else "replay-" if args.replay else "feedback-" if args.feedback else "client-assets-" if args.assets else "client-profiles-" if args.profiles else "net-constants-" if args.net_constants else "map-entities-" if args.map_entities else "bootstrap-weapon-" if args.bootstrap_weapon else "weapon-models-" if args.weapon_models else "arsenal-" if args.arsenal else "collision-" if args.collision else "weapon-registry-" if args.weapon_registry else "training-target-" if args.training_target else "bullet-impacts-" if args.bullet_impacts else "characters-" if args.characters else "hit-regions-" if args.hit_regions else "client-state-") + str(int(time.time() * 1000)) + ".json")
         output.write_text(json.dumps(decoded, indent=2) + "\n")
         summary = {"schemas": {k: {f: v[f] for f in ("found", "error") if f in v} for k, v in decoded["schemas"].items()},
                    "tables": {k: {f: v[f] for f in ("found", "rows", "columns", "error") if f in v} for k, v in decoded["tables"].items()}} if args.assets else {"read_only": True, "profile_buffers": 2} if args.profiles else decoded
         if args.frontend_assets:
             summary = {"read_only": True, "connection_state": decoded["connection_state"], "rawfiles": {k: {f: v[f] for f in ("found", "length", "compressed_length") if f in v} for k, v in decoded["rawfiles"].items()}}
+        if args.voice_assets:
+            summary = {"read_only": True, "connection_state": decoded["connection_state"], "ncs_crc": decoded["ncs_crc"],
+                       "sound_asset_count": decoded["sound_asset_count"], "voice_alias_count": len(decoded["aliases"]),
+                       "alias_errors": sum("error" in a for a in decoded["aliases"]),
+                       "rawfiles": len(decoded["rawfiles"]), "tables": len(decoded["tables"])}
         if args.hud_assets:
             summary = {"read_only": True, "connection_state": decoded["connection_state"], "menus": len(decoded["menus"])}
         elif args.tactical_assets:

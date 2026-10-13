@@ -20,3 +20,5 @@
 `damage-feedback-resources-3.3.3.3.json`记录三图各自NCS捕获SHA/CRC、反馈材质槽和当前声音消费者。仅含资源身份和布局元数据；运行配置由准备器复算，原始采集仍在忽略目录。
 
 `death-waypoint-hud-3.3.3.3.json`固定本版HUD两组读取位置、waypoint绘制器、坐标codec/零中心、旗标与材质采集身份。发送顺序为archival后current；死亡标识属于current，命中反馈属于archival。
+
+`voice-3.3.3.3.json`记录本版声音选择器、播放／停止、角色前缀消费者及阿富汗CRC核对的资源例子。完整声音目录由`tools/prepare_voice.py`按各图采集生成，不能把例子编号或参考脚本时机当作已通过实机听感验收。

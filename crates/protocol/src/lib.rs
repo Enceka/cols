@@ -18,6 +18,7 @@ pub mod game_scoreboard;
 pub mod game_shellshock;
 pub mod game_smoke;
 pub mod game_snapshot;
+pub mod game_sound;
 pub mod game_state;
 pub mod game_stats;
 pub mod game_target;
