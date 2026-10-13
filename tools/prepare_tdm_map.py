@@ -77,6 +77,9 @@ def prepare(template, map_name, constants, entities, collision, arsenal, charact
         raise ValueError("unsupported native TDM player count")
     teams = team_spawns(entities, map_name, player_count // 2)
     state = copy.deepcopy(template)
+    if map_name != template['map']:
+        for resource in ('nuke_file','props_file','voice_file'):
+            state.pop(resource,None)
     state.update(summary)
     state.update(map=map_name, mode="war", zone="mp", playlist=0, spawn_origin=teams[1][0])
     state["minimap"] = minimap(entities, map_name, characters, material_capture_sha256)

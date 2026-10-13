@@ -14,6 +14,7 @@ pub mod game_impact;
 pub mod game_killstreaks;
 pub mod game_obituary;
 pub mod game_player_card;
+pub mod game_props;
 pub mod game_scavenger;
 pub mod game_scoreboard;
 pub mod game_shellshock;

@@ -241,8 +241,8 @@ pub fn server_packet(
 
 /// Initial resource lists can exceed one raw datagram. Target0x467520 reads
 /// ACK bit31, XORs the body, then0x46e6a0/0x659040 inflates zlib into128KiB.
-/// Keep small messages byte-for-byte unchanged and reject compressed output
-/// that still needs the as-yet unsupported native fragmentation path.
+/// Keep small messages byte-for-byte unchanged. This single-packet interface
+/// rejects messages requiring fragments; streaming callers use the plural API.
 pub fn compact_server_packet(
     sequence: u32,
     client_ack: u32,
@@ -250,8 +250,34 @@ pub fn compact_server_packet(
     client_command: &[u8],
     body: &[u8],
 ) -> Result<Vec<u8>, LobbyError> {
+    let mut packets =
+        compact_server_packets(sequence, client_ack, challenge, client_command, body)?;
+    if packets.len() != 1 {
+        return Err(LobbyError(
+            "compressed server message requires fragmentation",
+        ));
+    }
+    Ok(packets.remove(0))
+}
+
+/// Native 0x5a5960 reassembly uses an index byte, last-index byte, stride
+/// short and payload-length short. ACK32 and XOR/zlib data are reassembled
+/// before 0x467520 decodes them; these are not offset/length-only fragments.
+pub fn compact_server_packets(
+    sequence: u32,
+    client_ack: u32,
+    challenge: u32,
+    client_command: &[u8],
+    body: &[u8],
+) -> Result<Vec<Vec<u8>>, LobbyError> {
     if body.len() + 4 < FRAGMENT_SIZE {
-        return server_packet(sequence, client_ack, challenge, client_command, body);
+        return Ok(vec![server_packet(
+            sequence,
+            client_ack,
+            challenge,
+            client_command,
+            body,
+        )?]);
     }
     if sequence == 0
         || sequence > SEQUENCE_MASK
@@ -268,11 +294,6 @@ pub fn compact_server_packet(
     let compressed = encoder
         .finish()
         .map_err(|_| LobbyError("server message compression failed"))?;
-    if compressed.len() + 4 >= FRAGMENT_SIZE {
-        return Err(LobbyError(
-            "compressed server message requires fragmentation",
-        ));
-    }
     let mut packet = sequence.to_le_bytes().to_vec();
     packet.extend_from_slice(&(client_ack | 0x8000_0000).to_le_bytes());
     packet.extend_from_slice(&compressed);
@@ -281,7 +302,24 @@ pub fn compact_server_packet(
         sequence as u8 ^ challenge as u8,
         client_command,
     );
-    Ok(packet)
+    if packet.len() - 4 < FRAGMENT_SIZE {
+        return Ok(vec![packet]);
+    }
+    let payload = &packet[4..];
+    let count = payload.len().div_ceil(FRAGMENT_SIZE);
+    if count > 128 {
+        return Err(LobbyError("native fragment bitmap budget"));
+    }
+    let mut packets = Vec::new();
+    for (index, chunk) in payload.chunks(FRAGMENT_SIZE).enumerate() {
+        let mut fragment = (sequence | FRAGMENT_BIT).to_le_bytes().to_vec();
+        fragment.extend_from_slice(&[index as u8, (count - 1) as u8]);
+        fragment.extend_from_slice(&(FRAGMENT_SIZE as u16).to_le_bytes());
+        fragment.extend_from_slice(&(chunk.len() as u16).to_le_bytes());
+        fragment.extend_from_slice(chunk);
+        packets.push(fragment);
+    }
+    Ok(packets)
 }
 
 /// Target bit reader 0x40c370/0x5a13a0: byte fields advance the byte cursor
@@ -446,6 +484,58 @@ fn read_client_message(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn target_indexed_fragment_headers_reassemble_out_of_order_without_repeating_duplicate_payloads()
+     {
+        use std::io::Read;
+        let mut n = 0x198733u32;
+        let body = (0..9000)
+            .map(|_| {
+                n ^= n << 13;
+                n ^= n >> 17;
+                n ^= n << 5;
+                n as u8
+            })
+            .collect::<Vec<_>>();
+        let fragments = compact_server_packets(31, 7, 0x75, b"s", &body).unwrap();
+        assert!(fragments.len() > 2);
+        let mut storage = vec![0u8; fragments.len() * FRAGMENT_SIZE];
+        let mut seen = std::collections::BTreeSet::new();
+        let mut total = 0;
+        for fragment in fragments.iter().rev().chain(std::iter::once(&fragments[0])) {
+            assert_eq!(
+                u32::from_le_bytes(fragment[..4].try_into().unwrap()),
+                31 | FRAGMENT_BIT
+            );
+            let index = usize::from(fragment[4]);
+            assert_eq!(usize::from(fragment[5]), fragments.len() - 1);
+            let stride = usize::from(u16::from_le_bytes(fragment[6..8].try_into().unwrap()));
+            assert_eq!(stride, FRAGMENT_SIZE);
+            let len = usize::from(u16::from_le_bytes(fragment[8..10].try_into().unwrap()));
+            assert_eq!(len, fragment.len() - 10);
+            if seen.insert(index) {
+                storage[index * stride..index * stride + len].copy_from_slice(&fragment[10..]);
+                total += len;
+            }
+        }
+        assert_eq!(seen.len(), fragments.len());
+        storage.truncate(total);
+        assert_eq!(
+            u32::from_le_bytes(storage[..4].try_into().unwrap()),
+            0x80000007
+        );
+        let mut encoded = storage[4..].to_vec();
+        xor_stream(&mut encoded, 31 ^ 0x75, b"s");
+        let mut decoded = Vec::new();
+        flate2::read::ZlibDecoder::new(&encoded[..])
+            .read_to_end(&mut decoded)
+            .unwrap();
+        assert_eq!(decoded, body);
+        assert_eq!(
+            compact_server_packets(2, 0, 0, b"", &[6]).unwrap(),
+            [server_packet(2, 0, 0, b"", &[6]).unwrap()]
+        );
+    }
     use super::*;
     #[test]
     fn resource_controls_ignore_opaque_movement_without_relaxing_gameplay_parsing() {

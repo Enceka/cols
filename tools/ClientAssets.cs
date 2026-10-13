@@ -924,7 +924,7 @@ partial class ClientAssets {
                 uint address=checked(arena+handle*4);byte[] effect=Read(address,0x38);
                 if((U(effect,4)&0x1fff)==0||(U(effect,4)&0xc0000000)!=0)continue;
                 string name=Name(Word(U(effect,0)));
-                if(name.IndexOf("grenade",StringComparison.Ordinal)<0&&!name.StartsWith("explosions/",StringComparison.Ordinal)&&name!="dust/nuke_aftermath_mp")continue;
+                if(name.IndexOf("grenade",StringComparison.Ordinal)<0&&!name.StartsWith("explosions/",StringComparison.Ordinal)&&name!="dust/nuke_aftermath_mp"&&!name.StartsWith("props/barrel",StringComparison.Ordinal)&&!name.StartsWith("smoke/car_damage_",StringComparison.Ordinal))continue;
                 byte[] checkedState=Read(address,0x94);
                 if(U(checkedState,0)!=U(effect,0)||U(checkedState,0x30)!=U(effect,0x30)
                     ||(U(checkedState,4)&0x1fff)==0||(U(checkedState,4)&0xc0000000)!=0)continue;

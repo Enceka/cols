@@ -6,8 +6,9 @@
 //! vertical center segment of length `height - 30`. Brush planes use that
 //! capsule's support function; terrain sweeps its full face/edge/vertex distance.
 //! This does not claim exact parity with the client's mesh-border filtering.
-//! Export coverage is world brushes and terrain. Static model collision and
-//! moving entities are not silently replaced with bounding boxes.
+//! Export coverage is world brushes and terrain. Registered destructible props
+//! use explicit oriented bounds from their native models; other model meshes
+//! and moving entities are outside this geometry export.
 use anyhow::{Context, Result, ensure};
 use codol_protocol::game_usercmd::UserCommand;
 use serde::Deserialize;
@@ -16,7 +17,7 @@ use std::{
     io::Read,
     path::Path,
     sync::{
-        Arc,
+        Arc, RwLock,
         atomic::{AtomicU64, Ordering},
     },
 };
@@ -174,6 +175,7 @@ pub struct Collision {
     known_glass: [u64; 16],
     destroyed_glass: [AtomicU64; 16],
     ignore_glass: bool,
+    props: Arc<RwLock<Vec<(u16, Primitive)>>>,
 }
 
 impl Clone for Collision {
@@ -190,12 +192,14 @@ impl Clone for Collision {
                 AtomicU64::new(self.destroyed_glass[i].load(Ordering::Relaxed))
             }),
             ignore_glass: self.ignore_glass,
+            props: self.props.clone(),
         }
     }
 }
 
 #[derive(Clone, Copy, Debug)]
 pub struct Trace {
+    pub prop_entity: Option<u16>,
     pub glass_piece: Option<u16>,
     pub fraction: f32,
     pub normal: V3,
@@ -207,6 +211,7 @@ pub struct Trace {
 impl Default for Trace {
     fn default() -> Self {
         Self {
+            prop_entity: None,
             glass_piece: None,
             fraction: 1.0,
             normal: [0.0; 3],
@@ -223,6 +228,7 @@ impl Collision {
     /// share only immutable geometry; a new match begins with intact glass.
     pub(crate) fn fresh_session(&self) -> Self {
         Self {
+            props: Arc::new(RwLock::new(Vec::new())),
             destroyed_glass: std::array::from_fn(|_| AtomicU64::new(0)),
             ignore_glass: false,
             ..self.clone()
@@ -439,6 +445,7 @@ impl Collision {
             "collision export contains no player- or shot-solid geometry"
         );
         let mut collision = Self {
+            props: Arc::new(RwLock::new(Vec::new())),
             map: export.map,
             ncs_crc: export.ncs_crc,
             captured_contents_mask: export.captured_contents_mask,
@@ -509,6 +516,7 @@ impl Collision {
             },
             &mut result,
         );
+        self.trace_props(start, end, Some(capsule), PLAYER_MASK, None, &mut result);
         result
     }
     /// Cast a zero-width segment through exported world geometry. Unlike the
@@ -517,6 +525,82 @@ impl Collision {
     /// its endpoint escapes, so a shot cannot originate through that brush.
     pub fn raycast(&self, start: V3, end: V3) -> Trace {
         self.raycast_mask(start, end, SHOT_MASK)
+    }
+    pub(crate) fn replace_props(&self, colliders: &[crate::game_props::Collider]) {
+        let props = colliders
+            .iter()
+            .map(|p| {
+                (
+                    p.entity,
+                    Primitive {
+                        glass_piece: None,
+                        bounds: Bounds {
+                            min: p.min,
+                            max: p.max,
+                        },
+                        contents: 1,
+                        surface_flags: 12 << 20,
+                        shape: Shape::Brush {
+                            planes: p.planes.clone(),
+                            surfaces: vec![12 << 20; 6],
+                        },
+                    },
+                )
+            })
+            .collect();
+        *self.props.write().expect("prop geometry lock") = props;
+    }
+    pub(crate) fn raycast_excluding_prop(&self, start: V3, end: V3, ignore: Option<u16>) -> Trace {
+        self.raycast_mask_excluding(start, end, SHOT_MASK, ignore)
+    }
+    fn trace_props(
+        &self,
+        start: V3,
+        end: V3,
+        capsule: Option<Capsule>,
+        mask: u32,
+        ignore: Option<u16>,
+        result: &mut Trace,
+    ) {
+        let half = capsule.map_or([0.0; 3], |c| {
+            [
+                c.radius + SKIN,
+                c.radius + SKIN,
+                c.radius + c.segment_half + SKIN,
+            ]
+        });
+        let bounds = Bounds::center_half(start, half).union(Bounds::center_half(end, half));
+        for (id, p) in self.props.read().expect("prop geometry lock").iter() {
+            if Some(*id) == ignore || p.contents & mask == 0 || !p.bounds.intersects(bounds) {
+                continue;
+            }
+            let Shape::Brush { planes, surfaces } = &p.shape else {
+                continue;
+            };
+            let hit = match capsule {
+                Some(c) => {
+                    let hit = sweep_brush(planes, surfaces, start, end, c);
+                    (hit.fraction < 1.0 || hit.start_solid || hit.all_solid).then_some(hit)
+                }
+                None => ray_brush(planes, surfaces, start, end),
+            };
+            let Some(mut hit) = hit else {
+                continue;
+            };
+            let was_solid = result.start_solid;
+            result.start_solid |= hit.start_solid;
+            result.all_solid |= hit.all_solid;
+            if hit.fraction < result.fraction
+                || hit.fraction == result.fraction
+                    && (result.contents == 0 || hit.start_solid && !was_solid)
+            {
+                hit.contents = p.contents;
+                hit.prop_entity = Some(*id);
+                hit.start_solid |= result.start_solid;
+                hit.all_solid |= result.all_solid;
+                *result = hit;
+            }
+        }
     }
     /// Navigation support must use the same contents as the player's hull.
     /// Bullet/visibility-only volumes can overlap physically walkable terrain.
@@ -542,18 +626,23 @@ impl Collision {
             },
             &mut trace,
         );
+        self.trace_props(start, end, Some(capsule), SHOT_MASK, None, &mut trace);
         trace
     }
     pub fn movement_surface(&self, start: V3, end: V3) -> Trace {
         self.raycast_mask(start, end, PLAYER_MASK)
     }
     fn raycast_mask(&self, start: V3, end: V3, mask: u32) -> Trace {
+        self.raycast_mask_excluding(start, end, mask, None)
+    }
+    fn raycast_mask_excluding(&self, start: V3, end: V3, mask: u32, ignore: Option<u16>) -> Trace {
         let bounds = Bounds {
             min: std::array::from_fn(|i| start[i].min(end[i])),
             max: std::array::from_fn(|i| start[i].max(end[i])),
         };
         let mut result = Trace::default();
         self.raycast_node(0, bounds, start, end, mask, &mut result);
+        self.trace_props(start, end, None, mask, ignore, &mut result);
         result
     }
     fn raycast_node(

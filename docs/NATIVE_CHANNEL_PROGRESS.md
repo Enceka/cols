@@ -40,6 +40,10 @@ S2C探针2：收到 messageAck=1 后，`sequence=2, clientCommandAck=0, body=[1,
 
 默认只发两个有界探针；显式 `--game-state` 才在 ACK2/reliableACK1 后发送 gamestate。丢包重发、完整服务端可靠命令发布、客户端命令执行和 native 分片都未完成。后续输入解析仅记录动作，未执行物理移动。不得把 transport/reliable ACK 扩大为游戏已可玩。
 
+## 原生分片的当前支持
+
+服务端现支持0x5a5490／0x5a5960的索引式发送与重组布局：seq32带FRAGMENT_BIT，随后index8、lastIndex8、stride16、length16及分片数据；stride1154，最多128片。ACK32与完整XOR／zlib负载先构成一个消息，再拆分。快照和gamestate共用发送队列，队列结束前不发送更高序号回复。独立重组回归覆盖乱序、重复及完整zlib还原；地图动态物件原生会话覆盖完整场景、死亡／回放切换和多分片接收。C2S的分片ACK请求／重传控制尚未实施，当前发送不请求该标志。
+
 ## 需要纠正的旧实验解释
 
 152字节原型超时没有证明 configstring 数量不足，因为当时消息头、XOR和opcode同时不匹配。服务端只能证明发送了 DATA，不能以自身编码成功声称客户端验证了它的 MAC；正确证据是后续 ACK 推进。

@@ -39,6 +39,7 @@ pub(crate) struct Actor {
 
 #[derive(Default)]
 pub(crate) struct ActorShot {
+    pub props_damage: Vec<(u16, u16)>,
     pub damage: Vec<(u8, u16, bool)>,
     pub impacts: Vec<WorldImpact>,
     /// Populated only after the match applies damage and protection rules.
@@ -122,8 +123,22 @@ pub(crate) fn fire_at_actors(
                     }
                 }
             }
-        } else if let Some(impact) = world_impact(eye, angles, ballistics, collision) {
-            outcome.impacts.push(impact);
+        } else {
+            if let Some(prop) = world.prop_entity {
+                let damage = ballistics
+                    .damage_at_distance(world.fraction * ballistics.range)
+                    .unwrap_or(0);
+                if let Some((_, total)) =
+                    outcome.props_damage.iter_mut().find(|(id, _)| *id == prop)
+                {
+                    *total = total.saturating_add(damage);
+                } else if damage != 0 {
+                    outcome.props_damage.push((prop, damage));
+                }
+            }
+            if let Some(impact) = world_impact(eye, angles, ballistics, collision) {
+                outcome.impacts.push(impact);
+            }
         }
     }
     outcome
@@ -173,6 +188,12 @@ pub(crate) fn melee_at_actors(
             .filter_map(|a| actor_fraction(eye, end, a).map(|fraction| (a, fraction)))
             .filter(|(_, fraction)| world.contents == 0 || *fraction < world.fraction)
             .min_by(|a, b| a.1.total_cmp(&b.1));
+        if hit.is_none()
+            && let Some(prop) = world.prop_entity
+        {
+            outcome.props_damage.push((prop, damage));
+            return outcome;
+        }
         if hit.is_none()
             && let Some(piece) = world.glass_piece
         {

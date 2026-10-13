@@ -10,6 +10,8 @@ mod loadout;
 
 #[derive(Default)]
 pub(crate) struct SnapshotWorld<'a> {
+    pub props: &'a [codol_protocol::game_props::PropSnapshot],
+    pub prop_baselines: &'a [codol_protocol::game_props::PropSnapshot],
     pub view_offset: [u16; 3],
     pub streaks: codol_protocol::game_killstreaks::StreakSnapshot,
     pub reward_inventory: Option<codol_protocol::game_snapshot::EquippedWeapon>,
@@ -145,6 +147,10 @@ pub struct PreparedGameState {
     voice_file: Option<std::path::PathBuf>,
     #[serde(default)]
     nuke_file: Option<std::path::PathBuf>,
+    #[serde(default)]
+    props_file: Option<std::path::PathBuf>,
+    #[serde(skip)]
+    props_resources: Option<Arc<crate::game_props::Resources>>,
     #[serde(skip)]
     nuke_resources: Option<Arc<crate::game_killstreaks::NukeResources>>,
     #[serde(skip)]
@@ -592,6 +598,13 @@ impl PreparedGameState {
         );
         let mut state: Self = serde_json::from_slice(&std::fs::read(path)?)?;
         let directory = path.parent().unwrap_or(Path::new("."));
+        if let Some(file) = &state.props_file {
+            state.props_resources = Some(Arc::new(crate::game_props::Resources::load(
+                &directory.join(file),
+                &state.map,
+                state.ncs_crc,
+            )?));
+        }
         if let Some(file) = &state.nuke_file {
             state.nuke_resources = Some(Arc::new(crate::game_killstreaks::NukeResources::load(
                 &directory.join(file),
@@ -1770,6 +1783,9 @@ impl PreparedGameState {
         }
         // Publish names before cgame/model initialization, not after spawning.
         values.extend(self.model_configstrings());
+        if let Some(props) = &self.props_resources {
+            values.extend(props.configstrings());
+        }
         values.sort_by_key(|v| v.0);
         for (index, name) in self.weapon_configstrings() {
             // NCS inherited weapon bank starts at5443; unused indices are
@@ -1829,6 +1845,8 @@ impl PreparedGameState {
             equipment,
             angles,
             codol_protocol::game_snapshot::WorldSnapshot {
+                props: world.props,
+                prop_baselines: world.prop_baselines,
                 view_offset: world.view_offset,
                 streaks: world.streaks,
                 reward_inventory: world.reward_inventory,
@@ -2052,6 +2070,10 @@ impl PreparedGameState {
                 .clone(),
         )?;
         tdm.configure_roster(self.roster_weapons.iter().map(Self::make_player).collect())?;
+        if let Some(resources) = &self.props_resources {
+            tdm.props =
+                crate::game_props::Props::new(resources.clone(), self.collision.as_ref().unwrap());
+        }
         if let Some(resources) = &self.nuke_resources {
             tdm.streaks.enable();
             tdm.streaks.acceptance_seed(resources.acceptance_seed);
@@ -2134,6 +2156,8 @@ pub(crate) fn synthetic() -> PreparedGameState {
         feedback_resources: None,
         voice_file: None,
         nuke_file: None,
+        props_file: None,
+        props_resources: None,
         nuke_resources: None,
         voice_resources: None,
         replay_resources: None,

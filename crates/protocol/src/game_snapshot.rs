@@ -241,6 +241,8 @@ pub fn player_frame_with_motion(
         equipment,
         angles,
         WorldSnapshot {
+            props: &[],
+            prop_baselines: &[],
             view_offset: [0; 3],
             streaks: Default::default(),
             reward_inventory: None,
@@ -287,6 +289,8 @@ pub fn player_frame_with_motion(
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct WorldSnapshot<'a> {
+    pub props: &'a [crate::game_props::PropSnapshot],
+    pub prop_baselines: &'a [crate::game_props::PropSnapshot],
     /// PS+0xa0..0xa8, fields70/45/191, native short-angle codec -100.
     /// Prediction adds this offset to raw usercmd angles (0x41af8e).
     pub view_offset: [u16; 3],
@@ -976,6 +980,15 @@ pub fn player_frame_with_world(
     if let Some(target) = world.target {
         crate::game_target::write_target(&mut out, target, establish_baseline)?;
     }
+    crate::game_props::write(
+        &mut out,
+        world.props,
+        if establish_baseline {
+            &[]
+        } else {
+            world.prop_baselines
+        },
+    )?;
     {
         for corpse in world
             .corpses

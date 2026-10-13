@@ -34,6 +34,7 @@ pub(crate) struct Connection {
     game_state: Option<Arc<crate::game_state::PreparedGameState>>,
     player: Option<crate::game_player::Player>,
     view_offset: [u16; 3],
+    native_fragments: VecDeque<Vec<u8>>,
     spawn_view_anchor: Option<([u16; 3], u32)>,
     grenades: crate::game_grenade::Grenades,
     smoke: crate::game_smoke::Smoke,
@@ -110,6 +111,7 @@ pub(crate) struct Connection {
 
 #[derive(Clone)]
 struct WorldHistory {
+    props: Vec<codol_protocol::game_props::PropSnapshot>,
     sounds: Vec<codol_protocol::game_sound::SoundSnapshot>,
     bags: Vec<codol_protocol::game_scavenger::BagSnapshot>,
     smokes: Vec<codol_protocol::game_smoke::SmokeSnapshot>,
@@ -393,6 +395,9 @@ impl Connection {
     /// An explicitly bounded stream at 20 Hz. The probe has no physics/input
     /// execution and is disabled unless explicitly selected by the operator.
     pub fn poll_snapshot(&mut self, now: Instant) -> Result<Option<Vec<u8>>> {
+        if let Some(fragment) = self.native_fragments.pop_front() {
+            return Ok(Some(fragment));
+        }
         if self.gamestate_update != Some(6)
             || self
                 .match_leave_sequence
@@ -491,6 +496,7 @@ impl Connection {
         if self.tdm.is_some() {
             self.advance_match(server_time)?;
             self.advance_grenades(server_time)?;
+            self.advance_props(server_time)?;
         } else {
             self.advance_bot(server_time)?;
         }
@@ -705,6 +711,10 @@ impl Connection {
             enemy = None;
         }
         let mut snapshot_motion = self.snapshot_motion();
+        let mut props = self
+            .tdm
+            .as_ref()
+            .map_or(Vec::new(), |m| m.props.snapshots());
         let mut view_offset = self.view_offset;
         let mut streaks = self.tdm.as_ref().map_or(Default::default(), |m| {
             if m.finished {
@@ -758,6 +768,7 @@ impl Connection {
                 }
             }
             self.replay.record(crate::game_replay::Frame {
+                props: props.clone(),
                 bags: bags.clone(),
                 smokes: smokes.clone(),
                 missiles: missiles.clone(),
@@ -817,6 +828,7 @@ impl Connection {
             }
             shellshock = playback.view.shellshock;
             angles = playback.view.angles;
+            props = playback.frame.props.clone();
             view_offset = [0; 3];
             command_time = playback.view.motion.command_time;
             equipment = Some(playback.view.equipment);
@@ -905,6 +917,8 @@ impl Connection {
             angles,
             equipment,
             crate::game_state::SnapshotWorld {
+                props: &props,
+                prop_baselines: previous.as_ref().map_or(&[], |h| h.props.as_slice()),
                 view_offset,
                 streaks,
                 reward_inventory,
@@ -986,7 +1000,7 @@ impl Connection {
         // The same native XOR/inflate decoder handles gamestates and live
         // snapshots. Crowded deaths/replay exits can exceed the raw budget;
         // retain the complete world and compress only when necessary.
-        let packet = game_wire::compact_server_packet(
+        let mut packets = game_wire::compact_server_packets(
             self.native_sent + 1,
             ack,
             self.challenge
@@ -994,6 +1008,8 @@ impl Connection {
             self.client_commands.command_for(ack)?,
             &body,
         )?;
+        let packet = packets.remove(0);
+        self.native_fragments.extend(packets);
         if snapshot_included && snapshot.len() > budget {
             tracing::info!(
                 raw_bytes = snapshot.len(),
@@ -1009,6 +1025,7 @@ impl Connection {
         }
         if self.tdm.is_some() {
             self.world_history.push_back(WorldHistory {
+                props,
                 sounds: if full { Vec::new() } else { sounds },
                 bags,
                 smokes,
@@ -1252,7 +1269,9 @@ impl Connection {
         let client_ack = client_commands.sequence();
         let client_command = client_commands.command_for(client_ack)?;
         let mut sending_gamestate = false;
-        let reply = if self.native_sent == 0 {
+        let reply = if !self.native_fragments.is_empty() {
+            None
+        } else if self.native_sent == 0 {
             Some(game_wire::server_packet(
                 1,
                 client_ack,
@@ -1276,8 +1295,10 @@ impl Connection {
             && let Some(state) = &self.game_state
         {
             let body = state.body_named(commands.sequence(), self.display_name.as_deref())?;
-            let reply =
-                game_wire::compact_server_packet(3, client_ack, challenge, client_command, &body)?;
+            let mut packets =
+                game_wire::compact_server_packets(3, client_ack, challenge, client_command, &body)?;
+            let reply = packets.remove(0);
+            self.native_fragments.extend(packets);
             sending_gamestate = true;
             Some(reply)
         } else if self.resource_collection || client_ack > self.client_commands.sequence() {
@@ -2340,6 +2361,78 @@ impl Connection {
                 if let Some(motion) = &mut self.motion {
                     motion.cancel_melee_charge();
                     motion.velocity = [0.0; 3];
+                }
+            }
+        }
+        self.drain_match_kills(now);
+        Ok(())
+    }
+    fn advance_props(&mut self, now: u32) -> Result<()> {
+        if self.tdm.as_ref().is_none_or(|m| m.finished) {
+            return Ok(());
+        }
+        let state = self.game_state.as_ref().unwrap().clone();
+        let collision = state.collision.as_ref().unwrap();
+        self.tdm.as_mut().unwrap().props.advance(now, collision);
+        // Each object can explode only once; the bounded queue also covers
+        // a chain reaching every supported object in the same frame.
+        for _ in 0..=128 {
+            let events = self.tdm.as_mut().unwrap().props.drain();
+            if events.is_empty() {
+                break;
+            }
+            for event in events {
+                match event {
+                    crate::game_props::Event::Fx { selector, origin } => {
+                        self.impacts.fx(now, selector, origin);
+                    }
+                    crate::game_props::Event::Sound {
+                        slot,
+                        owner,
+                        origin,
+                    } => {
+                        self.voices.prop_sound(now, owner, origin, slot)?;
+                    }
+                    crate::game_props::Event::Blast(blast) => {
+                        let mut local =
+                            state.local_player_snapshot(self.vitals.health > 0).unwrap();
+                        local.origin = self.motion.as_ref().unwrap().origin;
+                        local.angles = self.view_angles();
+                        local.weapon = self.player.as_ref().unwrap().equipment().weapon;
+                        let (feedback, hit) = self
+                            .tdm
+                            .as_mut()
+                            .unwrap()
+                            .prop_blast(now, blast, local, collision);
+                        if blast.owner == 0
+                            && let Some(feedback) = feedback
+                        {
+                            self.hit_feedback.record(now, feedback);
+                        }
+                        if let Some(hit) = hit {
+                            let damage = self
+                                .player
+                                .as_ref()
+                                .map_or(hit.damage, |p| p.explosive_damage(hit.damage));
+                            self.vitals.health = self.vitals.health.saturating_sub(damage);
+                            self.vitals.damage_event = self.vitals.damage_event.wrapping_add(1);
+                            self.vitals.damage_count = damage.min(127) as u8;
+                            self.health_recovery.damaged(now, self.vitals.health);
+                            if self.vitals.health == 0 {
+                                self.player_death = Some(now);
+                                self.hit_feedback.clear();
+                                self.tdm.as_mut().unwrap().player_killed(now, local, hit);
+                                self.player
+                                    .as_mut()
+                                    .unwrap()
+                                    .drop_offhand_on_death(now, local.angles);
+                                if let Some(motion) = &mut self.motion {
+                                    motion.cancel_melee_charge();
+                                    motion.velocity = [0.0; 3];
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }

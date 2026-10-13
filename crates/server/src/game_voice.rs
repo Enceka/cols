@@ -207,6 +207,35 @@ pub(crate) struct Speech {
     next_entity: u16,
 }
 impl Speech {
+    pub fn prop_sound(&mut self, now: u32, source: u8, origin: [f32; 3], slot: u16) -> Result<()> {
+        self.active
+            .retain(|(born, _)| now.wrapping_sub(*born) < 200);
+        if self.active.len() >= 32 {
+            return Ok(());
+        }
+        let number = if (game_sound::FIRST_SOUND_ENTITY..game_sound::END_SOUND_ENTITY)
+            .contains(&self.next_entity)
+        {
+            self.next_entity
+        } else {
+            game_sound::FIRST_SOUND_ENTITY
+        };
+        self.next_entity = if number + 1 == game_sound::END_SOUND_ENTITY {
+            game_sound::FIRST_SOUND_ENTITY
+        } else {
+            number + 1
+        };
+        self.active.push_back((
+            now,
+            SoundSnapshot {
+                entity_number: number,
+                source,
+                origin,
+                selector: SoundSelector::dynamic(slot)?,
+            },
+        ));
+        Ok(())
+    }
     pub fn advance(
         &mut self,
         now: u32,

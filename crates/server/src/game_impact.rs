@@ -144,6 +144,10 @@ impl ImpactEvents {
         let end = codol_protocol::game_sound::FIRST_SOUND_ENTITY;
         let entity_number = if !(first..end).contains(&self.next_entity) {
             first
+        } else if (codol_protocol::game_props::FIRST_ENTITY..codol_protocol::game_props::END_ENTITY)
+            .contains(&self.next_entity)
+        {
+            codol_protocol::game_props::END_ENTITY
         } else {
             self.next_entity
         };

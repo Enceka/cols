@@ -243,6 +243,7 @@ pub(crate) struct TdmMatch {
     baselines: Vec<EnemySnapshot>,
     rows: [ScoreboardRow; 12],
     pub(crate) streaks: crate::game_killstreaks::Streaks,
+    pub(crate) props: crate::game_props::Props,
     forced_winner: Option<u8>,
     pub(crate) acceptance_stationary: bool,
     scores: [i32; 4],
@@ -360,6 +361,7 @@ impl TdmMatch {
             baselines,
             rows,
             streaks: Default::default(),
+            props: Default::default(),
             forced_winner: None,
             acceptance_stationary: false,
             scores: [0; 4],
@@ -676,6 +678,19 @@ impl TdmMatch {
         if self.finished {
             return (None, 0);
         }
+        self.props.radial(
+            now,
+            crate::game_props::Blast {
+                source_entity: None,
+                owner: 0,
+                weapon: explosion.definition.index,
+                origin: explosion.origin,
+                radius: f32::from(explosion.definition.radius),
+                inner: explosion.definition.inner_damage,
+                outer: explosion.definition.outer_damage,
+            },
+            collision,
+        );
         let hits = self
             .bots
             .iter()
@@ -736,6 +751,58 @@ impl TdmMatch {
             ));
         }
         affected
+    }
+    pub fn prop_blast(
+        &mut self,
+        now: u32,
+        blast: crate::game_props::Blast,
+        local: EnemySnapshot,
+        collision: &Collision,
+    ) -> (
+        Option<codol_protocol::game_hit_feedback::HitKind>,
+        Option<PlayerHit>,
+    ) {
+        if self.finished {
+            return (None, None);
+        }
+        let team = self.config.teams[usize::from(blast.owner)];
+        let hits = self
+            .bots
+            .iter()
+            .filter(|b| b.health > 0 && b.snapshot.team != team)
+            .map(|b| {
+                let damage = crate::game_props::radius_damage(
+                    blast,
+                    b.snapshot.origin,
+                    40.0,
+                    None,
+                    collision,
+                );
+                (
+                    b.snapshot.client_index,
+                    b.weapon
+                        .as_ref()
+                        .map_or(damage, |w| w.explosive_damage(damage)),
+                    false,
+                )
+            })
+            .filter(|(_, d, _)| *d > 0)
+            .collect::<Vec<_>>();
+        let feedback = self.damage_bots(now, blast.owner, blast.weapon, &hits, false);
+        let local_hit = if local.alive && (blast.owner == 0 || local.team != team) {
+            let damage =
+                crate::game_props::radius_damage(blast, local.origin, 35.0, None, collision);
+            (damage > 0).then_some(PlayerHit {
+                damage,
+                attacker: blast.owner,
+                weapon: blast.weapon,
+                headshot: false,
+            })
+        } else {
+            None
+        };
+        self.props.radial(now, blast, collision);
+        (feedback, local_hit)
     }
     pub fn advance_gas(
         &mut self,
@@ -836,6 +903,10 @@ impl TdmMatch {
         );
         outcome.committed_feedback =
             self.damage_bots(shot.time, 0, shot.weapon, &outcome.damage, false);
+        for &(entity, damage) in &outcome.props_damage {
+            self.props
+                .damage(shot.time, entity, damage, 0, false, collision);
+        }
         outcome
     }
     pub fn player_melee(
@@ -861,6 +932,10 @@ impl TdmMatch {
         );
         outcome.committed_feedback =
             self.damage_bots(strike.time, 0, strike.weapon, &outcome.damage, true);
+        for &(entity, damage) in &outcome.props_damage {
+            self.props
+                .damage(strike.time, entity, damage, 0, false, collision);
+        }
         outcome
     }
     pub fn player_melee_approach(
@@ -1434,6 +1509,10 @@ impl TdmMatch {
                 },
             );
             let mut feedback = self.damage_bots(now, attacker, shot.weapon, &outcome.damage, false);
+            for &(entity, damage) in &outcome.props_damage {
+                self.props
+                    .damage(now, entity, damage, attacker, false, collision);
+            }
             for &(victim, damage, headshot) in &outcome.damage {
                 if victim == 0 && player_health > 0 {
                     player_health = player_health.saturating_sub(damage);

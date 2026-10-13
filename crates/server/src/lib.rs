@@ -52,3 +52,5 @@ pub mod services;
 pub mod session;
 pub mod stun_server;
 mod weapon_attributes;
+
+mod game_props;
