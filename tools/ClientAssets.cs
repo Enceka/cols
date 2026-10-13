@@ -560,7 +560,7 @@ class ClientAssets {
         // PS.weaponTime; no capacity field is guessed here. Names below are
         // diagnostic slots; 0x5587e0 explicitly consumes def+0x154/+0x15c.
         var names=new Dictionary<string,object>();
-        foreach(uint offset in new uint[]{0x7c,0x80,0x84,0x88,0x154,0x15c}) {
+        foreach(uint offset in new uint[]{0x7c,0x80,0x84,0x88,0x150,0x154,0x15c}) {
             uint pointer=Word(checked(at+offset));
             names["0x"+offset.ToString("x")]=pointer==0?null:Name(pointer);
         }
@@ -602,15 +602,19 @@ class ClientAssets {
     }
     byte[] itemPool;
     object M4DefaultParts(byte[] registry) { return WeaponDefaultParts("m4_mp",registry); }
-    object WeaponDefaultParts(string weaponName,byte[] registry) {
+    uint FindItemRecord(string weaponName) {
         // 0x584470 finds a record by its internal name; this bounded scan
         // reads the same pool without calling the game or its hash routine.
         int count=Count(Word(0x02db8ac8),65535);uint pool=Word(0x02db8ac4);
         byte[] records=itemPool??(itemPool=Read(pool,count*0x28));uint found=0;
         for(int i=1;i<count;i++)if(Name(U(records,i*0x28+12))==weaponName) {
-            if(found!=0)throw new Exception("ambiguous M4 item record");found=pool+(uint)i*0x28;
+            if(found!=0)throw new Exception("ambiguous weapon item record");found=pool+(uint)i*0x28;
         }
-        if(found==0)throw new Exception("M4 item record missing");
+        if(found==0)throw new Exception("weapon item record missing");
+        return found;
+    }
+    object WeaponDefaultParts(string weaponName,byte[] registry) {
+        uint found=FindItemRecord(weaponName);
         uint detailIndex=BitConverter.ToUInt16(Read(found+2,2),0);
         uint detailCount=BitConverter.ToUInt16(Read(0x02dbba30,2),0);
         if(detailIndex==0||detailIndex>=detailCount)throw new Exception("M4 details index invalid");
@@ -1604,7 +1608,10 @@ class ClientAssets {
             items.Add(Obj("item_id",item["item_id"],"kind",item["kind"],"name",name,"wire_index",wire));
         return items;
     }
-    public static void ExportWeaponModels(IntPtr process) {
+    public static void ExportWeaponModels(IntPtr process,string target) {
+        if(target!="m4_mp" && target!="famasss_mp" && target!="ak104ss_mp")
+            throw new Exception("weapon model target outside fixed allowlist");
+        string stem=target.Substring(0,target.Length-3);
         var r=new ClientAssets(process);var names=new SortedSet<string>();var itemNames=new SortedSet<string>();
         if(r.Word(0x01a2e7ec)!=10)throw new Exception("load the training map before capturing weapon models");
         byte[] entries=r.Read(0x01fc4e28,100000*28),heads=r.Read(0x01bc9f20,80000*4);
@@ -1631,8 +1638,8 @@ class ClientAssets {
             }
         }
         var tables=new Dictionary<string,object>();
-        foreach(string name in names)if(name.IndexOf("m4",StringComparison.OrdinalIgnoreCase)>=0) {
-            if(tables.Count>=32)throw new Exception("M4 table budget");
+        foreach(string name in names)if(name.IndexOf(stem,StringComparison.OrdinalIgnoreCase)>=0) {
+            if(tables.Count>=32)throw new Exception("weapon table budget");
             try{tables[name]=r.Table(name);}catch(Exception e){tables[name]=Obj("error",e.Message);}
         }
         foreach(string name in new string[]{"mp/coWeapItems/ast.csv","mp/coCharItemStatsTable.csv","mp/coWeapSlotDefs.csv",
@@ -1646,11 +1653,16 @@ class ClientAssets {
             if(name.EndsWith("_default",StringComparison.Ordinal)||name.EndsWith("_none",StringComparison.Ordinal))
                 defaults.Add(Obj("index",id,"name",name));
         }
-        var weapons=new List<object>();var compatible=new List<object>();uint baseIndex=0;int count=Count(r.Word(0x07817b88),899);
+        var weapons=new List<object>();var compatible=new List<object>();object baseDetails=null;uint baseIndex=0;int count=Count(r.Word(0x07817b88),899);
         for(uint i=1;i<=count;i++) {
             uint def=r.Word(0x017f5a40+i*4);string name=r.Name(r.Word(def));
-            if(name=="m4_mp") {
+            if(name==target) {
                 baseIndex=i;
+                var item=r.FindItemRecord(name);
+                uint detail=BitConverter.ToUInt16(r.Read(item+2,2),0);
+                uint details=r.Word(0x02dbba2c)+detail*0x4c;
+                baseDetails=Obj("details_base64",Convert.ToBase64String(r.Read(details,0x4c)),
+                    "runtime",r.WeaponRuntimeFields(def));
                 // 0x42e3b0: per-base compatibility count and (attachment,
                 // attribute) ushort pairs. Resolve names through its registry.
                 int n=Count(r.Read(0x017f5848+i,1)[0],64);
@@ -1660,8 +1672,14 @@ class ClientAssets {
                     if(id>=16384)throw new Exception("attachment ID budget");
                     uint attachment=r.Word(0x017e5848+id*4);
                     string partName=attachment==0?null:r.Name(attachment);
+                    uint attrIndex=BitConverter.ToUInt16(pairs,part*4+2);
+                    uint attr=r.Word(0x017f7a48+attrIndex*4);int attrCount=Count(r.Word(attr+4),256);
+                    byte[] attrs=r.Read(r.Word(attr+8),attrCount*12);var strings=new List<object>();
+                    for(int a=0;a<attrCount;a++)if(attrs[a*12]==0 || attrs[a*12]==39)
+                        strings.Add(Obj("kind",attrs[a*12],"operation",attrs[a*12+1],
+                            "offset",BitConverter.ToUInt16(attrs,a*12+4),"value",r.Name(U(attrs,a*12+8))));
                     compatible.Add(Obj("index",id,"name",partName,
-                        "attribute_index",BitConverter.ToUInt16(pairs,part*4+2),
+                        "attribute_index",attrIndex,"string_attributes",strings,
                         "items",r.AttachmentItems(partName,id)));
                 }
             }
@@ -1669,7 +1687,7 @@ class ClientAssets {
             // 0x42e3b0 embeds WeaponDef at composition+0xa0; 0x42dc10 writes
             // counts+0x91/+0x92 and model arrays+0xf68/+0xfac.
             uint record=checked(def-0xa0);
-            if(r.Name(record)!=name)throw new Exception("composed M4 record identity mismatch");
+            if(r.Name(record)!=name)throw new Exception("composed weapon record identity mismatch");
             int parts=Count(r.Read(record+0x92,1)[0],17);
             var models=new List<object>();
             for(uint part=0;part<parts;part++) {
@@ -1678,7 +1696,8 @@ class ClientAssets {
                     "world",world!=0&&modelHeaders.Contains(world)?r.Name(r.Word(world)):null,
                     "view",view!=0&&modelHeaders.Contains(view)?r.Name(r.Word(view)):null));
             }
-            weapons.Add(Obj("index",i,"name",name,"attachment_count",r.Read(record+0x91,1)[0],"models",models));
+            weapons.Add(Obj("index",i,"name",name,"attachment_count",r.Read(record+0x91,1)[0],"models",models,
+                "definition_base64",Convert.ToBase64String(r.Read(def,0xe28)),"runtime",r.WeaponRuntimeFields(def)));
         }
         var firstPerson=new List<object>();
         uint slot=r.Word(0x07817bb8);
@@ -1755,7 +1774,7 @@ class ClientAssets {
         }
         var output=Obj("schema_version",1,"read_only",true,
             "client_sha256","e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b",
-            "connection_state",r.Word(0x01a2e7ec),"ncs_crc",r.Word(0x02df7d90),"model_table_names",names,"item_table_names",itemNames,"tables",tables,"weapons",weapons,"compatible_attachments",compatible,"default_attachment_names",defaults,"m4_default_parts",r.M4DefaultParts(attachmentNames),"first_person",firstPerson,"candidate_hands",candidateHands);
+            "connection_state",r.Word(0x01a2e7ec),"ncs_crc",r.Word(0x02df7d90),"target",target,"base_details",baseDetails,"model_table_names",names,"item_table_names",itemNames,"tables",tables,"weapons",weapons,"compatible_attachments",compatible,"default_attachment_names",defaults,"m4_default_parts",r.M4DefaultParts(attachmentNames),"target_default_parts",r.WeaponDefaultParts(target,attachmentNames),"first_person",firstPerson,"candidate_hands",candidateHands);
         var serializer=new JavaScriptSerializer();serializer.MaxJsonLength=8*1024*1024;
         Console.WriteLine(serializer.Serialize(output));
     }

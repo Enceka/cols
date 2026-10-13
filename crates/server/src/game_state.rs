@@ -733,7 +733,7 @@ impl PreparedGameState {
                         && ammo.reserve <= 2047
                         && ammo
                             .fire_interval_msec
-                            .is_none_or(|n| (50..=2000).contains(&n))
+                            .is_none_or(|n| (1..=2000).contains(&n))
                         && ammo
                             .reload
                             .is_none_or(|r| r.valid() && ammo.fire_interval_msec.is_some())
@@ -2462,6 +2462,100 @@ mod tests {
             output.display()
         );
     }
+    #[test]
+    #[ignore = "audits the locally captured weapon catalogue"]
+    fn captured_bullet_catalogue_validates_owned_backpacks() {
+        use base64::{Engine, engine::general_purpose::STANDARD};
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../research-output");
+        let mut state = PreparedGameState::load(&root.join("tdm-afghan-hud-state.json")).unwrap();
+        let source = state.arsenal_file.as_ref().unwrap();
+        let captured: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(source).unwrap()).unwrap();
+        let arsenal = state.arsenal.clone().unwrap();
+        let mut rows = Vec::new();
+        let mut failed = Vec::new();
+        for w in captured["weapons"].as_array().unwrap() {
+            let Some(items) = w["item_ids"].as_array() else {
+                continue;
+            };
+            let definition = STANDARD
+                .decode(w["definition_base64"].as_str().unwrap())
+                .unwrap();
+            let word = |offset: usize| {
+                u32::from_le_bytes(definition[offset..offset + 4].try_into().unwrap())
+            };
+            let kind = word(0x47c);
+            if kind != 0 {
+                continue;
+            }
+            let item = items[0].as_u64().unwrap() as u32;
+            let result = arsenal
+                .resolve(item, &[], &[item], 352)
+                .and_then(|r| PreparedGameState::resolved_with_alternate(&arsenal, r, Some(54)))
+                .and_then(|w| {
+                    state.bootstrap_weapon = Some(w);
+                    state.validate()
+                });
+            let error = result.err().map(|e| e.to_string());
+            if error.is_some() && word(0x48c) <= 5 {
+                failed.push((w["name"].clone(), error.clone()));
+            }
+            rows.push(serde_json::json!({"name":w["name"],"item":item,"fire_type":word(0x48c),"interval_msec":word(0xd10),"equipment_valid":error.is_none(),"error":error}));
+        }
+        let output = root.join("eel-lava-native/gun-audit.json");
+        std::fs::write(&output,serde_json::to_vec_pretty(&serde_json::json!({"schema_version":1,"native_client_used":false,"weapons":rows,"failures":failed})).unwrap()).unwrap();
+        assert!(
+            failed.is_empty(),
+            "unavailable regular bullet guns: {failed:?}; see {}",
+            output.display()
+        );
+    }
+
+    #[test]
+    #[ignore = "requires local captured Afghan arsenal"]
+    fn captured_eel_backpack_keeps_its_native_sub_tick_fire_interval() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../research-output");
+        let mut state = PreparedGameState::load(&root.join("tdm-afghan-hud-state.json")).unwrap();
+        let arsenal = state.arsenal.as_ref().unwrap();
+        let parts = [11751, 11758, 11762];
+        let owned = [11857, 11751, 11758, 11762];
+        let weapon = PreparedGameState::resolved_with_alternate(
+            arsenal,
+            arsenal.resolve(11857, &parts, &owned, 352).unwrap(),
+            Some(54),
+        )
+        .unwrap();
+        assert_eq!(weapon.name, "famasss_mp");
+        assert_eq!(weapon.ammo.as_ref().unwrap().fire_interval_msec, Some(35));
+        state.bootstrap_weapon = Some(weapon);
+        state.validate().unwrap();
+        let mut p = state.primary_player().unwrap();
+        let command = |time| codol_protocol::game_usercmd::UserCommand {
+            time,
+            buttons: 1,
+            weapons: [352, 0, 0],
+            ..Default::default()
+        };
+        p.apply(&command(1001));
+        p.apply(&command(1035));
+        p.apply(&command(1036));
+        p.apply(&command(1071));
+        assert_eq!(
+            p.take_shots().iter().map(|x| x.time).collect::<Vec<_>>(),
+            [1001, 1036, 1071]
+        );
+        assert_eq!(p.equipment().ammo.unwrap().clip, 33);
+        state
+            .bootstrap_weapon
+            .as_mut()
+            .unwrap()
+            .ammo
+            .as_mut()
+            .unwrap()
+            .fire_interval_msec = Some(0);
+        assert!(state.validate().is_err());
+    }
+
     #[test]
     #[ignore = "requires local captured Afghan arsenal"]
     fn captured_special_forms_and_stock_keep_native_inventory_ammo_and_mobility() {

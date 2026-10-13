@@ -37,6 +37,7 @@ struct Weapon {
     definition: Vec<u8>,
     melee_charge_animation: bool,
     defaults: BTreeMap<u8, Part>,
+    no_optic: Option<Part>,
     items: BTreeMap<u32, Part>,
     attributes: BTreeMap<u16, Vec<[u8; 12]>>,
 }
@@ -268,6 +269,7 @@ impl Arsenal {
                 captured.name
             );
             let mut defaults = BTreeMap::new();
+            let mut no_optic = None;
             let mut items = BTreeMap::new();
             let mut attributes = BTreeMap::new();
             let mut part_wires = BTreeMap::new();
@@ -320,11 +322,14 @@ impl Arsenal {
                 // and exits at the first match. Preserve that selection.
                 attributes.entry(compatible.wire_index).or_insert(records);
                 for part in compatible.items {
-                    if matches!(part.item_id, 0 | 20008) {
+                    if part.item_id == 0 {
                         continue;
                     }
                     ensure!(
-                        valid_part(&part)
+                        (valid_part(&part)
+                            || (part.item_id == 20008
+                                && part.kind == 3
+                                && part.name == "sco_none"))
                             && part.name == compatible.name
                             && part.wire_index == compatible.wire_index,
                         "compatible attachment record identity mismatch"
@@ -332,6 +337,14 @@ impl Arsenal {
                     // Compact lookup aliases absent from the independent
                     // item table must never become ownable selections.
                     if !canonical_part(&part, &market) {
+                        continue;
+                    }
+                    if part.item_id == 20008 {
+                        ensure!(
+                            part.kind == 3 && part.name == "sco_none",
+                            "invalid native no-optic attachment"
+                        );
+                        no_optic = Some(part);
                         continue;
                     }
                     if let Some(previous) =
@@ -367,6 +380,7 @@ impl Arsenal {
                             definition,
                             melee_charge_animation,
                             defaults,
+                            no_optic,
                             items,
                             attributes
                         }
@@ -489,9 +503,20 @@ impl Arsenal {
             );
             selected.insert(part.kind, part);
         }
-        let attachments: Vec<_> = selected.values().map(|part| part.wire_index).collect();
+        // 0x568c80 appends sco_none when the native class has an iron-sight
+        // part (kind10) and no optic (kind3). It selects the raised/lowered
+        // sight tags even though item20008 is not an owned upgrade.
+        let no_optic = (!selected.contains_key(&3) && selected.contains_key(&10))
+            .then_some(weapon.no_optic.as_ref())
+            .flatten();
+        let attachments: Vec<_> = selected
+            .values()
+            .copied()
+            .chain(no_optic)
+            .map(|part| part.wire_index)
+            .collect();
         let mut records = Vec::new();
-        for part in selected.values() {
+        for part in selected.values().copied().chain(no_optic) {
             if let Some(attributes) = weapon.attributes.get(&part.wire_index) {
                 records.extend_from_slice(attributes);
             }
@@ -577,6 +602,51 @@ mod tests {
 
     fn load(value: &Value) -> Arsenal {
         Arsenal::from_bytes(&serde_json::to_vec(value).unwrap(), 123).unwrap()
+    }
+
+    #[test]
+    fn native_no_optic_uses_sight_tags_without_requiring_owned_upgrade() {
+        let mut value = capture();
+        let market = &mut value["marketplace"];
+        for (id, name) in [
+            (20008, "sco_none"),
+            (20587, "iro_default"),
+            (20608, "red_reflex"),
+        ] {
+            market["rows"] = json!(market["rows"].as_u64().unwrap() + 1);
+            for cell in [id.to_string(), name.into(), "wat".into()]
+                .into_iter()
+                .chain(std::iter::repeat_n(String::new(), 9))
+            {
+                market["cells_base64"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(json!(STANDARD.encode(cell)));
+            }
+        }
+        value["weapons"][0]["defaults"]["parts"]
+            .as_array_mut()
+            .unwrap()
+            .push(part(20587, 10, "iro_default", 30));
+        value["weapons"][0]["compatible"]
+            .as_array_mut()
+            .unwrap()
+            .extend([
+                json!({"name":"sco_none","wire_index":31,"items":[part(20008,3,"sco_none",31)],"attributes_base64":""}),
+                json!({"name":"red_reflex","wire_index":32,"items":[part(20608,3,"red_reflex",32)],"attributes_base64":""}),
+            ]);
+        let a = load(&value);
+        let irons = a.resolve(10001, &[], &[10001], 352).unwrap();
+        assert_eq!(irons.composed_name, "** 163 0 0 10 11 30 31");
+        let explicit_none = a.resolve(10001, &[20008], &[10001], 352).unwrap();
+        assert_eq!(explicit_none.composed_name, irons.composed_name);
+        let optic = a.resolve(10001, &[20608], &[10001, 20608], 352).unwrap();
+        assert_eq!(optic.composed_name, "** 163 0 0 32 10 11 30");
+        assert!(a.resolve(10001, &[20608], &[10001], 352).is_err());
+        assert_eq!(
+            a.resolve(10010, &[], &[10010], 353).unwrap().attachments,
+            Vec::<u16>::new()
+        );
     }
 
     fn word(value: &ResolvedWeapon, offset: usize) -> u32 {

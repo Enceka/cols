@@ -24,6 +24,8 @@ def main():
     mode.add_argument("--experiment", type=Path, help="a running experiment.json")
     parser.add_argument("--prefix-name", help="project-owned build prefix; experiment selects its own prefix")
     parser.add_argument("--sample-ready", type=Path, help="new experiment-local readiness receipt for replay sampling")
+    parser.add_argument("--weapon-models-target", choices=("m4_mp","famasss_mp","ak104ss_mp"),
+                        help="fixed weapon model/animation target; default M4")
     extract = parser.add_mutually_exclusive_group()
     extract.add_argument("--frontend-assets", action="store_true", help="read the fixed native frontend movie and map/mode tables")
     extract.add_argument("--assets", action="store_true", help="extract the fixed profile-schema and data-table allowlist")
@@ -49,6 +51,8 @@ def main():
     extract.add_argument("--tactical-assets", action="store_true", help="read native shock files, status tables, NCS order and parameter blocks")
     extract.add_argument("--hud-assets", action="store_true", help="read loaded native HUD/menu identities and fixed HUD rawfiles")
     args = parser.parse_args()
+    if args.weapon_models_target and (not args.weapon_models or not args.experiment):
+        parser.error("weapon-models-target requires weapon-models and a running experiment")
     if args.sample_ready and (not args.experiment or not args.replay):
         parser.error("sample-ready requires an experiment and replay sampling")
     if args.sample_ready:
@@ -101,7 +105,8 @@ def main():
         if "finished_unix" in state:
             parser.error("experiment has already ended")
         actual = subprocess.check_output(["/bin/ps", "-p", str(state["pid"]), "-o", "comm="], text=True).strip()
-        if actual != state["argv"][1]:
+        from clientlib import matches_client_image
+        if not matches_client_image(actual, state["argv"][1], prefix):
             parser.error("recorded PID is no longer the research client")
         if not stamp.is_file():
             parser.error("build the probe first with --build")
@@ -109,6 +114,8 @@ def main():
         if hashes != {"sources_sha256": source_hashes, "binary_sha256": sha256(binary)}:
             parser.error("probe changed; rebuild it")
         command = [wine, str(binary)] + (["--frontend-assets"] if args.frontend_assets else ["--glass"] if args.glass else ["--map-check"] if args.map_check else ["--hud-assets"] if args.hud_assets else ["--tactical-assets"] if args.tactical_assets else ["--appearance-load"] if args.appearance_load else ["--outfits"] if args.outfits else ["--grounding"] if args.grounding else ["--replay"] if args.replay else ["--feedback"] if args.feedback else ["--assets"] if args.assets else ["--profiles"] if args.profiles else ["--net-constants"] if args.net_constants else ["--map-entities"] if args.map_entities else ["--bootstrap-weapon"] if args.bootstrap_weapon else ["--weapon-models"] if args.weapon_models else ["--arsenal"] if args.arsenal else ["--collision"] if args.collision else ["--weapon-registry"] if args.weapon_registry else ["--training-target"] if args.training_target else ["--bullet-impacts"] if args.bullet_impacts else ["--characters"] if args.characters else ["--hit-regions"] if args.hit_regions else [])
+        if args.weapon_models_target:
+            command.append(args.weapon_models_target)
         if args.sample_ready:
             # Consume the native marker while stdout remains file-backed. This
             # avoids both startup races and pipe deadlocks from large frames.

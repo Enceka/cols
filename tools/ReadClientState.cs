@@ -55,7 +55,7 @@ class ReadClientState {
             bool netConstants=args.Length==1 && args[0]=="--net-constants";
             bool mapEntities=args.Length==1 && args[0]=="--map-entities";
             bool bootstrapWeapon=args.Length==1 && args[0]=="--bootstrap-weapon";
-            bool weaponModels=args.Length==1 && args[0]=="--weapon-models";
+            bool weaponModels=(args.Length==1 || args.Length==2) && args[0]=="--weapon-models";
             bool arsenal=args.Length==1 && args[0]=="--arsenal";
             bool collision=args.Length==1 && args[0]=="--collision";
             bool glass=args.Length==1 && args[0]=="--glass";
@@ -105,7 +105,7 @@ class ReadClientState {
                 if(netConstants) { ClientAssets.ExportNetConstants(process);return 0; }
                 if(mapEntities) { ClientAssets.ExportMapEntities(process);return 0; }
                 if(bootstrapWeapon) { ClientAssets.ExportBootstrapWeapon(process);return 0; }
-                if(weaponModels) { ClientAssets.ExportWeaponModels(process);return 0; }
+                if(weaponModels) { ClientAssets.ExportWeaponModels(process,args.Length==2?args[1]:"m4_mp");return 0; }
                 if(arsenal) { ClientAssets.ExportArsenal(process);return 0; }
                 if(collision) { ClientAssets.ExportCollision(process);return 0; }
                 if(frontendAssets) { ClientAssets.ExportFrontendAssets(process); return 0; }
