@@ -87,6 +87,34 @@ impl Description {
             && self.mode_crc == crc32fast::hash(mode.as_bytes())
     }
 
+    /// Query-4 browser result (0xa55700 -> 0x701db0): preserve the room's
+    /// address, owner, names and attributes; insert its session ID and current
+    /// player count. The session ID becomes the paging cursor (0xa558b0),
+    /// while the distinct channel ID in the tail becomes RoomObj.id (0x68c790).
+    /// The record includes session security material and must not be logged.
+    pub fn listing_record(
+        &self,
+        session_id: &[u8; 8],
+        current_players: u32,
+    ) -> Result<Vec<u8>, LobbyError> {
+        let mut source = Reader::new(&self.encoded);
+        let address = source.blob()?;
+        let session_kind = source.u32()?;
+        let maximum = source.u32()?;
+        let tail = source
+            .remaining()
+            .strip_suffix(&[0])
+            .ok_or(LobbyError("room description terminator missing"))?;
+        let mut out = Writer::default();
+        out.blob(address)?;
+        out.blob(session_id)?;
+        out.u32(session_kind);
+        out.u32(maximum);
+        out.u32(current_players);
+        out.0.extend_from_slice(tail);
+        Ok(out.0)
+    }
+
     /// Lookup result (0xa55700→0x701db0) adds a session Blob and player count
     /// to the create form. The receiver is an actual, separately bound UDP peer.
     pub fn allocation_record(

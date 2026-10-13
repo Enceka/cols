@@ -14,6 +14,7 @@
 - `publisher3333.json`：从目标样本独立恢复资源密钥后，用 PyCryptodome 生成的 AES-192-CTR 向量；明文为合成字节或本地研究配置，未包含内嵌 RSA 私钥。
 - `public-profile-synthetic.bin/json`：Python zlib/CRC32 生成的合成 32 KiB 档案及 125 个 Int32 投影字段；仅验证格式和完整性，不是真实玩家档案，也不能作为游戏档案种子。
 - `room-roster-synthetic.bin`：来自3.3.3.3的type14完整房间成员表及定向manifold结构；人类UID替换为42，其他成员元数据清零，只保留实验Bot合成ID、阵营和准备位。验证普通广播内发给模拟Bot的名单不能被遗漏，不包含真实账号或会话资料。
+- `room-browser-synthetic.json`：由本版原生消费者确认的 query4 四条件、普通／分页请求、11/11 双 UInt64 入房参数及保留真实房主结构的列表记录；独立 Python tagged 编码生成，身份和密钥为合成值。分页使用末条 session ID，列表项入房使用另一个 channel ID；不是大厅展示或真人入房的实机验收。
 
 真实票据接受与大厅握手证据另见 docs/AUTH_LOBBY_PROGRESS.md；不将真实会话密钥、票据或业务明文加入这些 fixtures。
 
