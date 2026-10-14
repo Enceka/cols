@@ -68,6 +68,10 @@ impl LocalServices {
     pub async fn publisher_playlist_version(&self) -> Result<u32> {
         self.publisher.playlist_version().await
     }
+    pub(crate) async fn player_nickname(&self, account: AccountId) -> Result<Option<String>> {
+        crate::backend::players::nickname(&self.accounts.root, account.title_id, account.user_id)
+            .await
+    }
     pub(crate) async fn subscribe_lobby(&self, session: &Session) -> Subscription {
         let (subscription, replaced) = self.delivery.subscribe(session.into(), self.rooms.clone());
         let mut pushes = Vec::new();

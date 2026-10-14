@@ -1,6 +1,9 @@
 use super::*;
 
 impl Connection {
+    pub(crate) fn set_player_name(&mut self, name: Option<String>) {
+        self.configured_name = name;
+    }
     pub fn stage(&self) -> &'static str {
         if self.gamestate_acknowledged {
             "gamestate_acknowledged"
@@ -254,7 +257,8 @@ impl Connection {
             let challenge = self
                 .challenge
                 .ok_or_else(|| anyhow::anyhow!("connect before challenge"))?;
-            self.display_name = Some(validate_connect(connect, owner, build, challenge)?);
+            let name = validate_connect(connect, owner, build, challenge)?;
+            self.display_name = Some(self.configured_name.clone().unwrap_or(name));
             self.owner_id = owner;
             self.connected = true;
             // 0x466b24..0x466c22 initializes netchan, enters state 5 and starts

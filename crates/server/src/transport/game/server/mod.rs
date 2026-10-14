@@ -586,6 +586,10 @@ impl GameServer {
                             );
                             connection.connection =
                                 crate::transport::game::connection::Connection::with_game_state(state);
+                            if let Some(services) = &self.services {
+                                let account = crate::contracts::account::AccountId { title_id: admission.title, user_id: admission.owner };
+                                connection.connection.set_player_name(services.player_nickname(account).await?);
+                            }
                             if resource_collection {
                                 connection.connection =
                                     connection.connection.with_resource_collection();

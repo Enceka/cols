@@ -388,6 +388,19 @@ fn native_encoded_nickname_is_decoded_without_accepting_controls() {
     assert_eq!(decode_connect_name("cXVpdAo="), "cXVpdAo=");
 }
 #[test]
+fn configured_player_name_is_used_only_after_connect_identity_is_verified() {
+    let mut connection = Connection {
+        challenge: Some(12345),
+        ..Default::default()
+    };
+    connection.set_player_name(Some("同名玩家".into()));
+    let valid = b"\xff\xff\xff\xffconnect fffffffffffffffe \"\\name\\ClientDefault\\xuid\\fffffffffffffffe\\challenge\\12345\\2490\\7\"";
+    assert!(connection.handle(valid, 42, 7).is_err());
+    assert!(connection.display_name.is_none());
+    connection.handle(valid, u64::MAX - 1, 7).unwrap();
+    assert_eq!(connection.display_name.as_deref(), Some("同名玩家"));
+}
+#[test]
 fn predicted_inputs_are_queued_until_the_clock_reaches_them_without_losing_transitions() {
     let mut c = Connection {
         last_snapshot_time: 1000,

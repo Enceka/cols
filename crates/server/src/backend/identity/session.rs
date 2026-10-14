@@ -20,8 +20,26 @@ pub struct SessionRegistry {
 struct RegistryState {
     tickets: HashMap<[u8; 128], Session>,
     current: HashMap<(u32, u64), Session>,
+    names: HashMap<(u32, u64), String>,
 }
 impl SessionRegistry {
+    pub(crate) fn set_display_name(&self, title_id: u32, user_id: u64, name: String) -> Result<()> {
+        self.entries
+            .lock()
+            .map_err(|_| anyhow::anyhow!("session registry poisoned"))?
+            .names
+            .insert((title_id, user_id), name);
+        Ok(())
+    }
+    pub(crate) fn display_name(&self, title_id: u32, user_id: u64) -> Result<Option<String>> {
+        Ok(self
+            .entries
+            .lock()
+            .map_err(|_| anyhow::anyhow!("session registry poisoned"))?
+            .names
+            .get(&(title_id, user_id))
+            .cloned())
+    }
     pub fn insert(&self, ticket: [u8; 128], session: Session) -> Result<()> {
         let mut entries = self
             .entries

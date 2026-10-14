@@ -115,6 +115,25 @@ impl AuthServer {
     pub fn address(&self) -> Result<SocketAddr> {
         Ok(self.listener.local_addr()?)
     }
+    pub async fn with_local_players(self, root: Option<&Path>) -> Result<Self> {
+        if let (Some(root), Some(title)) = (root, self.local_title_id) {
+            let path = root.join("profiles").join(title.to_string());
+            if path.exists() {
+                let mut entries = tokio::fs::read_dir(path).await?;
+                while let Some(entry) = entries.next_entry().await? {
+                    let Ok(user_id) = entry.file_name().to_string_lossy().parse::<u64>() else {
+                        continue;
+                    };
+                    if let Some(name) =
+                        crate::backend::players::nickname(root, title, user_id).await?
+                    {
+                        self.registry.set_display_name(title, user_id, name)?;
+                    }
+                }
+            }
+        }
+        Ok(self)
+    }
     pub fn directory(&self) -> &Path {
         &self.directory
     }
@@ -282,7 +301,10 @@ async fn issue_local(
         expires_at,
         license_id: u64::from(request.title_id),
         user_id: request.user_id,
-        username: format!("Player_{:016x}", request.user_id),
+        username: registry
+            .display_name(request.title_id, request.user_id)?
+            .map(|name| STANDARD.encode(name))
+            .unwrap_or_else(|| format!("Player_{:016x}", request.user_id)),
         session_key: key,
     };
     let response = local_ticket_response(request, &ticket)?;

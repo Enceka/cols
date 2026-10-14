@@ -158,6 +158,22 @@ pub fn player_rank(arguments: &[u8], user_id: u64) -> Result<(u8, u8), LobbyErro
     Ok(((rank - 1) as u8, prestige as u8))
 }
 
+/// Create a clean local private profile at the selected displayed level.
+pub fn new_private(user_id: u64, rank: u8) -> Result<Vec<u8>, LobbyError> {
+    if !(1..=70).contains(&rank) {
+        return Err(LobbyError("private profile rank out of range"));
+    }
+    let mut blank = vec![0; SNAPSHOT_BYTES];
+    let crc = crc32fast::hash(&blank[4..]);
+    blank[..4].copy_from_slice(&crc.to_le_bytes());
+    let seed = prepare_private(&blank, user_id, true)?;
+    let (mut plain, _) = snapshot_and_tail(&seed)?;
+    plain[4887..4891].copy_from_slice(&u32::from(rank).to_le_bytes());
+    plain[4891..4895].copy_from_slice(&4u32.to_le_bytes());
+    plain[8297..8299].copy_from_slice(&i16::from(rank - 1).to_le_bytes());
+    encode_private(plain)
+}
+
 /// Prepare a local level-one private profile from an intact client-default
 /// snapshot. Preserve all unrelated bytes, including the observed zero header.
 pub fn prepare_private(
@@ -253,6 +269,21 @@ pub fn public_record(user_id: u64, arguments: &[u8]) -> Result<Vec<u8>, LobbyErr
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn fresh_private_profiles_cover_all_levels_without_inheriting_progress() {
+        for level in 1..=70 {
+            let bytes = new_private(123, level).unwrap();
+            assert_eq!(player_rank(&bytes, 123).unwrap(), (level - 1, 0));
+            let (plain, _) = snapshot_and_tail(&bytes).unwrap();
+            assert_eq!(&plain[4844..4848], &0u32.to_le_bytes());
+            assert_eq!(&plain[4891..4895], &4u32.to_le_bytes());
+            assert_eq!(&plain[8297..8299], &i16::from(level - 1).to_le_bytes());
+            assert!(player_rank(&bytes, 124).is_err());
+        }
+        for level in [0, 71, 255] {
+            assert!(new_private(123, level).is_err());
+        }
+    }
     fn fixture() -> Vec<u8> {
         include_bytes!(concat!(
             env!("CARGO_MANIFEST_DIR"),

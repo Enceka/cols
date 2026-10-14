@@ -190,7 +190,19 @@ async fn local_tickets_bind_request_identity_and_use_fresh_session_keys() {
     let temp = tempfile::tempdir().unwrap();
     let mut settings = options(temp.path(), false);
     settings.local_title_id = Some(1002);
-    let server = AuthServer::bind(settings).await.unwrap();
+    let data = temp.path().join("players");
+    let account = data.join("profiles/1002/2");
+    std::fs::create_dir_all(&account).unwrap();
+    std::fs::write(account.join("player.json"), serde_json::to_vec(&serde_json::json!({
+        "schema_version":1,"client_sha256":codol_protocol::CLIENT_SHA256,"title_id":1002,"user_id":"2",
+        "player_id":"11111111111111111111111111111111", "settings":{"nickname":"同名玩家","level":37,"unlock_all":true}
+    })).unwrap()).unwrap();
+    let server = AuthServer::bind(settings)
+        .await
+        .unwrap()
+        .with_local_players(Some(&data))
+        .await
+        .unwrap();
     let address = server.address().unwrap();
     let (stop, stopped) = oneshot::channel();
     let task = tokio::spawn(server.run(async {
@@ -220,6 +232,11 @@ async fn local_tickets_bind_request_identity_and_use_fresh_session_keys() {
         let plain = codol_protocol::auth::ticket::decrypt_ticket(&bytes, 1).unwrap();
         assert_eq!(&plain[5..9], &1002u32.to_le_bytes());
         assert_eq!(&plain[25..33], &2u64.to_le_bytes());
+        let end = plain[33..97].iter().position(|&byte| byte == 0).unwrap();
+        assert_eq!(
+            STANDARD.decode(&plain[33..33 + end]).unwrap(),
+            "同名玩家".as_bytes()
+        );
         keys.push(plain[97..121].to_vec());
     }
     assert_ne!(keys[0], keys[1]);

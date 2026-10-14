@@ -22,6 +22,7 @@ pub(crate) struct Connection {
     resource_collection: bool,
     challenge: Option<u32>,
     display_name: Option<String>,
+    configured_name: Option<String>,
     owner_id: u64,
     scoreboard_sent: bool,
     hud_rules_sent: bool,

@@ -28,6 +28,23 @@ struct Cli {
 // CLI arguments are parsed once at startup, outside gameplay frame processing.
 #[allow(clippy::large_enum_variant)]
 enum Command {
+    /// Create an independent local player from an externally prepared starter template.
+    CreateLocalPlayer {
+        #[arg(long)]
+        source_data_dir: PathBuf,
+        #[arg(long)]
+        template: PathBuf,
+        #[arg(long)]
+        output_parent: PathBuf,
+        #[arg(long, default_value_t = 1002)]
+        title_id: u32,
+        #[arg(long)]
+        nickname: String,
+        #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u8).range(1..=70))]
+        level: u8,
+        #[arg(long)]
+        unlock_all: bool,
+    },
     /// Open the local management panel for configuration, diagnostics and logs.
     Admin {
         #[arg(long, default_value = "127.0.0.1:39080")]
@@ -340,6 +357,29 @@ pub(super) async fn run() -> Result<()> {
                 serde_json::json!({"backup":backup,"level":70,"rank_version":4,"experience_within_rank":0,"cp":cp,"gp":gp,"scope":"local_test_account"})
             );
         }
+        Command::CreateLocalPlayer {
+            source_data_dir,
+            template,
+            output_parent,
+            title_id,
+            nickname,
+            level,
+            unlock_all,
+        } => {
+            let directory = crate::backend::players::create(
+                &source_data_dir,
+                &template,
+                &output_parent,
+                title_id,
+                crate::backend::players::Settings {
+                    nickname,
+                    level,
+                    unlock_all,
+                },
+            )
+            .await?;
+            println!("{}", serde_json::json!({"player_directory": directory}));
+        }
         Command::PreparePrivateProfile {
             assets,
             snapshot,
@@ -510,6 +550,9 @@ pub(super) async fn run() -> Result<()> {
                 local_title_id,
             })
             .await?;
+            let server = server
+                .with_local_players(service_data_dir.as_deref())
+                .await?;
             ready["auth"] = serde_json::json!(server.address()?);
             if let Some(bind) = lobby_bind {
                 let mut lobby = LobbyServer::bind_with_services(
