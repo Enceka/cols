@@ -44,6 +44,9 @@ impl StunServer {
     pub fn address(&self) -> Result<SocketAddr> {
         Ok(self.primary.local_addr()?)
     }
+    pub fn alternate_address(&self) -> Result<SocketAddr> {
+        Ok(self.alternate.local_addr()?)
+    }
     pub async fn run<F: Future<Output = std::io::Result<()>>>(self, shutdown: F) -> Result<()> {
         // Diagnostic disk I/O must neither delay address discovery nor end
         // the live service. Bound both queued records and total capture count.

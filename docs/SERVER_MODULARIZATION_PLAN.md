@@ -10,6 +10,7 @@ crates/server/src/
 ├── lib.rs                          # 顶层模块入口
 ├── app/
 │   ├── cli.rs                      # CLI 解析、命令执行与启动装配
+│   ├── readiness.rs                # 原生启动器的进程身份与就绪契约
 │   ├── config.rs
 │   └── services/                   # LocalServices：业务组合、房间投递与档案快照
 ├── contracts/                     # 无凭据的 AccountId、接收者身份与任务结果
@@ -39,6 +40,7 @@ crates/server/src/
 │   ├── identity/session.rs         # 登录会话、凭据有效性
 │   ├── profile/                    # 公私有档案读取与保存
 │   ├── inventory/                  # 基础物品所有权
+│   ├── progression/                # 等级模型、经验事务、结算回执与读取投影
 │   ├── commerce/                   # 商品、钱包、永久物品购买
 │   ├── publisher/                  # 公共文件、元数据、playlist 版本
 │   ├── files/                      # 玩家文件、配额与身份范围
@@ -108,6 +110,7 @@ crates/server/src/
 | 边界 | 入口与约束 |
 | --- | --- |
 | 应用启动 | [`app::run`](../crates/server/src/app/mod.rs)，二进制入口仅建立 Tokio runtime |
+| 启动器就绪 | `app/readiness` 在端点、地图和业务装配完成后原子发布本次进程记录；接口见 [NATIVE_LAUNCHER.md](NATIVE_LAUNCHER.md) |
 | 业务组合 | [`LocalServices`](../crates/server/src/app/services/mod.rs)，组合各业务服务和房间投递；本身不再包含全部任务处理与存储实现 |
 | 大厅分发 | [`TaskRouter`](../crates/server/src/transport/lobby/router.rs)，分发到按业务组织的 handlers；handlers 保持原生错误码、回执与顺序 |
 | 账号数据 | [`AccountStore`](../crates/server/src/infra/storage/accounts.rs)，一个实例共享同一数据目录与写锁，不能为各业务单独建立互不相关的写锁 |
@@ -121,6 +124,8 @@ crates/server/src/
 `LocalWorld::from_prepared` 为每个世界建立独立的动态碰撞状态；直接构造世界也保持玻璃与物件隔离，不依赖连接层额外处理。其可变组件仅在 crate 内可见，当前由连接桥接代码协调；它不是供账号业务修改的公共上下文。账号文件、房间成员、网络凭据不能加入该对象。
 
 存储和账号业务使用 `contracts::account::AccountId`，不依赖网络会话结构，也不为读取档案构造虚假的登录凭据。认证层将已验证会话转换成账号身份；`contracts` 不反向依赖业务实现。
+
+等级业务通过 `contracts::progression::MatchAward`接收可信对局结果，事务和回执位于`backend/progression`，由`app/services`组合。档案和库存服务读取同一已提交投影；玩法不能直接修改账号文件，传输层不生成经验奖励策略。当前普通对局尚未调用发奖接口，具体状态见[等级接入进展](PROGRESSION_PREPARATION.md)。
 
 已准备地图目录会加载并组合运行时准备状态，因此位于 `game/session/catalog`；出生准备工具会执行碰撞与模式校验，因此位于 `diagnostics/map_starts`。`content` 只承载资源定义和静态选择解析，不反向构造运行时世界。
 

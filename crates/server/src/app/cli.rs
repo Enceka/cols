@@ -185,6 +185,9 @@ enum Command {
         /// Enemy body-pose capture; may be written after the server starts.
         #[arg(long, requires = "game_state")]
         hit_regions: Option<PathBuf>,
+        /// Atomically publish the native launcher contract after services are assembled.
+        #[arg(long, requires_all = ["local_title_id", "lobby_bind", "service_data_dir", "stun_bind", "game_bind", "game_state", "game_map_catalog"])]
+        launcher_ready_file: Option<PathBuf>,
     },
     /// Parse an observed task-10 JSON body; identifiers are omitted from output.
     InspectAuth {
@@ -200,6 +203,9 @@ enum Command {
     Observe {
         #[arg(long, default_value = "configs/local.toml")]
         config: PathBuf,
+        /// Atomically publish the observer's bound listeners to the native launcher.
+        #[arg(long)]
+        launcher_ready_file: Option<PathBuf>,
     },
     /// Validate listener configuration without opening sockets.
     CheckConfig {
@@ -487,7 +493,14 @@ pub(super) async fn run() -> Result<()> {
             continuous_play,
             game_capture_every,
             hit_regions,
+            launcher_ready_file,
         } => {
+            let mut ready = serde_json::json!({
+                "kind":"native_services", "lobby_protocol":210, "game_protocol":3,
+                "title_id":local_title_id, "continuous_play":continuous_play,
+                "native_bot_rooms":native_bot_rooms,
+                "game_state_loaded":false, "map_catalog_loaded":false
+            });
             let server = AuthServer::bind(AuthOptions {
                 bind,
                 certificate: cert,
@@ -497,6 +510,7 @@ pub(super) async fn run() -> Result<()> {
                 local_title_id,
             })
             .await?;
+            ready["auth"] = serde_json::json!(server.address()?);
             if let Some(bind) = lobby_bind {
                 let mut lobby = LobbyServer::bind_with_services(
                     bind,
@@ -508,6 +522,7 @@ pub(super) async fn run() -> Result<()> {
                 if continuous_play {
                     lobby = lobby.with_continuous_play()?;
                 }
+                ready["lobby"] = serde_json::json!(lobby.address()?);
                 tracing::info!(address=%lobby.address()?,"Rust lobby listener ready");
                 tracing::info!(address=%server.address()?,directory=%server.directory().display(),"Rust AUTH listener ready");
                 let (stop, receiver) = tokio::sync::watch::channel(false);
@@ -532,6 +547,7 @@ pub(super) async fn run() -> Result<()> {
                             state = state.with_continuous_play();
                         }
                         game = game.with_game_state(state);
+                        ready["game_state_loaded"] = serde_json::json!(true);
                     }
                     if let Some(path) = hit_regions {
                         game = game.with_hit_regions(path);
@@ -546,6 +562,7 @@ pub(super) async fn run() -> Result<()> {
                             catalog = catalog.with_continuous_play();
                         }
                         game = game.with_game_map_catalog(catalog);
+                        ready["map_catalog_loaded"] = serde_json::json!(true);
                     }
                     if native_bot_rooms {
                         let services = lobby
@@ -573,16 +590,22 @@ pub(super) async fn run() -> Result<()> {
                     tracing::info!(address=%endpoint.address(),"experimental Rust game UDP endpoint ready");
                     lobby = lobby.with_game_endpoint(endpoint).await?;
                     game = game.with_services(lobby.services());
+                    ready["game"] = serde_json::json!(game.admissions().address());
                     tasks.spawn(game.run(wait_for_stop(receiver.clone())));
                 }
                 if let Some(bind) = stun_bind {
                     let stun =
                         StunServer::bind(bind, stun_alt, server.directory().join("stun")).await?;
                     tracing::info!(address=%stun.address()?,"Rust STUN listener ready");
+                    ready["stun"] = serde_json::json!(stun.address()?);
+                    ready["stun_alt"] = serde_json::json!(stun.alternate_address()?);
                     tasks.spawn(stun.run(wait_for_stop(receiver.clone())));
                 }
                 tasks.spawn(server.run(wait_for_stop(receiver.clone())));
                 tasks.spawn(lobby.run(wait_for_stop(receiver)));
+                if let Some(path) = launcher_ready_file {
+                    super::readiness::publish(&path, ready).await?;
+                }
                 let outcome = tokio::select! {
                     result=tokio::signal::ctrl_c()=>result.context("shutdown signal"),
                     result=tasks.join_next()=>result.context("service task missing")?.context("service task failed")?,
@@ -640,11 +663,23 @@ pub(super) async fn run() -> Result<()> {
             let config = Config::load(&config)?;
             println!("{}", serde_json::to_string_pretty(&config)?);
         }
-        Command::Observe { config } => {
+        Command::Observe {
+            config,
+            launcher_ready_file,
+        } => {
             let observer = Observer::bind(Config::load(&config)?).await?;
             tracing::info!(directory = %observer.directory().display(), "observation run created; no game responses enabled");
             for (name, address) in observer.addresses()? {
                 tracing::info!(listener = name, %address, "TCP listener ready");
+            }
+            if let Some(path) = launcher_ready_file {
+                let listeners: std::collections::BTreeMap<_, _> =
+                    observer.addresses()?.into_iter().collect();
+                super::readiness::publish(
+                    &path,
+                    serde_json::json!({"kind":"tcp_observer","listeners":listeners}),
+                )
+                .await?;
             }
             observer.run(tokio::signal::ctrl_c()).await?;
             tracing::info!("all capture sessions closed");
