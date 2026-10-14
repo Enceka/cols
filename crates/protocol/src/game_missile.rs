@@ -8,6 +8,8 @@ pub struct MissileSnapshot {
     pub weapon: u16,
     pub present: bool,
     pub generation: u32,
+    pub owner: u8,
+    pub angles: [u16; 3],
 }
 pub(crate) fn write(
     out: &mut Writer,
@@ -16,8 +18,10 @@ pub(crate) fn write(
 ) -> Result<(), LobbyError> {
     for states in [missiles, baselines] {
         for (i, state) in states.iter().enumerate() {
-            if !(1700..1708).contains(&state.entity_number)
+            if !((1700..1708).contains(&state.entity_number)
+                || (1648..1664).contains(&state.entity_number))
                 || !(1..900).contains(&state.weapon)
+                || state.owner >= 12
                 || state
                     .origin
                     .iter()
@@ -51,7 +55,7 @@ pub(crate) fn write(
         out.bits(1, 1);
         out.bits(36, 6);
         let mut previous = -1;
-        for index in [0, 1, 2, 8, 17, 20, 33, 36] {
+        for index in [0, 1, 2, 6, 7, 8, 16, 17, 20, 33, 36] {
             gap(out, (index - previous) as u32);
             previous = index;
             match index {
@@ -71,6 +75,16 @@ pub(crate) fn write(
                     );
                 }
                 17 => scalar(out, 1, u32::from(base.is_some()), 8),
+                6 | 7 | 16 => {
+                    let axis = match index {
+                        6 => 2,
+                        7 => 0,
+                        _ => 1,
+                    };
+                    out.bits(0, 2);
+                    out.bytes
+                        .extend_from_slice(&current.angles[axis].to_le_bytes());
+                }
                 // -98 absolute 30-bit branch, like the corpse reset flags.
                 20 => {
                     out.bits(1, 1);
@@ -82,7 +96,12 @@ pub(crate) fn write(
                     base.map_or(0, |b| u32::from(b.weapon)),
                     32,
                 ),
-                36 => scalar(out, 0, 0, 11), // owner local client0
+                36 => scalar(
+                    out,
+                    u32::from(current.owner),
+                    base.map_or(0, |b| u32::from(b.owner)),
+                    11,
+                ),
                 _ => unreachable!(),
             }
         }
@@ -152,6 +171,10 @@ mod tests {
                     assert_eq!(reader.bits(1).unwrap(), 1);
                     f32::from(reader.bits(16).unwrap() as u16 as i16).to_bits()
                 }
+                -79 => {
+                    assert_eq!(reader.bits(2).unwrap(), 0);
+                    u32::from(reader.u16().unwrap())
+                }
                 -98 => {
                     assert_eq!(reader.bits(1).unwrap(), 1);
                     reader.bits(30).unwrap()
@@ -178,7 +201,9 @@ mod tests {
     #[test]
     fn native_missile_fields_survive_every_bit_alignment_and_reused_slots() {
         let first = MissileSnapshot {
-            entity_number: 1700,
+            owner: 7,
+            angles: [8192, 49152, 1024],
+            entity_number: 1648,
             origin: [10.0, -2.0, 4.0],
             weapon: 95,
             present: true,
@@ -188,6 +213,8 @@ mod tests {
             origin: [20.0, -4.0, 8.0],
             weapon: 232,
             generation: 2,
+            owner: 11,
+            angles: [65535, 32768, 0],
             ..first
         };
         for alignment in 0..8 {
@@ -198,7 +225,7 @@ mod tests {
             let mut reader = Reader::new(&out.bytes);
             reader.bits(alignment).unwrap();
             assert_eq!(reader.bits(2).unwrap(), 2);
-            assert_eq!(reader.bits(11).unwrap(), 1700);
+            assert_eq!(reader.bits(11).unwrap(), 1648);
             assert_eq!(reader.bits(3).unwrap(), 6);
             let base = fields(&mut reader, &BTreeMap::new());
             assert_eq!(base[&4], 4);
@@ -207,16 +234,24 @@ mod tests {
             assert_eq!(base[&0xc], 1);
             assert_eq!(base[&8], 2);
             assert_eq!(base[&0xd0], 95);
+            assert_eq!(base[&0x80], 7);
+            assert_eq!(base[&0x3c], 8192);
+            assert_eq!(base[&0x40], 49152);
+            assert_eq!(base[&0x44], 1024);
             assert_eq!(reader.u8().unwrap(), 0xee);
             let mut delta = Writer::default();
             write(&mut delta, &[second], &[first]).unwrap();
             delta.bytes.push(0xee);
             let mut reader = Reader::new(&delta.bytes);
             assert_eq!(reader.bits(2).unwrap(), 2);
-            assert_eq!(reader.bits(11).unwrap(), 1700);
+            assert_eq!(reader.bits(11).unwrap(), 1648);
             assert_eq!(reader.bits(3).unwrap(), 6);
             let state = fields(&mut reader, &base);
             assert_eq!(state[&0xd0], 232);
+            assert_eq!(state[&0x80], 11);
+            assert_eq!(state[&0x3c], 65535);
+            assert_eq!(state[&0x40], 32768);
+            assert_eq!(state[&0x44], 0);
             assert_eq!(state[&8], 0);
             assert_eq!(state[&0x18], 20f32.to_bits());
             assert_eq!(reader.u8().unwrap(), 0xee);
@@ -225,7 +260,7 @@ mod tests {
             removed.bytes.push(0xee);
             let mut reader = Reader::new(&removed.bytes);
             assert_eq!(reader.bits(2).unwrap(), 2);
-            assert_eq!(reader.bits(11).unwrap(), 1700);
+            assert_eq!(reader.bits(11).unwrap(), 1648);
             assert_eq!(reader.bits(1).unwrap(), 1);
             assert_eq!(reader.u8().unwrap(), 0xee);
         }

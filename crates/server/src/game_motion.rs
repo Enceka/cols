@@ -663,6 +663,15 @@ impl Collision {
         self.raycast_mask(start, end, PLAYER_MASK)
     }
     pub(crate) fn projectile_trace(&self, start: V3, end: V3, radius: f32) -> Trace {
+        self.projectile_trace_excluding_prop(start, end, radius, None)
+    }
+    pub(crate) fn projectile_trace_excluding_prop(
+        &self,
+        start: V3,
+        end: V3,
+        radius: f32,
+        ignore: Option<u16>,
+    ) -> Trace {
         let capsule = Capsule {
             radius,
             segment_half: 0.0,
@@ -681,7 +690,7 @@ impl Collision {
             },
             &mut trace,
         );
-        self.trace_props(start, end, Some(capsule), SHOT_MASK, None, &mut trace);
+        self.trace_props(start, end, Some(capsule), SHOT_MASK, ignore, &mut trace);
         trace
     }
     pub fn movement_surface(&self, start: V3, end: V3) -> Trace {

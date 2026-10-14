@@ -35,6 +35,7 @@ mod game_navigation;
 mod game_perks;
 mod game_player;
 mod game_replay;
+mod game_sam;
 mod game_scavenger;
 pub mod game_server;
 mod game_smoke;

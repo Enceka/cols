@@ -15,17 +15,23 @@ const LIFE_MSEC: u32 = 60_000;
 const WRECK_MSEC: u32 = 5_000;
 
 #[derive(Clone, Copy)]
-pub(crate) struct SentryDefinition {
+pub(crate) struct DeviceDefinition {
+    native_id: u8,
     model: u16,
     wreck_model: u16,
     bounds: ModelBounds,
     wreck_bounds: ModelBounds,
     pub weapon: u16,
     interval: u32,
-    ballistics: Ballistics,
+    armament: Armament,
     explosion_fx: u16,
 }
-impl SentryDefinition {
+#[derive(Clone, Copy)]
+enum Armament {
+    Bullets(Ballistics),
+    Sam(crate::game_sam::Weapon),
+}
+impl DeviceDefinition {
     pub fn from_resources(r: &RadarResources) -> Option<Self> {
         let weapon = r.weapons.get("sentry_minigun_mp")?;
         let falloff = DamageFalloff::from_stages(weapon.damage_stages, weapon.damage_ranges)?;
@@ -53,13 +59,33 @@ impl SentryDefinition {
             return None;
         }
         Some(Self {
+            native_id: 16,
             model: *r.models.get("sentry_minigun")?,
             wreck_model: *r.models.get("sentry_minigun_destroyed")?,
             bounds,
             wreck_bounds,
             weapon: weapon.weapon,
             interval: u32::from(weapon.fire_interval_msec),
-            ballistics,
+            armament: Armament::Bullets(ballistics),
+            explosion_fx: *r.effects.get("explosions/sentry_gun_explosion_instant")?,
+        })
+    }
+    pub fn sam_from_resources(r: &RadarResources) -> Option<Self> {
+        let weapon = crate::game_sam::Weapon::from_resources(r)?;
+        let bounds = *r.model_bounds.get("t5_weapon_sam_turret")?;
+        let model = *r.models.get("t5_weapon_sam_turret")?;
+        if !bounds.valid() {
+            return None;
+        }
+        Some(Self {
+            native_id: 21,
+            model,
+            wreck_model: model,
+            bounds,
+            wreck_bounds: bounds,
+            weapon: weapon.index,
+            interval: weapon.interval,
+            armament: Armament::Sam(weapon),
             explosion_fx: *r.effects.get("explosions/sentry_gun_explosion_instant")?,
         })
     }
@@ -68,7 +94,7 @@ pub(crate) struct Placement {
     entity: u16,
     origin: [f32; 3],
     angles: [u16; 3],
-    definition: SentryDefinition,
+    definition: DeviceDefinition,
 }
 #[derive(Debug)]
 pub(crate) enum PlacementFailure {
@@ -111,7 +137,25 @@ impl Deployables {
         player: Actor,
         collision: &Collision,
     ) -> Result<Placement, PlacementFailure> {
-        let definition = SentryDefinition::from_resources(r).ok_or(PlacementFailure::Resources)?;
+        let definition = DeviceDefinition::from_resources(r).ok_or(PlacementFailure::Resources)?;
+        self.plan_device(definition, player, collision)
+    }
+    pub fn plan_sam(
+        &self,
+        r: &RadarResources,
+        player: Actor,
+        collision: &Collision,
+    ) -> Result<Placement, PlacementFailure> {
+        let definition =
+            DeviceDefinition::sam_from_resources(r).ok_or(PlacementFailure::Resources)?;
+        self.plan_device(definition, player, collision)
+    }
+    fn plan_device(
+        &self,
+        definition: DeviceDefinition,
+        player: Actor,
+        collision: &Collision,
+    ) -> Result<Placement, PlacementFailure> {
         let entity = (FIRST_ENTITY..END_ENTITY)
             .find(|id| !self.devices.iter().any(|d| d.placement.entity == *id))
             .ok_or(PlacementFailure::PoolExhausted)?;
@@ -210,7 +254,7 @@ impl Deployables {
         {
             return false;
         }
-        tracing::info!(entity=placement.entity,owner,team,now,origin=?placement.origin,"sentry deployed");
+        tracing::info!(entity=placement.entity,id=placement.definition.native_id,owner,team,now,origin=?placement.origin,"reward device deployed");
         self.devices.push(Device {
             placement,
             owner,
@@ -250,12 +294,19 @@ impl Deployables {
             })
             .collect::<Vec<_>>();
         snapshots.sort_by_key(|p| p.entity_number);
+        snapshots.retain(|p| {
+            self.devices.iter().any(|d| {
+                d.placement.entity == p.entity_number
+                    && (d.health > 0 || d.placement.definition.native_id != 21)
+            })
+        });
         snapshots
     }
     fn sync_collision(&self, collision: &Collision) {
         let shapes = self
             .devices
             .iter()
+            .filter(|d| d.health > 0 || d.placement.definition.native_id != 21)
             .map(|d| {
                 let b = if d.health == 0 {
                     d.placement.definition.wreck_bounds
@@ -346,6 +397,9 @@ impl Deployables {
         }
         let mut shots = Vec::new();
         for d in &mut self.devices {
+            let Armament::Bullets(ballistics) = d.placement.definition.armament else {
+                continue;
+            };
             if d.health == 0 || now < d.next_fire {
                 continue;
             }
@@ -371,7 +425,7 @@ impl Deployables {
                     let distance = delta.into_iter().map(|v| v * v).sum::<f32>().sqrt();
                     let yaw = delta[1].atan2(delta[0]).to_degrees();
                     let angle = (yaw - base + 180.0).rem_euclid(360.0) - 180.0;
-                    if distance > d.placement.definition.ballistics.range || angle.abs() > 70.0 {
+                    if distance > ballistics.range || angle.abs() > 70.0 {
                         return None;
                     }
                     let center = [a.origin[0], a.origin[1], a.origin[2] + a.height * 0.5];
@@ -395,11 +449,76 @@ impl Deployables {
                     eye,
                     angles,
                     weapon: d.placement.definition.weapon,
-                    ballistics: d.placement.definition.ballistics,
+                    ballistics,
                 });
             }
         }
         shots
+    }
+    pub fn sam_launches(
+        &mut self,
+        now: u32,
+        targets: &[crate::game_airspace::Target],
+        emp_teams: u8,
+        capacity: usize,
+        collision: &Collision,
+    ) -> Vec<crate::game_sam::Launch> {
+        let mut launches = Vec::new();
+        for d in &mut self.devices {
+            let Armament::Sam(weapon) = d.placement.definition.armament else {
+                continue;
+            };
+            if d.health == 0
+                || now >= d.end
+                || now < d.next_fire
+                || emp_teams & (1 << d.team) != 0
+                || launches.len() >= capacity
+            {
+                continue;
+            }
+            let origin = [
+                d.placement.origin[0],
+                d.placement.origin[1],
+                d.placement.origin[2] + d.placement.definition.bounds.max[2] + 2.0,
+            ];
+            let target = targets
+                .iter()
+                .filter(|t| t.source.team != d.team)
+                .filter_map(|t| {
+                    let distance = (0..3)
+                        .map(|i| (t.center[i] - origin[i]).powi(2))
+                        .sum::<f32>()
+                        .sqrt();
+                    if distance > 5000.0 {
+                        return None;
+                    }
+                    let trace = collision.raycast_excluding_prop(
+                        origin,
+                        t.center,
+                        Some(d.placement.entity),
+                    );
+                    if trace.start_solid
+                        || trace.all_solid
+                        || (trace.fraction < 1.0 && trace.prop_entity != Some(t.entity))
+                    {
+                        return None;
+                    }
+                    Some((distance, *t))
+                })
+                .min_by(|a, b| a.0.total_cmp(&b.0));
+            if let Some((_, target)) = target {
+                d.next_fire = now.saturating_add(weapon.interval);
+                launches.push(crate::game_sam::Launch {
+                    owner: d.owner,
+                    team: d.team,
+                    device: d.placement.entity,
+                    origin,
+                    target,
+                    weapon,
+                });
+            }
+        }
+        launches
     }
     pub fn drain(&mut self) -> Vec<Event> {
         self.events.drain(..).collect()
@@ -474,6 +593,55 @@ mod tests {
         let plan = d.plan_sentry(&test_resources(), owner, c).unwrap();
         assert!(d.place(plan, 0, 1, 1000, &[owner], c));
         d
+    }
+    #[test]
+    fn sam_only_launches_at_visible_enemies_with_capacity_and_without_emp() {
+        let mut r = test_resources();
+        r.models.insert("t5_weapon_sam_turret".into(), 133);
+        r.model_bounds.insert(
+            "t5_weapon_sam_turret".into(),
+            r.model_bounds["sentry_minigun"],
+        );
+        r.effects.insert("explosions/aerial_explosion".into(), 5);
+        let mut w = r.weapons["sentry_minigun_mp"].clone();
+        w.weapon = 351;
+        w.weapon_type = 2;
+        w.projectile_speed = 3000;
+        w.fire_interval_msec = 750;
+        w.radius = 300;
+        w.damage_stages[0] = 1000;
+        r.weapons.insert("tow_turret_mp".into(), w);
+        let c = collision(false);
+        let owner = actor(0, 1, 0.0, 0.0);
+        let mut devices = Deployables::default();
+        let plan = devices.plan_sam(&r, owner, &c).unwrap();
+        assert!(devices.place(plan, 0, 1, 1000, &[owner], &c));
+        let mut t = crate::game_airspace::Target {
+            entity: 448,
+            source: crate::game_killstreaks::SupportFlight {
+                actor: 6,
+                id: 1,
+                team: 1,
+                start: 0,
+                end: 30000,
+            },
+            center: [500.0, 0.0, 200.0],
+        };
+        assert!(devices.sam_launches(1500, &[t], 0, 16, &c).is_empty());
+        t.source.team = 2;
+        assert!(devices.sam_launches(1500, &[t], 2, 16, &c).is_empty());
+        assert!(devices.sam_launches(1500, &[t], 0, 0, &c).is_empty());
+        assert!(
+            devices
+                .sam_launches(1500, &[t], 0, 16, &collision(true))
+                .is_empty()
+        );
+        let mut distant = t;
+        distant.center[0] = 6000.0;
+        assert!(devices.sam_launches(1500, &[distant], 0, 16, &c).is_empty());
+        assert_eq!(devices.sam_launches(1500, &[t], 0, 16, &c).len(), 1);
+        assert!(devices.sam_launches(2249, &[t], 0, 16, &c).is_empty());
+        assert_eq!(devices.sam_launches(2250, &[t], 0, 16, &c).len(), 1);
     }
     #[test]
     fn placement_requires_resources_world_clearance_ground_and_unoccupied_body() {

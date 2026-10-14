@@ -148,6 +148,8 @@ impl ImpactEvents {
             .contains(&self.next_entity)
         {
             codol_protocol::game_props::END_ENTITY
+        } else if (1648..1664).contains(&self.next_entity) {
+            1664
         } else {
             self.next_entity
         };

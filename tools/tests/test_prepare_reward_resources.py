@@ -45,9 +45,11 @@ class RewardResources(unittest.TestCase):
     def test_damage_stages_and_ranges_keep_registered_weapon_values(self):
         a,n,c=sample();raw=bytearray(base64.b64decode(a['weapons'][0]['definition_base64']))
         struct.pack_into('<6I',raw,0xbb4,20,0,0,0,0,10);struct.pack_into('<6f',raw,0xbcc,1200,0,0,0,0,1800)
+        struct.pack_into('<III',raw,0x8f0,17,3000,23)
         a['weapons'][0]['definition_base64']=base64.b64encode(raw).decode()
         r,_=self.run_prepare(a,n,c);w=r['weapons']['killstreak_uav_mp']
         self.assertEqual(w['damage_stages'],[20,0,0,0,0,10]);self.assertEqual(w['damage_ranges'],[1200,0,0,0,0,1800])
+        self.assertEqual(w['projectile_speed'],3000)
     def test_dynamic_character_models_and_composed_guns_do_not_forge_ncs_entries(self):
         a,n,c=sample();a['models'].append(dict(name='dynamic_outfit',index=200));a['weapons'].append(dict(name='** dynamic rifle',index=200))
         r,_=self.run_prepare(a,n,c);self.assertNotIn('dynamic_outfit',r['models'])

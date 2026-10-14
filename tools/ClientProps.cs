@@ -52,6 +52,12 @@ partial class ClientAssets {
                 uint es=ent+0xf0;
                 props.Add(Obj("entity",id,"type",type,"flags",flags,"model",model,"origin",r.EntityOrigin(es),"angles",Floats(r.Read(es+0x3c,12),0,3),"weapon",r.Word(es+0xd0),"event_sequence",r.Word(es+0xac),"event_ids",new uint[]{r.Word(es+0xb0),r.Word(es+0xb8),r.Word(es+0xc0),r.Word(es+0xc8)},"dobj_slot",BitConverter.ToUInt16(r.Read(0x02ef4858+id*2,2),0)));
             }
+            var missiles=new List<object>();
+            for(uint id=1648;id<1664;id++) {
+                uint ent=ents+id*0x238,es=ent+0xf0,flags=r.Word(ent+0x204);
+                if((flags&1)==0||r.Word(es+4)!=4)continue;
+                missiles.Add(Obj("entity",id,"type",r.Word(es+4),"flags",flags,"origin",r.EntityOrigin(es),"angles",Floats(r.Read(es+0x3c,12),0,3),"weapon",r.Word(es+0xd0),"owner",r.Word(es+0x80),"dobj_slot",BitConverter.ToUInt16(r.Read(0x02ef4858+id*2,2),0)));
+            }
             var sounds=new List<object>();byte[] channels=r.Read(0x07810d58,53*0xa8);
             for(int channel=0;channel<53;channel++) {
                 int at=channel*0xa8;uint source=U(channels,at+0xc),alias=U(channels,at+0x68);
@@ -63,7 +69,7 @@ partial class ClientAssets {
                 if(!((source&0x7ff)>=384&&(source&0x7ff)<448)&&name!="sentry_minigun_fire"&&name!="sentry_minigun_cooldown")continue;
                 sounds.Add(Obj("slot",channel,"source",source,"alias",name,"handle",U(channels,at+0x20),"active_byte",channels[at+0x94]));
             }
-            frames.Add(Obj("time",r.Word(cg+0xae4c8),"health",r.Word(cg+0x190),"origin",Floats(r.Read(cg+0x1c,12),0,3),"yaw",Floats(r.Read(cg+0x150,4),0,1)[0],"pitch",Floats(r.Read(cg+0x14c,4),0,1)[0],"props",props,"effects",r.EffectStates(),"device_sounds",sounds));
+            frames.Add(Obj("time",r.Word(cg+0xae4c8),"health",r.Word(cg+0x190),"origin",Floats(r.Read(cg+0x1c,12),0,3),"yaw",Floats(r.Read(cg+0x150,4),0,1)[0],"pitch",Floats(r.Read(cg+0x14c,4),0,1)[0],"props",props,"missiles",missiles,"effects",r.EffectStates(),"device_sounds",sounds));
             System.Threading.Thread.Sleep(50);
         }
         var s=new JavaScriptSerializer();s.MaxJsonLength=16*1024*1024;Console.WriteLine(s.Serialize(Obj("schema_version",1,"read_only",true,"frames",frames)));

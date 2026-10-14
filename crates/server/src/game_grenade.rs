@@ -267,6 +267,8 @@ impl Grenades {
             .unwrap();
         self.missiles.push(Missile {
             snapshot: codol_protocol::game_missile::MissileSnapshot {
+                owner: 0,
+                angles: [0; 3],
                 entity_number,
                 origin,
                 weapon: def.index,

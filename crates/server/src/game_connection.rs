@@ -640,6 +640,10 @@ impl Connection {
         let mut impacts = self.impacts.snapshot(server_time);
         let sounds = self.voices.snapshots();
         let mut missiles = self.grenades.snapshots();
+        if let Some(tdm) = &self.tdm {
+            missiles.extend(tdm.sam_missiles.snapshots());
+            missiles.sort_by_key(|m| m.entity_number);
+        }
         let mut smokes = self.smoke.snapshots(server_time);
         let mut bags = self.scavenger.snapshots();
         let mut shellshock = self.tactical.snapshot(server_time);
@@ -1962,6 +1966,16 @@ impl Connection {
                 h.saturating_sub(hit.damage)
             });
         local.alive = health > 0;
+        if let (Some(diagnostics), Some(resources)) =
+            (state.nuke_resources(), state.radar_resources())
+        {
+            self.tdm.as_mut().unwrap().acceptance_enemy_support(
+                now,
+                diagnostics,
+                resources,
+                collision,
+            );
+        }
         let devices = self.tdm.as_mut().unwrap().step_deployables(
             now,
             (local, motion.view_height + 10.0, health),
@@ -2506,6 +2520,7 @@ impl Connection {
             let mut events = tdm.props.drain();
             events.extend(tdm.deployables.drain());
             events.extend(tdm.airspace.drain());
+            events.extend(tdm.sam_missiles.drain());
             if events.is_empty() {
                 break;
             }
@@ -2964,17 +2979,18 @@ impl Connection {
                     .iter()
                     .find(|r| r.weapon == player.equipment().weapon)
             {
-                if radio.native_id == 16 {
+                if matches!(radio.native_id, 16 | 21) {
                     if player.equipment().firing.is_none_or(|f| f.state == 0) {
                         let state = self.game_state.as_ref().unwrap();
                         let motion = self.motion.as_ref().unwrap();
                         let mut local = state.local_player_snapshot(true).unwrap();
                         local.origin = motion.origin;
                         local.angles = input.angles;
-                        if tdm.deploy_sentry(
+                        if tdm.deploy_device(
                             through,
                             local,
                             motion.view_height + 10.0,
+                            radio.native_id,
                             resources,
                             state.collision.as_ref().unwrap(),
                         ) {

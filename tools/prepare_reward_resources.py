@@ -49,6 +49,7 @@ def prepare(assets_raw, ncs_raw, catalog=None, entities_raw=None):
                           switch=dict(drop_msec=u(0x74c), raise_msec=u(0x750), empty_drop_msec=u(0x768), empty_raise_msec=u(0x764)),
                           fire_interval_msec=weapon['runtime_fields']['fire_interval_msec'],
                           radius=u(0x8d8), inner_damage=u(0x8e0), outer_damage=u(0x8e4),
+                          projectile_speed=u(0x8f4),
                           damage_stages=list(struct.unpack_from('<6I', raw, 0xbb4)),
                           damage_ranges=list(struct.unpack_from('<6f', raw, 0xbcc)))
     radios, unavailable = [], []

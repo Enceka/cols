@@ -246,6 +246,7 @@ pub(crate) struct TdmMatch {
     pub(crate) props: crate::game_props::Props,
     pub(crate) deployables: crate::game_deployables::Deployables,
     pub(crate) airspace: crate::game_airspace::Airspace,
+    pub(crate) sam_missiles: crate::game_sam::Missiles,
     forced_winner: Option<u8>,
     pub(crate) acceptance_stationary: bool,
     pub(crate) acceptance_fire_after_msec: Option<u32>,
@@ -258,6 +259,7 @@ pub(crate) struct TdmMatch {
     start: Option<u32>,
     navigation: std::sync::Arc<crate::game_navigation::Navigation>,
     next_diagnostics: u32,
+    acceptance_support_index: usize,
     next_route_client: usize,
 }
 impl TdmMatch {
@@ -367,6 +369,7 @@ impl TdmMatch {
             props: Default::default(),
             deployables: Default::default(),
             airspace: Default::default(),
+            sam_missiles: Default::default(),
             forced_winner: None,
             acceptance_stationary: false,
             acceptance_fire_after_msec: None,
@@ -379,6 +382,7 @@ impl TdmMatch {
             start: None,
             navigation,
             next_diagnostics: 0,
+            acceptance_support_index: 0,
             next_route_client: 0,
         })
     }
@@ -557,6 +561,55 @@ impl TdmMatch {
         models.sort_by_key(|p| p.entity_number);
         models
     }
+    pub(crate) fn acceptance_enemy_support(
+        &mut self,
+        now: u32,
+        diagnostics: &crate::game_killstreaks::NukeResources,
+        resources: &crate::game_killstreaks::RadarResources,
+        collision: &Collision,
+    ) {
+        if !self.acceptance_stationary || !diagnostics.acceptance_stationary || self.finished {
+            return;
+        }
+        let Some(start) = self.start else {
+            return;
+        };
+        let Some(request) = diagnostics
+            .acceptance_enemy_support
+            .get(self.acceptance_support_index)
+        else {
+            return;
+        };
+        if now.saturating_sub(start) < request.after_msec {
+            return;
+        }
+        let Some(bot) = self
+            .bots
+            .iter()
+            .find(|b| b.snapshot.alive && b.snapshot.team != self.config.teams[0])
+        else {
+            return;
+        };
+        let actor = bot.snapshot.client_index;
+        let origin = bot.snapshot.origin;
+        if !self
+            .streaks
+            .owned_radios(actor)
+            .any(|(_, id)| id == request.native_id)
+        {
+            self.streaks
+                .acceptance_supply_support(actor, request.native_id);
+        }
+        if self.call_radio(now, actor, request.native_id, origin, resources, collision) {
+            self.acceptance_support_index += 1;
+            tracing::info!(
+                now,
+                actor,
+                id = request.native_id,
+                "diagnostic enemy aircraft called through ordinary support path"
+            );
+        }
+    }
     pub(crate) fn call_radio(
         &mut self,
         now: u32,
@@ -610,22 +663,32 @@ impl TdmMatch {
         }
         true
     }
-    pub(crate) fn deploy_sentry(
+    pub(crate) fn deploy_device(
         &mut self,
         now: u32,
         local: EnemySnapshot,
         height: f32,
+        id: u8,
         resources: &crate::game_killstreaks::RadarResources,
         collision: &Collision,
     ) -> bool {
-        if self.finished || !local.alive || !self.streaks.can_radio(0, local.team, 16, now) {
+        if self.finished
+            || !local.alive
+            || !matches!(id, 16 | 21)
+            || !self.streaks.can_radio(0, local.team, id, now)
+        {
             return false;
         }
         let actors = self.actors(local, height);
         let Some(player) = actors.iter().find(|a| a.client == 0).copied() else {
             return false;
         };
-        let placement = match self.deployables.plan_sentry(resources, player, collision) {
+        let planned = if id == 21 {
+            self.deployables.plan_sam(resources, player, collision)
+        } else {
+            self.deployables.plan_sentry(resources, player, collision)
+        };
+        let placement = match planned {
             Ok(placement) => placement,
             Err(reason) => {
                 tracing::info!(now,?reason,origin=?local.origin,yaw=player.yaw,"sentry placement unavailable");
@@ -638,8 +701,19 @@ impl TdmMatch {
         {
             return false;
         }
-        assert!(self.streaks.try_radio(0, local.team, 16, now));
+        assert!(self.streaks.try_radio(0, local.team, id, now));
         true
+    }
+    #[cfg(test)]
+    fn deploy_sentry(
+        &mut self,
+        now: u32,
+        local: EnemySnapshot,
+        height: f32,
+        r: &crate::game_killstreaks::RadarResources,
+        c: &Collision,
+    ) -> bool {
+        self.deploy_device(now, local, height, 16, r, c)
     }
     fn damage_world_model(
         &mut self,
@@ -702,6 +776,26 @@ impl TdmMatch {
         let emp = (1..=2)
             .filter(|&team| self.streaks.emp_active(team, now))
             .fold(0, |mask, team| mask | (1 << team));
+        let targets = self.airspace.targets();
+        for hit in self
+            .sam_missiles
+            .advance(now, self.finished, &targets, collision)
+        {
+            self.damage_world_model(now, hit.entity, hit.damage, hit.owner, false, collision);
+        }
+        let targets = self.airspace.targets();
+        if !self.finished {
+            let launches = self.deployables.sam_launches(
+                now,
+                &targets,
+                emp,
+                self.sam_missiles.capacity(),
+                collision,
+            );
+            for launch in launches {
+                assert!(self.sam_missiles.launch(now, launch));
+            }
+        }
         let shots = self.deployables.step(
             now,
             &self.actors(local, height),

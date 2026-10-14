@@ -162,12 +162,14 @@ pub(crate) struct WeaponFacts {
     pub inner_damage: u32,
     pub outer_damage: u32,
     #[serde(default)]
+    pub projectile_speed: u32,
+    #[serde(default)]
     pub damage_stages: [u32; 6],
     #[serde(default)]
     pub damage_ranges: [f32; 6],
 }
 /// Effect handlers explicitly publish their implemented IDs.
-pub(crate) const SUPPORT_IDS: [u8; 5] = [1, 3, 14, 16, 19];
+pub(crate) const SUPPORT_IDS: [u8; 6] = [1, 3, 14, 16, 19, 21];
 impl RadarResources {
     pub fn load(path: &Path, map: &str, crc: u32) -> Result<Self> {
         ensure!(
@@ -232,6 +234,7 @@ impl RadarResources {
                     .iter()
                     .all(|v| *v <= 15000)
                     && w.radius <= 1_000_000
+                    && w.projectile_speed <= 50000
                     && w.damage_stages.iter().all(|v| *v <= 1_000_000)
                     && w.damage_ranges
                         .iter()
@@ -293,6 +296,13 @@ pub(crate) struct SupportFlight {
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub(crate) struct AcceptanceSupport {
+    pub after_msec: u32,
+    pub native_id: u8,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct NukeResources {
     pub schema_version: u8,
     pub client_sha256: String,
@@ -316,6 +326,8 @@ pub(crate) struct NukeResources {
     pub acceptance_stationary: bool,
     #[serde(default)]
     pub acceptance_fire_after_msec: Option<u32>,
+    #[serde(default)]
+    pub acceptance_enemy_support: Vec<AcceptanceSupport>,
 }
 impl NukeResources {
     pub fn load(path: &Path, map: &str, crc: u32) -> Result<Self> {
@@ -328,6 +340,17 @@ impl NukeResources {
             result
                 .acceptance_fire_after_msec
                 .is_none_or(|t| result.acceptance_stationary && (1000..=600_000).contains(&t))
+                && result.acceptance_enemy_support.len() <= 8
+                && result
+                    .acceptance_enemy_support
+                    .iter()
+                    .all(|s| result.acceptance_stationary
+                        && (1000..=600_000).contains(&s.after_msec)
+                        && matches!(s.native_id, 1 | 3))
+                && result
+                    .acceptance_enemy_support
+                    .windows(2)
+                    .all(|w| w[0].after_msec < w[1].after_msec)
                 && result.acceptance_seed <= 24
                 && ((result.acceptance_seed == 0 && !result.acceptance_stationary)
                     || path
@@ -391,6 +414,7 @@ pub(crate) fn test_resources() -> NukeResources {
         acceptance_seed: 0,
         acceptance_stationary: false,
         acceptance_fire_after_msec: None,
+        acceptance_enemy_support: Vec::new(),
     }
 }
 
@@ -487,6 +511,23 @@ impl Streaks {
         state.previews = previews;
         state.radios_owned = owned;
     }
+    /// Explicit isolated diagnostic stock, never reported as earned kills.
+    pub(crate) fn acceptance_supply_support(&mut self, actor: u8, id: u8) {
+        assert!(actor > 0 && actor < 12 && matches!(id, 1 | 3));
+        self.configure_radios(
+            actor,
+            Previews {
+                ids: [id, 0, 0],
+                targets: [0; 3],
+            },
+        );
+        self.actors[usize::from(actor)].radios_owned[0] = true;
+        tracing::info!(
+            actor,
+            id,
+            "diagnostic enemy support stock supplied; not natural kills"
+        );
+    }
     pub fn enable_supported(&mut self, resources: &RadarResources) {
         self.available = resources
             .radios
@@ -494,7 +535,10 @@ impl Streaks {
             .filter(|r| {
                 SUPPORT_IDS.contains(&r.native_id)
                     && (r.native_id != 16
-                        || crate::game_deployables::SentryDefinition::from_resources(resources)
+                        || crate::game_deployables::DeviceDefinition::from_resources(resources)
+                            .is_some())
+                    && (r.native_id != 21
+                        || crate::game_deployables::DeviceDefinition::sam_from_resources(resources)
                             .is_some())
             })
             .fold(0, |m, r| m | (1u64 << r.native_id));
@@ -598,6 +642,7 @@ impl Streaks {
             .collect()
     }
     pub fn stop_flight(&mut self, source: SupportFlight) {
+        let before = self.support.len();
         self.support.retain(|s| {
             !(s.actor == source.actor
                 && s.id == source.id
@@ -605,6 +650,17 @@ impl Streaks {
                 && s.start == source.start
                 && s.end == source.end)
         });
+        if self.support.len() < before {
+            tracing::info!(
+                actor = source.actor,
+                id = source.id,
+                team = source.team,
+                start = source.start,
+                end = source.end,
+                remaining = self.support.len(),
+                "aircraft support removed"
+            );
+        }
     }
     pub fn radar_flags(&self, team: u8, now: u32) -> u8 {
         let uavs = self
@@ -1053,6 +1109,14 @@ mod tests {
         assert!(NukeResources::load(&path, "mp_afghan", 123).is_err());
         std::fs::write(directory.path().join(".codol-nuke-acceptance"), b"").unwrap();
         assert!(NukeResources::load(&path, "mp_afghan", 123).is_ok());
+        resource["acceptance_enemy_support"] =
+            serde_json::json!([{"after_msec":2000,"native_id":1}]);
+        write(&resource);
+        assert!(NukeResources::load(&path, "mp_afghan", 123).is_ok());
+        resource["acceptance_enemy_support"][0]["native_id"] = 14.into();
+        write(&resource);
+        assert!(NukeResources::load(&path, "mp_afghan", 123).is_err());
+        resource["acceptance_enemy_support"][0]["native_id"] = 1.into();
         resource["acceptance_fire_after_msec"] = 4000.into();
         write(&resource);
         assert!(NukeResources::load(&path, "mp_afghan", 123).is_ok());
@@ -1063,6 +1127,10 @@ mod tests {
             .as_object_mut()
             .unwrap()
             .remove("acceptance_fire_after_msec");
+        resource
+            .as_object_mut()
+            .unwrap()
+            .remove("acceptance_enemy_support");
         resource["acceptance_seed"] = 24.into();
         write(&resource);
         assert!(NukeResources::load(&path, "mp_afghan", 123).is_ok());

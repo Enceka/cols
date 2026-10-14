@@ -67,6 +67,12 @@ struct Flight {
     origin: [f32; 3],
     angles: [u16; 3],
 }
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Target {
+    pub entity: u16,
+    pub source: SupportFlight,
+    pub center: [f32; 3],
+}
 #[derive(Debug)]
 pub(crate) enum Failure {
     Resources,
@@ -194,6 +200,20 @@ impl Airspace {
             .collect::<Vec<_>>();
         snapshots.sort_by_key(|s| s.entity_number);
         snapshots
+    }
+    pub fn targets(&self) -> Vec<Target> {
+        self.flights
+            .iter()
+            .map(|f| {
+                let b = f.plan.definition.bounds;
+                let shape = Collider::new(f.plan.entity, f.origin, f.angles, b.min, b.max);
+                Target {
+                    entity: f.plan.entity,
+                    source: f.source,
+                    center: std::array::from_fn(|i| (shape.min[i] + shape.max[i]) * 0.5),
+                }
+            })
+            .collect()
     }
     pub fn damage(
         &mut self,
