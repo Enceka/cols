@@ -1,5 +1,8 @@
 //! Opt-in local services. Opaque user files are isolated by authenticated
 //! title/UID; no old-build profile or catalogue data is manufactured.
+use crate::lobby_delivery::{
+    DeliveryHub, DirectedPush, Identity, Subscription, publish_with_cleanup,
+};
 use crate::marketplace::{LocalShop, LocalWallet, Payment};
 use crate::{auth_server::write_private, session::Session};
 use anyhow::{Context, Result, ensure};
@@ -13,13 +16,15 @@ use sha2::{Digest, Sha256};
 use std::{
     io::ErrorKind,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 use tokio::{io::AsyncReadExt, sync::Mutex};
 
 pub struct LocalServices {
     root: PathBuf,
     writes: Mutex<()>,
-    rooms: Mutex<crate::rooms::Rooms>,
+    rooms: Arc<Mutex<crate::rooms::Rooms>>,
+    delivery: Arc<DeliveryHub>,
 }
 pub(crate) struct GameProfile {
     pub public: Vec<u8>,
@@ -31,6 +36,8 @@ pub struct TaskResult {
     pub result: Result<Vec<Vec<u8>>, u32>,
     /// Unsolicited lobby kind-2 bodies, sent after the task acknowledgement.
     pub pushes: Vec<Vec<u8>>,
+    /// Plaintext notifications for other authenticated connections.
+    pub deliveries: Vec<DirectedPush>,
 }
 impl TaskResult {
     pub(crate) fn success(label: &'static str, records: Vec<Vec<u8>>) -> Self {
@@ -38,6 +45,7 @@ impl TaskResult {
             label,
             result: Ok(records),
             pushes: Vec::new(),
+            deliveries: Vec::new(),
         }
     }
     pub(crate) fn failure(label: &'static str, code: u32) -> Self {
@@ -45,6 +53,14 @@ impl TaskResult {
             label,
             result: Err(code),
             pushes: Vec::new(),
+            deliveries: Vec::new(),
+        }
+    }
+    pub(crate) fn push_to(&mut self, actor: Identity, target: Identity, body: Vec<u8>) {
+        if actor == target {
+            self.pushes.push(body);
+        } else {
+            self.deliveries.push(DirectedPush { target, body });
         }
     }
 }
@@ -73,6 +89,42 @@ struct LocalInventory {
 const MAX_INVENTORY_FILE_BYTES: usize = 256 * 1024;
 
 impl LocalServices {
+    pub(crate) async fn subscribe_lobby(&self, session: &Session) -> Subscription {
+        let (subscription, replaced) = self.delivery.subscribe(session.into(), self.rooms.clone());
+        let mut pushes = Vec::new();
+        {
+            let mut rooms = self.rooms.lock().await;
+            pushes.extend(rooms.discard_changed_credentials(session));
+            for identity in replaced {
+                pushes.extend(rooms.disconnect(identity));
+            }
+        }
+        publish_with_cleanup(&self.delivery, &self.rooms, pushes).await;
+        subscription
+    }
+    pub(crate) async fn publish_lobby(&self, pushes: Vec<DirectedPush>) {
+        publish_with_cleanup(&self.delivery, &self.rooms, pushes).await;
+    }
+    pub(crate) async fn reap_rooms(&self, now: u32) {
+        let pushes = self.rooms.lock().await.reap(now);
+        self.publish_lobby(pushes).await;
+    }
+    pub(crate) async fn handle_connected(
+        &self,
+        body: &[u8],
+        session: &Session,
+        now: u32,
+        connection: &Subscription,
+    ) -> Result<TaskResult> {
+        ensure!(connection.is_current(), "lobby connection was replaced");
+        let request = Request::parse(body)?;
+        if matches!(request.service, 11 | 21) || (request.service, request.task) == (6, 14) {
+            let mut rooms = self.rooms.lock().await;
+            ensure!(connection.is_current(), "lobby connection was replaced");
+            return rooms.handle(&request, session, now);
+        }
+        self.handle(body, session, now).await
+    }
     pub(crate) fn permits_nuke_diagnostics(&self) -> bool {
         self.root.join(".codol-nuke-acceptance").is_file()
     }
@@ -113,7 +165,8 @@ impl LocalServices {
         Ok(Self {
             root: tokio::fs::canonicalize(root).await?,
             writes: Mutex::new(()),
-            rooms: Mutex::new(crate::rooms::Rooms::default()),
+            rooms: Arc::new(Mutex::new(crate::rooms::Rooms::default())),
+            delivery: Arc::new(DeliveryHub::default()),
         })
     }
 

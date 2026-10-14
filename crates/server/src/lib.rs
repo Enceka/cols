@@ -43,6 +43,7 @@ mod game_top_players;
 mod game_voice;
 mod game_weapon_registry;
 pub mod http;
+pub mod lobby_delivery;
 pub mod lobby_server;
 mod marketplace;
 pub mod observe;

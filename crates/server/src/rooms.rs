@@ -1,12 +1,19 @@
-//! Per-session local room channels. Game sessions and gameplay are separate.
+//! Authenticated room channels and native peer delivery. Gameplay is separate.
+#[path = "room_directory.rs"]
+mod directory;
+#[cfg(test)]
+#[path = "room_directory_tests.rs"]
+mod directory_tests;
+use crate::lobby_delivery::Identity;
+use crate::{services::TaskResult, session::Session};
 #[cfg(test)]
 #[path = "story_room_tests.rs"]
 mod story_tests;
-use crate::{services::TaskResult, session::Session};
-use anyhow::Result;
+use anyhow::{Result, ensure};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use codol_protocol::room::Description;
 use codol_protocol::task::{self, Reader, Request, Writer};
+use directory::{Human, Snapshot};
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
@@ -22,6 +29,7 @@ struct Channel {
     owner_ready: bool,
     roster_requested: bool,
     member_teams: HashMap<u64, u8>,
+    humans: HashMap<u64, Human>,
 }
 struct GameSession {
     id: [u8; 8],
@@ -62,8 +70,9 @@ impl Channel {
         };
         for member in &updates.members {
             anyhow::ensure!(
-                member.id == self.owner
-                    || (1..=11).any(|c| codol_protocol::room_messages::bot_id(c) == member.id),
+                self.humans.contains_key(&member.id)
+                    || (self.bots_announced
+                        && (1..=11).any(|c| codol_protocol::room_messages::bot_id(c) == member.id)),
                 "unexpected member in local bot room"
             );
             anyhow::ensure!(member.team <= 3, "invalid room team");
@@ -146,6 +155,8 @@ fn bot_pushes(
 pub(crate) struct Rooms {
     channels: HashMap<u64, Channel>,
     game_endpoint: Option<Arc<crate::game_server::GameAdmissions>>,
+    snapshots: HashMap<Identity, Snapshot>,
+    pending_events: Vec<crate::lobby_delivery::DirectedPush>,
 }
 impl Rooms {
     pub(crate) fn renew_session(&mut self, session: &Session, now: u32) -> Result<()> {
@@ -160,12 +171,23 @@ impl Rooms {
         }) {
             channel.expires_at = session.expires_at;
         }
+        for channel in self.channels.values_mut() {
+            if let Some(member) = channel.humans.get_mut(&session.user_id)
+                && member.identity == Identity::from(session)
+                && member.key == session.key
+                && member.expires > now
+            {
+                member.expires = session.expires_at;
+            }
+        }
         Ok(())
     }
     pub fn with_game_endpoint(endpoint: Arc<crate::game_server::GameAdmissions>) -> Self {
         Self {
             channels: HashMap::new(),
             game_endpoint: Some(endpoint),
+            snapshots: HashMap::new(),
+            pending_events: Vec::new(),
         }
     }
     pub fn handle(
@@ -174,16 +196,63 @@ impl Rooms {
         session: &Session,
         now: u32,
     ) -> Result<TaskResult> {
-        if session.expires_at > now {
-            for channel in self.channels.values_mut().filter(|c| {
-                c.title_id == session.title_id
-                    && c.owner == session.user_id
-                    && c.session_seed == session.iv_seed
-            }) {
-                channel.expires_at = session.expires_at;
+        let removed = self.reap(now);
+        if session.expires_at <= now {
+            let mut response = TaskResult::failure("expired_room_session", task::TASK_FAILED);
+            for push in removed {
+                response.push_to(session.into(), push.target, push.body);
+            }
+            return Ok(response);
+        }
+        self.renew_session(session, now)?;
+        let mut response = match self.handle_live(request, session, now) {
+            Ok(response) => response,
+            Err(error) => {
+                self.pending_events.extend(removed);
+                return Err(error);
+            }
+        };
+        for push in removed {
+            response.push_to(session.into(), push.target, push.body);
+        }
+        Ok(response)
+    }
+    fn handle_live(
+        &mut self,
+        request: &Request<'_>,
+        session: &Session,
+        now: u32,
+    ) -> Result<TaskResult> {
+        if request.service == 21
+            && (request.task == 13
+                || (request.task == 5 && Reader::new(request.arguments).u32()? == 4))
+        {
+            return self.browse(request, session, now);
+        }
+        if request.service == 11 {
+            match request.task {
+                11 => return self.join(request.arguments, session, now),
+                2 => return self.leave(request.arguments, session, now),
+                15 => return self.members(request.arguments, session, now),
+                4 | 5 => {
+                    let mut r = Reader::new(request.arguments);
+                    let id = r.u64()?;
+                    let human_target = request.task == 5
+                        && self.channels.get(&id).is_some_and(|c| {
+                            r.u64().ok().is_some_and(|uid| c.humans.contains_key(&uid))
+                        });
+                    if self
+                        .channels
+                        .get(&id)
+                        .is_some_and(|c| !c.is_owner(session) || c.humans.len() > 1)
+                        || human_target
+                    {
+                        return self.peer_send(request, session, now);
+                    }
+                }
+                _ => {}
             }
         }
-        self.channels.retain(|_, c| c.expires_at > now);
         match (request.service, request.task) {
             (6, 14) if self.game_endpoint.is_some() => {
                 let endpoint = self.game_endpoint.as_ref().expect("guarded endpoint");
@@ -228,6 +297,12 @@ impl Rooms {
                     ));
                 }
                 let endpoint = self.game_endpoint.as_ref().expect("guarded game endpoint");
+                if channel.humans.len() != 1 {
+                    return Ok(TaskResult::failure(
+                        "shared_game_world_not_available",
+                        task::TASK_FAILED,
+                    ));
+                }
                 let Some(game) = channel.game.as_ref() else {
                     if endpoint.story_capture_map.is_some() {
                         let (id, key) = endpoint.allocate_story(
@@ -269,14 +344,31 @@ impl Rooms {
             }
             (11, 13) => {
                 Reader::new(request.arguments).finish()?;
+                if self
+                    .channels
+                    .values()
+                    .any(|c| c.is_member(session, now) && !c.is_owner(session))
+                {
+                    return Ok(TaskResult::failure("already_in_room", task::TASK_FAILED));
+                }
                 if let Some(endpoint) = &self.game_endpoint {
                     endpoint.revoke_other_sessions(session);
                 }
-                self.channels.retain(|_, c| {
-                    !(c.title_id == session.title_id
-                        && c.owner == session.user_id
-                        && c.session_seed != session.iv_seed)
-                });
+                let old: Vec<_> = self
+                    .channels
+                    .values()
+                    .flat_map(|c| c.humans.values())
+                    .filter(|m| {
+                        m.identity.title == session.title_id
+                            && m.identity.user == session.user_id
+                            && m.identity.seed != session.iv_seed
+                    })
+                    .map(|m| m.identity)
+                    .collect();
+                for identity in old {
+                    let pushes = self.disconnect(identity);
+                    self.pending_events.extend(pushes);
+                }
                 let existing = self
                     .channels
                     .iter()
@@ -317,6 +409,7 @@ impl Rooms {
                             owner_ready: false,
                             roster_requested: false,
                             member_teams: HashMap::new(),
+                            humans: HashMap::from([(session.user_id, Human::owner(session))]),
                         },
                     );
                     id
@@ -324,39 +417,25 @@ impl Rooms {
                 // Target bdChannelInfo decoder 0xa55a40, bound by 0xa4c940.
                 let mut record = Writer::default();
                 record.u64(id);
-                record.u32(1);
+                record.u32(self.channels[&id].population());
                 record.u32(0);
                 record.u64(session.user_id);
                 record.boolean(false);
                 record.boolean(false);
                 record.u32(0);
-                Ok(TaskResult::success(
-                    "local_room_channel_created",
-                    vec![record.0],
-                ))
-            }
-            (11, 2) => {
-                let mut r = Reader::new(request.arguments);
-                let id = r.u64()?;
-                r.finish()?;
-                if !self.channels.get(&id).is_some_and(|c| {
-                    c.title_id == session.title_id
-                        && c.owner == session.user_id
-                        && c.session_seed == session.iv_seed
-                }) {
-                    return Ok(TaskResult::failure(
-                        "room_owner_mismatch",
-                        task::TASK_FAILED,
-                    ));
+                let mut response =
+                    TaskResult::success("local_room_channel_created", vec![record.0]);
+                for push in std::mem::take(&mut self.pending_events) {
+                    response.push_to(session.into(), push.target, push.body);
                 }
-                self.channels.remove(&id);
-                if let Some(endpoint) = &self.game_endpoint {
-                    endpoint.revoke(session);
-                }
-                Ok(TaskResult::success("local_room_channel_left", vec![]))
+                Ok(response)
             }
             (21, 1) => {
                 let description = Description::parse(request.arguments, session.user_id)?;
+                ensure!(
+                    STANDARD.encode(&description.owner_name).len() < 64,
+                    "SDK owner name exceeds capacity"
+                );
                 let Some(channel) = self.channels.get_mut(&description.channel_id).filter(|c| {
                     c.title_id == session.title_id
                         && c.owner == session.user_id
@@ -376,6 +455,18 @@ impl Rooms {
                     id
                 };
                 channel.game = Some(GameSession { id, description });
+                channel
+                    .humans
+                    .get_mut(&session.user_id)
+                    .expect("owner membership")
+                    .name = STANDARD.encode(
+                    &channel
+                        .game
+                        .as_ref()
+                        .expect("registered")
+                        .description
+                        .owner_name,
+                );
                 let mut record = Writer::default();
                 record.blob(&id)?;
                 // Wait for the owner's first broadcast: creation's RPC
@@ -396,6 +487,10 @@ impl Rooms {
                 }
                 let _update_kind = r.u32()?;
                 let description = Description::parse(r.remaining(), session.user_id)?;
+                ensure!(
+                    STANDARD.encode(&description.owner_name).len() < 64,
+                    "SDK owner name exceeds capacity"
+                );
                 let Some(channel) = self.channels.get_mut(&description.channel_id).filter(|c| {
                     c.title_id == session.title_id
                         && c.owner == session.user_id
@@ -413,6 +508,11 @@ impl Rooms {
                     ));
                 };
                 game.description = description;
+                channel
+                    .humans
+                    .get_mut(&session.user_id)
+                    .expect("owner membership")
+                    .name = STANDARD.encode(&game.description.owner_name);
                 Ok(TaskResult::success("local_room_session_updated", vec![]))
             }
             (21, 3) => {
@@ -436,50 +536,6 @@ impl Rooms {
                     endpoint.revoke(session);
                 }
                 Ok(TaskResult::success("local_room_session_deleted", vec![]))
-            }
-            (11, 15) => {
-                let mut r = Reader::new(request.arguments);
-                let id = r.u64()?;
-                let maximum = r.u32()?;
-                r.finish()?;
-                let Some(channel) = self.channels.get(&id).filter(|c| {
-                    c.title_id == session.title_id
-                        && c.owner == session.user_id
-                        && c.session_seed == session.iv_seed
-                        && (1..=100).contains(&maximum)
-                }) else {
-                    return Ok(TaskResult::failure(
-                        "room_owner_mismatch",
-                        task::TASK_FAILED,
-                    ));
-                };
-                let Some(game) = &channel.game else {
-                    return Ok(TaskResult::failure(
-                        "room_session_missing",
-                        task::TASK_FAILED,
-                    ));
-                };
-                // Target 0xa55c20: UInt64, String[64], UInt32.
-                let mut record = Writer::default();
-                record.u64(channel.owner);
-                record.string(&game.description.owner_name);
-                record.u32(0);
-                let mut records = vec![record.0];
-                if channel.bots_announced {
-                    for client in 1..=codol_protocol::room_messages::BOT_CLIENTS {
-                        if records.len() >= maximum as usize {
-                            break;
-                        }
-                        let mut bot = Writer::default();
-                        bot.u64(codol_protocol::room_messages::bot_id(client));
-                        bot.string(
-                            &STANDARD.encode(codol_protocol::room_messages::bot_name(client)),
-                        );
-                        bot.u32(0);
-                        records.push(bot.0);
-                    }
-                }
-                Ok(TaskResult::success("local_room_members", records))
             }
             (11, 5) => {
                 let mut r = Reader::new(request.arguments);
@@ -604,7 +660,7 @@ impl Rooms {
                     let mut push = Writer::default();
                     push.u32(7);
                     push.u64(session.user_id);
-                    push.string(name);
+                    push.string(&STANDARD.encode(name));
                     push.u64(id);
                     push.blob(&payload)?;
                     push.u32(delivery);
@@ -865,7 +921,9 @@ mod tests {
         };
         let bytes = request(codol_protocol::room_messages::bot_id(11));
         let req = Request::parse(&bytes).unwrap();
-        assert!(rooms.handle(&req, &session(43), 1).is_err());
+        let denied = rooms.handle(&req, &session(43), 1).unwrap();
+        assert!(denied.result.is_err());
+        assert!(denied.pushes.is_empty() && denied.deliveries.is_empty());
         let unknown = request(123);
         assert!(
             rooms
@@ -1036,7 +1094,7 @@ mod tests {
             .unwrap();
         let mut reader = Reader::new(&reply[0]);
         assert_eq!(reader.u64().unwrap(), owner.user_id);
-        assert_eq!(reader.string(65).unwrap(), "Lab player");
+        assert_eq!(reader.string(65).unwrap(), "TGFiIHBsYXllcg==");
         assert_eq!(reader.u32().unwrap(), 0);
         let batch = [12, 0, 0, 0, 2, 2, 0, 0, 0, 8, 0, 0, 0, 128, 8, 0];
         let mut message = Writer(vec![11, 3, 4]);
@@ -1097,7 +1155,9 @@ mod tests {
         assert_ne!(create(&mut rooms, &new_session).0, new_id);
         assert!(!rooms.channels.contains_key(&new_id));
         let bad = Request::parse(&[11, 3, 13, 0, 0]).unwrap();
-        assert!(rooms.handle(&bad, &a, 101).is_err());
+        let mut authenticated = a.clone();
+        authenticated.expires_at = 1000;
+        assert!(rooms.handle(&bad, &authenticated, 101).is_err());
         assert!(rooms.channels.is_empty());
     }
     #[test]
@@ -1107,6 +1167,7 @@ mod tests {
         let (id, _) = create(&mut rooms, &owner);
         let (other, _) = create(&mut rooms, &session(43));
         owner.expires_at = 1000;
+        rooms.renew_session(&owner, 99).unwrap();
         let req = Request::parse(&[11, 3, 13, 0]).unwrap();
         let reply = rooms.handle(&req, &owner, 101).unwrap().result.unwrap();
         assert_eq!(Reader::new(&reply[0]).u64().unwrap(), id);

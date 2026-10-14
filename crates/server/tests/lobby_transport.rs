@@ -249,7 +249,7 @@ async fn exercise_lobby(local_services: bool, continuous: bool) {
         let mut r = codol_protocol::task::Reader::new(&push.body);
         assert_eq!(r.u32().unwrap(), 7);
         assert_eq!(r.u64().unwrap(), u64::MAX);
-        assert_eq!(r.string(65).unwrap(), u64::MAX.to_string());
+        assert_eq!(r.string(65).unwrap(), "MTg0NDY3NDQwNzM3MDk1NTE2MTU=");
         assert_eq!(r.u64().unwrap(), channel);
         assert_eq!(r.blob().unwrap(), payload);
         assert_eq!(r.u32().unwrap(), 1);

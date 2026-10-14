@@ -133,6 +133,63 @@ pub fn bot_room_updates(batch: &[u8], owner: u64) -> Result<Updates, LobbyError>
     recipients.extend((1..=BOT_CLIENTS).map(bot_id));
     updates_for(batch, &recipients)
 }
+/// Inspect owner-produced updates for all authenticated channel recipients.
+pub fn channel_updates(batch: &[u8], recipients: &[u64]) -> Result<Updates, LobbyError> {
+    updates_for(batch, recipients)
+}
+/// Participant commands currently supported by the native room relay: join,
+/// request the roster, and ready/cancel. Authoritative owner records are rejected.
+pub fn validate_participant(batch: &[u8], owner: u64) -> Result<(), LobbyError> {
+    fn message(bytes: &[u8], owner: u64, depth: usize) -> Result<(), LobbyError> {
+        if depth > 4 || bytes.is_empty() || bytes.len() > 1024 {
+            return Err(LobbyError("room nesting limit"));
+        }
+        let mut r = Bits { bytes, position: 0 };
+        if r.read(1)? != 0 {
+            return Err(LobbyError("unsupported typed room stream"));
+        }
+        match r.read(8)? {
+            1 => {
+                let count = r.read(32)?;
+                if count > 64 {
+                    return Err(LobbyError("room manifold count"));
+                }
+                for _ in 0..count {
+                    if r.read(1)? != 0 && r.read(64)? != owner {
+                        return Err(LobbyError("participant target must be the owner"));
+                    }
+                    let size = r.read(32)? as usize;
+                    message(&r.bytes(size)?, owner, depth + 1)?;
+                }
+            }
+            6 | 13 => {}
+            16 => {
+                r.read(1)?;
+            }
+            _ => return Err(LobbyError("participant cannot produce this room command")),
+        }
+        Ok(())
+    }
+    if batch.is_empty() || batch.len() > 16384 {
+        return Err(LobbyError("room batch size"));
+    }
+    let mut left = batch;
+    let mut count = 0;
+    while !left.is_empty() {
+        let header = left.get(..4).ok_or(LobbyError("room length missing"))?;
+        let size = u32::from_le_bytes(header.try_into().unwrap()) as usize;
+        let record = left
+            .get(4..4 + size)
+            .ok_or(LobbyError("room record truncated"))?;
+        message(record, owner, 0)?;
+        left = &left[4 + size..];
+        count += 1;
+        if count > 64 {
+            return Err(LobbyError("room batch count"));
+        }
+    }
+    Ok(())
+}
 fn updates_for(batch: &[u8], recipients: &[u64]) -> Result<Updates, LobbyError> {
     fn message(
         bytes: &[u8],
