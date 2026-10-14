@@ -1,4 +1,7 @@
 //! Per-session local room channels. Game sessions and gameplay are separate.
+#[cfg(test)]
+#[path = "story_room_tests.rs"]
+mod story_tests;
 use crate::{services::TaskResult, session::Session};
 use anyhow::Result;
 use base64::{Engine, engine::general_purpose::STANDARD};
@@ -204,7 +207,7 @@ impl Rooms {
                         vec![],
                     ));
                 }
-                let Some(channel) = self.channels.values().find(|c| {
+                let Some((channel_id, channel)) = self.channels.iter().find(|(_, c)| {
                     c.title_id == session.title_id
                         && c.owner == session.user_id
                         && c.session_seed == session.iv_seed
@@ -226,6 +229,25 @@ impl Rooms {
                 }
                 let endpoint = self.game_endpoint.as_ref().expect("guarded game endpoint");
                 let Some(game) = channel.game.as_ref() else {
+                    if endpoint.story_capture_map.is_some() {
+                        let (id, key) = endpoint.allocate_story(
+                            session,
+                            *channel_id,
+                            query.criteria[0],
+                            now,
+                        )?;
+                        let record = codol_protocol::story::allocation_record(
+                            endpoint.address(),
+                            *channel_id,
+                            query.criteria[0],
+                            &id,
+                            &key,
+                        )?;
+                        return Ok(TaskResult::success(
+                            "local_story_transport_allocated",
+                            vec![record],
+                        ));
+                    }
                     return Ok(TaskResult::failure(
                         "game_allocation_requires_live_key",
                         task::TASK_FAILED,

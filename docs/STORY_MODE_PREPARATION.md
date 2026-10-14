@@ -2,7 +2,7 @@
 
 目标为 CODOL 3.3.3.3，客户端 SHA-256 `e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b`。剧情可以沿用现有 Rust 后端的认证、分配、UDP、移动和战斗基础继续接入；当前尚不能开局游玩。最小目标应为首关“身份不明”对应的 `coop_training_mp_cargoship`，原生模式为 `coop`，地图表限定一个玩家。
 
-本版数据含 11 条有章节编号的剧情地图，当前版本列开放 10 条；这表示前端版本准入，不表示资源完整、账号已解锁或玩法可用。当前缺口包括没有 `21/1` 的开局分配、`coop` 地图准备与准入、任务运行、剧情角色和通关持久化。当前 Rust 无 GSC VM，也没有剧情任务模块；不能靠修改地图名完成剧情接入。
+本版数据含 11 条有章节编号的剧情地图，当前版本列开放 10 条；这表示前端版本准入，不表示资源完整、账号已解锁或玩法可用。显式首关采集入口已实现无 `21/1` 的随机密钥分配与原生开局校验，默认 TDM 分配不变。当前缺口包括该路径的原生客户端验证、`coop` 地图准备与准入、任务运行、剧情角色和通关持久化。当前 Rust 无 GSC VM，也没有剧情任务模块；不能靠修改地图名完成剧情接入。
 
 ## 关卡、前端与资源
 
@@ -36,7 +36,7 @@ IFS 清单中没有独立 `.gsc/.csc` 路径。这只说明清单没有列出散
 
 真实首关既有采集 `client-1791288403789` 的 `ui-1791288587762.png` 显示选中“身份不明”并停在“战斗开始”。packet 039/041/042 依次为 `11/13` 建 channel、`21/5` 查询游戏服、`11/4` 房间消息；所有已记录的业务帧均未出现 `21/1`。查询的实际参数为 `query=1, offset=0, maximum=10, build=-688906341`，没有地图字段。这一条采集不证明全部剧情关卡流程一致。
 
-当前 `rooms.rs` 的 `21/5` 分支要求 `channel.game` 存在，密钥来自客户端 `21/1` 描述；缺少描述就返回 `game_allocation_requires_live_key`。这是现有实现的前置条件，而不是已证明的“剧情必须先上传密钥”协议要求。
+默认 `rooms.rs` 的 `21/5` 分支要求 `channel.game` 存在，密钥来自客户端 `21/1` 描述；缺少描述就返回 `game_allocation_requires_live_key`。显式 `--story-capture-map coop_training_mp_cargoship` 允许拥有者的单人 channel 不经 `21/1` 分配随机 security ID/key；分配与登录身份/channel/build 绑定，重试复用，退出、换登录和过期撤销。它没有改变默认 TDM 前置条件。
 
 本版客户端的静态消费者支持进一步恢复这个路径：
 
@@ -44,7 +44,7 @@ IFS 清单中没有独立 `.gsc/.csc` 路径。这只说明清单没有列出散
 - `0x6d4530` 从结果复制 ID、37 字节地址和上述 key 到 61 字节服务器记录，key 位于记录 `+0x2d`。它提供分配回包密钥会被保留的直接静态证据。
 - 游戏服查询调用链为 `0x6e3310 → 0x6d4900 → 0xa56f50`；返回经 `0x6d4790 → 0x6eb2a0 → 0x6eb140` 将完整 `0x228` 字节结果复制到房间查询缓存，包含上述 key。
 
-**据此推断**，无 `21/1` 的分配可尝试由 Rust 游戏服生成随机 key，并在同一条分配记录返回随机 security ID/key/真实地址，让客户端采用该记录。当前尚未用新分配回包实测剧情 DTLS；密钥注册、booking 和握手仍是验收项。现有训练路径可以继续保留客户端上传 key 的行为，不必为研究剧情更改它。
+**据此推断并实现诊断入口**，无 `21/1` 的分配由 Rust 游戏服生成随机 key，并在同一条分配记录返回 security ID/key/真实地址，让客户端采用该记录。诊断结果中的未知属性使用零值，原生客户端对完整记录的接受性仍需验证。当前尚未用新分配回包实测剧情 DTLS；密钥注册、booking 和握手仍是验收项。现有训练路径继续保留客户端上传 key 的行为。
 
 恢复时应把分配身份绑定到当前 title/UID/登录 seed/channel/build，重试复用分配，到期、退出和换登录撤销；使用实际绑定的 UDP 接收端。查询只有 build，不能在此时凭 query 值确定所选关卡。地图/难度应从后续原生房间消息及 `mmstart` 确认，再核对已准备的剧情目录，缺失时明确拒绝。
 
@@ -54,7 +54,7 @@ IFS 清单中没有独立 `.gsc/.csc` 路径。这只说明清单没有列出散
 
 | 能力 | 当前可复用部分 | 剧情缺口 |
 | --- | --- | --- |
-| 账号与游戏通道 | 认证、大厅、channel、booking、P-224/加密 DATA、连接与 stats 上传 | 无 `21/1` 分配记录及真实剧情握手 |
+| 账号与游戏通道 | 认证、大厅、channel、booking、P-224/加密 DATA、连接与 stats 上传；显式首关服务端密钥分配 | 分配结果的客户端接受性及真实剧情握手 |
 | 地图与资源 | NCS/CRC 计算、实体与碰撞提取、gamestate、资源目录 | 本图初始化证据、出生、剧情实体和 `coop` 常量；不能复用 TDM CRC |
 | 玩家与战斗 | 背包/武器、移动、命中/伤害、战斗事件 | 剧情的装备限制、受控移动、死亡/重试规则 |
 | AI | 已实现 TDM Bot 的移动、导航、交战与动画 | 跟随、守点、指令、剧情 NPC、脚本动画及载具；当前 Bot 使用 PLAYER 席位 |
@@ -82,9 +82,34 @@ IFS 清单中没有独立 `.gsc/.csc` 路径。这只说明清单没有列出散
 
 ## 证据与复核
 
-原始捕获、反编译输出和资源表留在忽略目录，不发布剧情脚本、文本、影片、账号或密钥。当前报告使用本版已有真实采集和新的静态核对；没有新启动剧情客户端，没有修改服务端运行逻辑，也没有宣称已进图或完成剧情。
+原始捕获、反编译输出和资源表留在忽略目录，不发布剧情脚本、文本、影片、账号或密钥。当前原生剧情证据来自已有采集；新增入口已通过自动测试，没有新原生剧情握手、出生或通关证据。
 
 本地汇总为 `research-output/story-study/evidence.json`，记录来源哈希、版本列、最小关卡元数据、fastfile 清单观察、外置影片存在性、完成标记的 schema 位置及旧抓包查询。可在 `server/` 运行 `python3 research-output/story-study/analyze.py` 重算；脚本只读取本地证据，不调用客户端。
+
+### 准备与采集入口
+
+`tools/prepare_story.py` 从只读前端、私有档案定义及 IFS 清单生成 `catalog.json` 和 `first-map.json`。它按版本列2保留开放/关闭状态、原始章节顺序、单人容量和完成标记的 schema 位置；不会生成可游玩的世界或写入 TDM 目录。当前本地准备位于 `research-output/story-integration-preparation/`，仍明确标记资源准备和剧情玩法未验证。
+
+```sh
+python3 tools/prepare_story.py \
+  --frontend research-output/gamehub/client-1791827405139/frontend-assets-1791827623712.json \
+  --assets research-output/gamehub/client-1791824837703/client-assets-1791825042989.json \
+  --resource-lists research-output/ifs-lists-3.3.3.3.json \
+  --output research-output/story-preparation-new
+
+sh tools/cargo.sh build --locked -p codol-server
+python3 tools/gamehub_run.py client --prefix-name wine10-story-capture --seconds 900 \
+  --title-id-hex 3ea --rust-auth --local-auth-tickets --rust-lobby --rust-stun \
+  --rust-game --local-services --trust-lab-cert --quiet-network \
+  --service-data-dir research-output/story-integration-preparation/service-data \
+  --story-capture-map coop_training_mp_cargoship
+```
+
+采集使用预先复制好的独立服务数据、独立 Wine prefix，并遵守现有客户端锁和监听端口排他规则。`serve-auth` 的同名选项要求游戏 UDP，并拒绝与 `game-state`、地图目录、Bot 房间或持续玩法组合；harness 还要求显式 prefix/服务目录并拒绝正常 `client-work/server-data`。正常服务不应为准备工作重启。
+
+该入口只接首关的显式 `map / g_gametype coop` 原生开局形式，校验单人容量、重复设置和不支持的命令，保留难度元数据；不执行收到的设置。传输目录的 `story-capture.json` 明确记录没有世界/玩法快照。不接受其它地图、TDM模式或训练 playlist 替代首关。原生实际命令若不在已核对形式内，先采集并核对消费者再扩展。
+
+协议、分配、退出撤销、身份隔离、密钥重试/轮换、开局绑定、CLI互斥与元数据准备均有自动验证。独立工作树完整fmt/Clippy、534项Rust和136项Python检查通过；合入后主工作区剧情相关测试通过。随机空闲端口的实际后端启动与正常退出已验证，记录为`research-output/story-integration-preparation/backend-ready.json`，准备好的可执行文件为同目录`codol-server`。准备文件和后端启动不代表剧情任务执行结果；后续仍需首关原生分配/DTLS和本图资源初始化证据。
 
 主要依据：
 

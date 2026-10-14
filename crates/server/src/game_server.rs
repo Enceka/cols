@@ -1,4 +1,9 @@
 //! Game UDP transport with matchmaking-bound captured map preparations.
+#[path = "story_capture.rs"]
+mod story_capture;
+#[cfg(test)]
+#[path = "story_capture_tests.rs"]
+mod story_tests;
 use crate::game_handshake::Peer;
 use crate::{
     auth_server::write_private, capture::unix_time_ms, services::TaskResult, session::Session,
@@ -27,12 +32,14 @@ pub(crate) struct Admission {
     playlist_version: Option<u32>,
     start_command: Option<String>,
     room_teams: Option<[u8; 12]>,
+    story_channel: Option<u64>,
 }
 
 pub struct GameAdmissions {
     address: SocketAddrV4,
     entries: Mutex<HashMap<[u8; 8], Admission>>,
     pub(crate) bot_rooms: Option<crate::room_bots::Policy>,
+    pub(crate) story_capture_map: Option<String>,
 }
 impl GameAdmissions {
     pub fn address(&self) -> SocketAddrV4 {
@@ -54,7 +61,10 @@ impl GameAdmissions {
             a.expires > now
                 && (a.title != session.title_id
                     || a.owner != session.user_id
-                    || (a.seed == session.iv_seed && a.key == security_key && a.build == build))
+                    || (a.seed == session.iv_seed
+                        && a.key == security_key
+                        && a.build == build
+                        && a.story_channel.is_none()))
         });
         if let Some((id, a)) = entries.iter().find(|(_, a)| {
             a.title == session.title_id && a.owner == session.user_id && a.seed == session.iv_seed
@@ -83,6 +93,76 @@ impl GameAdmissions {
                 playlist_version: None,
                 start_command: None,
                 room_teams: None,
+                story_channel: None,
+            },
+        );
+        Ok((id, key))
+    }
+    /// Build-only story searches do not upload a client key. The opt-in
+    /// endpoint owns one random key per live channel and login identity.
+    pub(crate) fn allocate_story(
+        &self,
+        session: &Session,
+        channel: u64,
+        build: i32,
+        now: u32,
+    ) -> Result<([u8; 8], [u8; 16])> {
+        ensure!(
+            self.story_capture_map.as_deref() == Some(codol_protocol::story::FIRST_MAP),
+            "story capture is not enabled"
+        );
+        ensure!(
+            session.expires_at > now
+                && !matches!(channel, 0 | u64::MAX)
+                && build == codol_protocol::story::CLIENT_BUILD,
+            "invalid story allocation identity"
+        );
+        let mut entries = self
+            .entries
+            .lock()
+            .map_err(|_| anyhow::anyhow!("game admissions poisoned"))?;
+        entries.retain(|_, a| {
+            a.expires > now
+                && (a.title != session.title_id
+                    || a.owner != session.user_id
+                    || (a.seed == session.iv_seed
+                        && a.build == build
+                        && a.story_channel == Some(channel)))
+        });
+        if let Some((id, a)) = entries.iter().find(|(_, a)| {
+            a.title == session.title_id && a.owner == session.user_id && a.seed == session.iv_seed
+        }) {
+            return Ok((*id, a.key));
+        }
+        ensure!(entries.len() < 32, "game admission capacity");
+        let mut id = [0; 8];
+        loop {
+            openssl::rand::rand_bytes(&mut id)?;
+            if id != [0; 8] && !entries.contains_key(&id) {
+                break;
+            }
+        }
+        let mut key = [0; 16];
+        loop {
+            openssl::rand::rand_bytes(&mut key)?;
+            if key != [0; 16] {
+                break;
+            }
+        }
+        entries.insert(
+            id,
+            Admission {
+                title: session.title_id,
+                owner: session.user_id,
+                seed: session.iv_seed,
+                build,
+                expires: session.expires_at.min(now.saturating_add(930)),
+                key,
+                booked: false,
+                playlist_version: None,
+                start_command: None,
+                room_teams: None,
+                story_channel: Some(channel),
             },
         );
         Ok((id, key))
@@ -179,6 +259,16 @@ impl GameAdmissions {
                         && a.booked
                 })
                 .ok_or_else(|| anyhow::anyhow!("game start requires booking"))?;
+            if admission.story_channel.is_some() {
+                let selected = story_capture::selection(
+                    command,
+                    self.story_capture_map
+                        .as_deref()
+                        .ok_or_else(|| anyhow::anyhow!("story capture policy missing"))?,
+                )?;
+                tracing::info!(map=%selected.map,mode="coop",difficulty=selected.difficulty,
+                    "native story transport start accepted");
+            }
             // Capture configuration for protocol recovery; never execute received console text.
             admission.start_command = Some(command.to_owned());
             response.label = "local_game_transport_start_requested";
@@ -341,11 +431,32 @@ impl GameServer {
                 address,
                 entries: Mutex::new(HashMap::new()),
                 bot_rooms: None,
+                story_capture_map: None,
             }),
         })
     }
     pub fn admissions(&self) -> Arc<GameAdmissions> {
         self.admissions.clone()
+    }
+    /// Collect the first story map's transport using its native UI entrance.
+    /// This endpoint has no prepared gamestate or gameplay snapshots.
+    pub fn with_story_capture_map(mut self, map: String) -> Result<Self> {
+        ensure!(
+            map == codol_protocol::story::FIRST_MAP,
+            "only the first native story map is prepared for capture"
+        );
+        ensure!(
+            self.game_state.is_none()
+                && self.game_map_catalog.is_none()
+                && self.resource_capture_map.is_none()
+                && !self.continuous_play
+                && self.admissions.bot_rooms.is_none(),
+            "story capture requires a separate transport-only endpoint"
+        );
+        Arc::get_mut(&mut self.admissions)
+            .ok_or_else(|| anyhow::anyhow!("story capture must precede admission sharing"))?
+            .story_capture_map = Some(map);
+        Ok(self)
     }
     pub fn with_continuous_play(mut self) -> Self {
         self.continuous_play = true;
@@ -458,6 +569,17 @@ impl GameServer {
             .start_command
             .as_deref()
             .ok_or_else(|| anyhow::anyhow!("game start missing"))?;
+        if let Some(map) = &self.admissions.story_capture_map {
+            ensure!(
+                admission.story_channel.is_some()
+                    && admission.build == codol_protocol::story::CLIENT_BUILD
+                    && self.game_state.is_none()
+                    && self.game_map_catalog.is_none(),
+                "story capture cannot use a client-key allocation or TDM preparation"
+            );
+            story_capture::selection(start, map)?;
+            return Ok(None);
+        }
         if let Some((version, playlist)) = self.resource_capture_playlist
             && let Some((selected, entry)) = crate::game_map_selection::playlist_start(start)?
         {
@@ -527,6 +649,25 @@ impl GameServer {
         }
     }
     pub async fn run<F: Future<Output = std::io::Result<()>>>(mut self, shutdown: F) -> Result<()> {
+        if let Some(map) = &self.admissions.story_capture_map {
+            ensure!(
+                self.game_state.is_none()
+                    && self.game_map_catalog.is_none()
+                    && self.resource_capture_map.is_none()
+                    && !self.continuous_play
+                    && self.admissions.bot_rooms.is_none(),
+                "story capture cannot publish a TDM world"
+            );
+            write_private(
+                &self.directory.join("story-capture.json"),
+                &serde_json::to_vec(
+                    &serde_json::json!({"map":map,"mode":"coop","maximum_players":1,
+                "server_issued_key":true,"world_simulation":false,"gameplay_snapshots":false,
+                "client_sha256":codol_protocol::CLIENT_SHA256}),
+                )?,
+            )
+            .await?;
+        }
         if let Some(map) = &self.resource_capture_map {
             let initializes = self
                 .game_map_catalog
@@ -889,6 +1030,7 @@ mod tests {
             address: "127.0.0.1:39004".parse().unwrap(),
             entries: Mutex::new(HashMap::new()),
             bot_rooms: None,
+            story_capture_map: None,
         }
     }
 
@@ -932,6 +1074,7 @@ mod tests {
             booked: true,
             playlist_version: None,
             room_teams: None,
+            story_channel: None,
             start_command: Some(
                 "mmstart sv_resetServer; map mp_killhouse_sh; g_gametype war".into(),
             ),
@@ -1023,6 +1166,7 @@ mod tests {
             booked: true,
             playlist_version: None,
             room_teams: None,
+            story_channel: None,
             start_command: Some("mmstart sv_resetServer; map mp_bog_sh; g_gametype war".into()),
         };
         assert!(server.template_for(&admission).is_err());
@@ -1125,6 +1269,7 @@ mod tests {
             booked: true,
             playlist_version: None,
             room_teams: None,
+            story_channel: None,
             start_command: Some(
                 "mmstart sv_resetServer; map mp_killhouse_sh; g_gametype war".into(),
             ),

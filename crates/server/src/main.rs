@@ -158,6 +158,9 @@ enum Command {
         /// Collect one native TDM map's loaded resources without sending a world.
         #[arg(long, requires = "native_bot_rooms")]
         resource_capture_map: Option<String>,
+        /// First story map's isolated allocation/handshake capture; no gameplay world.
+        #[arg(long, requires = "game_bind", conflicts_with_all=["game_state","game_map_catalog","native_bot_rooms","resource_capture_map","continuous_play"])]
+        story_capture_map: Option<String>,
         /// Bind resource collection to one native single-entry publisher playlist.
         #[arg(long, requires = "resource_capture_map")]
         resource_capture_playlist: Option<u8>,
@@ -466,6 +469,7 @@ async fn main() -> Result<()> {
             game_map_catalog,
             native_bot_rooms,
             resource_capture_map,
+            story_capture_map,
             resource_capture_playlist,
             resource_compass_probe,
             continuous_play,
@@ -545,6 +549,9 @@ async fn main() -> Result<()> {
                     }
                     if let Some(probe) = resource_compass_probe {
                         game = game.with_resource_compass_probe(&probe)?;
+                    }
+                    if let Some(map) = story_capture_map {
+                        game = game.with_story_capture_map(map)?;
                     }
                     let endpoint = game.admissions();
                     tracing::info!(address=%endpoint.address(),"experimental Rust game UDP endpoint ready");
@@ -681,4 +688,49 @@ async fn wait_for_stop(mut receiver: tokio::sync::watch::Receiver<bool>) -> std:
         let _ = receiver.changed().await;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod story_options_tests {
+    use super::*;
+    fn arguments() -> Vec<&'static str> {
+        vec![
+            "codol-server",
+            "serve-auth",
+            "--cert",
+            "cert.pem",
+            "--key",
+            "key.pem",
+            "--local-title-id",
+            "1002",
+            "--lobby-bind",
+            "127.0.0.1:39001",
+            "--service-data-dir",
+            "story-data",
+            "--game-bind",
+            "127.0.0.1:39004",
+            "--story-capture-map",
+            "coop_training_mp_cargoship",
+        ]
+    }
+    #[test]
+    fn story_capture_cli_requires_game_transport() {
+        assert!(Cli::try_parse_from(arguments()).is_ok());
+        let mut missing = arguments();
+        missing.drain(12..14);
+        assert!(Cli::try_parse_from(missing).is_err());
+    }
+    #[test]
+    fn story_capture_cli_cannot_mix_with_tdm_or_continuous_world_options() {
+        for extra in [
+            vec!["--game-state", "afghan.json"],
+            vec!["--game-map-catalog", "maps.json"],
+            vec!["--native-bot-rooms"],
+            vec!["--continuous-play"],
+        ] {
+            let mut args = arguments();
+            args.extend(extra);
+            assert!(Cli::try_parse_from(args).is_err());
+        }
+    }
 }

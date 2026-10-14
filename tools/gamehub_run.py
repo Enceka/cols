@@ -190,6 +190,8 @@ def main():
     parser.add_argument("--game-map-catalog", type=Path, help="captured preparations for native room map selection")
     parser.add_argument("--native-bot-rooms", action="store_true", help="native custom rooms with one human and eleven server bots on prepared TDM maps")
     parser.add_argument("--resource-capture-map", help="collect one native TDM map without a gamestate or world; requires native-bot-rooms")
+    parser.add_argument("--story-capture-map", choices=("coop_training_mp_cargoship",),
+                        help="isolated first-story allocation/handshake capture without a gameplay world")
     parser.add_argument("--resource-capture-playlist", type=int, help="single-entry native playlist ID for isolated resource capture")
     parser.add_argument("--resource-compass-probe",type=Path,help="metadata-only request for a native compass candidate; requires resource-capture-map")
     parser.add_argument("--snapshot-probe", nargs="?", type=int, const=60, help="bootstrap frame budget at 20 Hz (1..18000; default 60); requires game-state")
@@ -232,6 +234,13 @@ def main():
         parser.error("rust-game requires local-services")
     if args.game_state and (not args.rust_game or not args.game_state.is_file()):
         parser.error("game-state requires rust-game and an existing prepared file")
+    if args.story_capture_map and (args.action != "client" or not args.rust_game
+            or not args.service_data_dir or not args.prefix_name or args.game_state
+            or args.game_map_catalog or args.native_bot_rooms or args.resource_capture_map
+            or args.continuous_play):
+        parser.error("story-capture-map requires client, rust-game, an explicit prefix and isolated service-data-dir without TDM preparations")
+    if args.story_capture_map and args.service_data_dir.resolve() == (REPO / "client-work/server-data").resolve():
+        parser.error("story capture must use isolated service data")
     if args.snapshot_probe is not None and (not args.game_state or not 1 <= args.snapshot_probe <= 18000):
         parser.error("snapshot-probe requires game-state and 1..18000 frames")
     if args.game_map_catalog and (not args.rust_game or not args.game_map_catalog.is_file()):
@@ -379,6 +388,9 @@ def main():
                         if args.resource_capture_map:
                             tls_argv += ["--resource-capture-map", args.resource_capture_map]
                             state["resource_capture_map"] = args.resource_capture_map
+                        if args.story_capture_map:
+                            tls_argv += ["--story-capture-map", args.story_capture_map]
+                            state["story_capture_map"] = args.story_capture_map
                         if args.resource_capture_playlist is not None:
                             tls_argv += ["--resource-capture-playlist", str(args.resource_capture_playlist)]
                             state["resource_capture_playlist"] = args.resource_capture_playlist
