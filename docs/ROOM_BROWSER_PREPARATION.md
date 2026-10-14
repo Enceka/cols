@@ -198,15 +198,31 @@ tick 与对局生命周期按房间持有，再为每位玩家保留独立输入
 
 ## 证据与复现
 
-当前协议模块 155 项测试通过，包含五项房间浏览／加入／列表记录测试；协议模块
-Clippy（all-targets、warnings-as-errors）通过。这是格式与回归验证，不是原生
-大厅可见或真人入房的验收。
+房间浏览新增五项协议测试通过，覆盖格式与既有分配查询的隔离；协议模块
+Clippy（all-targets、warnings-as-errors）通过。这不是原生大厅可见或真人入房的
+验收。
 
-原生采集 `client-1791930805510` 在进程识别阶段返回
-`marked client process did not appear`，尚未登录或取得房间列表请求。
-`research-output/room-browser-20261014/diagnostic-cleanup.json` 确认两处临时 CA
-分别与各自备份一致、正常服务资料 19 个文件哈希不变、新增截图为 0；此诊断只
-记录启动未通过，不对房间协议作负面归因。
+`room_browser_acceptance` 使用临时服务资料、两个合成身份与动态端口的真实
+GameAdmissions，直接调用 LocalServices，覆盖正常后端启用游戏端点时的路由。
+其目标是让来访身份查到并加入已登记房间；当前结果如下：
+
+| 验收项 | 实际处理 | 结果 |
+| --- | --- | --- |
+| 房主创建频道并登记房间 | `local_room_session_created`，一条记录 | 通过 |
+| 来访者普通 query4 查询 | `service_decode_failure`，`unsupported local session search`，错误4 | 未通过 |
+| 来访者 `21/13` 首屏分页 | `unsupported_room_task`，错误4 | 未通过 |
+| 来访者 `11/11` 加入已登记频道 | `unsupported_room_task`，错误4 | 未通过 |
+
+报告为 `research-output/room-browser-live-acceptance/service-dispatch.json`。这项验证
+使用合成描述和认证会话直接进入业务层，没有替代网络认证、未知过滤条件的语义、
+原生列表呈现、跨连接通知或两个真人客户端的实机闭环。
+
+正常启动器的现存客户端已通过只读采样确认：前端 connection_state=0／frontend_state=5、6772 项库存，以及
+阿富汗房间／局内 state10 和 12 人名单。对应证据在
+`research-output/room-browser-live-acceptance/acceptance.json` 及其同目录；实际 Wine prefix 由现存 wineserver
+的 IPC inode 与 `native.verified.local.json` 匹配，不能默认使用另一个 native.local
+profile 的 prefix。验收未重启或停止现存客户端与正常服务端。当前未取得原生 query4／分页
+请求，不将正常单人 Bot 对局当作公共列表或真人加入通过。
 
 - `fixtures/protocol/room-browser-synthetic.json`：本版消费者地址、独立 Python
   tagged 编码生成的普通／分页／入房请求，以及合成创建描述与列表记录；只含
@@ -228,7 +244,12 @@ Clippy（all-targets、warnings-as-errors）通过。这是格式与回归验证
   6acf70 6e3200 6e3310 6d4810 a570d0 702520 7d0550 a558b0 \
   a55700 701db0 68c790 6c9fe0 a4db00 a4ca40
 sh tools/cargo.sh test -p codol-protocol --locked room_browser
+sh tools/cargo.sh run --locked -p codol-server --example room_browser_acceptance -- \
+  research-output/room-browser-live-acceptance/service-dispatch.json
 ```
+
+业务验收命令在任一目标未满足时返回非零，输出实际 handler、错误码与结果数量；
+临时资料与动态端口在结束前清理。不会操作现存客户端、正常账号资料或正常端点。
 
 真实大厅展示、跨客户端加入、非首屏续页、密码／邀请及房主迁移仍须按上面的独立
 验收闭环确认。当前准备代码不把这些项目标为已实现。
