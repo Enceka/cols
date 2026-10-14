@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "client_sha256": "e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b",
+  "section_reader_va": 5913424,
+  "command_reader_va": 5913744,
+  "opcode_table_va": 5914576,
+  "opcode_table_sha256": "48dedbb60e880466d1cca1e78a14f46f0d904871da94686fdeabb0e205e0e261",
+  "set_entity": {
+    "opcode": 3,
+    "reader_va": 5913882,
+    "bits": 11
+  },
+  "set_time": {
+    "opcode": 4,
+    "reader_va": 5913902,
+    "absolute_tag": 1,
+    "bits": 32
+  },
+  "complete_goal": {
+    "opcode": 1,
+    "reader_va": 5914137,
+    "flags_bits": 2
+  },
+  "end": {
+    "opcode": 5,
+    "reader_va": 5914566
+  },
+  "dictionary": {
+    "reader_va": 5913424,
+    "count_bits": 8,
+    "node_bits": 11
+  },
+  "numbers": {
+    "weight_reader_va": 5913296,
+    "one_bits_lsb_first": [
+      0,
+      1
+    ],
+    "blend_reader_va": 5913040,
+    "default_blend": 0.2,
+    "rate_reader_va": 5913168,
+    "default_rate": 1.0
+  },
+  "native_acceptance": "pending"
+}
