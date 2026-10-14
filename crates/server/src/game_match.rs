@@ -245,6 +245,7 @@ pub(crate) struct TdmMatch {
     pub(crate) streaks: crate::game_killstreaks::Streaks,
     pub(crate) props: crate::game_props::Props,
     pub(crate) deployables: crate::game_deployables::Deployables,
+    pub(crate) airspace: crate::game_airspace::Airspace,
     forced_winner: Option<u8>,
     pub(crate) acceptance_stationary: bool,
     pub(crate) acceptance_fire_after_msec: Option<u32>,
@@ -365,6 +366,7 @@ impl TdmMatch {
             streaks: Default::default(),
             props: Default::default(),
             deployables: Default::default(),
+            airspace: Default::default(),
             forced_winner: None,
             acceptance_stationary: false,
             acceptance_fire_after_msec: None,
@@ -551,8 +553,62 @@ impl TdmMatch {
     pub(crate) fn world_models(&self) -> Vec<codol_protocol::game_props::PropSnapshot> {
         let mut models = self.props.snapshots();
         models.extend(self.deployables.snapshots());
+        models.extend(self.airspace.snapshots());
         models.sort_by_key(|p| p.entity_number);
         models
+    }
+    pub(crate) fn call_radio(
+        &mut self,
+        now: u32,
+        actor: u8,
+        id: u8,
+        origin: [f32; 3],
+        resources: &crate::game_killstreaks::RadarResources,
+        collision: &Collision,
+    ) -> bool {
+        if actor >= self.config.player_count {
+            return false;
+        }
+        let team = self.config.teams[usize::from(actor)];
+        if self.finished || !self.streaks.can_radio(actor, team, id, now) {
+            return false;
+        }
+        let plan = if matches!(id, 1 | 3)
+            && crate::game_airspace::Airspace::resources_present(resources, id)
+        {
+            match self.airspace.plan_radar(resources, id, origin, collision) {
+                Ok(plan) => Some(plan),
+                Err(reason) => {
+                    tracing::info!(
+                        actor,
+                        id,
+                        ?reason,
+                        "air support call rejected; stock retained"
+                    );
+                    return false;
+                }
+            }
+        } else {
+            None
+        };
+        if !self.streaks.try_radio(actor, team, id, now) {
+            return false;
+        }
+        if let Some(plan) = plan {
+            let source = self
+                .streaks
+                .support_flights(now)
+                .into_iter()
+                .find(|s| s.actor == actor && s.id == id && s.start == now)
+                .unwrap();
+            self.airspace.launch(plan, source, collision);
+        }
+        if id == 14 {
+            for source in self.airspace.emp(now, team, collision) {
+                self.streaks.stop_flight(source);
+            }
+        }
+        true
     }
     pub(crate) fn deploy_sentry(
         &mut self,
@@ -604,6 +660,19 @@ impl TdmMatch {
                 self.config.teams[usize::from(owner)],
                 collision,
             )
+        } else if (crate::game_airspace::FIRST_ENTITY..crate::game_airspace::END_ENTITY)
+            .contains(&entity)
+        {
+            if let Some(source) = self.airspace.damage(
+                now,
+                entity,
+                damage,
+                self.config.teams[usize::from(owner)],
+                collision,
+            ) {
+                self.streaks.stop_flight(source);
+            }
+            true
         } else {
             self.props
                 .damage(now, entity, damage, owner, splash, collision)
@@ -617,6 +686,12 @@ impl TdmMatch {
         collision: &Collision,
     ) -> Tick {
         let (mut local, height, health) = player;
+        self.airspace.advance(
+            now,
+            self.finished,
+            &self.streaks.support_flights(now),
+            collision,
+        );
         let protected = self
             .bots
             .iter()
@@ -848,6 +923,18 @@ impl TdmMatch {
             local.team,
             collision,
         );
+        let blast = crate::game_props::Blast {
+            source_entity: None,
+            owner: 0,
+            weapon: explosion.definition.index,
+            origin: explosion.origin,
+            radius: f32::from(explosion.definition.radius),
+            inner: explosion.definition.inner_damage,
+            outer: explosion.definition.outer_damage,
+        };
+        for source in self.airspace.radial(now, blast, local.team, collision) {
+            self.streaks.stop_flight(source);
+        }
         let hits = self
             .bots
             .iter()
@@ -960,6 +1047,9 @@ impl TdmMatch {
         };
         self.props.radial(now, blast, collision);
         self.deployables.radial(now, blast, team, collision);
+        for source in self.airspace.radial(now, blast, team, collision) {
+            self.streaks.stop_flight(source);
+        }
         (feedback, local_hit)
     }
     pub fn advance_gas(

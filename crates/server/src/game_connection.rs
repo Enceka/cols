@@ -2505,6 +2505,7 @@ impl Connection {
             let tdm = self.tdm.as_mut().unwrap();
             let mut events = tdm.props.drain();
             events.extend(tdm.deployables.drain());
+            events.extend(tdm.airspace.drain());
             if events.is_empty() {
                 break;
             }
@@ -2989,12 +2990,25 @@ impl Connection {
                             );
                         }
                     }
-                } else if tdm
-                    .streaks
-                    .try_radio(0, tdm.teams()[0], radio.native_id, through)
-                {
-                    self.radio_return =
-                        Some((through + u32::from(radio.switch.raise_msec), radio.weapon));
+                } else {
+                    let state = self.game_state.as_ref().unwrap();
+                    let origin = self.motion.as_ref().unwrap().origin;
+                    if tdm.call_radio(
+                        through,
+                        0,
+                        radio.native_id,
+                        origin,
+                        resources,
+                        state.collision.as_ref().unwrap(),
+                    ) {
+                        self.radio_return =
+                            Some((through + u32::from(radio.switch.raise_msec), radio.weapon));
+                    } else {
+                        player.return_reward();
+                        let _ = self
+                            .server_commands
+                            .push(format!("a {}", player.equipment().weapon).as_bytes());
+                    }
                 }
             }
             if let (Some(tdm), Some(player), Some(resources)) = (

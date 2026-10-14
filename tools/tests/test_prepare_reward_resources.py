@@ -23,9 +23,19 @@ def sample():
 
 
 class RewardResources(unittest.TestCase):
-    def run_prepare(self,a,n,c):
+    def run_prepare(self,a,n,c,entities=None):
         with patch('prepare_reward_resources.compute',return_value=dict(ncs_crc=123)):
-            return prepare(json.dumps(a).encode(),json.dumps(n).encode(),c)
+            return prepare(json.dumps(a).encode(),json.dumps(n).encode(),c,entities_raw=json.dumps(entities).encode() if entities else None)
+    def test_air_route_uses_matching_native_map_anchor_and_rejects_missing_or_duplicate_anchors(self):
+        a,n,c=sample();raw=b'{"classname" "script_origin" "targetname" "airstrikeheight" "origin" "1875.7 1261.8 1456.6"}'
+        capture=dict(schema_version=1,read_only=True,client_sha256=CLIENT_SHA256,maps=[dict(name='maps/mp/mp_afghan.d3dbsp',byte_count=len(raw),entity_string_base64=base64.b64encode(raw).decode())])
+        r,_=self.run_prepare(a,n,c,capture);self.assertEqual(r['air_route']['center'],[1875.7,1261.8,1456.6])
+        self.assertEqual(len(r['air_route']['sources_sha256'][0]),64)
+        bad=copy.deepcopy(capture);bad['maps'][0]['name']='maps/mp/mp_rust.d3dbsp'
+        with self.assertRaises(ValueError):self.run_prepare(a,n,c,bad)
+        for changed in [raw.replace(b'airstrikeheight',b'other_marker'),raw+raw]:
+            bad=copy.deepcopy(capture);bad['maps'][0].update(byte_count=len(changed),entity_string_base64=base64.b64encode(changed).decode())
+            with self.assertRaises(ValueError):self.run_prepare(a,n,c,bad)
     def test_all_positive_bindings_use_actual_registration_and_report_absent_special_assets(self):
         a,n,c=sample();r,missing=self.run_prepare(a,n,c)
         self.assertEqual([(x['native_id'],x['weapon']) for x in r['radios']],[(1,1),(3,2),(14,3),(19,4)])

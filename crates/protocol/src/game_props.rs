@@ -36,7 +36,7 @@ pub(crate) fn write(
     baseline: &[PropSnapshot],
 ) -> Result<(), LobbyError> {
     for list in [current, baseline] {
-        if list.len() > 192
+        if list.len() > 208
             || list.iter().any(|p| !p.valid())
             || list
                 .windows(2)

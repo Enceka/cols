@@ -46,7 +46,7 @@ partial class ClientAssets {
             uint cgBank=r.Word(0x07817ba8),entBank=r.Word(0x07817bb0);if(cgBank>=256||entBank>=256)throw new Exception("invalid prop state bank");
             uint cg=r.Word(0x01a19510+cgBank*4)^0xfbb2c97a,ents=r.Word(0x01a19510+entBank*4)^0x2168f672;
             var props=new List<object>();
-            for(uint id=256;id<448;id++) {
+            for(uint id=256;id<464;id++) {
                 uint ent=ents+id*0x238;uint flags=r.Word(ent+0x204),type=r.Word(ent+0xf4);if(type!=0&&type!=11)continue;
                 uint model=r.Word(ent+0xf0+0x98);if(model==0)continue;
                 uint es=ent+0xf0;

@@ -122,6 +122,14 @@ pub(crate) struct RadarResources {
     pub effects: BTreeMap<String, u16>,
     #[serde(default)]
     pub weapons: BTreeMap<String, WeaponFacts>,
+    #[serde(default)]
+    pub air_route: Option<AirRoute>,
+}
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct AirRoute {
+    pub center: [f32; 3],
+    pub sources_sha256: [String; 1],
 }
 #[derive(Clone, Copy, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -197,6 +205,13 @@ impl RadarResources {
                     .iter()
                     .all(|r| CATALOG.rewards.iter().any(|c| c.native_id == r.native_id))
                 && result.models.values().all(|v| (1..1024).contains(v))
+                && result.air_route.as_ref().is_none_or(|r| r
+                    .center
+                    .iter()
+                    .all(|v| v.is_finite() && v.abs() <= 30000.0)
+                    && r.sources_sha256
+                        .iter()
+                        .all(|h| h.len() == 64 && h.bytes().all(|b| b.is_ascii_hexdigit())))
                 && result
                     .model_bounds
                     .iter()
@@ -261,9 +276,19 @@ pub(crate) enum RadioEvent {
 }
 #[derive(Clone, Copy)]
 struct Support {
+    actor: u8,
+    start: u32,
     team: u8,
     id: u8,
     end: u32,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct SupportFlight {
+    pub actor: u8,
+    pub id: u8,
+    pub team: u8,
+    pub start: u32,
+    pub end: u32,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -544,6 +569,8 @@ impl Streaks {
         }
         if matches!(id, 1 | 3 | 14 | 19) {
             self.support.push(Support {
+                actor,
+                start: now,
                 team,
                 id,
                 end: now.saturating_add(if id == 14 { 60_000 } else { RADAR_MSEC }),
@@ -556,6 +583,28 @@ impl Streaks {
             time: now,
         });
         true
+    }
+    pub fn support_flights(&self, now: u32) -> Vec<SupportFlight> {
+        self.support
+            .iter()
+            .filter(|s| s.end > now && matches!(s.id, 1 | 3))
+            .map(|s| SupportFlight {
+                actor: s.actor,
+                id: s.id,
+                team: s.team,
+                start: s.start,
+                end: s.end,
+            })
+            .collect()
+    }
+    pub fn stop_flight(&mut self, source: SupportFlight) {
+        self.support.retain(|s| {
+            !(s.actor == source.actor
+                && s.id == source.id
+                && s.team == source.team
+                && s.start == source.start
+                && s.end == source.end)
+        });
     }
     pub fn radar_flags(&self, team: u8, now: u32) -> u8 {
         let uavs = self
@@ -749,6 +798,7 @@ mod tests {
             model_bounds: Default::default(),
             effects: Default::default(),
             weapons: Default::default(),
+            air_route: None,
             radios: vec![
                 Radio {
                     native_id: 1,
@@ -838,6 +888,36 @@ mod tests {
         assert_eq!(s.radar_flags(1, 33000), 0);
         s.clear_owned();
         assert_eq!(s.radar_flags(1, 35000), 0);
+    }
+    #[test]
+    fn destroyed_aircraft_removes_its_call_without_clearing_other_owned_support() {
+        let mut s = Streaks::default();
+        for actor in [0, 1, 6] {
+            s.configure_radios(
+                actor,
+                Previews {
+                    ids: [1, 3, 0],
+                    targets: [3, 4, 0],
+                },
+            );
+            s.actors[usize::from(actor)].radios_owned = [true, true, false];
+        }
+        assert!(s.try_radio(0, 1, 1, 1000));
+        assert!(s.try_radio(1, 1, 1, 2000));
+        assert!(s.try_radio(6, 2, 3, 3000));
+        let calls = s.support_flights(3000);
+        assert_eq!(calls.len(), 3);
+        assert_eq!(s.radar_flags(1, 3000), 11);
+        let first = *calls.iter().find(|c| c.actor == 0 && c.id == 1).unwrap();
+        s.stop_flight(first);
+        assert_eq!(s.radar_flags(1, 3000), 7);
+        s.stop_flight(first);
+        assert_eq!(s.support_flights(3000).len(), 2);
+        let counter = *calls.iter().find(|c| c.id == 3).unwrap();
+        s.stop_flight(counter);
+        assert_eq!(s.radar_flags(1, 3000), 5);
+        assert_eq!(s.owned_radios(0).collect::<Vec<_>>(), [(1, 3)]);
+        assert_eq!(s.radar_flags(1, 32000), 0);
     }
     #[test]
     fn death_preserves_earned_radios_but_resets_threshold_and_new_life_awards() {

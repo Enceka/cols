@@ -8,11 +8,12 @@ import math
 from pathlib import Path
 import struct
 from prepare_game_state import compute, CLIENT_SHA256
+from prepare_map_hud import map_entities
 
 CATALOG = Path(__file__).resolve().parents[1] / 'fixtures/protocol/killstreaks-3.3.3.3.json'
 
 
-def prepare(assets_raw, ncs_raw, catalog=None):
+def prepare(assets_raw, ncs_raw, catalog=None, entities_raw=None):
     assets, ncs = json.loads(assets_raw), json.loads(ncs_raw)
     catalog = catalog or json.loads(CATALOG.read_bytes())
     for capture in [assets, ncs]:
@@ -81,6 +82,15 @@ def prepare(assets_raw, ncs_raw, catalog=None):
     result = dict(schema_version=1, client_sha256=CLIENT_SHA256,
                   sources_sha256=[hashlib.sha256(r).hexdigest() for r in [assets_raw, ncs_raw]],
                   map=path[8:-7], ncs_crc=crc, radios=radios, models=models, model_bounds=model_bounds, effects=effects)
+    if entities_raw is not None:
+        capture = json.loads(entities_raw)
+        anchors = [e for e in map_entities(capture, result['map']) if e.get(b'targetname') == b'airstrikeheight']
+        if len(anchors) != 1:
+            raise ValueError('expected one captured air-support height anchor')
+        center = [float(x) for x in anchors[0][b'origin'].split()]
+        if len(center) != 3 or not all(math.isfinite(x) and abs(x) <= 30000 for x in center):
+            raise ValueError('invalid captured air-support anchor')
+        result['air_route'] = dict(center=center, sources_sha256=[hashlib.sha256(entities_raw).hexdigest()])
     # Companion weapon facts remain separate from activator timings.
     relevant = {r['weapon_token_c13'] for r in catalog['rewards']}
     prefixes = ('ac130_', 'cobra_', 'harrier_', 'pavelow_', 'sentry_', 'tow_turret_', 'remotemissile_', 'remote_missile', 'rcbomb_', 'missile_drone_', 'mg4juggernaut', 'minigungunship', 'kingpin_spawn', 'artillery_', 'airstrike_', 'stealth_bomb_', 'dog_bite', 'littlebird_')
@@ -91,8 +101,9 @@ def prepare(assets_raw, ncs_raw, catalog=None):
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--assets', type=Path, required=True); p.add_argument('--ncs', type=Path, required=True)
+    p.add_argument('--entities', type=Path, help='matching captured map entities with the native air-support anchor')
     p.add_argument('--output', type=Path, required=True); args = p.parse_args()
-    result, unavailable = prepare(args.assets.read_bytes(), args.ncs.read_bytes())
+    result, unavailable = prepare(args.assets.read_bytes(), args.ncs.read_bytes(), entities_raw=args.entities.read_bytes() if args.entities else None)
     with args.output.open('x') as f: json.dump(result, f, indent=2); f.write('\n')
     print(json.dumps(dict(map=result['map'], activators=len(result['radios']), unavailable=unavailable)))
 

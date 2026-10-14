@@ -3,6 +3,7 @@ pub mod admin;
 pub mod auth_server;
 pub mod capture;
 pub mod config;
+mod game_airspace;
 mod game_appearance;
 mod game_arsenal;
 mod game_bot;
