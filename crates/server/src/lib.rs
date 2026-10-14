@@ -10,6 +10,7 @@ mod game_class_selection;
 pub mod game_combat;
 mod game_connection;
 mod game_death_waypoints;
+mod game_deployables;
 mod game_emp;
 mod game_enemy;
 mod game_feedback;

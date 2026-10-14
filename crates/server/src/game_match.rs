@@ -244,6 +244,7 @@ pub(crate) struct TdmMatch {
     rows: [ScoreboardRow; 12],
     pub(crate) streaks: crate::game_killstreaks::Streaks,
     pub(crate) props: crate::game_props::Props,
+    pub(crate) deployables: crate::game_deployables::Deployables,
     forced_winner: Option<u8>,
     pub(crate) acceptance_stationary: bool,
     pub(crate) acceptance_fire_after_msec: Option<u32>,
@@ -363,6 +364,7 @@ impl TdmMatch {
             rows,
             streaks: Default::default(),
             props: Default::default(),
+            deployables: Default::default(),
             forced_winner: None,
             acceptance_stationary: false,
             acceptance_fire_after_msec: None,
@@ -546,6 +548,135 @@ impl TdmMatch {
             })
             .collect()
     }
+    pub(crate) fn world_models(&self) -> Vec<codol_protocol::game_props::PropSnapshot> {
+        let mut models = self.props.snapshots();
+        models.extend(self.deployables.snapshots());
+        models.sort_by_key(|p| p.entity_number);
+        models
+    }
+    pub(crate) fn deploy_sentry(
+        &mut self,
+        now: u32,
+        local: EnemySnapshot,
+        height: f32,
+        resources: &crate::game_killstreaks::RadarResources,
+        collision: &Collision,
+    ) -> bool {
+        if self.finished || !local.alive || !self.streaks.can_radio(0, local.team, 16, now) {
+            return false;
+        }
+        let actors = self.actors(local, height);
+        let Some(player) = actors.iter().find(|a| a.client == 0).copied() else {
+            return false;
+        };
+        let placement = match self.deployables.plan_sentry(resources, player, collision) {
+            Ok(placement) => placement,
+            Err(reason) => {
+                tracing::info!(now,?reason,origin=?local.origin,yaw=player.yaw,"sentry placement unavailable");
+                return false;
+            }
+        };
+        if !self
+            .deployables
+            .place(placement, 0, local.team, now, &actors, collision)
+        {
+            return false;
+        }
+        assert!(self.streaks.try_radio(0, local.team, 16, now));
+        true
+    }
+    fn damage_world_model(
+        &mut self,
+        now: u32,
+        entity: u16,
+        damage: u16,
+        owner: u8,
+        splash: bool,
+        collision: &Collision,
+    ) -> bool {
+        if (crate::game_deployables::FIRST_ENTITY..crate::game_deployables::END_ENTITY)
+            .contains(&entity)
+        {
+            self.deployables.damage(
+                now,
+                entity,
+                damage,
+                self.config.teams[usize::from(owner)],
+                collision,
+            )
+        } else {
+            self.props
+                .damage(now, entity, damage, owner, splash, collision)
+        }
+    }
+    pub(crate) fn step_deployables(
+        &mut self,
+        now: u32,
+        player: (EnemySnapshot, f32, u16),
+        local_undetectable: bool,
+        collision: &Collision,
+    ) -> Tick {
+        let (mut local, height, health) = player;
+        let protected = self
+            .bots
+            .iter()
+            .filter(|b| b.weapon.as_ref().is_some_and(|w| w.sentry_undetectable()))
+            .fold(u16::from(local_undetectable), |mask, b| {
+                mask | (1 << b.snapshot.client_index)
+            });
+        let emp = (1..=2)
+            .filter(|&team| self.streaks.emp_active(team, now))
+            .fold(0, |mask, team| mask | (1 << team));
+        let shots = self.deployables.step(
+            now,
+            &self.actors(local, height),
+            protected,
+            emp,
+            self.finished,
+            collision,
+        );
+        let mut tick = Tick::default();
+        let mut local_health = health;
+        for shot in shots {
+            if self.finished {
+                break;
+            }
+            let outcome = crate::game_deployables::resolve_shot(
+                &shot,
+                now,
+                &self.actors(local, height),
+                collision,
+            );
+            let feedback = self.damage_bots(now, shot.owner, shot.weapon, &outcome.damage, false);
+            if shot.owner > 0
+                && let Some(kind) = feedback
+            {
+                self.bots[usize::from(shot.owner - 1)].feedback = Some((now, kind));
+            }
+            for &(entity, damage) in &outcome.props_damage {
+                self.damage_world_model(now, entity, damage, shot.owner, false, collision);
+            }
+            for &(victim, damage, headshot) in &outcome.damage {
+                if victim == 0 && local_health > 0 {
+                    local_health = local_health.saturating_sub(damage);
+                    local.alive = local_health > 0;
+                    tick.hits.push(PlayerHit {
+                        damage,
+                        attacker: shot.owner,
+                        weapon: shot.weapon,
+                        headshot,
+                    });
+                }
+            }
+            tick.impacts.extend(
+                outcome
+                    .impacts
+                    .into_iter()
+                    .map(|impact| (shot.weapon, impact)),
+            );
+        }
+        tick
+    }
     fn credit(
         &mut self,
         now: u32,
@@ -703,6 +834,20 @@ impl TdmMatch {
             },
             collision,
         );
+        self.deployables.radial(
+            now,
+            crate::game_props::Blast {
+                source_entity: None,
+                owner: 0,
+                weapon: explosion.definition.index,
+                origin: explosion.origin,
+                radius: f32::from(explosion.definition.radius),
+                inner: explosion.definition.inner_damage,
+                outer: explosion.definition.outer_damage,
+            },
+            local.team,
+            collision,
+        );
         let hits = self
             .bots
             .iter()
@@ -814,6 +959,7 @@ impl TdmMatch {
             None
         };
         self.props.radial(now, blast, collision);
+        self.deployables.radial(now, blast, team, collision);
         (feedback, local_hit)
     }
     pub fn advance_gas(
@@ -916,8 +1062,7 @@ impl TdmMatch {
         outcome.committed_feedback =
             self.damage_bots(shot.time, 0, shot.weapon, &outcome.damage, false);
         for &(entity, damage) in &outcome.props_damage {
-            self.props
-                .damage(shot.time, entity, damage, 0, false, collision);
+            self.damage_world_model(shot.time, entity, damage, 0, false, collision);
         }
         outcome
     }
@@ -945,8 +1090,7 @@ impl TdmMatch {
         outcome.committed_feedback =
             self.damage_bots(strike.time, 0, strike.weapon, &outcome.damage, true);
         for &(entity, damage) in &outcome.props_damage {
-            self.props
-                .damage(strike.time, entity, damage, 0, false, collision);
+            self.damage_world_model(strike.time, entity, damage, 0, false, collision);
         }
         outcome
     }
@@ -1151,8 +1295,7 @@ impl TdmMatch {
             );
             let mut feedback = self.damage_bots(now, attacker, shot.weapon, &outcome.damage, false);
             for &(entity, damage) in &outcome.props_damage {
-                self.props
-                    .damage(now, entity, damage, attacker, false, collision);
+                self.damage_world_model(now, entity, damage, attacker, false, collision);
             }
             for &(victim, damage, headshot) in &outcome.damage {
                 if victim == 0 && player_health > 0 {
@@ -1874,6 +2017,91 @@ mod tests {
             roster: Vec::new(),
             models: Vec::new(),
         }
+    }
+    #[test]
+    fn sentry_consumes_only_successful_placement_and_retains_owner_credit_after_death() {
+        let collision = world();
+        let resources = crate::game_deployables::test_resources();
+        let mut game = TdmMatch::new(config(), template(), 190.0, &collision).unwrap();
+        game.acceptance_stationary = true;
+        let catalog: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../fixtures/protocol/killstreaks-3.3.3.3.json"
+        ))
+        .unwrap();
+        let item = catalog["marketplace"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|i| i["native_id"] == 16)
+            .unwrap()["item_id"]
+            .as_u64()
+            .unwrap() as u32;
+        let offset = catalog["class_offsets"][0][0].as_u64().unwrap() as usize;
+        let mut profile = vec![0; offset + 12];
+        profile[offset..offset + 4].copy_from_slice(&(item + 1).to_le_bytes());
+        let preview =
+            crate::game_killstreaks::Previews::from_profile(&profile, 0, &[item], 0.0).unwrap();
+        game.streaks.configure_radios(0, preview);
+        game.streaks.enable_supported(&resources);
+        let local = template();
+        assert!(!game.deploy_sentry(2100, local, 70.0, &resources, &collision));
+        for victim in 6..=10 {
+            game.damage_bots(2200, 0, 352, &[(victim, 100, false)], false);
+        }
+        assert!(game.streaks.can_radio(0, 2, 16, 2200));
+        collision.replace_props(&[crate::game_props::Collider::new(
+            256,
+            [96.0, 0.0, 0.0],
+            [0; 3],
+            [-30.0, -30.0, 0.0],
+            [30.0, 30.0, 80.0],
+        )]);
+        assert!(!game.deploy_sentry(2300, local, 70.0, &resources, &collision));
+        assert!(game.streaks.can_radio(0, 2, 16, 2300));
+        assert!(game.deployables.snapshots().is_empty());
+        collision.replace_props(&[]);
+        assert!(game.deploy_sentry(2400, local, 70.0, &resources, &collision));
+        assert!(!game.streaks.can_radio(0, 2, 16, 2400));
+        assert!(!game.deploy_sentry(2401, local, 70.0, &resources, &collision));
+        game.player_killed(
+            2500,
+            local,
+            PlayerHit {
+                damage: 100,
+                attacker: 11,
+                weapon: 352,
+                headshot: false,
+            },
+        );
+        let mut dead = local;
+        dead.alive = false;
+        let weapon = BotWeapon {
+            weapon: 352,
+            fire_interval_msec: 80,
+            ballistics: crate::game_combat::Ballistics {
+                damage: 20,
+                range: 1000.0,
+                near_range: 1000.0,
+                location_multipliers: None,
+                falloff: None,
+                pellets: 1,
+                spread_degrees: 0.0,
+            },
+        };
+        game.step(5300, (dead, 70.0, 0), weapon, &collision, |s, _, _, _| s)
+            .unwrap();
+        for time in (6400..=6600).step_by(50) {
+            game.step_deployables(time, (dead, 70.0, 0), false, &collision);
+        }
+        let kills = game.take_kills();
+        assert!(
+            kills
+                .iter()
+                .any(|k| k.attacker == 0 && k.weapon == 347 && k.victim.client_index == 6)
+        );
+        assert_eq!(game.rows[0].kills, 6);
+        assert_eq!(game.streaks.snapshot(0, 0).progress, 0);
+        assert_eq!(game.world_models()[0].entity_number, 384);
     }
     #[test]
     fn map_headings_follow_team_and_death_selected_spawn_for_players_and_bots() {

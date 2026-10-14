@@ -61,6 +61,19 @@ pub(crate) fn fire_at_actors(
     shooter: (u8, u8),
     scene: ActorScene<'_>,
 ) -> ActorShot {
+    fire_at_actors_with_source(eye, angles, time, ballistics, shooter, scene, None)
+}
+/// Reward devices trace from their actual muzzle while excluding only their
+/// own hull. Other devices, teammates and map objects still block the shot.
+pub(crate) fn fire_at_actors_with_source(
+    eye: [f32; 3],
+    angles: [u16; 3],
+    time: u32,
+    ballistics: Ballistics,
+    shooter: (u8, u8),
+    scene: ActorScene<'_>,
+    source_entity: Option<u16>,
+) -> ActorShot {
     let ActorScene {
         actors,
         regions,
@@ -101,7 +114,12 @@ pub(crate) fn fire_at_actors(
                 nearest = Some((*actor, fraction, location));
             }
         }
-        let world = collision.shot_raycast(eye, end, nearest.map_or(1.0, |(_, f, _)| f));
+        let world = collision.shot_raycast_excluding_prop(
+            eye,
+            end,
+            nearest.map_or(1.0, |(_, f, _)| f),
+            source_entity,
+        );
         if world.start_solid || world.all_solid {
             continue;
         }
@@ -136,8 +154,15 @@ pub(crate) fn fire_at_actors(
                     outcome.props_damage.push((prop, damage));
                 }
             }
-            if let Some(impact) = world_impact(eye, angles, ballistics, collision) {
-                outcome.impacts.push(impact);
+            if world.contents != 0
+                && world.surface_flags & 0xb4 == 0
+                && ((world.surface_flags >> 20) & 31) <= 30
+            {
+                outcome.impacts.push(WorldImpact {
+                    origin: std::array::from_fn(|i| eye[i] + (end[i] - eye[i]) * world.fraction),
+                    normal: world.normal,
+                    surface: ((world.surface_flags >> 20) & 31) as u8,
+                });
             }
         }
     }

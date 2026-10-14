@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "client_sha256": "e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b",
+  "entity_type": 11,
+  "name": "ET_TURRET",
+  "type_names_va": 13490452,
+  "descriptor_va": 12938512,
+  "descriptor_sha256": "99f7ec521ed2010efd7acefabb6394cbe621eac1dc4d23ec96a7c37ee5dc59c8",
+  "field_table_va": 12920232,
+  "field_count": 61,
+  "shared_fields_fixture": "entity-state-fields-3.3.3.3.json",
+  "packed_weapon_offset": 208,
+  "fire_event": 70,
+  "fire_event_parameter_bits": 0
+}

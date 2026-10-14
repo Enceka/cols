@@ -117,9 +117,28 @@ pub(crate) struct RadarResources {
     #[serde(default)]
     pub models: BTreeMap<String, u16>,
     #[serde(default)]
+    pub model_bounds: BTreeMap<String, ModelBounds>,
+    #[serde(default)]
     pub effects: BTreeMap<String, u16>,
     #[serde(default)]
     pub weapons: BTreeMap<String, WeaponFacts>,
+}
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ModelBounds {
+    pub min: [f32; 3],
+    pub max: [f32; 3],
+}
+impl ModelBounds {
+    pub fn valid(self) -> bool {
+        (0..3).all(|i| {
+            self.min[i].is_finite()
+                && self.max[i].is_finite()
+                && self.min[i] < self.max[i]
+                && self.min[i].abs() <= 4096.0
+                && self.max[i].abs() <= 4096.0
+        })
+    }
 }
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -134,9 +153,13 @@ pub(crate) struct WeaponFacts {
     pub radius: u32,
     pub inner_damage: u32,
     pub outer_damage: u32,
+    #[serde(default)]
+    pub damage_stages: [u32; 6],
+    #[serde(default)]
+    pub damage_ranges: [f32; 6],
 }
 /// Effect handlers explicitly publish their implemented IDs.
-pub(crate) const SUPPORT_IDS: [u8; 4] = [1, 3, 14, 19];
+pub(crate) const SUPPORT_IDS: [u8; 5] = [1, 3, 14, 16, 19];
 impl RadarResources {
     pub fn load(path: &Path, map: &str, crc: u32) -> Result<Self> {
         ensure!(
@@ -174,6 +197,10 @@ impl RadarResources {
                     .iter()
                     .all(|r| CATALOG.rewards.iter().any(|c| c.native_id == r.native_id))
                 && result.models.values().all(|v| (1..1024).contains(v))
+                && result
+                    .model_bounds
+                    .iter()
+                    .all(|(name, bounds)| result.models.contains_key(name) && bounds.valid())
                 && result.effects.values().all(|v| (1..400).contains(v))
                 && result.weapons.values().all(|w| (1..900).contains(&w.weapon)
                     && w.weapon_type <= 6
@@ -190,6 +217,10 @@ impl RadarResources {
                     .iter()
                     .all(|v| *v <= 15000)
                     && w.radius <= 1_000_000
+                    && w.damage_stages.iter().all(|v| *v <= 1_000_000)
+                    && w.damage_ranges
+                        .iter()
+                        .all(|v| v.is_finite() && (0.0..=1_000_000.0).contains(v))
                     && w.inner_damage <= 1_000_000
                     && w.outer_damage <= 1_000_000)
                 && result.radios.iter().all(|r| (1..900).contains(&r.weapon)
@@ -435,7 +466,12 @@ impl Streaks {
         self.available = resources
             .radios
             .iter()
-            .filter(|r| SUPPORT_IDS.contains(&r.native_id))
+            .filter(|r| {
+                SUPPORT_IDS.contains(&r.native_id)
+                    && (r.native_id != 16
+                        || crate::game_deployables::SentryDefinition::from_resources(resources)
+                            .is_some())
+            })
             .fold(0, |m, r| m | (1u64 << r.native_id));
     }
     pub fn emp_active(&self, team: u8, now: u32) -> bool {
@@ -478,8 +514,9 @@ impl Streaks {
             .enumerate()
             .filter(|(slot, _)| state.radios_owned[*slot])
     }
-    pub fn try_radio(&mut self, actor: u8, team: u8, id: u8, now: u32) -> bool {
+    pub fn can_radio(&self, actor: u8, team: u8, id: u8, now: u32) -> bool {
         if !self.radios_enabled
+            || actor >= 12
             || id >= 64
             || self.available & (1u64 << id) == 0
             || !matches!(team, 1 | 2)
@@ -487,24 +524,31 @@ impl Streaks {
         {
             return false;
         }
-        let state = &mut self.actors[usize::from(actor)];
+        let state = &self.actors[usize::from(actor)];
         let Some(slot) = state.previews.ids.iter().position(|v| *v == id) else {
             return false;
         };
-        if !state.alive || !state.radios_owned[slot] {
+        state.alive && state.radios_owned[slot]
+    }
+    pub fn try_radio(&mut self, actor: u8, team: u8, id: u8, now: u32) -> bool {
+        if !self.can_radio(actor, team, id, now) {
             return false;
         }
+        let state = &mut self.actors[usize::from(actor)];
+        let slot = state.previews.ids.iter().position(|v| *v == id).unwrap();
         state.radios_owned[slot] = false;
         self.support.retain(|s| s.end > now);
         if id == 14 {
             self.support
                 .retain(|s| s.team == team || !matches!(s.id, 1 | 19));
         }
-        self.support.push(Support {
-            team,
-            id,
-            end: now.saturating_add(if id == 14 { 60_000 } else { RADAR_MSEC }),
-        });
+        if matches!(id, 1 | 3 | 14 | 19) {
+            self.support.push(Support {
+                team,
+                id,
+                end: now.saturating_add(if id == 14 { 60_000 } else { RADAR_MSEC }),
+            });
+        }
         self.radio_events.push_back(RadioEvent::Called {
             actor,
             id,
@@ -702,6 +746,7 @@ mod tests {
             map: "mp_afghan".into(),
             ncs_crc: 123,
             models: Default::default(),
+            model_bounds: Default::default(),
             effects: Default::default(),
             weapons: Default::default(),
             radios: vec![

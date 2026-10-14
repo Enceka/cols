@@ -61,8 +61,14 @@ partial class ClientAssets {
         for(uint i=1;i<=count;i++) {
             uint def=r.Word(0x017f5a40+i*4);string name=r.Name(r.Word(def));
             if(!all && name!="killstreak_nuke_mp" && name!="nuke_mp" && name!="killstreak_uav_mp" && name!="killstreak_counter_uav_mp")continue;
+            var firingAliases=new Dictionary<string,object>();
+            if(all)foreach(uint offset in new uint[]{0x4c0,0x4c4,0x4cc,0x4d0,0x4d8,0x4dc,0x4e0}) {
+                uint pointer=r.Word(def+offset);string alias=null;
+                if(pointer!=0)try{alias=r.Name(r.Word(pointer));}catch{}
+                firingAliases["0x"+offset.ToString("x")]=alias;
+            }
             weapons.Add(Obj("name",name,"index",i,"definition_base64",Convert.ToBase64String(r.Read(def,0xe28)),
-                "runtime_fields",r.WeaponRuntimeFields(def)));
+                "runtime_fields",r.WeaponRuntimeFields(def),"firing_aliases",firingAliases));
         }
         var effects=new List<object>();
         for(uint i=1;i<=399;i++) {
@@ -91,7 +97,12 @@ partial class ClientAssets {
             for(uint id=1;id<1024;id++) {
                 uint model=U(registered,(int)id*4);if(model==0)continue;
                 byte[] bounds=r.Read(model+0x140,24);
-                models.Add(Obj("name",r.Name(r.Word(model)),"index",id,"bounds_center",Floats(bounds,0,3),"bounds_half",Floats(bounds,12,3)));
+                string name=r.Name(r.Word(model));var bones=new List<string>();
+                if(name.StartsWith("sentry",StringComparison.Ordinal)||name.StartsWith("t5_weapon_sam",StringComparison.Ordinal)) {
+                    int countBones=Count(r.Read(model+4,1)[0],253);byte[] ids=r.Read(r.Word(model+0x2c),countBones*2);uint strings=r.Word(0x02f37164);
+                    for(int bone=0;bone<countBones;bone++)bones.Add(r.Name(strings+4+(uint)BitConverter.ToUInt16(ids,bone*2)*20));
+                }
+                models.Add(Obj("name",name,"index",id,"bounds_center",Floats(bounds,0,3),"bounds_half",Floats(bounds,12,3),"bone_names",bones));
             }
         }
         var output=Obj("schema_version",1,"read_only",true,

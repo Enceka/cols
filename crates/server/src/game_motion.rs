@@ -289,8 +289,17 @@ impl Collision {
     /// A validated bullet breaks only mapped glass before its closest body.
     /// Recast after each shatter; permanent WINDOW brushes still stop bullets.
     pub(crate) fn shot_raycast(&self, start: V3, end: V3, body_fraction: f32) -> Trace {
+        self.shot_raycast_excluding_prop(start, end, body_fraction, None)
+    }
+    pub(crate) fn shot_raycast_excluding_prop(
+        &self,
+        start: V3,
+        end: V3,
+        body_fraction: f32,
+        ignore: Option<u16>,
+    ) -> Trace {
         loop {
-            let hit = self.raycast(start, end);
+            let hit = self.raycast_excluding_prop(start, end, ignore);
             if hit.start_solid || hit.all_solid || hit.fraction >= body_fraction {
                 return hit;
             }
@@ -527,6 +536,16 @@ impl Collision {
         self.raycast_mask(start, end, SHOT_MASK)
     }
     pub(crate) fn replace_props(&self, colliders: &[crate::game_props::Collider]) {
+        self.replace_prop_range(256..384, colliders);
+    }
+    /// Map objects and reward devices own disjoint collision ranges. Updating
+    /// one range must preserve every other owner's live shapes.
+    pub(crate) fn replace_prop_range(
+        &self,
+        range: std::ops::Range<u16>,
+        colliders: &[crate::game_props::Collider],
+    ) {
+        assert!(colliders.iter().all(|p| range.contains(&p.entity)));
         let props = colliders
             .iter()
             .map(|p| {
@@ -547,8 +566,44 @@ impl Collision {
                     },
                 )
             })
-            .collect();
-        *self.props.write().expect("prop geometry lock") = props;
+            .collect::<Vec<_>>();
+        let mut live = self.props.write().expect("prop geometry lock");
+        live.retain(|(entity, _)| !range.contains(entity));
+        live.extend(props);
+        live.sort_by_key(|(entity, _)| *entity);
+    }
+    /// Conservative broad bounds for infrequent device placement. Brushes use
+    /// their face planes; triangles use all box/triangle separating axes.
+    pub(crate) fn bounds_clear(&self, min: V3, max: V3) -> bool {
+        let bounds = Bounds { min, max };
+        valid(min)
+            && valid(max)
+            && (0..3).all(|i| min[i] < max[i])
+            && !self.bounds_blocked(0, bounds)
+            && !self
+                .props
+                .read()
+                .expect("prop geometry lock")
+                .iter()
+                .any(|(_, p)| shape_blocks_bounds(p, bounds))
+    }
+    fn bounds_blocked(&self, node: usize, bounds: Bounds) -> bool {
+        if !self.nodes[node].bounds().intersects(bounds) {
+            return false;
+        }
+        match self.nodes[node] {
+            Node::Branch { left, right, .. } => {
+                self.bounds_blocked(left, bounds) || self.bounds_blocked(right, bounds)
+            }
+            Node::Leaf { first, count, .. } => {
+                self.indices[first..first + count].iter().any(|&index| {
+                    let p = &self.primitives[index];
+                    p.contents & PLAYER_MASK != 0
+                        && !self.glass_is_absent(p.glass_piece)
+                        && shape_blocks_bounds(p, bounds)
+                })
+            }
+        }
     }
     pub(crate) fn raycast_excluding_prop(&self, start: V3, end: V3, ignore: Option<u16>) -> Trace {
         self.raycast_mask_excluding(start, end, SHOT_MASK, ignore)
@@ -746,6 +801,40 @@ impl Collision {
                     }
                 }
             }
+        }
+    }
+}
+
+fn shape_blocks_bounds(p: &Primitive, bounds: Bounds) -> bool {
+    if !p.bounds.intersects(bounds) {
+        return false;
+    }
+    let center = std::array::from_fn(|i| bounds.center(i));
+    let half: V3 = std::array::from_fn(|i| (bounds.max[i] - bounds.min[i]) * 0.5);
+    match &p.shape {
+        Shape::Brush { planes, .. } => !planes.iter().any(|plane| {
+            let n = [plane[0], plane[1], plane[2]];
+            dot(n, center) - (0..3).map(|i| n[i].abs() * half[i]).sum::<f32>() >= plane[3]
+        }),
+        Shape::Triangle { vertices } => {
+            let points = vertices.map(|v| sub(v, center));
+            let edges = [
+                sub(points[1], points[0]),
+                sub(points[2], points[1]),
+                sub(points[0], points[2]),
+            ];
+            let axes = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+            let separated = |axis: V3| {
+                let projections = points.map(|v| dot(axis, v));
+                let radius = (0..3).map(|i| axis[i].abs() * half[i]).sum::<f32>();
+                projections.into_iter().fold(f32::INFINITY, f32::min) > radius
+                    || projections.into_iter().fold(f32::NEG_INFINITY, f32::max) < -radius
+            };
+            !separated(cross(edges[0], edges[1]))
+                && !axes.into_iter().any(separated)
+                && !edges
+                    .into_iter()
+                    .any(|edge| axes.into_iter().any(|axis| separated(cross(edge, axis))))
         }
     }
 }

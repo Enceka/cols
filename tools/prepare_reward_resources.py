@@ -4,6 +4,7 @@ import argparse
 import base64
 import hashlib
 import json
+import math
 from pathlib import Path
 import struct
 from prepare_game_state import compute, CLIENT_SHA256
@@ -46,7 +47,9 @@ def prepare(assets_raw, ncs_raw, catalog=None):
                           clip_key=None if u(0x6c0)==0xffffffff else u(0x6c0), ammo_key=None if u(0x6b8)==0xffffffff else u(0x6b8),
                           switch=dict(drop_msec=u(0x74c), raise_msec=u(0x750), empty_drop_msec=u(0x768), empty_raise_msec=u(0x764)),
                           fire_interval_msec=weapon['runtime_fields']['fire_interval_msec'],
-                          radius=u(0x8d8), inner_damage=u(0x8e0), outer_damage=u(0x8e4))
+                          radius=u(0x8d8), inner_damage=u(0x8e0), outer_damage=u(0x8e4),
+                          damage_stages=list(struct.unpack_from('<6I', raw, 0xbb4)),
+                          damage_ranges=list(struct.unpack_from('<6f', raw, 0xbcc)))
     radios, unavailable = [], []
     for reward in catalog['rewards']:
         if reward['native_id'] == 0:
@@ -55,12 +58,18 @@ def prepare(assets_raw, ncs_raw, catalog=None):
         if definition is None:
             unavailable.append(reward['native_id']); continue
         radios.append(dict(native_id=reward['native_id'], **{k: definition[k] for k in ['weapon','switch','fire_interval_msec']}))
-    models = {}
+    models, model_bounds = {}, {}
     for model in assets['models']:
         if model['name'] not in bank(0): continue
         if model['name'] in models or model['index'] != slot(0, model['name']):
             raise ValueError('model registration mismatch')
         models[model['name']] = model['index']
+        center, half = model['bounds_center'], model['bounds_half']
+        if len(center) != 3 or len(half) != 3 or not all(math.isfinite(x) for x in center + half) or not all(h >= 0 for h in half):
+            raise ValueError('invalid registered model bounds')
+        low, high = [c-h for c,h in zip(center, half)], [c+h for c,h in zip(center, half)]
+        if all(h > 0 for h in half) and all(abs(x) <= 4096 for x in low + high):
+            model_bounds[model['name']] = dict(min=low, max=high)
     effects = {}
     for effect in assets['effects']:
         if effect['name'] in effects or effect['selector'] != slot(3, effect['name']):
@@ -71,7 +80,7 @@ def prepare(assets_raw, ncs_raw, catalog=None):
         raise ValueError('invalid map identity')
     result = dict(schema_version=1, client_sha256=CLIENT_SHA256,
                   sources_sha256=[hashlib.sha256(r).hexdigest() for r in [assets_raw, ncs_raw]],
-                  map=path[8:-7], ncs_crc=crc, radios=radios, models=models, effects=effects)
+                  map=path[8:-7], ncs_crc=crc, radios=radios, models=models, model_bounds=model_bounds, effects=effects)
     # Companion weapon facts remain separate from activator timings.
     relevant = {r['weapon_token_c13'] for r in catalog['rewards']}
     prefixes = ('ac130_', 'cobra_', 'harrier_', 'pavelow_', 'sentry_', 'tow_turret_', 'remotemissile_', 'remote_missile', 'rcbomb_', 'missile_drone_', 'mg4juggernaut', 'minigungunship', 'kingpin_spawn', 'artillery_', 'airstrike_', 'stealth_bomb_', 'dog_bite', 'littlebird_')

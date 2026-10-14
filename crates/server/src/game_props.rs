@@ -256,6 +256,9 @@ impl Props {
                 origin: p.origin,
                 angles: p.angles,
                 present: s.phase != Phase::Gone,
+                weapon: 0,
+                events: Default::default(),
+                turret: false,
             })
             .collect()
     }

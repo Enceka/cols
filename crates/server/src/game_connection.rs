@@ -718,10 +718,7 @@ impl Connection {
             enemy = None;
         }
         let mut snapshot_motion = self.snapshot_motion();
-        let mut props = self
-            .tdm
-            .as_ref()
-            .map_or(Vec::new(), |m| m.props.snapshots());
+        let mut props = self.tdm.as_ref().map_or(Vec::new(), |m| m.world_models());
         let mut view_offset = self.view_offset;
         let mut streaks = self.tdm.as_ref().map_or(Default::default(), |m| {
             if m.finished {
@@ -1946,7 +1943,7 @@ impl Connection {
         let active = self.vitals.health > 0 && now.wrapping_sub(self.player_birth) >= 1000;
         local.alive = active;
         let collision = state.collision.as_ref().unwrap();
-        let tick = self.tdm.as_mut().unwrap().step_with_smoke(
+        let mut tick = self.tdm.as_mut().unwrap().step_with_smoke(
             now,
             (
                 local,
@@ -1958,6 +1955,23 @@ impl Connection {
             collision,
             |snapshot, frame, firing, toggle| state.animate_enemy(snapshot, frame, firing, toggle),
         )?;
+        let health = tick
+            .hits
+            .iter()
+            .fold(if active { self.vitals.health } else { 0 }, |h, hit| {
+                h.saturating_sub(hit.damage)
+            });
+        local.alive = health > 0;
+        let devices = self.tdm.as_mut().unwrap().step_deployables(
+            now,
+            (local, motion.view_height + 10.0, health),
+            self.player
+                .as_ref()
+                .is_some_and(|p| p.sentry_undetectable()),
+            collision,
+        );
+        tick.hits.extend(devices.hits);
+        tick.impacts.extend(devices.impacts);
         for hit in tick.hits {
             if state
                 .nuke_resources()
@@ -2051,7 +2065,7 @@ impl Connection {
                         id,
                         team,
                         time,
-                        duration_msec = if id == 14 {
+                        duration_msec = if matches!(id, 14 | 16) {
                             60_000
                         } else {
                             crate::game_killstreaks::RADAR_MSEC
@@ -2488,7 +2502,9 @@ impl Connection {
         // Each object can explode only once; the bounded queue also covers
         // a chain reaching every supported object in the same frame.
         for _ in 0..=128 {
-            let events = self.tdm.as_mut().unwrap().props.drain();
+            let tdm = self.tdm.as_mut().unwrap();
+            let mut events = tdm.props.drain();
+            events.extend(tdm.deployables.drain());
             if events.is_empty() {
                 break;
             }
@@ -2936,7 +2952,7 @@ impl Connection {
             }
             if let (Some(tdm), Some(player), Some(resources)) = (
                 &mut self.tdm,
-                &self.player,
+                &mut self.player,
                 self.game_state.as_ref().and_then(|s| s.radar_resources()),
             ) && self.vitals.health > 0
                 && !tdm.finished
@@ -2946,12 +2962,40 @@ impl Connection {
                     .radios
                     .iter()
                     .find(|r| r.weapon == player.equipment().weapon)
-                && tdm
+            {
+                if radio.native_id == 16 {
+                    if player.equipment().firing.is_none_or(|f| f.state == 0) {
+                        let state = self.game_state.as_ref().unwrap();
+                        let motion = self.motion.as_ref().unwrap();
+                        let mut local = state.local_player_snapshot(true).unwrap();
+                        local.origin = motion.origin;
+                        local.angles = input.angles;
+                        if tdm.deploy_sentry(
+                            through,
+                            local,
+                            motion.view_height + 10.0,
+                            resources,
+                            state.collision.as_ref().unwrap(),
+                        ) {
+                            self.radio_return = Some((through + 50, radio.weapon));
+                        } else {
+                            player.return_reward();
+                            let _ = self
+                                .server_commands
+                                .push(format!("a {}", player.equipment().weapon).as_bytes());
+                            tracing::info!(
+                                time = through,
+                                "sentry placement rejected; stock retained"
+                            );
+                        }
+                    }
+                } else if tdm
                     .streaks
                     .try_radio(0, tdm.teams()[0], radio.native_id, through)
-            {
-                self.radio_return =
-                    Some((through + u32::from(radio.switch.raise_msec), radio.weapon));
+                {
+                    self.radio_return =
+                        Some((through + u32::from(radio.switch.raise_msec), radio.weapon));
+                }
             }
             if let (Some(tdm), Some(player), Some(resources)) = (
                 &mut self.tdm,

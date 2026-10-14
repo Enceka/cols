@@ -475,6 +475,9 @@ impl Player {
                 .is_some_and(|l| l.scavenger_allowed && !l.clip_only)
             && self.ammo_space(&self.current) > 0
     }
+    pub(crate) fn sentry_undetectable(&self) -> bool {
+        self.perks.has("modNoSentryGuns")
+    }
     pub fn scavenge(&mut self, bag_weapon: u16) -> bool {
         if !self.can_scavenge() {
             return false;

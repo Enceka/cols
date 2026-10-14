@@ -40,17 +40,30 @@ partial class ClientAssets {
     }
     public static void ExportPropsState(IntPtr process,bool once=false) {
         var r=new ClientAssets(process);var frames=new List<object>();
-        for(int frame=0;frame<(once?1:400);frame++) {
+        var clock=System.Diagnostics.Stopwatch.StartNew();var aliasNames=new Dictionary<uint,string>();
+        for(int frame=0;frame<(once?1:400)&&(once||clock.ElapsedMilliseconds<20000);frame++) {
             if(r.Word(0x01a2e7ec)!=10)break;
             uint cgBank=r.Word(0x07817ba8),entBank=r.Word(0x07817bb0);if(cgBank>=256||entBank>=256)throw new Exception("invalid prop state bank");
             uint cg=r.Word(0x01a19510+cgBank*4)^0xfbb2c97a,ents=r.Word(0x01a19510+entBank*4)^0x2168f672;
             var props=new List<object>();
-            for(uint id=256;id<384;id++) {
-                uint ent=ents+id*0x238;uint flags=r.Word(ent+0x204);if(r.Word(ent+0xf4)!=0)continue;
+            for(uint id=256;id<448;id++) {
+                uint ent=ents+id*0x238;uint flags=r.Word(ent+0x204),type=r.Word(ent+0xf4);if(type!=0&&type!=11)continue;
                 uint model=r.Word(ent+0xf0+0x98);if(model==0)continue;
-                props.Add(Obj("entity",id,"flags",flags,"model",model,"origin",r.EntityOrigin(ent+0xf0),"angles",Floats(r.Read(ent+0xf0+0x3c,12),0,3),"dobj_slot",BitConverter.ToUInt16(r.Read(0x02ef4858+id*2,2),0)));
+                uint es=ent+0xf0;
+                props.Add(Obj("entity",id,"type",type,"flags",flags,"model",model,"origin",r.EntityOrigin(es),"angles",Floats(r.Read(es+0x3c,12),0,3),"weapon",r.Word(es+0xd0),"event_sequence",r.Word(es+0xac),"event_ids",new uint[]{r.Word(es+0xb0),r.Word(es+0xb8),r.Word(es+0xc0),r.Word(es+0xc8)},"dobj_slot",BitConverter.ToUInt16(r.Read(0x02ef4858+id*2,2),0)));
             }
-            frames.Add(Obj("time",r.Word(cg+0xae4c8),"health",r.Word(cg+0x190),"origin",Floats(r.Read(cg+0x1c,12),0,3),"yaw",Floats(r.Read(cg+0x150,4),0,1)[0],"pitch",Floats(r.Read(cg+0x14c,4),0,1)[0],"props",props,"effects",r.EffectStates()));
+            var sounds=new List<object>();byte[] channels=r.Read(0x07810d58,53*0xa8);
+            for(int channel=0;channel<53;channel++) {
+                int at=channel*0xa8;uint source=U(channels,at+0xc),alias=U(channels,at+0x68);
+                if(alias<0x10000)continue;
+                string name;if(!aliasNames.TryGetValue(alias,out name)) {
+                    try{name=r.Name(r.Word(alias));}catch{continue;}
+                    aliasNames[alias]=name;
+                }
+                if(!((source&0x7ff)>=384&&(source&0x7ff)<448)&&name!="sentry_minigun_fire"&&name!="sentry_minigun_cooldown")continue;
+                sounds.Add(Obj("slot",channel,"source",source,"alias",name,"handle",U(channels,at+0x20),"active_byte",channels[at+0x94]));
+            }
+            frames.Add(Obj("time",r.Word(cg+0xae4c8),"health",r.Word(cg+0x190),"origin",Floats(r.Read(cg+0x1c,12),0,3),"yaw",Floats(r.Read(cg+0x150,4),0,1)[0],"pitch",Floats(r.Read(cg+0x14c,4),0,1)[0],"props",props,"effects",r.EffectStates(),"device_sounds",sounds));
             System.Threading.Thread.Sleep(50);
         }
         var s=new JavaScriptSerializer();s.MaxJsonLength=16*1024*1024;Console.WriteLine(s.Serialize(Obj("schema_version",1,"read_only",true,"frames",frames)));
