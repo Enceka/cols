@@ -9,6 +9,11 @@
 处理。原生界面的列表显示、两个真实游戏客户端入房仍需单独验收；多人共享对局尚
 未实现，多个真人成员的房间明确拒绝游戏服分配，不把独立玩家世界当作共享对局。
 
+本机已实测两个独立原生窗口，但认证 UID 冲突会撤销另一端的大厅连接。
+原生分页查询第三项实际为 16、页大小为 30，当前回包为
+`unsupported_browser_criteria`；单端创建房间已确认，双原生同房与对局尚未通过。
+证据、可复现检查及剩余边界见[双客户端验收](MULTICLIENT_ACCEPTANCE.md)。
+
 ## 原生入口与协议分工
 
 前端导出的 `ListRoomTask.onStart` 调用 `CFunctionContainer.ListRoom(type, mode)`。
@@ -223,8 +228,9 @@ RPC transaction ID保持FIFO；另一个测试在C2S只送达两字节长度前�
 阿富汗房间／局内 state10 和 12 人名单。对应证据在
 `research-output/room-browser-live-acceptance/acceptance.json` 及其同目录；实际 Wine prefix 由现存 wineserver
 的 IPC inode 与 `native.verified.local.json` 匹配，不能默认使用另一个 native.local
-profile 的 prefix。验收未重启或停止现存客户端与正常服务端。当前未取得原生 query4／分页
-请求，不将正常单人 Bot 对局当作公共列表或真人加入通过。
+profile 的 prefix。验收未重启或停止现存客户端与正常服务端。公共列表的独立原生请求已在
+[双客户端验收](MULTICLIENT_ACCEPTANCE.md)中取得，但实际筛选条件被拒绝；
+正常单人 Bot 对局不构成公共列表或真人加入通过。
 
 - `fixtures/protocol/room-browser-synthetic.json`：本版消费者地址、独立 Python
   tagged 编码生成的普通／分页／入房请求，以及合成创建描述与列表记录；只含
