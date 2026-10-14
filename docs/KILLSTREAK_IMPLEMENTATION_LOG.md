@@ -32,9 +32,13 @@
 
 攻击机的空对空FFAR与SAM共用导弹调度，鹞式7接入两轮轰炸、四秒延迟入场、45秒悬停期限及六发导弹上限。机炮、本地玩家受击和导弹爆炸继续携带原始生命归属；作用于本地玩家的延迟击杀同样不能给操控者的新生命增加连杀进度。
 
-目前缺口包括：专用实体/旋翼/炮塔原生验收、火箭和诱饵弹及坠毁原生验收、速度单位的本版独立证据、鹞式完整实机验收。三个奖励仍未开放正常规则。诊断开关要求标记目录和静止测试配置；本轮尝试启动隔离验证时，另一场充能模式原生采集正在占用客户端与端口，启动器拒绝重复启动，未中断该场采集。
+随后在原先占用客户端的采集自行结束后，完成隔离实机验证：攻击直升机8的实体560使用type12、模型146，重型直升机10使用模型148；两者均有有效DObj、持续运动及推进的开火事件序列。服务端同时记录到调用者0的机炮击杀，客户端时钟正常推进，延迟实体链未见自循环。没有修改目标EXE/DLL。
 
-证据目录：`research-output/attack-aircraft-20261015`。`routes-check.log`验证真实阿富汗完整入场/巡航/离场；`attack-lifecycle-check.log`、`harrier-authority-check.log`、`sam-decoy-check.log`和`native-descriptor-check.log`覆盖生命周期、鹞式、诱饵弹导弹及字段解码。完整工作区检查随集成刷新；`fixtures/protocol/helicopter-fields-3.3.3.3.json`是目标布局证据，尚不代表完整原生玩法已验收。
+旋翼验证仍未完成：现有重型采样没有稳定的当帧骨骼，截图也未对准飞机；这只能说明缺少证据，不能判断旋翼是否旋转。后续重新获取奖励的尝试遇到诊断Bot开火后多次死亡，未完成验收，也未证明手雷本人伤害。该轮自己启动的客户端已由对应启动器正常结束，连接配置与CA恢复。
+
+目前缺口包括：旋翼/炮塔与可见开火及声音、火箭和诱饵弹及坠毁原生验收、速度单位的本版独立证据、鹞式完整实机验收。坠毁目前是完整机体碰撞的物理下坠，尚未完成原始坠毁航线的行为。三个奖励仍未开放正常规则。诊断开关要求标记目录和静止测试配置，不能用于绕过普通资源完整性门槛。
+
+证据目录：`research-output/attack-aircraft-20261015`。`native-8-result.json`、`native-10-result.json`及对应`props-state`记录上述原生实体和开火采样。`routes-check.log`验证真实阿富汗完整入场/巡航/离场；`attack-lifecycle-check.log`、`harrier-authority-check.log`、`sam-decoy-check.log`和`native-descriptor-check.log`覆盖生命周期、鹞式、诱饵弹导弹及字段解码。`final-aircraft-tests.log`的串行全工作区检查通过：protocol171项、server472项及集成检查；Python162项及clippy通过。另一次并行检查中的既有observe超时用例随后串行六项重跑通过。`fixtures/protocol/helicopter-fields-3.3.3.3.json`是目标布局证据，尚不代表完整原生玩法已验收。
 
 ## 尚待完成
 
