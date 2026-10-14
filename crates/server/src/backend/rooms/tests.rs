@@ -14,6 +14,7 @@ fn channel_membership_precedes_each_bot_join_and_ready() {
     let policy = crate::backend::rooms::bots::Policy {
         version: 7,
         maps: Default::default(),
+        loadouts: Default::default(),
     };
     let pushes = bot_pushes(&policy, 123, &owner, false).unwrap();
     assert_eq!(pushes.len(), 33);
@@ -82,6 +83,243 @@ fn create(rooms: &mut Rooms, s: &Session) -> (u64, Vec<u8>) {
     let id = Reader::new(&reply[0]).u64().unwrap();
     (id, reply[0].clone())
 }
+#[test]
+fn bot_avatars_wait_for_members_and_follow_team_map_and_frontend_refresh() {
+    use codol_protocol::room::messages::Loadout;
+    use codol_protocol::room::messages::Member;
+    use codol_protocol::room::messages::RoomInfo;
+    use codol_protocol::room::messages::Updates;
+    use codol_protocol::room::messages::bot_id;
+    let fixture: serde_json::Value = serde_json::from_slice(include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../fixtures/protocol/room-loadout-synthetic.json"
+    )))
+    .unwrap();
+    let template: Loadout = serde_json::from_value(fixture["loadout"].clone()).unwrap();
+    let roster = (1..=11)
+        .map(|client| {
+            let mut axis = template;
+            let mut allies = template;
+            axis.clothing[0] = 500 + client;
+            allies.clothing[0] = 800 + client;
+            [axis, allies]
+        })
+        .collect::<Vec<_>>();
+    let policy = crate::backend::rooms::bots::Policy {
+        version: 7,
+        maps: ["mp_afghan".into(), "mp_killhouse_sh".into()].into(),
+        loadouts: [
+            ("mp_afghan".into(), roster.clone()),
+            ("mp_killhouse_sh".into(), roster.clone()),
+        ]
+        .into(),
+    };
+    let owner = session(0x8000000000000001);
+    let mut rooms = Rooms::default();
+    let (id, _) = create(&mut rooms, &owner);
+    let channel = rooms.channels.get_mut(&id).unwrap();
+    channel.game = Some(GameSession {
+        id: [0; 8],
+        description: Description::parse(
+            include_bytes!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../fixtures/protocol/room-create-synthetic.bin"
+            )),
+            owner.user_id,
+        )
+        .unwrap(),
+    });
+    channel.room_info = Some(RoomInfo {
+        mode: "war".into(),
+        map: "mp_afghan".into(),
+        playlist: 255,
+        minimum: 4,
+        maximum: 12,
+    });
+    assert!(
+        channel
+            .sync_bot_loadouts(&policy, id, true)
+            .unwrap()
+            .is_empty()
+    );
+    channel.bots_announced = true;
+    assert!(
+        channel
+            .sync_bot_loadouts(&policy, id, true)
+            .unwrap()
+            .is_empty()
+    );
+    channel
+        .update_members(&Updates {
+            members: (1..=11)
+                .map(|client| Member {
+                    id: bot_id(client),
+                    team: if client % 2 == 0 { 2 } else { 1 },
+                    ready: false,
+                })
+                .collect(),
+            ..Default::default()
+        })
+        .unwrap();
+    let pushes = channel.sync_bot_loadouts(&policy, id, false).unwrap();
+    assert_eq!(pushes.len(), 11);
+    for (client, push) in (1..=11).zip(&pushes) {
+        let mut r = Reader::new(push);
+        assert_eq!(r.u32().unwrap(), 7);
+        assert_eq!(r.u64().unwrap(), bot_id(client));
+        assert_eq!(
+            r.string(65).unwrap(),
+            STANDARD.encode(format!("Bot {client}"))
+        );
+        assert_eq!(r.u64().unwrap(), id);
+        let team = if client % 2 == 0 { 2 } else { 1 };
+        let expected = roster[usize::from(client - 1)][usize::from(2 - team)]
+            .record(team)
+            .unwrap();
+        assert_eq!(
+            r.blob().unwrap(),
+            codol_protocol::room::messages::to_member(&expected, owner.user_id).unwrap()
+        );
+        assert_eq!(r.u32().unwrap(), 1);
+        assert!(r.remaining().is_empty());
+    }
+    assert!(!channel.owner_ready);
+    assert!(
+        channel
+            .sync_bot_loadouts(&policy, id, false)
+            .unwrap()
+            .is_empty()
+    );
+    channel.member_teams.insert(bot_id(1), 2);
+    assert_eq!(
+        channel.sync_bot_loadouts(&policy, id, false).unwrap().len(),
+        1
+    );
+    assert_eq!(channel.avatar_sent[&1].2.clothing[0], 501);
+    assert_eq!(
+        channel.sync_bot_loadouts(&policy, id, true).unwrap().len(),
+        11
+    );
+    channel.room_info.as_mut().unwrap().map = "mp_killhouse_sh".into();
+    assert_eq!(
+        channel.sync_bot_loadouts(&policy, id, false).unwrap().len(),
+        11
+    );
+    channel.member_teams.remove(&bot_id(1));
+    assert_eq!(
+        channel.sync_bot_loadouts(&policy, id, true).unwrap().len(),
+        10
+    );
+    assert!(!channel.avatar_sent.contains_key(&1));
+    channel.room_info.as_mut().unwrap().map = "mp_unknown".into();
+    assert!(
+        channel
+            .sync_bot_loadouts(&policy, id, true)
+            .unwrap()
+            .is_empty()
+    );
+}
+#[tokio::test]
+async fn native_cancel_and_avatar_republish_resend_loadouts_after_the_owner_echo() {
+    use codol_protocol::room::messages::Loadout;
+    use codol_protocol::room::messages::RoomInfo;
+    use codol_protocol::room::messages::bot_id;
+    use codol_protocol::room::messages::bot_ready;
+    let fixture: serde_json::Value = serde_json::from_slice(include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../fixtures/protocol/room-loadout-synthetic.json"
+    )))
+    .unwrap();
+    let loadout: Loadout = serde_json::from_value(fixture["loadout"].clone()).unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let server = crate::transport::game::server::GameServer::bind(
+        "127.0.0.1:0".parse().unwrap(),
+        temp.path().join("game"),
+    )
+    .await
+    .unwrap();
+    let mut endpoint = server.admissions();
+    drop(server);
+    Arc::get_mut(&mut endpoint).unwrap().bot_rooms = Some(crate::backend::rooms::bots::Policy {
+        version: 7,
+        maps: ["mp_afghan".into()].into(),
+        loadouts: [("mp_afghan".into(), vec![[loadout; 2]; 11])].into(),
+    });
+    let mut rooms = Rooms::with_game_endpoint(endpoint);
+    let owner = session(0x8000000000000001);
+    let (id, _) = create(&mut rooms, &owner);
+    let channel = rooms.channels.get_mut(&id).unwrap();
+    channel.game = Some(GameSession {
+        id: [0; 8],
+        description: Description::parse(
+            include_bytes!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../fixtures/protocol/room-create-synthetic.bin"
+            )),
+            owner.user_id,
+        )
+        .unwrap(),
+    });
+    channel.room_info = Some(RoomInfo {
+        mode: "war".into(),
+        map: "mp_afghan".into(),
+        playlist: 255,
+        minimum: 4,
+        maximum: 12,
+    });
+    channel.bots_announced = true;
+    for client in 1..=11 {
+        channel
+            .member_teams
+            .insert(bot_id(client), if client % 2 == 0 { 2 } else { 1 });
+    }
+    let request = |record: &[u8]| {
+        let mut w = Writer(vec![11, 3, 4]);
+        w.u64(id);
+        w.blob(record).unwrap();
+        w.u32(1);
+        w.0.push(0);
+        w.0
+    };
+    for (record, expected, expected_ready, avatar_count) in [
+        (bot_ready(false), 23, false, 11),
+        (bot_ready(true), 12, true, 0),
+        (bot_ready(false), 23, false, 11), // Native match return rebuilds frontend objects.
+        (loadout.record(2).unwrap(), 12, false, 11),
+    ] {
+        let data = request(&record);
+        let reply = rooms
+            .handle(&Request::parse(&data).unwrap(), &owner, 1)
+            .unwrap();
+        assert_eq!(reply.pushes.len(), expected);
+        assert_eq!(rooms.channels[&id].owner_ready, expected_ready);
+        let mut echo = Reader::new(&reply.pushes[0]);
+        assert_eq!(echo.u32().unwrap(), 7);
+        assert_eq!(echo.u64().unwrap(), owner.user_id);
+        let avatars = reply.pushes[1..]
+            .iter()
+            .filter(|push| {
+                let mut r = Reader::new(push);
+                r.u32().unwrap();
+                r.u64().unwrap();
+                r.string(65).unwrap();
+                r.u64().unwrap();
+                codol_protocol::room::messages::updates(r.blob().unwrap(), owner.user_id)
+                    .unwrap()
+                    .avatar_refresh
+            })
+            .count();
+        assert_eq!(avatars, avatar_count);
+    }
+    let denied = request(&bot_ready(false));
+    assert!(
+        rooms
+            .handle(&Request::parse(&denied).unwrap(), &session(43), 1)
+            .unwrap()
+            .pushes
+            .is_empty()
+    );
+}
 #[tokio::test]
 async fn supported_creation_joins_bots_after_receiver_ready_without_a_map_change() {
     let temp = tempfile::tempdir().unwrap();
@@ -96,6 +334,7 @@ async fn supported_creation_joins_bots_after_receiver_ready_without_a_map_change
     Arc::get_mut(&mut endpoint).unwrap().bot_rooms = Some(crate::backend::rooms::bots::Policy {
         version: 7,
         maps: ["mp_killhouse_sh".into()].into(),
+        loadouts: Default::default(),
     });
     for (map, mode, playlist, capacity, explicit_unsupported, expected_joins) in [
         ("mp_killhouse_sh", "war", u32::MAX, 12, false, 33),

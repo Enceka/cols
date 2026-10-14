@@ -65,6 +65,9 @@ impl MatchConfig {
         );
         for entry in &self.roster {
             entry.animation.validate()?;
+            for loadout in entry.room_loadouts.iter().flatten() {
+                loadout.validate()?;
+            }
             for (faction, outfit) in entry.outfits.iter().flatten().enumerate() {
                 if let Some(character) = outfit.character {
                     character.fields()?;

@@ -29,6 +29,55 @@ pub struct Member {
     pub team: u8,
     pub ready: bool,
 }
+/// Frontend item IDs, independent of game model/weapon/character registries.
+/// Native type18: 0x6df130/0x6df360; cha,fpa,boo,fja,han,hea,ves,heg,elp,knp,pat,eye.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Loadout {
+    pub clothing: [u16; 12],
+    /// Primary and secondary: base item followed by six explicit attachments.
+    pub weapons: [[u16; 7]; 2],
+    #[serde(default)]
+    pub equipment: [u16; 6],
+    #[serde(default)]
+    pub perks: [u16; 3],
+    #[serde(default)]
+    pub rewards: [u16; 3],
+    #[serde(default)]
+    pub trailing_item: u16,
+}
+impl Loadout {
+    pub fn validate(&self) -> Result<(), LobbyError> {
+        if self.clothing[0] == 0
+            || self.clothing.iter().any(|&id| id > i16::MAX as u16)
+            || self.weapons[0][0] == 0
+        {
+            return Err(LobbyError("invalid room item loadout"));
+        }
+        Ok(())
+    }
+    pub fn record(&self, room_team: u8) -> Result<Vec<u8>, LobbyError> {
+        self.validate()?;
+        if !matches!(room_team, 1 | 2) {
+            return Err(LobbyError("invalid room loadout team"));
+        }
+        let mut w = Output::default().frame(18);
+        w.bits(0, 8); // Native constructor's flag, not gender or an animation ID.
+        w.bits(u64::from(room_team), 8);
+        for &id in self
+            .clothing
+            .iter()
+            .chain(self.weapons.iter().flatten())
+            .chain(&self.equipment)
+            .chain(&self.perks)
+            .chain(&self.rewards)
+            .chain(std::iter::once(&self.trailing_item))
+        {
+            w.bits(u64::from(id), 16);
+        }
+        Ok(w.batch())
+    }
+}
 #[derive(Default, Debug)]
 pub struct Updates {
     pub info: Option<RoomInfo>,
@@ -36,6 +85,8 @@ pub struct Updates {
     pub full_roster: bool,
     pub join_result: Option<u8>,
     pub ready: Option<bool>,
+    /// Owner republished its avatar, including after native frontend teardown.
+    pub avatar_refresh: bool,
 }
 struct Bits<'a> {
     bytes: &'a [u8],
@@ -246,6 +297,12 @@ fn updates_for(batch: &[u8], recipients: &[u64]) -> Result<Updates, LobbyError> 
                 result.info = Some(info);
             }
             16 => result.ready = Some(r.read(1)? != 0),
+            18 => {
+                if bytes.len() != 82 {
+                    return Err(LobbyError("invalid room avatar record size"));
+                }
+                result.avatar_refresh = true;
+            }
             _ => {}
         }
         Ok(())
@@ -335,6 +392,61 @@ pub fn to_member(record: &[u8], _recipient: u64) -> Result<Vec<u8>, LobbyError> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn hex_bytes(value: &str) -> Vec<u8> {
+        value
+            .as_bytes()
+            .chunks_exact(2)
+            .map(|v| u8::from_str_radix(std::str::from_utf8(v).unwrap(), 16).unwrap())
+            .collect()
+    }
+    #[test]
+    fn frontend_loadout_matches_native_type18_layout_and_keeps_item_ids() {
+        let fixture: serde_json::Value = serde_json::from_slice(include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/protocol/room-loadout-synthetic.json"
+        )))
+        .unwrap();
+        let loadout: Loadout = serde_json::from_value(fixture["loadout"].clone()).unwrap();
+        let expected = hex_bytes(fixture["record_hex"].as_str().unwrap());
+        assert_eq!(loadout.record(2).unwrap(), expected);
+        assert_eq!(expected.len(), 86);
+        assert_eq!(expected[85] & 0xfe, 0);
+        let wrapped = to_member(&expected, 42).unwrap();
+        assert!(updates(&wrapped, 42).unwrap().avatar_refresh);
+        for n in 1..wrapped.len() {
+            assert!(updates(&wrapped[..n], 42).is_err());
+        }
+        for team in [0, 3, 6, 255] {
+            assert!(loadout.record(team).is_err());
+        }
+        let mut invalid = loadout;
+        invalid.clothing[0] = 0;
+        assert!(invalid.record(1).is_err());
+        invalid = loadout;
+        invalid.clothing[5] = 32768;
+        assert!(invalid.record(1).is_err());
+        invalid = loadout;
+        invalid.weapons[0][0] = 0;
+        assert!(invalid.record(1).is_err());
+    }
+    #[test]
+    #[ignore = "requires sanitized retained native type18 records in CODOL_ROOM_AVATAR_CAPTURE"]
+    fn retained_native_owner_loadouts_reencode_identically() {
+        let path = std::env::var("CODOL_ROOM_AVATAR_CAPTURE").unwrap();
+        let samples: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        let samples = samples.as_array().unwrap();
+        assert_eq!(samples.len(), 4);
+        for sample in samples {
+            let loadout: Loadout = serde_json::from_value(sample["loadout"].clone()).unwrap();
+            assert_eq!(
+                loadout
+                    .record(sample["room_team"].as_u64().unwrap() as u8)
+                    .unwrap(),
+                hex_bytes(sample["record_hex"].as_str().unwrap())
+            );
+        }
+    }
     #[test]
     fn join_result_is_one_byte_before_the_room_mode_string() {
         // C1 0x6de190 reads an 8-bit result, then RoomInfo begins with "war".

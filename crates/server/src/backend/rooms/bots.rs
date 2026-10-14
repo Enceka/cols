@@ -1,10 +1,13 @@
 //! Lobby participation for the eleven players simulated by TdmMatch.
-use std::collections::BTreeSet;
+use anyhow::{Result, ensure};
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone)]
 pub(crate) struct Policy {
     pub version: u32,
     pub maps: BTreeSet<String>,
+    /// Map-specific prepared roster; each pair is Axis/Allies, unlike room teams.
+    pub loadouts: BTreeMap<String, Vec<[codol_protocol::room::messages::Loadout; 2]>>,
 }
 impl Policy {
     pub fn accepts(&self, info: &codol_protocol::room::messages::RoomInfo) -> bool {
@@ -16,6 +19,60 @@ impl Policy {
     }
 }
 
+impl super::Channel {
+    pub(super) fn sync_bot_loadouts(
+        &mut self,
+        policy: &Policy,
+        channel_id: u64,
+        force: bool,
+    ) -> Result<Vec<Vec<u8>>> {
+        if !self.bots_announced {
+            return Ok(Vec::new());
+        }
+        let Some(map) = self.bot_map(policy).map(str::to_owned) else {
+            return Ok(Vec::new());
+        };
+        let Some(roster) = policy.loadouts.get(&map) else {
+            return Ok(Vec::new()); // Older preparations have no frontend item IDs.
+        };
+        ensure!(
+            roster.len() == usize::from(codol_protocol::room::messages::BOT_CLIENTS),
+            "room avatar roster must contain eleven bots"
+        );
+        let mut pushes = Vec::new();
+        for client in 1..=codol_protocol::room::messages::BOT_CLIENTS {
+            let uid = codol_protocol::room::messages::bot_id(client);
+            // Only the host's member records establish acceptance and team.
+            // Never infer them from JoinRequest order or from the game roster.
+            let Some(&team @ (1 | 2)) = self.member_teams.get(&uid) else {
+                self.avatar_sent.remove(&client);
+                continue;
+            };
+            let loadout = roster[usize::from(client - 1)][usize::from(2 - team)];
+            let identity = (map.clone(), team, loadout);
+            if !force && self.avatar_sent.get(&client) == Some(&identity) {
+                continue;
+            }
+            pushes.push(super::bot_message(
+                client,
+                channel_id,
+                self.owner,
+                &loadout.record(team)?,
+            )?);
+            self.avatar_sent.insert(client, identity);
+            tracing::debug!(
+                client,
+                team,
+                map,
+                character = loadout.clothing[0],
+                weapon = loadout.weapons[0][0],
+                "native room bot avatar queued"
+            );
+        }
+        Ok(pushes)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -24,6 +81,7 @@ mod tests {
         let policy = Policy {
             version: 7,
             maps: BTreeSet::from(["mp_afghan".into(), "mp_killhouse_sh".into()]),
+            loadouts: Default::default(),
         };
         let mut info = codol_protocol::room::messages::RoomInfo {
             mode: "war".into(),

@@ -30,6 +30,7 @@ struct Channel {
     owner_ready: bool,
     roster_requested: bool,
     member_teams: HashMap<u64, u8>,
+    avatar_sent: HashMap<u8, (String, u8, codol_protocol::room::messages::Loadout)>,
     humans: HashMap<u64, Human>,
 }
 struct GameSession {
@@ -413,6 +414,7 @@ impl Rooms {
                             owner_ready: false,
                             roster_requested: false,
                             member_teams: HashMap::new(),
+                            avatar_sent: HashMap::new(),
                             humans: HashMap::from([(session.user_id, Human::owner(session))]),
                         },
                     );
@@ -585,6 +587,17 @@ impl Rooms {
                 if updates.full_roster {
                     tracing::info!(teams=?channel.game_teams()?, "native bot room roster confirmed");
                 }
+                if let Some(policy) = self
+                    .game_endpoint
+                    .as_ref()
+                    .and_then(|e| e.bot_rooms.as_ref())
+                {
+                    result.pushes.extend(channel.sync_bot_loadouts(
+                        policy,
+                        id,
+                        updates.avatar_refresh,
+                    )?);
+                }
                 Ok(result)
             }
             (11, 4) => {
@@ -619,6 +632,9 @@ impl Rooms {
                 } else {
                     Default::default()
                 };
+                let avatar_reset = updates.info.is_some()
+                    || updates.ready == Some(false)
+                    || updates.avatar_refresh;
                 if channel.bots_announced {
                     channel.update_members(&updates)?;
                     if updates.full_roster {
@@ -709,6 +725,15 @@ impl Rooms {
                         bots = 11,
                         "native room bot participation queued"
                     );
+                }
+                if let Some(policy) = self
+                    .game_endpoint
+                    .as_ref()
+                    .and_then(|e| e.bot_rooms.as_ref())
+                {
+                    result
+                        .pushes
+                        .extend(channel.sync_bot_loadouts(policy, id, avatar_reset)?);
                 }
                 Ok(result)
             }

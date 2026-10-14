@@ -10,6 +10,9 @@ pub(crate) struct BotLoadout {
     pub personality: String,
     #[serde(default)]
     pub outfits: Option<[BotOutfit; 2]>,
+    /// Axis/Allies item loadouts for the native room frontend, in game team order.
+    #[serde(default)]
+    pub room_loadouts: Option<[codol_protocol::room::messages::Loadout; 2]>,
 }
 #[derive(Clone, Copy, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]

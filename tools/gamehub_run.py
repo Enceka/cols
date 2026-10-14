@@ -181,6 +181,7 @@ def main():
     parser.add_argument("--tls-probe", action="store_true", help="use a loopback-only OpenSSL TLS 1.0 research listener for endpoint B")
     parser.add_argument("--rust-auth", action="store_true", help="use the in-process Rust AUTH TLS/HTTP endpoint")
     parser.add_argument("--release-server", action="store_true", help="run the optimized Rust server built with cargo build --release")
+    parser.add_argument("--server-binary", type=Path, help="explicit pinned Rust server for isolated verification")
     parser.add_argument("--auth-reply-file", type=Path, help="experimental JSON reply for --rust-auth")
     parser.add_argument("--local-auth-tickets", action="store_true", help="ask the Rust endpoint to issue local test-account tickets")
     parser.add_argument("--rust-lobby", action="store_true", help="enable the Rust protocol-210 lobby handshake observer")
@@ -263,6 +264,8 @@ def main():
         parser.error("resource-compass-probe requires resource-capture-map and an existing candidate file")
     if args.release_server and not args.rust_auth:
         parser.error("release-server requires rust-auth")
+    if args.server_binary and (not args.rust_auth or not args.server_binary.is_file()):
+        parser.error("server-binary requires rust-auth and an existing server executable")
     if args.hit_regions and not args.game_state:
         parser.error("hit-regions requires game-state")
     if args.trust_lab_cert and not (args.tls_probe or args.rust_auth):
@@ -363,7 +366,8 @@ def main():
                     if not certificate.is_file() or not key.is_file():
                         raise RuntimeError("create the local TLS lab certificate first; see GAMEHUB_DEBUG.md")
                     if args.rust_auth:
-                        executable = REPO / "target" / ("release" if args.release_server else "debug") / "codol-server"
+                        executable = args.server_binary.resolve() if args.server_binary else REPO / "target" / ("release" if args.release_server else "debug") / "codol-server"
+                        state["server_binary_sha256"] = sha256(executable)
                         tls_argv = [str(executable), "serve-auth", "--cert", str(certificate), "--key", str(key), "--capture-dir", str(output / "auth-captures")]
                         if args.auth_reply_file:
                             tls_argv += ["--reply-file", str(args.auth_reply_file.resolve())]
@@ -421,7 +425,7 @@ def main():
                         state["temporary_ca_paths"] = [str(path.relative_to(work)) for path in ca_backups]
                 cfg += '\n[[listeners]]\nname = "resources"\nbind = "127.0.0.1:39003"\n'
                 (output / "observe.toml").write_text(cfg)
-                observer_executable=REPO/"target"/("release" if args.release_server else "debug")/"codol-server"
+                observer_executable=args.server_binary.resolve() if args.server_binary else REPO/"target"/("release" if args.release_server else "debug")/"codol-server"
                 server = subprocess.Popen([str(observer_executable), "observe", "--config", str(output / "observe.toml")], stdout=server_log, stderr=subprocess.STDOUT)
                 state["backend_ready_wait_seconds"] = wait_backend_ready(
                     output, server, tls, args.rust_auth, args.rust_game

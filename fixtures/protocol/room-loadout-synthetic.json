@@ -1,0 +1,63 @@
+{
+  "schema_version": 1,
+  "client_sha256": "e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b",
+  "source": "native 0x6df130/0x6df360 layout; synthetic item IDs, no account data",
+  "body_bits": 649,
+  "room_team": 2,
+  "loadout": {
+    "clothing": [
+      101,
+      102,
+      103,
+      104,
+      105,
+      106,
+      107,
+      108,
+      109,
+      110,
+      111,
+      112
+    ],
+    "weapons": [
+      [
+        65244,
+        201,
+        202,
+        203,
+        204,
+        205,
+        206
+      ],
+      [
+        34661,
+        301,
+        302,
+        303,
+        304,
+        305,
+        306
+      ]
+    ],
+    "equipment": [
+      401,
+      402,
+      403,
+      404,
+      405,
+      406
+    ],
+    "perks": [
+      501,
+      502,
+      503
+    ],
+    "rewards": [
+      601,
+      602,
+      603
+    ],
+    "trailing_item": 701
+  },
+  "record_hex": "52000000240004ca00cc00ce00d000d200d400d600d800da00dc00de00e000b8fd93019401960198019a019c01ca0e5b025c025e0260026202640222032403260328032a032c03ea03ec03ee03b204b404b6047a0500"
+}

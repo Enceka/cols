@@ -141,6 +141,22 @@ impl GameMapCatalog {
             .map(|((map, _), _)| map.clone())
             .collect()
     }
+    pub(crate) fn bot_room_loadouts(
+        &self,
+    ) -> BTreeMap<String, Vec<[codol_protocol::room::messages::Loadout; 2]>> {
+        self.states
+            .iter()
+            .filter(|((_, mode), _)| mode == "war")
+            .filter_map(|((map, _), state)| {
+                state
+                    .room_bot_loadouts()
+                    .filter(|roster| {
+                        roster.len() == usize::from(codol_protocol::room::messages::BOT_CLIENTS)
+                    })
+                    .map(|roster| (map.clone(), roster))
+            })
+            .collect()
+    }
     pub(crate) fn select_rotation(
         &self,
         version: u32,

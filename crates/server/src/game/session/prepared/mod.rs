@@ -265,6 +265,16 @@ impl PreparedGameState {
     pub(crate) fn has_tdm(&self) -> bool {
         self.match_config.is_some()
     }
+    pub(crate) fn room_bot_loadouts(
+        &self,
+    ) -> Option<Vec<[codol_protocol::room::messages::Loadout; 2]>> {
+        self.match_config
+            .as_ref()?
+            .roster
+            .iter()
+            .map(|b| b.room_loadouts)
+            .collect()
+    }
     pub fn map(&self) -> &str {
         &self.map
     }

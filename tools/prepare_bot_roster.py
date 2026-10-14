@@ -307,10 +307,16 @@ def main():
         result = rebind_animations(state, json.loads(args.characters.read_text()), json.loads(arsenal_path.read_text()))
     else:
         result = prepare(state, json.loads(args.characters.read_text()), json.loads(arsenal_path.read_text()), args.stream_outfits, native)
-    for name in ("arsenal_file", "collision_file"):
-        state[name] = str((args.game_state.parent / state[name]).resolve())
+    if args.native_characters and state.get('appearance_file'):
+        from prepare_room_bot_loadouts import bind
+        result['room_avatars'] = bind(state,
+            json.loads((args.game_state.parent / state['appearance_file']).read_text()),
+            json.loads(arsenal_path.read_text()))
+    for name, value in list(state.items()):
+        if name.endswith('_file') and isinstance(value, str):
+            state[name] = str((args.game_state.parent / value).resolve())
     with args.output.open("x") as target:
-        json.dump(state, target, indent=2)
+        json.dump(state, target, separators=(',', ':'))
         target.write("\n")
     print(json.dumps(result))
 

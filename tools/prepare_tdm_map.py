@@ -131,8 +131,13 @@ def main():
     state["training_enemy"]["source_sha256"] = hashlib.sha256(args.characters.read_bytes()).hexdigest()
     state["arsenal_file"] = str(args.arsenal.resolve())
     state["collision_file"] = str(args.collision.resolve())
+    if args.native_characters and state.get('appearance_file'):
+        from prepare_room_bot_loadouts import bind
+        appearance_path = args.template.parent / state['appearance_file']
+        result['room_avatars'] = bind(state, json.loads(appearance_path.read_text()), loaded['arsenal'])
+        state['appearance_file'] = str(appearance_path.resolve())
     with args.output.open("x") as out:
-        json.dump(state, out, indent=2)
+        json.dump(state, out, separators=(',', ':'))
         out.write("\n")
     print(json.dumps(result))
 

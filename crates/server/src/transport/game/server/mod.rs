@@ -201,9 +201,18 @@ impl GameServer {
             !maps.is_empty(),
             "native bot rooms require TDM preparations"
         );
+        let loadouts = self
+            .game_map_catalog
+            .as_ref()
+            .expect("validated catalog")
+            .bot_room_loadouts();
         Arc::get_mut(&mut self.admissions)
             .ok_or_else(|| anyhow::anyhow!("bot room policy must precede admission sharing"))?
-            .bot_rooms = Some(crate::backend::rooms::bots::Policy { version, maps });
+            .bot_rooms = Some(crate::backend::rooms::bots::Policy {
+            version,
+            maps,
+            loadouts,
+        });
         Ok(self)
     }
     /// Explicit single-map collection. Captured metadata may be initialized
@@ -873,6 +882,7 @@ mod tests {
             Some(crate::backend::rooms::bots::Policy {
                 version: 7,
                 maps: ["mp_afghan".into()].into(),
+                loadouts: Default::default(),
             });
         let server = server
             .with_resource_capture_map("mp_bog_sh".into())

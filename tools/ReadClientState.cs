@@ -34,6 +34,14 @@ class ReadClientState {
         return bytes;
     }
     static uint Read(IntPtr process,uint address,int size) { byte[] bytes=ReadBytes(process,address,size);return size==1?bytes[0]:size==2?BitConverter.ToUInt16(bytes,0):BitConverter.ToUInt32(bytes,0); }
+    static ushort[] RoomItems(IntPtr process,uint address,int count) {
+        byte[] bytes=ReadBytes(process,address,count*2);ushort[] items=new ushort[count];
+        for(int i=0;i<count;i++)items[i]=BitConverter.ToUInt16(bytes,i*2);
+        return items;
+    }
+    static int RoomBot(ulong uid) {
+        return uid>0x7fff434f444f0000UL && uid<=0x7fff434f444f000bUL ? (int)(uid-0x7fff434f444f0000UL) : 0;
+    }
     static void Field(IntPtr process,string name,uint address,int size) {
         Console.WriteLine("\""+name+"\":"+Read(process,address,size)+",");
     }
@@ -472,11 +480,36 @@ class ReadClientState {
                                 slot=i, bot_client=uid>0x7fff434f444f0000UL && uid<=0x7fff434f444f000bUL ? (int)(uid-0x7fff434f444f0000UL) : 0,
                                 name=Encoding.ASCII.GetString(name,0,end), clan=Encoding.ASCII.GetString(clan,0,clanEnd),
                                 room_team=Read(process,checked(member+0x88),4), ready=Read(process,checked(member+0x8c),1), party=Read(process,checked(member+0xa8),4),
-                                dlc_level=Read(process,checked(member+0x170),4)
+                                dlc_level=Read(process,checked(member+0x170),4),
+                                avatar_team=Read(process,checked(member+0x10c),4),
+                                avatar_clothing=RoomItems(process,checked(member+0x110),12),
+                                avatar_weapons=RoomItems(process,checked(member+0x128),14),
+                                avatar_weapon_class=Read(process,checked(member+0x160),4)
                             }));
                         }
                         Console.WriteLine("],");
                     }
+                    var avatarCache=new System.Collections.Generic.List<object>();
+                    for(uint i=0;i<18;i++) {
+                        uint at=0x0c802a80+i*0x68;
+                        ulong uid=BitConverter.ToUInt64(ReadBytes(process,at,8),0);
+                        if(uid==0)continue;
+                        avatarCache.Add(new {slot=i,bot_client=RoomBot(uid),team=Read(process,at+0xc,4),
+                            clothing=RoomItems(process,at+0x10,12),weapons=RoomItems(process,at+0x28,14),weapon_class=Read(process,at+0x60,4)});
+                    }
+                    Console.WriteLine("\"room_avatar_cache\":"+new System.Web.Script.Serialization.JavaScriptSerializer().Serialize(avatarCache)+",");
+                    var avatarScene=new System.Collections.Generic.List<object>();
+                    uint sceneCount=Read(process,0x07837f74,4);
+                    if(sceneCount<=9)for(uint i=0;i<sceneCount;i++) {
+                        uint at=0x0b59b000+i*0x90;
+                        ulong uid=BitConverter.ToUInt64(ReadBytes(process,at,8),0);
+                        uint loadout=Read(process,at+0x7c,4);
+                        avatarScene.Add(new {slot=i,bot_client=RoomBot(uid),loadout_ready=loadout>=0x10000,
+                            team=Read(process,at+0x78,4),
+                            package=loadout>=0x10000?Read(process,loadout+0x10,2):0,
+                            primary=loadout>=0x10000?Read(process,loadout+0x28,2):0});
+                    }
+                    Console.WriteLine("\"room_avatar_scene\":"+new System.Web.Script.Serialization.JavaScriptSerializer().Serialize(avatarScene)+",");
                     Field(process,"room_is_host",checked(roomController+0x260),1);
                     Field(process,"room_join_request_handler",0x078b0760+6*4,4);
                     uint channel=Read(process,checked(roomController+0x10),4);
