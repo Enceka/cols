@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "client_sha256": "e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b",
+  "player_state": {
+    "offset": 564,
+    "field": 143,
+    "bits": 8
+  },
+  "selector": {
+    "configstring_base": 2047,
+    "shader_bits": [
+      0,
+      1
+    ],
+    "size_bits": [
+      2,
+      6
+    ],
+    "direction_bit": 7,
+    "quad_diameter": "size / 31 * compass world height"
+  },
+  "command": {
+    "confirm": 131072,
+    "cancel": 262144,
+    "xy_offsets": [
+      36,
+      37
+    ],
+    "yaw_offset": 38,
+    "xy_decode": "wrapping_sub(raw, 128) / 255",
+    "yaw_decode": "compass north yaw + raw * 360 / 255",
+    "confirm_precedes_cancel": true
+  },
+  "native": {
+    "activation": 4586030,
+    "shader": 4428342,
+    "size": 4428370,
+    "xy_bias": [
+      4586776,
+      4586817
+    ],
+    "play_fx_axis": 5299264
+  },
+  "evidence": {
+    "contracts_only": true,
+    "native_gameplay_completion": false
+  }
+}
