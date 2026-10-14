@@ -192,6 +192,8 @@ def main():
     parser.add_argument("--resource-capture-map", help="collect one native TDM map without a gamestate or world; requires native-bot-rooms")
     parser.add_argument("--story-capture-map", choices=("coop_training_mp_cargoship",),
                         help="isolated first-story allocation/handshake capture without a gameplay world")
+    parser.add_argument("--story-resource-state",type=Path,
+                        help="captured cargo CRC metadata for resource initialization without gameplay")
     parser.add_argument("--resource-capture-playlist", type=int, help="single-entry native playlist ID for isolated resource capture")
     parser.add_argument("--resource-compass-probe",type=Path,help="metadata-only request for a native compass candidate; requires resource-capture-map")
     parser.add_argument("--snapshot-probe", nargs="?", type=int, const=60, help="bootstrap frame budget at 20 Hz (1..18000; default 60); requires game-state")
@@ -241,6 +243,8 @@ def main():
         parser.error("story-capture-map requires client, rust-game, an explicit prefix and isolated service-data-dir without TDM preparations")
     if args.story_capture_map and args.service_data_dir.resolve() == (REPO / "client-work/server-data").resolve():
         parser.error("story capture must use isolated service data")
+    if args.story_resource_state and (not args.story_capture_map or not args.story_resource_state.is_file()):
+        parser.error("story-resource-state requires native story capture and an existing metadata file")
     if args.snapshot_probe is not None and (not args.game_state or not 1 <= args.snapshot_probe <= 18000):
         parser.error("snapshot-probe requires game-state and 1..18000 frames")
     if args.game_map_catalog and (not args.rust_game or not args.game_map_catalog.is_file()):
@@ -391,6 +395,9 @@ def main():
                         if args.story_capture_map:
                             tls_argv += ["--story-capture-map", args.story_capture_map]
                             state["story_capture_map"] = args.story_capture_map
+                        if args.story_resource_state:
+                            tls_argv += ["--story-resource-state",str(args.story_resource_state.resolve())]
+                            state["story_resource_state_sha256"] = sha256(args.story_resource_state)
                         if args.resource_capture_playlist is not None:
                             tls_argv += ["--resource-capture-playlist", str(args.resource_capture_playlist)]
                             state["resource_capture_playlist"] = args.resource_capture_playlist

@@ -161,6 +161,9 @@ enum Command {
         /// First story map's isolated allocation/handshake capture; no gameplay world.
         #[arg(long, requires = "game_bind", conflicts_with_all=["game_state","game_map_catalog","native_bot_rooms","resource_capture_map","continuous_play"])]
         story_capture_map: Option<String>,
+        /// Captured story CRC metadata; initializes resources without a gameplay world.
+        #[arg(long, requires = "story_capture_map")]
+        story_resource_state: Option<PathBuf>,
         /// Bind resource collection to one native single-entry publisher playlist.
         #[arg(long, requires = "resource_capture_map")]
         resource_capture_playlist: Option<u8>,
@@ -470,6 +473,7 @@ async fn main() -> Result<()> {
             native_bot_rooms,
             resource_capture_map,
             story_capture_map,
+            story_resource_state,
             resource_capture_playlist,
             resource_compass_probe,
             continuous_play,
@@ -552,6 +556,9 @@ async fn main() -> Result<()> {
                     }
                     if let Some(map) = story_capture_map {
                         game = game.with_story_capture_map(map)?;
+                    }
+                    if let Some(path) = story_resource_state {
+                        game = game.with_story_resource_state(&path)?;
                     }
                     let endpoint = game.admissions();
                     tracing::info!(address=%endpoint.address(),"experimental Rust game UDP endpoint ready");

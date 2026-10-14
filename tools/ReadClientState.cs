@@ -50,6 +50,8 @@ class ReadClientState {
         try {
             bool feedback=args.Length==1 && args[0]=="--feedback";
             bool replay=args.Length==1 && args[0]=="--replay";
+            bool storyBundle=args.Length==1 && args[0]=="--story-bundle";
+            bool storyAssets=args.Length==1 && args[0]=="--story-assets";
             bool assets=args.Length==1 && args[0]=="--assets";
             bool profiles=args.Length==1 && args[0]=="--profiles";
             bool netConstants=args.Length==1 && args[0]=="--net-constants";
@@ -80,7 +82,7 @@ class ReadClientState {
             bool nukeAssets=args.Length==1 && args[0]=="--nuke-assets";
             bool nukeState=args.Length==1 && args[0]=="--nuke-state";
             bool nukeFrame=args.Length==1 && args[0]=="--nuke-frame";
-            if(args.Length!=0 && !propsState && !propsFrame && !propsAssets && !rewardAssets && !nukeAssets && !nukeState && !nukeFrame && !voicePlayback && !voiceAssets && !frontendAssets && !glass && !mapCheck && !hudAssets && !tacticalAssets && !appearanceLoad && !outfits && !grounding && !replay && !feedback && !hitRegions && !assets && !profiles && !netConstants && !mapEntities && !bootstrapWeapon && !weaponModels && !arsenal && !collision && !weaponRegistry && !trainingTarget && !bulletImpacts && !characters) throw new Exception("only fixed extraction modes are supported");
+            if(args.Length!=0 && !storyBundle && !storyAssets && !propsState && !propsFrame && !propsAssets && !rewardAssets && !nukeAssets && !nukeState && !nukeFrame && !voicePlayback && !voiceAssets && !frontendAssets && !glass && !mapCheck && !hudAssets && !tacticalAssets && !appearanceLoad && !outfits && !grounding && !replay && !feedback && !hitRegions && !assets && !profiles && !netConstants && !mapEntities && !bootstrapWeapon && !weaponModels && !arsenal && !collision && !weaponRegistry && !trainingTarget && !bulletImpacts && !characters) throw new Exception("only fixed extraction modes are supported");
             IntPtr snapshot=CreateToolhelp32Snapshot(2,0); uint found=0;
             if(snapshot==new IntPtr(-1)) throw new Exception("process snapshot failed");
             try {
@@ -114,6 +116,8 @@ class ReadClientState {
                 if(nukeAssets) { ClientAssets.ExportNukeAssets(process);return 0; }
                 if(nukeState) { ClientAssets.ExportNukeState(process);return 0; }
                 if(nukeFrame) { ClientAssets.ExportNukeState(process,true);return 0; }
+                if(storyBundle) { ClientAssets.ExportStoryBundle(process);return 0; }
+                if(storyAssets) { ClientAssets.ExportStoryAssets(process);return 0; }
                 if(assets) { ClientAssets.Export(process);return 0; }
                 if(feedback) { ClientAssets.ExportFeedback(process);return 0; }
                 if(replay) { ClientAssets.ExportReplay(process);return 0; }

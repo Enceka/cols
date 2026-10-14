@@ -1,4 +1,6 @@
 //! Opt-in, resource-derived bootstrap for the controlled training playlist.
+#[path = "story_resource_state.rs"]
+mod story_resource_state;
 use anyhow::{Result, ensure};
 use codol_protocol::game_state::Gamestate;
 use serde::Deserialize;
@@ -122,6 +124,8 @@ struct BootstrapAmmo {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PreparedGameState {
+    #[serde(skip)]
+    story_resource_only: bool,
     schema_version: u32,
     client_sha256: String,
     capture_sha256: String,
@@ -866,10 +870,14 @@ impl PreparedGameState {
             "prepared game state source hash"
         );
         ensure!(
-            crate::game_map_registry::native_id(&state.map).is_some()
-                && state.mode == "war"
-                && state.zone == "mp"
-                && state.playlist == 0,
+            (state.story_resource_only
+                && state.map == codol_protocol::story::FIRST_MAP
+                && state.mode == "coop"
+                && state.clone().resource_initialization().is_ok())
+                || (crate::game_map_registry::native_id(&state.map).is_some()
+                    && state.mode == "war"
+                    && state.zone == "mp"
+                    && state.playlist == 0),
             "prepared map requires a captured native TDM identity"
         );
         ensure!(
@@ -2158,6 +2166,7 @@ impl PreparedGameState {
 #[cfg(test)]
 pub(crate) fn synthetic() -> PreparedGameState {
     PreparedGameState {
+        story_resource_only: false,
         schema_version: 1,
         client_sha256: codol_protocol::CLIENT_SHA256.into(),
         capture_sha256: "0".repeat(64),

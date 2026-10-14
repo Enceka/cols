@@ -13,6 +13,7 @@ import re
 
 from clientlib import REPO, manifest
 from schema_fields import flatten
+from prepare_game_state import compute
 
 FIRST_MAP = "coop_training_mp_cargoship"
 CLIENT_SHA256 = next(f["sha256"] for f in manifest()["files"]
@@ -85,10 +86,11 @@ def progress(assets, catalog):
         flag = item["completion_flag"]
         if flag not in flags or not 0 <= flags[flag] < 2048:
             raise ValueError("missing native story completion flag")
-        field = fields["unlockFlags[%d]" % flags[flag]]
-        if field["type"] != 2 or field["projected"]:
+        field = fields["unlockFlagsNew[%d]" % flags[flag]]
+        if field["type"] != 9 or field["width"] != 2 or field["projected"]:
             raise ValueError("unexpected native completion field")
-        item.update(completion_flag_id=flags[flag], completion_field=field)
+        item.update(completion_flag_id=flags[flag], completion_field=field,
+                    completion_minimum=1, legacy_completion_field=fields["unlockFlags[%d]" % flags[flag]])
 
 
 def resource_observations(lists, catalog):
@@ -111,7 +113,11 @@ def main():
     parser.add_argument("--assets", type=Path, required=True)
     parser.add_argument("--resource-lists", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--constants",type=Path,help="this cargo map's native NCS capture")
+    parser.add_argument("--map-entities",type=Path,help="native cargo base-map entity capture")
     args = parser.parse_args()
+    if bool(args.constants) != bool(args.map_entities):
+        parser.error("story resource metadata requires both constants and map entities")
     sources = {}
     captures = []
     for path in (args.frontend, args.assets, args.resource_lists):
@@ -134,6 +140,15 @@ def main():
     args.output.mkdir(parents=True, exist_ok=False)
     for name, value in (("catalog.json", catalog), ("first-map.json", queue)):
         (args.output / name).write_text(json.dumps(value, indent=2) + "\n")
+    if args.constants:
+        raw=args.constants.read_bytes();entities=json.loads(args.map_entities.read_bytes());identity(entities)
+        matches=[m for m in entities["maps"] if m["name"]=="maps/mp/mp_cargoship.d3dbsp"]
+        if len(matches)!=1:
+            raise ValueError("story metadata requires the native cargo base-map asset")
+        constants=compute(json.loads(raw))
+        metadata=dict(schema_version=1,client_sha256=CLIENT_SHA256,capture_sha256=hashlib.sha256(raw).hexdigest(),
+                      map=FIRST_MAP,mode="coop",**{k:constants[k] for k in ["ncs_crc","common_crc","constant_count","asset_count"]})
+        (args.output/"cargo-metadata.json").write_text(json.dumps(metadata,indent=2)+"\n")
     print(json.dumps(dict(output=str(args.output), story_maps=len(catalog["maps"]),
                          enabled=sum(m["enabled_by_version"] for m in catalog["maps"]),
                          gameplay_verified=False)))

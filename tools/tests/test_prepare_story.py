@@ -44,11 +44,12 @@ class StoryPreparation(unittest.TestCase):
                 prepare(capture)
 
     def test_completion_mapping_ignores_table_headers_and_requires_the_native_flags(self):
-        definition = dict(version=19, size=264, leafCount=2048, rootType=5, rootIndex=0,
-                          structs=[dict(leafCount=2048, properties=[dict(name="unlockFlags",
-                          type=6, index=0, leaf=0, extra4=0)])],
-                          indexedArrays=[dict(count=2048, type=2, index=0)],
-                          offsets=list(range(64, 2112)))
+        definition = dict(version=19, size=8192, leafCount=4096, rootType=5, rootIndex=0,
+                          structs=[dict(leafCount=4096, properties=[dict(name="unlockFlags",
+                          type=6, index=0, leaf=0, extra4=0),dict(name="unlockFlagsNew",
+                          type=6, index=1, leaf=2048, extra4=0)])],
+                          indexedArrays=[dict(count=2048, type=2, index=0),dict(count=2048,type=9,index=0)],
+                          offsets=list(range(64, 2112))+list(range(4096,8192,2)))
         values = ["flag", "", "", "cf_ch_" + FIRST_MAP, "150", "",
                   "cf_ch_coop_defense_mp_suburbs", "160", ""]
         assets = dict(schema_version=1, read_only=True, client_sha256=CLIENT_SHA256,
@@ -58,7 +59,9 @@ class StoryPreparation(unittest.TestCase):
         catalog = prepare(self.capture())
         progress(assets, catalog)
         self.assertEqual(catalog["maps"][0]["completion_flag_id"], 150)
-        self.assertEqual(catalog["maps"][0]["completion_field"]["bit"], 6)
+        self.assertEqual(catalog["maps"][0]["completion_field"]["type"], 9)
+        self.assertEqual(catalog["maps"][0]["completion_minimum"], 1)
+        self.assertEqual(catalog["maps"][0]["legacy_completion_field"]["bit"], 6)
         assets["tables"]["mp/unlockFlags.csv"]["cells_base64"][3] = base64.b64encode(b"missing").decode()
         with self.assertRaises(ValueError):
             progress(assets, prepare(self.capture()))

@@ -28,6 +28,12 @@ pub(super) fn selection(command: &str, expected_map: &str) -> Result<Selection> 
     let mut seen = HashSet::new();
     for statement in statements {
         let words: Vec<_> = statement.split_whitespace().collect();
+        // Native cargo capture emits an empty trailing2654 option. Preserve
+        // exactly that form; every other setting still needs one value.
+        if words == ["2654"] {
+            ensure!(seen.insert("2654"), "duplicate story option");
+            continue;
+        }
         ensure!(
             words.len() == 2 && seen.insert(words[0]),
             "invalid or duplicate story setting"
@@ -96,6 +102,20 @@ mod tests {
             )
             .is_ok()
         );
+    }
+
+    #[test]
+    fn native_cargo_start_accepts_only_the_captured_empty_trailing_option() {
+        let start = "mmstart sv_resetServer; 2486 1; 3265 1; 2489 0; 2500 0; g_gametype coop;  g_difficulty 0; map coop_training_mp_cargoship;2654 ;";
+        let selected = selection(start, codol_protocol::story::FIRST_MAP).unwrap();
+        assert_eq!(selected.difficulty, Some(0));
+        for invalid in [
+            start.replace("2654 ;", "2654;2654;"),
+            start.replace("2654 ;", "g_difficulty;"),
+            start.replace("2654 ;", "quit;"),
+        ] {
+            assert!(selection(&invalid, codol_protocol::story::FIRST_MAP).is_err());
+        }
     }
 
     #[test]

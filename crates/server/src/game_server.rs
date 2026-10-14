@@ -341,6 +341,7 @@ pub struct GameServer {
     admissions: Arc<GameAdmissions>,
     directory: PathBuf,
     game_state: Option<Arc<crate::game_state::PreparedGameState>>,
+    story_resources: Option<Arc<crate::game_state::PreparedGameState>>,
     game_map_catalog: Option<crate::game_map_catalog::GameMapCatalog>,
     resource_capture_map: Option<String>,
     resource_capture_playlist: Option<(u32, u8)>,
@@ -421,6 +422,7 @@ impl GameServer {
             socket,
             directory,
             game_state: None,
+            story_resources: None,
             game_map_catalog: None,
             resource_capture_map: None,
             resource_capture_playlist: None,
@@ -437,6 +439,16 @@ impl GameServer {
     }
     pub fn admissions(&self) -> Arc<GameAdmissions> {
         self.admissions.clone()
+    }
+    pub fn with_story_resource_state(mut self, path: &std::path::Path) -> Result<Self> {
+        ensure!(
+            self.admissions.story_capture_map.as_deref() == Some(codol_protocol::story::FIRST_MAP),
+            "story metadata requires explicit native story capture"
+        );
+        self.story_resources = Some(Arc::new(
+            crate::game_state::PreparedGameState::load_story_resources(path)?,
+        ));
+        Ok(self)
     }
     /// Collect the first story map's transport using its native UI entrance.
     /// This endpoint has no prepared gamestate or gameplay snapshots.
@@ -578,7 +590,7 @@ impl GameServer {
                 "story capture cannot use a client-key allocation or TDM preparation"
             );
             story_capture::selection(start, map)?;
-            return Ok(None);
+            return Ok(self.story_resources.clone());
         }
         if let Some((version, playlist)) = self.resource_capture_playlist
             && let Some((selected, entry)) = crate::game_map_selection::playlist_start(start)?
@@ -663,6 +675,7 @@ impl GameServer {
                 &serde_json::to_vec(
                     &serde_json::json!({"map":map,"mode":"coop","maximum_players":1,
                 "server_issued_key":true,"world_simulation":false,"gameplay_snapshots":false,
+                "resource_gamestate_available":self.story_resources.is_some(),
                 "client_sha256":codol_protocol::CLIENT_SHA256}),
                 )?,
             )
@@ -861,8 +874,9 @@ impl GameServer {
                             } else {
                                 state.clone()
                             };
-                            let resource_collection =
-                                self.resource_capture_map.as_deref() == Some(state.map());
+                            let resource_collection = self.resource_capture_map.as_deref()
+                                == Some(state.map())
+                                || admission.story_channel.is_some();
                             ensure!(
                                 !state.has_nuke_diagnostics()
                                     || self
