@@ -50,6 +50,18 @@ class RewardResources(unittest.TestCase):
         r,_=self.run_prepare(a,n,c);w=r['weapons']['killstreak_uav_mp']
         self.assertEqual(w['damage_stages'],[20,0,0,0,0,10]);self.assertEqual(w['damage_ranges'],[1200,0,0,0,0,1800])
         self.assertEqual(w['projectile_speed'],3000)
+    def test_airdrop_markers_export_authored_pull_throw_and_bounce_parameters(self):
+        a,n,c=sample();name='airdrop_marker_mp';raw=bytearray(0xe28)
+        for off,value in [(0x47c,1),(0x480,6),(0x6c0,5),(0x6b8,5),(0x70c,600),(0xd10,360),(0x6f0,129),(0x7ac,1000),(0x8f4,960),(0x8f8,120)]:struct.pack_into('<I',raw,off,value)
+        struct.pack_into('<31f',raw,0x934,*([.5]*31));struct.pack_into('<31f',raw,0x9b0,*([.25]*31))
+        a['weapons'].append(dict(name=name,index=5,definition_base64=base64.b64encode(raw).decode(),runtime_fields=dict(fire_interval_msec=360)))
+        next(row for row in n['linked'] if row['category']==13)['strings_base64'].append(base64.b64encode(name.encode()).decode())
+        c['rewards'].append(dict(native_id=2,weapon_token_c13=name))
+        r,_=self.run_prepare(a,n,c);m=r['weapons'][name]['marker']
+        self.assertEqual((m['prepare_msec'],m['throw_msec'],m['throw_delay_msec'],m['fuse_msec']),(600,360,129,1000))
+        self.assertEqual(m['parallel'],[.5]*31);self.assertEqual(m['perpendicular'],[.25]*31);self.assertEqual(m['speed_up'],120)
+        struct.pack_into('<I',raw,0x490,1);a['weapons'][-1]['definition_base64']=base64.b64encode(raw).decode()
+        with self.assertRaises(ValueError):self.run_prepare(a,n,c)
     def test_dynamic_character_models_and_composed_guns_do_not_forge_ncs_entries(self):
         a,n,c=sample();a['models'].append(dict(name='dynamic_outfit',index=200));a['weapons'].append(dict(name='** dynamic rifle',index=200))
         r,_=self.run_prepare(a,n,c);self.assertNotIn('dynamic_outfit',r['models'])

@@ -52,6 +52,12 @@ def prepare(assets_raw, ncs_raw, catalog=None, entities_raw=None):
                           projectile_speed=u(0x8f4),
                           damage_stages=list(struct.unpack_from('<6I', raw, 0xbb4)),
                           damage_ranges=list(struct.unpack_from('<6f', raw, 0xbcc)))
+        if name in ['airdrop_marker_mp', 'airdrop_mega_marker_mp', 'airdrop_sentry_marker_mp', 'airdrop_sam_marker_mp']:
+            if u(0x47c) != 1 or u(0x480) != 6 or u(0x490) != 0 or u(0x8d8) != 0 or raw[0xd7a] not in (0, 1):
+                raise ValueError('unexpected native marker definition: ' + name)
+            words[name]['marker'] = dict(prepare_msec=u(0x70c), throw_msec=u(0xd10), throw_delay_msec=u(0x6f0),
+                fuse_msec=u(0x7ac), cook=bool(raw[0xd7a]), speed_up=u(0x8f8), speed_forward=u(0x8fc), stickiness=u(0x928),
+                parallel=list(struct.unpack_from('<31f',raw,0x934)), perpendicular=list(struct.unpack_from('<31f',raw,0x9b0)))
     radios, unavailable = [], []
     for reward in catalog['rewards']:
         if reward['native_id'] == 0:

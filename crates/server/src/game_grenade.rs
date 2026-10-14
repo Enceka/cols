@@ -7,6 +7,8 @@ use std::sync::LazyLock;
 #[derive(Clone, Debug, Deserialize)]
 pub(crate) struct Definition {
     pub name: String,
+    #[serde(default)]
+    pub marker_reward: Option<u8>,
     pub index: u16,
     items: Vec<u32>,
     #[serde(rename = "type")]
@@ -60,10 +62,83 @@ static CATALOG: LazyLock<Catalog> = LazyLock::new(|| {
     c
 });
 impl Definition {
+    pub(crate) fn marker(
+        resources: &crate::game_killstreaks::RadarResources,
+        id: u8,
+    ) -> Option<Self> {
+        let name = match id {
+            2 => "airdrop_marker_mp",
+            4 => "airdrop_sentry_marker_mp",
+            9 => "airdrop_mega_marker_mp",
+            22 => "airdrop_sam_marker_mp",
+            _ => return None,
+        };
+        let w = resources.weapons.get(name)?;
+        let m = w.marker.as_ref()?;
+        if !m.valid()
+            || w.weapon_type != 1
+            || w.weapon_class != 6
+            || w.radius != 0
+            || resources.radio(id)?.weapon != w.weapon
+            || w.projectile_speed == 0
+            || w.projectile_speed > 50000
+        {
+            return None;
+        }
+        let d = Self {
+            name: name.into(),
+            marker_reward: Some(id),
+            index: w.weapon,
+            items: vec![],
+            weapon_type: 1,
+            weapon_class: 6,
+            offhand_class: 0,
+            clip_key: w.clip_key?,
+            capacity: 1,
+            prepare_msec: m.prepare_msec,
+            throw_msec: m.throw_msec,
+            throw_delay_msec: m.throw_delay_msec,
+            fuse_msec: m.fuse_msec,
+            cook: m.cook,
+            explosion_kind: 0,
+            smoke: None,
+            tactical: None,
+            gas: false,
+            emp: false,
+            radius: 0,
+            inner_damage: 0,
+            outer_damage: 0,
+            speed: w.projectile_speed as u16,
+            speed_up: m.speed_up,
+            speed_forward: m.speed_forward,
+            stickiness: m.stickiness,
+            parallel: m.parallel,
+            perpendicular: m.perpendicular,
+        };
+        d.validate().ok()?;
+        Some(d)
+    }
     pub fn capacity(&self) -> u16 {
         self.capacity
     }
     fn supported(&self) -> bool {
+        if let Some(id) = self.marker_reward {
+            return !self.cook
+                && self.weapon_type == 1
+                && self.weapon_class == 6
+                && self.offhand_class == 0
+                && self.capacity == 1
+                && self.radius == 0
+                && self.inner_damage == 0
+                && self.outer_damage == 0
+                && matches!(
+                    (id, self.name.as_str()),
+                    (2, "airdrop_marker_mp")
+                        | (4, "airdrop_sentry_marker_mp")
+                        | (9, "airdrop_mega_marker_mp")
+                        | (22, "airdrop_sam_marker_mp")
+                );
+        }
         self.weapon_type == 1
             && self.weapon_class == 6
             && (((self.tactical == Some(crate::game_tactical::Kind::Flash)
@@ -114,7 +189,10 @@ impl Definition {
                 && self.throw_msec > 0
                 && self.prepare_msec > 0
                 && self.fuse_msec > 0
-                && (self.smoke.is_some() || self.gas || self.radius > 0)
+                && (self.smoke.is_some()
+                    || self.gas
+                    || self.radius > 0
+                    || self.marker_reward.is_some())
                 && self.inner_damage >= self.outer_damage
                 && self
                     .parallel
@@ -192,6 +270,47 @@ pub(crate) struct Throw {
     pub dropped: bool,
 }
 #[cfg(test)]
+pub(crate) fn marker_resources() -> crate::game_killstreaks::RadarResources {
+    use crate::game_killstreaks::{MarkerFacts, Radio};
+    let mut r = crate::game_deployables::test_resources();
+    let original = r.weapons["sentry_minigun_mp"].clone();
+    for (id, index, name) in [
+        (2, 293, "airdrop_marker_mp"),
+        (9, 294, "airdrop_mega_marker_mp"),
+        (22, 295, "airdrop_sam_marker_mp"),
+        (4, 296, "airdrop_sentry_marker_mp"),
+    ] {
+        let mut w = original.clone();
+        w.weapon = index;
+        w.weapon_type = 1;
+        w.weapon_class = 6;
+        w.clip_key = Some(index);
+        w.ammo_key = Some(index);
+        w.radius = 0;
+        w.projectile_speed = 960;
+        w.marker = Some(MarkerFacts {
+            prepare_msec: 600,
+            throw_msec: 360,
+            throw_delay_msec: 129,
+            fuse_msec: 1000,
+            cook: false,
+            speed_up: 120,
+            speed_forward: 0,
+            stickiness: 0,
+            parallel: [0.5; 31],
+            perpendicular: [0.25; 31],
+        });
+        r.radios.push(Radio {
+            native_id: id,
+            weapon: index,
+            switch: w.switch,
+            fire_interval_msec: 360,
+        });
+        r.weapons.insert(name.into(), w);
+    }
+    r
+}
+#[cfg(test)]
 pub(crate) fn captured(name: &str) -> Definition {
     CATALOG
         .grenades
@@ -265,6 +384,11 @@ impl Grenades {
                     .all(|m| m.snapshot.entity_number != *number)
             })
             .unwrap();
+        let expires = request.time.saturating_add(if def.marker_reward.is_some() {
+            30_000
+        } else {
+            u32::from(request.fuse_msec)
+        });
         self.missiles.push(Missile {
             snapshot: codol_protocol::game_missile::MissileSnapshot {
                 owner: 0,
@@ -277,7 +401,7 @@ impl Grenades {
             },
             velocity,
             definition: def,
-            expires: request.time + u32::from(request.fuse_msec),
+            expires,
             time: request.time,
             resting: request.in_hand,
         });
@@ -321,7 +445,14 @@ impl Grenades {
                     }
                 }
             }
+            if missile.definition.marker_reward.is_some() && missile.resting {
+                missile.expires = missile.time;
+            }
             if now >= missile.expires {
+                if missile.definition.marker_reward.is_some() && !missile.resting {
+                    missile.snapshot.present = false;
+                    continue;
+                }
                 explosions.push(Explosion {
                     time: missile.expires,
                     origin: missile.snapshot.origin,

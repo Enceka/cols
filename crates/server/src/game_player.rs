@@ -215,6 +215,7 @@ struct Weapon {
     needs_rechamber: bool,
     spread: Option<SpreadTiming>,
     melee: Option<MeleeTiming>,
+    marker: Option<crate::game_grenade::Definition>,
 }
 impl Weapon {
     fn attack_mask(&self) -> u32 {
@@ -275,6 +276,7 @@ pub(crate) struct Player {
     offhand_held: u32,
     offhand_pending: bool,
     throws: Vec<crate::game_grenade::Throw>,
+    marker_phase: Option<u8>,
     perks: crate::game_perks::Perks,
     sprinting: bool,
     support_arrow: bool,
@@ -341,6 +343,7 @@ impl Player {
             offhand_held: 0,
             offhand_pending: false,
             throws: Vec::new(),
+            marker_phase: None,
             perks: Default::default(),
             sprinting: false,
             support_arrow: false,
@@ -366,6 +369,7 @@ impl Player {
                 needs_rechamber: false,
                 spread: None,
                 melee: None,
+                marker: None,
             },
             secondary: None,
             alternate: None,
@@ -840,6 +844,18 @@ impl Player {
             alternate_timing: None,
         });
     }
+    pub fn grant_marker_reward(
+        &mut self,
+        slot: usize,
+        radio: &crate::game_killstreaks::Radio,
+        definition: crate::game_grenade::Definition,
+    ) {
+        assert_eq!(radio.weapon, definition.index);
+        self.grant_reward(slot, radio.weapon, radio.switch, radio.fire_interval_msec);
+        if let Some(reward) = self.rewards[slot].as_mut() {
+            reward.weapon.marker = Some(definition);
+        }
+    }
     pub fn reward_inventory(&self) -> [Option<EquippedWeapon>; 4] {
         self.rewards.each_ref().map(|r| {
             r.as_ref().map(|r| EquippedWeapon {
@@ -857,6 +873,8 @@ impl Player {
         self.begin_raise();
     }
     fn restore_reward(&mut self) {
+        self.marker_phase = None;
+        self.grenade_time = 0;
         if let Some(slot) = self.active_reward.take() {
             let other = self.rewards[slot].as_mut().unwrap();
             std::mem::swap(&mut self.current, &mut other.weapon);
@@ -1099,6 +1117,8 @@ impl Player {
     }
 
     fn begin_drop(&mut self, requested: u16) {
+        self.marker_phase = None;
+        self.grenade_time = 0;
         self.current.cancel_burst();
         let timing = self.current.switch.expect("switching timings checked");
         if let Some(state) = self
@@ -1210,7 +1230,7 @@ impl Player {
             self.perks.value("modReloadSpeedScale", 1.0)
         } else if (1..=5).contains(&state) {
             self.perks.value("modWeaponSwitchSpeedScale", 1.0)
-        } else if matches!(state, 6 | 7) {
+        } else if self.current.marker.is_none() && matches!(state, 6 | 7) {
             self.perks.value("modRateOfFire", 1.0)
         } else {
             1.0
@@ -1411,6 +1431,9 @@ impl Player {
             return;
         }
         if self.current.equipment.firing.is_some() && self.apply_sprint() {
+            return;
+        }
+        if self.apply_marker(cmd) {
             return;
         }
         if self.current.is_burst()
@@ -1677,6 +1700,51 @@ impl Player {
         }
     }
 
+    fn apply_marker(&mut self, cmd: &UserCommand) -> bool {
+        let Some(d) = self.current.marker.clone() else {
+            return false;
+        };
+        if let Some(phase) = self.marker_phase {
+            let f = self.current.equipment.firing.unwrap();
+            if phase == 0 && f.remaining_msec == 0 && cmd.buttons & 1 == 0 {
+                self.current.animate(6, 2, d.throw_msec, d.throw_delay_msec);
+                self.marker_phase = Some(1);
+            } else if phase == 1 {
+                if f.delay_msec == 0 {
+                    let ammo = self.current.equipment.ammo.as_mut().unwrap();
+                    if ammo.clip > 0 {
+                        ammo.clip -= 1;
+                        self.throws.push(crate::game_grenade::Throw {
+                            time: cmd.time,
+                            angles: cmd.angles,
+                            definition: d.clone(),
+                            fuse_msec: d.fuse_msec,
+                            in_hand: false,
+                            dropped: false,
+                        });
+                        self.emit(events::FIRE_WEAPON_LAST_SHOT, 0);
+                    }
+                }
+                if f.remaining_msec == 0 {
+                    self.marker_phase = None;
+                    self.grenade_time = 0;
+                    self.current.ready();
+                }
+            }
+            return true;
+        }
+        if Self::input_allowed(cmd)
+            && cmd.weapons[0] == d.index
+            && cmd.buttons & 1 != 0
+            && !self.attack_held
+            && !self.current.empty()
+        {
+            self.current.animate(6, 3, d.prepare_msec, 0);
+            self.emit(35, 0); // Native EV_PULLBACK_WEAPON, not EV_PREP_OFFHAND.
+            self.marker_phase = Some(0);
+        }
+        true
+    }
     fn offhand_time(&self, time: u16) -> u16 {
         (f32::from(time) / self.perks.value("modOffhandSpeedScale", 1.0)).trunc() as u16
     }
@@ -1717,6 +1785,7 @@ impl Player {
         );
     }
     pub fn drop_offhand_on_death(&mut self, time: u32, angles: [u16; 3]) {
+        self.marker_phase = None;
         if self.selected_offhand.is_some() && self.offhand_pending && self.grenade_time != 0 {
             self.throw_offhand(
                 &UserCommand {
@@ -1839,6 +1908,87 @@ pub(crate) mod tests {
             charge: None,
         });
         p
+    }
+    #[test]
+    fn primary_reward_marker_holds_then_throws_once_after_the_authored_delay() {
+        let r = crate::game_grenade::marker_resources();
+        let mut p = player();
+        let d = crate::game_grenade::Definition::marker(&r, 2).unwrap();
+        p.current.equipment.weapon = 293;
+        p.current.equipment.ammo.as_mut().unwrap().clip = 1;
+        p.current.marker = Some(d);
+        let command = |time, buttons| UserCommand {
+            time,
+            buttons,
+            weapons: [293, 0, 0],
+            ..Default::default()
+        };
+        p.apply(&command(1100, 1));
+        assert_eq!(p.equipment().firing.unwrap().animation & 0x3ff, 3);
+        p.apply(&command(1800, 1));
+        assert!(p.take_throws().is_empty());
+        assert_eq!(p.equipment().ammo.unwrap().clip, 1);
+        p.apply(&command(1810, 0));
+        p.apply(&command(1938, 0));
+        assert!(p.take_throws().is_empty());
+        p.apply(&command(1939, 0));
+        let t = p.take_throws();
+        assert_eq!(t.len(), 1);
+        assert_eq!(t[0].definition.marker_reward, Some(2));
+        assert_eq!(p.equipment().ammo.unwrap().clip, 0);
+        assert!(p.take_shots().is_empty());
+        p.apply(&command(2300, 1));
+        assert!(p.take_throws().is_empty());
+    }
+    #[test]
+    fn switching_away_from_a_pulled_marker_keeps_the_marker_ammo() {
+        let r = crate::game_grenade::marker_resources();
+        let mut p = player();
+        p.set_switch_timing(SwitchTiming {
+            drop_msec: 10,
+            raise_msec: 10,
+            empty_drop_msec: 10,
+            empty_raise_msec: 10,
+        });
+        let radio = r.radio(2).unwrap();
+        p.grant_marker_reward(
+            1,
+            radio,
+            crate::game_grenade::Definition::marker(&r, 2).unwrap(),
+        );
+        let command = |time, weapon, buttons| UserCommand {
+            time,
+            buttons,
+            weapons: [weapon, 0, 0],
+            ..Default::default()
+        };
+        p.apply(&command(1100, 293, 0));
+        p.apply(&command(1110, 293, 0));
+        p.apply(&command(1120, 293, 0));
+        p.apply(&command(1130, 293, 1));
+        assert!(p.marker_phase.is_some());
+        p.apply(&command(1140, 352, 0));
+        assert!(p.marker_phase.is_none());
+        assert!(p.take_throws().is_empty());
+        p.apply(&command(1150, 352, 0));
+        assert_eq!(p.reward_inventory()[1].unwrap().ammo.unwrap().clip, 1);
+    }
+    #[test]
+    fn unthrown_primary_marker_is_cancelled_on_death_without_spending_ammo() {
+        let r = crate::game_grenade::marker_resources();
+        let mut p = player();
+        p.current.equipment.weapon = 293;
+        p.current.equipment.ammo.as_mut().unwrap().clip = 1;
+        p.current.marker = crate::game_grenade::Definition::marker(&r, 2);
+        p.apply(&UserCommand {
+            time: 1100,
+            buttons: 1,
+            weapons: [293, 0, 0],
+            ..Default::default()
+        });
+        p.drop_offhand_on_death(1200, [0; 3]);
+        assert!(p.take_throws().is_empty());
+        assert_eq!(p.equipment().ammo.unwrap().clip, 1);
     }
     #[test]
     fn held_gun_melee_hits_once_after_delay_and_never_spends_ammo() {

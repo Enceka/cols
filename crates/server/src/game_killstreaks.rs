@@ -150,6 +150,39 @@ impl ModelBounds {
 }
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub(crate) struct MarkerFacts {
+    pub prepare_msec: u16,
+    pub throw_msec: u16,
+    pub throw_delay_msec: u16,
+    pub fuse_msec: u16,
+    pub cook: bool,
+    pub speed_up: u16,
+    pub speed_forward: u16,
+    pub stickiness: u32,
+    pub parallel: [f32; 31],
+    pub perpendicular: [f32; 31],
+}
+impl MarkerFacts {
+    pub fn valid(&self) -> bool {
+        !self.cook
+            && self.prepare_msec > 0
+            && self.prepare_msec <= 15000
+            && self.throw_msec > 0
+            && self.throw_msec <= 15000
+            && self.throw_delay_msec <= self.throw_msec
+            && self.fuse_msec > 0
+            && self.fuse_msec <= 60000
+            && self.speed_up <= 50000
+            && self.speed_forward <= 50000
+            && self
+                .parallel
+                .iter()
+                .chain(&self.perpendicular)
+                .all(|v| v.is_finite() && (0.0..=1.0).contains(v))
+    }
+}
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct WeaponFacts {
     pub weapon: u16,
     pub weapon_type: u32,
@@ -163,6 +196,8 @@ pub(crate) struct WeaponFacts {
     pub outer_damage: u32,
     #[serde(default)]
     pub projectile_speed: u32,
+    #[serde(default)]
+    pub marker: Option<MarkerFacts>,
     #[serde(default)]
     pub damage_stages: [u32; 6],
     #[serde(default)]
@@ -235,6 +270,11 @@ impl RadarResources {
                     .all(|v| *v <= 15000)
                     && w.radius <= 1_000_000
                     && w.projectile_speed <= 50000
+                    && w.marker.as_ref().is_none_or(|m| m.valid()
+                        && w.weapon_type == 1
+                        && w.weapon_class == 6
+                        && w.radius == 0
+                        && w.projectile_speed > 0)
                     && w.damage_stages.iter().all(|v| *v <= 1_000_000)
                     && w.damage_ranges
                         .iter()
@@ -254,6 +294,19 @@ impl RadarResources {
                     && r.fire_interval_msec <= 15000),
             "radar map/build/resources mismatch"
         );
+        for radio in &result.radios {
+            if matches!(radio.native_id, 2 | 4 | 9 | 22)
+                && result
+                    .weapons
+                    .values()
+                    .any(|w| w.weapon == radio.weapon && w.marker.is_some())
+            {
+                ensure!(
+                    crate::game_grenade::Definition::marker(&result, radio.native_id).is_some(),
+                    "invalid registered airdrop marker"
+                );
+            }
+        }
         Ok(result)
     }
     pub fn radio(&self, id: u8) -> Option<&Radio> {

@@ -142,3 +142,83 @@ fn sphere_hits_walls_gravity_reaches_floor_and_explosion_fires_once() {
         150
     );
 }
+
+#[test]
+fn marker_flights_keep_registered_identity_and_signal_only_when_resting() {
+    let resources = marker_resources();
+    for (id, weapon) in [(2, 293), (9, 294), (22, 295), (4, 296)] {
+        let d = Definition::marker(&resources, id).unwrap();
+        assert_eq!(d.index, weapon);
+        assert_eq!(d.marker_reward, Some(id));
+        let c = world(false);
+        let mut g = Grenades::default();
+        assert!(g.launch(
+            Throw {
+                time: 1000,
+                angles: [0; 3],
+                fuse_msec: d.fuse_msec,
+                definition: d,
+                in_hand: false,
+                dropped: false
+            },
+            [0.0, 0.0, 64.0],
+            [0.0; 3],
+            &c
+        ));
+        assert_eq!(g.snapshots()[0].weapon, weapon);
+        let before = g.snapshots()[0].origin;
+        let mut emitted = Vec::new();
+        for now in (1050..6000).step_by(50) {
+            emitted.extend(g.advance(now, &c));
+        }
+        assert_eq!(emitted.len(), 1);
+        assert_eq!(emitted[0].definition.marker_reward, Some(id));
+        assert!(emitted[0].origin[0] > before[0]);
+        assert!(emitted[0].origin[2] < 4.0);
+        assert!(g.snapshots().is_empty());
+        assert!(g.advance(7000, &c).is_empty());
+    }
+}
+
+#[test]
+#[ignore = "requires matching target-build marker resources and map collision capture"]
+fn captured_airdrop_markers_settle_in_the_real_map_without_radius_damage() {
+    let r = crate::game_killstreaks::RadarResources::load(
+        std::path::Path::new(&std::env::var("CODOL_MARKER_RESOURCES").unwrap()),
+        "mp_afghan",
+        523897474,
+    )
+    .unwrap();
+    let c = Collision::load(std::path::Path::new(
+        &std::env::var("CODOL_MARKER_COLLISION").unwrap(),
+    ))
+    .unwrap();
+    for id in [2, 4, 9, 22] {
+        let d = Definition::marker(&r, id).unwrap();
+        let mut g = Grenades::default();
+        assert!(g.launch(
+            Throw {
+                time: 1000,
+                angles: [0, 49152, 0],
+                definition: d,
+                fuse_msec: 1000,
+                in_hand: false,
+                dropped: false
+            },
+            [4080.0, 2620.0, 72.0],
+            [0.0; 3],
+            &c
+        ));
+        let mut landed = vec![];
+        for now in (1020..20000).step_by(20) {
+            landed.extend(g.advance(now, &c));
+        }
+        assert_eq!(landed.len(), 1, "marker {id} did not settle");
+        assert_eq!(landed[0].definition.marker_reward, Some(id));
+        assert_eq!(radius_damage(&landed[0], landed[0].origin, 70.0, &c), 0);
+        println!(
+            "marker={id} landed={:?} time={}",
+            landed[0].origin, landed[0].time
+        );
+    }
+}

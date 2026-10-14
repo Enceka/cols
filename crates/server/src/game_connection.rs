@@ -2053,7 +2053,11 @@ impl Connection {
         {
             for (slot, id) in tdm.streaks.owned_radios(0) {
                 if let Some(r) = resources.radio(id) {
-                    player.grant_reward(slot + 1, r.weapon, r.switch, r.fire_interval_msec);
+                    if let Some(marker) = crate::game_grenade::Definition::marker(&resources, id) {
+                        player.grant_marker_reward(slot + 1, r, marker);
+                    } else {
+                        player.grant_reward(slot + 1, r.weapon, r.switch, r.fire_interval_msec);
+                    }
                 }
             }
         }
