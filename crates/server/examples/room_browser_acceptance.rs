@@ -1,12 +1,15 @@
 //! Exercise room creation, browsing and admission against isolated local services.
 //! Uses synthetic authenticated identities; does not operate the live client/backend.
 use anyhow::{Context, Result, ensure};
-use codol_protocol::{
-    room::Description,
-    room_browser,
-    task::{self, Reader, Request, Writer},
-};
-use codol_server::{game_server::GameServer, services::LocalServices, session::Session};
+use codol_protocol::lobby::task;
+use codol_protocol::lobby::task::Reader;
+use codol_protocol::lobby::task::Request;
+use codol_protocol::lobby::task::Writer;
+use codol_protocol::room::browser as room_browser;
+use codol_protocol::room::description::Description;
+use codol_server::app::services::LocalServices;
+use codol_server::backend::identity::session::Session;
+use codol_server::transport::game::server::GameServer;
 use serde_json::{Value, json};
 use std::path::PathBuf;
 
@@ -61,9 +64,10 @@ async fn main() -> Result<()> {
         .await?
         .with_game_endpoint(game.admissions())
         .await;
-    let fixture: Value = serde_json::from_str(include_str!(
-        "../../../fixtures/protocol/room-browser-synthetic.json"
-    ))?;
+    let fixture: Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../fixtures/protocol/room-browser-synthetic.json"
+    )))?;
     let owner = session(42);
     let guest = session(43);
 

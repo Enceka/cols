@@ -95,9 +95,9 @@ String filename
 
 ## 实现入口、运行及接续
 
-- `crates/protocol/src/task.rs`：有界 tagged reader、存储请求、普通回执编码。
-- `crates/server/src/services.rs`：时间、文件服务、title/UID 绑定、原子文件替换。
-- `crates/server/src/lobby_server.rs`：按序调用处理器，写入 `packet-NNN-reply.json`，再加密发送。
+- `crates/protocol/src/lobby/task.rs`：有界 tagged reader、存储请求、普通回执编码。
+- `crates/server/src/transport/lobby/router.rs` 与 `handlers/`：任务路由和协议适配；`backend/` 执行业务，`infra/storage/` 负责有界读取和原子替换。
+- `crates/server/src/transport/lobby/server/mod.rs`：按序调用处理器，写入 `packet-NNN-reply.json`，再加密发送。
 - `crates/server/tests/lobby_transport.rs`：未知任务失败后仍能按序取得时间及缺文件回执。
 
 ```sh

@@ -37,7 +37,7 @@
 
 目标算法是 AES-192-CTR：`IV = LE32(file_length) || 01×12`，128 位 counter 按大端递增，首块使用 AES(IV)。VA `0x00a852c0`、`0x00a82860`、`0x00a86740` 的初始化、重设 IV、递增指令已核对。wire 没有附带 IV、额外 padding 或 NUL。
 
-`crates/protocol/src/publisher.rs` 实现该算法；`fixtures/protocol/publisher3333.json` 使用 PyCryptodome 独立生成，覆盖不同长度与多块输入。实际配置明文是 `configs/publisher/configs_s.ini`，只设置 `[version] g_dwConfigVersion=1`，并注明本地研究用途。它不是恢复出的官方全量配置。
+`crates/protocol/src/lobby/publisher.rs` 实现该算法；`fixtures/protocol/publisher3333.json` 使用 PyCryptodome 独立生成，覆盖不同长度与多块输入。实际配置明文是 `configs/publisher/configs_s.ini`，只设置 `[version] g_dwConfigVersion=1`，并注明本地研究用途。它不是恢复出的官方全量配置。
 
 目标 INI parser 为 `0x0058fde0`；`0x006cb4d0` 在 `0x006cb515..0x006cb534` 读取上述 section/key 并写到 `0x078a06bc`。动态该值为 1，证明不只是成功下载密文。
 
@@ -89,7 +89,7 @@ Blob profileSnapshot  // 压缩时为 zlib，解压后必须是 32768 字节
 
 读取结果先有 tagged UInt64 UID（`0x00a5a370`），然后是上述参数但不含请求终止 0。写入任务不绑定结果数组，所以保存成功后发送零记录状态回执。
 
-实现位于 `crates/protocol/src/profile.rs`、`crates/server/src/services.rs`。解压限制固定为 32 KiB，拒绝 CRC 错误、压缩流尾随数据、膨胀和未知投影形状。只在完整校验后原子替换 `profiles/<title>/<UID>/public.bin`，保留客户端的精确序列化字节。测试覆盖重启读回、身份隔离及坏 CRC 不覆盖已存数据。完整游戏语义和索引字段还未解析；其他字段投影暂不接受。
+实现位于 `crates/protocol/src/lobby/profile.rs`、`crates/server/src/backend/profile/mod.rs`。解压限制固定为 32 KiB，拒绝 CRC 错误、压缩流尾随数据、膨胀和未知投影形状。只在完整校验后原子替换 `profiles/<title>/<UID>/public.bin`，保留客户端的精确序列化字节。测试覆盖重启读回、身份隔离及坏 CRC 不覆盖已存数据。完整游戏语义和索引字段还未解析；其他字段投影暂不接受。
 
 ## 80/230 初始玩家数据
 

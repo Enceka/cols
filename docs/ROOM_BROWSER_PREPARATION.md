@@ -245,7 +245,7 @@ profile 的 prefix。验收未重启或停止现存客户端与正常服务端�
   -postScript DecompileTargets.java research-output/ghidra/room-browser-check.c \
   6acf70 6e3200 6e3310 6d4810 a570d0 702520 7d0550 a558b0 \
   a55700 701db0 68c790 6c9fe0 a4db00 a4ca40
-sh tools/cargo.sh test -p codol-protocol --locked room_browser
+sh tools/cargo.sh test -p codol-protocol --locked room::browser
 sh tools/cargo.sh run --locked -p codol-server --example room_browser_acceptance -- \
   research-output/room-routes-acceptance.json
 ```

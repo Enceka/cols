@@ -1,4 +1,4 @@
-use codol_server::stun_server::StunServer;
+use codol_server::transport::stun::StunServer;
 use std::time::Duration;
 use tokio::{net::UdpSocket, sync::oneshot};
 

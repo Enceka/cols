@@ -29,7 +29,7 @@
 
 **AUTH 票据实现**
 
-`crates/protocol/src/ticket.rs` 实现 128 字节小端布局、Tiger/192（Tiger1）、Tiger(LE32(seed)) IV 和无额外 padding 的 3DES-CBC；与 AlphaBuild 的独立 Python/PyCryptodome 生成结果逐字节一致。参考来源及合成参数保存在 `fixtures/protocol/auth-ticket-alpha-vector.json`。
+`crates/protocol/src/auth/ticket.rs` 实现 128 字节小端布局、Tiger/192（Tiger1）、Tiger(LE32(seed)) IV 和无额外 padding 的 3DES-CBC；与 AlphaBuild 的独立 Python/PyCryptodome 生成结果逐字节一致。参考来源及合成参数保存在 `fixtures/protocol/auth-ticket-alpha-vector.json`。
 
 `local_ticket_response` 生成 task 11 / code 700 的 JSON，回显 iv_seed，并使用 Base64 票据。当前两个票据字段采用参考实现的同一密文形式，已被本样本接受并用于后续握手。
 
@@ -119,12 +119,12 @@ Rust 现提供 type 30→31、20→21、14→15 应答，报告实际观测到�
 
 | 文件 | 职责 |
 | --- | --- |
-| `crates/protocol/src/ticket.rs` | 票据编码、摘要和 3DES |
-| `crates/protocol/src/lobby.rs` | 210 preface、位缓冲区、HKDF、AES/HMAC、71/4 结构 |
-| `crates/server/src/auth_server.rs` | TLS/HTTP、动态票据、本地身份 |
-| `crates/server/src/session.rs` | 票据到用户/会话密钥的绑定 |
-| `crates/server/src/lobby_server.rs` | 大厅握手、验证、有限状态回执和观测 |
-| `crates/protocol/src/stun.rs` / `crates/server/src/stun_server.rs` | 目标版本 UDP 地址发现、NAT/keepalive 及抓取 |
+| `crates/protocol/src/auth/ticket.rs` | 票据编码、摘要和 3DES |
+| `crates/protocol/src/lobby/channel.rs` | 210 preface、位缓冲区、HKDF、AES/HMAC、71/4 结构 |
+| `crates/server/src/transport/auth/mod.rs` | TLS/HTTP、动态票据、本地身份 |
+| `crates/server/src/backend/identity/session.rs` | 票据到用户/会话密钥的绑定 |
+| `crates/server/src/transport/lobby/server/mod.rs` | 大厅握手、验证、有限状态回执和观测 |
+| `crates/protocol/src/discovery/stun.rs` / `crates/server/src/transport/stun/mod.rs` | 目标版本 UDP 地址发现、NAT/keepalive 及抓取 |
 
 ```sh
 sh tools/check.sh

@@ -149,7 +149,10 @@ pub fn parse_client_hello(record: &[u8]) -> Result<ClientHello, ParseError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    const OBSERVED: &[u8] = include_bytes!("../../../fixtures/protocol/clienthello-3.3.3.3.bin");
+    const OBSERVED: &[u8] = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../fixtures/protocol/clienthello-3.3.3.3.bin"
+    ));
 
     #[test]
     fn reads_the_real_client_hello() {

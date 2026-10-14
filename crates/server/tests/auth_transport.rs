@@ -1,4 +1,5 @@
-use codol_server::auth_server::{AuthOptions, AuthServer};
+use codol_server::transport::auth::AuthOptions;
+use codol_server::transport::auth::AuthServer;
 use openssl::{
     asn1::Asn1Time,
     hash::MessageDigest,
@@ -83,7 +84,10 @@ async fn tls_continue_fragmented_body_and_fixture_response() {
         Ok(())
     }));
     let mut stream = connect(address).await;
-    let body = include_bytes!("../../../fixtures/protocol/auth-task10-sanitized.json");
+    let body = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../fixtures/protocol/auth-task10-sanitized.json"
+    ));
     let header = format!(
         "POST /auth/ HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nExpect: 100-continue\r\nX-TransactionID: 1\r\n\r\n",
         body.len()
@@ -144,7 +148,10 @@ async fn rejects_ambiguous_lengths_and_recovers_for_next_connection() {
         assert!(!response.windows(12).any(|s| s == b"100 Continue"));
     }
     let mut stream = connect(address).await;
-    let body = include_bytes!("../../../fixtures/protocol/auth-task10-sanitized.json");
+    let body = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../fixtures/protocol/auth-task10-sanitized.json"
+    ));
     let header = format!(
         "POST /auth/ HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
         body.len()
@@ -190,7 +197,10 @@ async fn local_tickets_bind_request_identity_and_use_fresh_session_keys() {
         let _ = stopped.await;
         Ok(())
     }));
-    let body = include_bytes!("../../../fixtures/protocol/auth-task10-sanitized.json");
+    let body = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../fixtures/protocol/auth-task10-sanitized.json"
+    ));
     let mut keys = Vec::new();
     for _ in 0..2 {
         let mut stream = connect(address).await;
@@ -207,7 +217,7 @@ async fn local_tickets_bind_request_identity_and_use_fresh_session_keys() {
             .unwrap()
             .try_into()
             .unwrap();
-        let plain = codol_protocol::ticket::decrypt_ticket(&bytes, 1).unwrap();
+        let plain = codol_protocol::auth::ticket::decrypt_ticket(&bytes, 1).unwrap();
         assert_eq!(&plain[5..9], &1002u32.to_le_bytes());
         assert_eq!(&plain[25..33], &2u64.to_le_bytes());
         keys.push(plain[97..121].to_vec());

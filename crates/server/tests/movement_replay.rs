@@ -6,8 +6,9 @@
 //! remain untrusted even when an observed positional error happens to be small.
 
 use anyhow::{Context, Result, ensure};
-use codol_protocol::game_usercmd::UserCommand;
-use codol_server::game_motion::{Collision, Motion};
+use codol_protocol::game::channel::usercmd::UserCommand;
+use codol_server::game::player::movement::Motion;
+use codol_server::game::world::collision::Collision;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,

@@ -28,7 +28,7 @@
 
 ```sh
 sh tools/check.sh
-sh tools/cargo.sh test --release --locked -p codol-server --lib game_navigation -- --ignored --nocapture
+sh tools/cargo.sh test --release --locked -p codol-server --lib game::ai::navigation -- --ignored --nocapture
 sh tools/cargo.sh build --release --locked -p codol-server
 target/release/codol-server verify-maps --catalog research-output/native-tdm-map-catalog.json --seconds 60 --output research-output/bot-navigation-rerun.json
 ```

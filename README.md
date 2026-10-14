@@ -2,6 +2,8 @@
 
 当前纯 Rust 后端已通过真实 3.3.3.3 客户端验证：认证、大厅、训练场景、玩家背包装配、切枪、换弹、瞄准和胶囊碰撞移动。基础声音已恢复；训练靶支持遮挡检查、扣血、销毁和重生，世界弹着事件已接通。AI、多人世界同步和完整对局规则仍待实现；商城价格与购买按用户要求暂缓。
 
+源码目录与模块边界见 [服务端模块结构](docs/SERVER_MODULARIZATION_PLAN.md)。
+
 从 [docs/README.md](docs/README.md) 接续任务；运行细节见 [docs/FOUNDATION.md](docs/FOUNDATION.md)，静态发现见 [docs/BOOTSTRAP_FINDINGS.md](docs/BOOTSTRAP_FINDINGS.md)。
 
 本地 Web 管理面板提供服务概览、诊断终端、日志查看及 TOML 配置编辑：运行 `sh tools/cargo.sh run --locked -p codol-server -- admin`，访问 `http://127.0.0.1:39080`。日志接入与配置生效范围见 [docs/ADMIN_PANEL.md](docs/ADMIN_PANEL.md)。

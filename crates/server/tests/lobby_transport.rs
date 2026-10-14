@@ -1,9 +1,9 @@
-use codol_protocol::lobby::{self, Direction};
-use codol_server::{
-    capture::unix_time_ms,
-    lobby_server::LobbyServer,
-    session::{Session, SessionRegistry},
-};
+use codol_protocol::lobby::channel as lobby;
+use codol_protocol::lobby::channel::Direction;
+use codol_server::backend::identity::session::Session;
+use codol_server::backend::identity::session::SessionRegistry;
+use codol_server::infra::capture::unix_time_ms;
+use codol_server::transport::lobby::server::LobbyServer;
 use std::{sync::Arc, time::Duration};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -12,9 +12,10 @@ use tokio::{
 };
 
 fn vector() -> serde_json::Value {
-    serde_json::from_str(include_str!(
-        "../../../fixtures/protocol/lobby210-synthetic.json"
-    ))
+    serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../fixtures/protocol/lobby210-synthetic.json"
+    )))
     .unwrap()
 }
 fn bytes(v: &serde_json::Value, name: &str) -> Vec<u8> {
@@ -146,7 +147,7 @@ async fn exercise_lobby(local_services: bool, continuous: bool) {
     if local_services {
         // Pipeline a supported request after an unsupported one. Skipping the
         // failure would shift every subsequent reply in the real client's FIFO.
-        let mut publisher = codol_protocol::task::Writer(vec![10, 3, 21]);
+        let mut publisher = codol_protocol::lobby::task::Writer(vec![10, 3, 21]);
         publisher.string("");
         publisher.string("configs_s.info");
         publisher.0.push(0);
@@ -179,7 +180,7 @@ async fn exercise_lobby(local_services: bool, continuous: bool) {
             match sequence {
                 2 => assert_eq!(
                     message.body,
-                    codol_protocol::task::reply(2, 7, Err(4)).unwrap()
+                    codol_protocol::lobby::task::reply(2, 7, Err(4)).unwrap()
                 ),
                 3 => {
                     assert_eq!(
@@ -195,7 +196,7 @@ async fn exercise_lobby(local_services: bool, continuous: bool) {
                 }
                 4 => assert_eq!(
                     message.body,
-                    codol_protocol::task::reply(4, 21, Err(1000)).unwrap()
+                    codol_protocol::lobby::task::reply(4, 21, Err(1000)).unwrap()
                 ),
                 _ => unreachable!(),
             }
@@ -213,11 +214,11 @@ async fn exercise_lobby(local_services: bool, continuous: bool) {
         .unwrap();
         stream.write_all(&create).await.unwrap();
         let created = receive(&mut stream, &secrets.data_keys, 5).await;
-        let channel = codol_protocol::task::Reader::new(&created.body[26..])
+        let channel = codol_protocol::lobby::task::Reader::new(&created.body[26..])
             .u64()
             .unwrap();
         let payload = [1, 0, 0, 0, 2];
-        let mut msg = codol_protocol::task::Writer(vec![11, 3, 4]);
+        let mut msg = codol_protocol::lobby::task::Writer(vec![11, 3, 4]);
         msg.u64(channel);
         msg.blob(&payload).unwrap();
         msg.u32(1);
@@ -242,11 +243,11 @@ async fn exercise_lobby(local_services: bool, continuous: bool) {
         assert_eq!(ack.kind, 1);
         assert_eq!(
             ack.body,
-            codol_protocol::task::reply(6, 4, Ok(&[])).unwrap()
+            codol_protocol::lobby::task::reply(6, 4, Ok(&[])).unwrap()
         );
         let push = receive(&mut stream, &secrets.data_keys, 7).await;
         assert_eq!(push.kind, 2);
-        let mut r = codol_protocol::task::Reader::new(&push.body);
+        let mut r = codol_protocol::lobby::task::Reader::new(&push.body);
         assert_eq!(r.u32().unwrap(), 7);
         assert_eq!(r.u64().unwrap(), u64::MAX);
         assert_eq!(r.string(65).unwrap(), "MTg0NDY3NDQwNzM3MDk1NTE2MTU=");
@@ -276,7 +277,7 @@ async fn exercise_lobby(local_services: bool, continuous: bool) {
             .unwrap(),
         )
         .unwrap();
-        let mut refresh = codol_protocol::task::Writer(vec![80, 3, 203]);
+        let mut refresh = codol_protocol::lobby::task::Writer(vec![80, 3, 203]);
         refresh.string("");
         refresh.u16(20000);
         refresh.0.push(0);
@@ -285,13 +286,13 @@ async fn exercise_lobby(local_services: bool, continuous: bool) {
                 8,
                 230,
                 vec![80, 3, 230, 16, 0, 0],
-                vec![codol_protocol::task::player_data(u64::MAX, &items).unwrap()],
+                vec![codol_protocol::lobby::task::player_data(u64::MAX, &items).unwrap()],
             ),
             (
                 9,
                 203,
                 refresh.0,
-                codol_protocol::task::inventory_records(u64::MAX, &items).unwrap(),
+                codol_protocol::lobby::task::inventory_records(u64::MAX, &items).unwrap(),
             ),
         ] {
             let packet = lobby::encrypt_application(
@@ -309,7 +310,8 @@ async fn exercise_lobby(local_services: bool, continuous: bool) {
             assert!(response.body.len() > 65536);
             assert_eq!(
                 response.body,
-                codol_protocol::task::reply(u64::from(sequence), opcode, Ok(&records)).unwrap()
+                codol_protocol::lobby::task::reply(u64::from(sequence), opcode, Ok(&records))
+                    .unwrap()
             );
         }
     }
@@ -330,7 +332,7 @@ async fn exercise_lobby(local_services: bool, continuous: bool) {
             let response = receive(&mut stream, &secrets.data_keys, sequence + 1).await;
             assert_eq!(
                 response.body,
-                codol_protocol::task::reply(u64::from(sequence), 1, Err(4)).unwrap()
+                codol_protocol::lobby::task::reply(u64::from(sequence), 1, Err(4)).unwrap()
             );
         }
         // Cross the diagnostic frame cap without consuming crypto/RPC sequence

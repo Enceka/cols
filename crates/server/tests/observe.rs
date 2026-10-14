@@ -1,4 +1,5 @@
-use codol_server::{config::Config, observe::Observer};
+use codol_server::app::config::Config;
+use codol_server::diagnostics::observe::Observer;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{path::Path, time::Duration};
@@ -9,7 +10,11 @@ use tokio::{
 };
 
 fn config(path: &Path) -> Config {
-    let mut config: Config = toml::from_str(include_str!("../../../configs/local.toml")).unwrap();
+    let mut config: Config = toml::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../configs/local.toml"
+    )))
+    .unwrap();
     config.capture_dir = path.into();
     for listener in &mut config.listeners {
         listener.bind.set_port(0);
@@ -187,7 +192,10 @@ fn rejects_unsafe_paths_unknown_keys_and_unbounded_settings() {
     assert!(
         toml::from_str::<Config>(&format!(
             "unknown = 1\n{}",
-            include_str!("../../../configs/local.toml")
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../configs/local.toml"
+            ))
         ))
         .is_err()
     );

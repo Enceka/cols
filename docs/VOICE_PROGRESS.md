@@ -19,7 +19,7 @@
 
 `0x62dd90` 从 alias list 选择实际变体，记录步长为 `0x6c`。服务端传 alias／selector，由客户端选择样本；具体 WAV 名字不是网络声音编号。
 
-[game_sound.rs](../crates/protocol/src/game_sound.rs) 提供 `SoundSelector::constant`／`dynamic`、`play_command`／`stop_command`／`spatial_event` 和 `VoicePrefix`。可靠窗口负责重发；开局和结算各只产生一次命令。角色喊话使用独立的 EV3 临时实体，保留发声者与位置，不向同一声音另发本地命令。
+[game_sound.rs](../crates/protocol/src/game/snapshot/sound.rs) 提供 `SoundSelector::constant`／`dynamic`、`play_command`／`stop_command`／`spatial_event` 和 `VoicePrefix`。可靠窗口负责重发；开局和结算各只产生一次命令。角色喊话使用独立的 EV3 临时实体，保留发声者与位置，不向同一声音另发本地命令。
 
 声音实体由 Rust 分配在 1668..1699，弹着范围为 54..1667，投掷物从1700开始；这是服务器的槽位分配，不是客户端规定的固定声音范围。描述表22的field5为14bit声音参数，field9／ES+0x80为11bit源实体。声音实体保留200ms；同一身份在重传／delta中保留原生一次性latch，到期相对已确认基线显式删除，全基线不固定声音事件。
 
