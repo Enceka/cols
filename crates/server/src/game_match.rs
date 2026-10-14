@@ -433,7 +433,9 @@ impl TdmMatch {
                         health: bot.health,
                         damage_event: bot.damage_event,
                         damage_count: bot.damage_count,
-                        emp_jammed: bot.emp.active(now),
+                        emp_jammed: bot.emp.active(now)
+                            || (self.streaks.emp_active(bot.snapshot.team, now)
+                                && weapon.emp_protection() > 0.0),
                         spawn_count: (self.rows[usize::from(bot.snapshot.client_index)].deaths
                             + u32::from(bot.health > 0)) as u8,
                         ..Default::default()

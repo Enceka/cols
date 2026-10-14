@@ -76,10 +76,11 @@ class ReadClientState {
             bool propsState=args.Length==1 && args[0]=="--props-state";
             bool propsFrame=args.Length==1 && args[0]=="--props-frame";
             bool propsAssets=args.Length==1 && args[0]=="--props-assets";
+            bool rewardAssets=args.Length==1 && args[0]=="--reward-assets";
             bool nukeAssets=args.Length==1 && args[0]=="--nuke-assets";
             bool nukeState=args.Length==1 && args[0]=="--nuke-state";
             bool nukeFrame=args.Length==1 && args[0]=="--nuke-frame";
-            if(args.Length!=0 && !propsState && !propsFrame && !propsAssets && !nukeAssets && !nukeState && !nukeFrame && !voicePlayback && !voiceAssets && !frontendAssets && !glass && !mapCheck && !hudAssets && !tacticalAssets && !appearanceLoad && !outfits && !grounding && !replay && !feedback && !hitRegions && !assets && !profiles && !netConstants && !mapEntities && !bootstrapWeapon && !weaponModels && !arsenal && !collision && !weaponRegistry && !trainingTarget && !bulletImpacts && !characters) throw new Exception("only fixed extraction modes are supported");
+            if(args.Length!=0 && !propsState && !propsFrame && !propsAssets && !rewardAssets && !nukeAssets && !nukeState && !nukeFrame && !voicePlayback && !voiceAssets && !frontendAssets && !glass && !mapCheck && !hudAssets && !tacticalAssets && !appearanceLoad && !outfits && !grounding && !replay && !feedback && !hitRegions && !assets && !profiles && !netConstants && !mapEntities && !bootstrapWeapon && !weaponModels && !arsenal && !collision && !weaponRegistry && !trainingTarget && !bulletImpacts && !characters) throw new Exception("only fixed extraction modes are supported");
             IntPtr snapshot=CreateToolhelp32Snapshot(2,0); uint found=0;
             if(snapshot==new IntPtr(-1)) throw new Exception("process snapshot failed");
             try {
@@ -109,6 +110,7 @@ class ReadClientState {
                 if(propsState) { ClientAssets.ExportPropsState(process);return 0; }
                 if(propsFrame) { ClientAssets.ExportPropsState(process,true);return 0; }
                 if(propsAssets) { ClientAssets.ExportPropsAssets(process);return 0; }
+                if(rewardAssets) { ClientAssets.ExportNukeAssets(process,true);return 0; }
                 if(nukeAssets) { ClientAssets.ExportNukeAssets(process);return 0; }
                 if(nukeState) { ClientAssets.ExportNukeState(process);return 0; }
                 if(nukeFrame) { ClientAssets.ExportNukeState(process,true);return 0; }

@@ -55,12 +55,12 @@ partial class ClientAssets {
         }
         return null;
     }
-    public static void ExportNukeAssets(IntPtr process) {
+    public static void ExportNukeAssets(IntPtr process,bool all=false) {
         var r=new ClientAssets(process);int count=Count(r.Word(0x07817b88),899);
         var weapons=new List<object>();
         for(uint i=1;i<=count;i++) {
             uint def=r.Word(0x017f5a40+i*4);string name=r.Name(r.Word(def));
-            if(name!="killstreak_nuke_mp" && name!="nuke_mp" && name!="killstreak_uav_mp" && name!="killstreak_counter_uav_mp")continue;
+            if(!all && name!="killstreak_nuke_mp" && name!="nuke_mp" && name!="killstreak_uav_mp" && name!="killstreak_counter_uav_mp")continue;
             weapons.Add(Obj("name",name,"index",i,"definition_base64",Convert.ToBase64String(r.Read(def,0xe28)),
                 "runtime_fields",r.WeaponRuntimeFields(def)));
         }
@@ -68,7 +68,7 @@ partial class ClientAssets {
         for(uint i=1;i<=399;i++) {
             uint fx=r.Word(0x01a1f9bc+i*4);if(fx==0)continue;
             string name=r.Name(r.Word(fx));
-            if(name=="explosions/player_death_nuke"||name=="explosions/player_death_nuke_flash"||name=="dust/nuke_aftermath_mp")
+            if(all||name=="explosions/player_death_nuke"||name=="explosions/player_death_nuke_flash"||name=="dust/nuke_aftermath_mp")
                 effects.Add(Obj("name",name,"selector",i));
         }
         var sounds=new List<object>();
@@ -76,11 +76,29 @@ partial class ClientAssets {
             uint entry;uint asset=r.Find(11,name,out entry,false);
             sounds.Add(Obj("name",name,"found",asset!=0,"loaded",asset!=0&&(r.Read(entry,28)[17]&5)!=0));
         }
+        var aceTables=new Dictionary<string,object>();
+        if(all)foreach(string name in new string[]{"mp/item_etk.csv","mp/item_kis.csv","mp/coAceStreakStatsTable.csv","mp/coAceKillstreakStatsTable.csv","mp/coAceKillstreakTable.csv"})aceTables[name]=r.Table(name,false);
+        var optional=new List<object>();
+        if(all)foreach(string name in new string[]{"killstreak_locker_mp","super_katana_mp","killstreak_consumable_mp","killstreak_pro_ac130_mp"}) {
+            uint entry;uint asset=r.Find(28,name,out entry,false);
+            optional.Add(Obj("name",name,"found",asset!=0,"loaded",asset!=0&&(r.Read(entry,28)[17]&5)!=0,"layout",asset==0?null:r.Layout(asset,0x40,1)));
+        }
+        var models=new List<object>();
+        if(all) {
+            uint slot=r.Word(0x07817bac);if(slot>=256)throw new Exception("invalid reward model bank");
+            uint cgs=r.Word(0x01a19510+slot*4)^0xce9af8cf;
+            byte[] registered=r.Read(cgs+0xf0,1024*4);
+            for(uint id=1;id<1024;id++) {
+                uint model=U(registered,(int)id*4);if(model==0)continue;
+                byte[] bounds=r.Read(model+0x140,24);
+                models.Add(Obj("name",r.Name(r.Word(model)),"index",id,"bounds_center",Floats(bounds,0,3),"bounds_half",Floats(bounds,12,3)));
+            }
+        }
         var output=Obj("schema_version",1,"read_only",true,
             "client_sha256","e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b",
             "connection_state",r.Word(0x01a2e7ec),"map",r.Name(r.Word(0x02dfb000)),
-            "ncs_crc",r.Word(0x02df7d90),"weapons",weapons,"effects",effects,"sounds",sounds);
-        Console.WriteLine(new JavaScriptSerializer().Serialize(output));
+            "ncs_crc",r.Word(0x02df7d90),"weapons",weapons,"effects",effects,"sounds",sounds,"models",models,"optional_assets",optional,"ace_tables",aceTables);
+        var serializer=new JavaScriptSerializer();serializer.MaxJsonLength=16*1024*1024;Console.WriteLine(serializer.Serialize(output));
     }
     public static void ExportNukeState(IntPtr process,bool once=false) {
         var r=new ClientAssets(process);var frames=new List<object>();
@@ -111,6 +129,7 @@ partial class ClientAssets {
                     "compass_last_scan",r.Word(actor+0x58),"compass_flags",r.Word(actor+0x6c)));
             }
             frames.Add(Obj("time",r.Word(cg+0xae4c8),"pm_type",r.Word(cg+4),"health",r.Word(cg+0x190),
+                "player_flags",r.Word(cg+0x10),"ability_mask_0",r.Word(cg+0x4cc),
                 "progress",r.Word(cg+0x64),"ids",ids,"targets",targets,"action_types",types,"action_weapons",weapons,
                 "weapon",r.Word(cg+0x340),"weapon_state",r.Word(cg+0x27c),"weapon_animation",r.Word(cg+0x26c),
                 "selected_weapon",r.Word(cg+0xbd00c),"view_offset",Floats(r.Read(cg+0xa0,12),0,3),

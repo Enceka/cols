@@ -277,6 +277,7 @@ pub(crate) struct Player {
     throws: Vec<crate::game_grenade::Throw>,
     perks: crate::game_perks::Perks,
     sprinting: bool,
+    support_arrow: bool,
     current: Weapon,
     secondary: Option<Weapon>,
     alternate: Option<Weapon>,
@@ -342,6 +343,7 @@ impl Player {
             throws: Vec::new(),
             perks: Default::default(),
             sprinting: false,
+            support_arrow: false,
             current: Weapon {
                 offhand_switch: None,
                 fast_reload: false,
@@ -752,6 +754,9 @@ impl Player {
     pub fn asym_robot(&self) -> bool {
         self.perks.has("modAsymRobot")
     }
+    pub fn set_support_arrow(&mut self, active: bool) {
+        self.support_arrow = active;
+    }
     pub fn equipment(&self) -> Equipment {
         let mut equipment = self.current.equipment;
         let mut alternates = self.weapons().filter(|w| {
@@ -768,6 +773,10 @@ impl Player {
         });
         equipment.perks = self.perks.native_masks();
         equipment.abilities = self.perks.abilities;
+        if self.support_arrow {
+            equipment.abilities.masks[0] |= 0x80;
+            equipment.abilities.values[13] = 1.0;
+        }
         equipment.move_multiplier = self.perks.value("modMoveSpeedScale", 1.0);
         equipment.offhands = self.offhands.each_ref().map(|g| {
             g.as_ref()
@@ -839,6 +848,10 @@ impl Player {
     }
     pub fn remove_nuke(&mut self, id: u16) {
         self.remove_reward(id);
+    }
+    pub fn return_reward(&mut self) {
+        self.restore_reward();
+        self.begin_raise();
     }
     fn restore_reward(&mut self) {
         if let Some(slot) = self.active_reward.take() {

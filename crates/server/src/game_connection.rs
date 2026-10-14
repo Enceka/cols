@@ -761,7 +761,14 @@ impl Connection {
             .player
             .as_ref()
             .map_or([None; 4], |p| p.reward_inventory());
-        self.vitals.emp_jammed = self.emp.active(server_time);
+        self.vitals.emp_jammed = self.emp.active(server_time)
+            || self.tdm.as_ref().is_some_and(|m| {
+                m.streaks.emp_active(m.teams()[0], server_time)
+                    && self
+                        .player
+                        .as_ref()
+                        .is_some_and(|p| p.emp_protection() > 0.0)
+            });
         let mut snapshot_vitals = (self.bot.is_some() || self.tdm.is_some()).then_some(self.vitals);
         let mut hit_feedback = state
             .feedback_resources()
@@ -1954,7 +1961,7 @@ impl Connection {
         for hit in tick.hits {
             if state
                 .nuke_resources()
-                .is_some_and(|r| r.acceptance_seed != 0)
+                .is_some_and(|r| r.acceptance_seed != 0 && r.acceptance_fire_after_msec.is_none())
             {
                 continue;
             }
@@ -2009,6 +2016,9 @@ impl Connection {
         let Some(tdm) = &mut self.tdm else {
             return Ok(());
         };
+        if let Some(player) = &mut self.player {
+            player.set_support_arrow(!tdm.finished && tdm.streaks.sr71_active(tdm.teams()[0], now));
+        }
         if self.vitals.health > 0
             && !tdm.finished
             && let Some(player) = &mut self.player
@@ -2029,14 +2039,26 @@ impl Connection {
                     id,
                     team,
                     time,
-                } => tracing::info!(
-                    actor,
-                    id,
-                    team,
-                    time,
-                    duration_msec = crate::game_killstreaks::RADAR_MSEC,
-                    "radio support called"
-                ),
+                } => {
+                    if id == 14
+                        && let Some(&fx) = resources.effects.get("explosions/emp_flash_mp")
+                    {
+                        self.impacts
+                            .fx(now, fx, self.motion.as_ref().unwrap().origin);
+                    }
+                    tracing::info!(
+                        actor,
+                        id,
+                        team,
+                        time,
+                        duration_msec = if id == 14 {
+                            60_000
+                        } else {
+                            crate::game_killstreaks::RADAR_MSEC
+                        },
+                        "radio support called"
+                    );
+                }
             }
         }
         if self.radio_return.is_some_and(|(time, _)| now >= time) {
@@ -2897,6 +2919,21 @@ impl Connection {
                 }
             }
             self.input_count += 1;
+            if let (Some(tdm), Some(player), Some(resources)) = (
+                &self.tdm,
+                &mut self.player,
+                self.game_state.as_ref().and_then(|s| s.radar_resources()),
+            ) && tdm.streaks.emp_active(tdm.teams()[0], through)
+                && resources
+                    .radios
+                    .iter()
+                    .any(|r| r.weapon == player.equipment().weapon)
+            {
+                player.return_reward();
+                let _ = self
+                    .server_commands
+                    .push(format!("a {}", player.equipment().weapon).as_bytes());
+            }
             if let (Some(tdm), Some(player), Some(resources)) = (
                 &mut self.tdm,
                 &self.player,

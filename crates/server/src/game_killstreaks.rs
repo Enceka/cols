@@ -4,7 +4,7 @@
 use anyhow::{Result, ensure};
 use codol_protocol::game_killstreaks::StreakSnapshot;
 use serde::Deserialize;
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::Path;
 use std::sync::LazyLock;
 
@@ -113,12 +113,34 @@ pub(crate) struct RadarResources {
     pub sources_sha256: [String; 2],
     pub map: String,
     pub ncs_crc: u32,
-    pub radios: [Radio; 2],
+    pub radios: Vec<Radio>,
+    #[serde(default)]
+    pub models: BTreeMap<String, u16>,
+    #[serde(default)]
+    pub effects: BTreeMap<String, u16>,
+    #[serde(default)]
+    pub weapons: BTreeMap<String, WeaponFacts>,
 }
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct WeaponFacts {
+    pub weapon: u16,
+    pub weapon_type: u32,
+    pub weapon_class: u32,
+    pub clip_key: Option<u16>,
+    pub ammo_key: Option<u16>,
+    pub switch: crate::game_player::SwitchTiming,
+    pub fire_interval_msec: u16,
+    pub radius: u32,
+    pub inner_damage: u32,
+    pub outer_damage: u32,
+}
+/// Effect handlers explicitly publish their implemented IDs.
+pub(crate) const SUPPORT_IDS: [u8; 4] = [1, 3, 14, 19];
 impl RadarResources {
     pub fn load(path: &Path, map: &str, crc: u32) -> Result<Self> {
         ensure!(
-            path.metadata()?.len() <= 16384,
+            path.metadata()?.len() <= 256 * 1024,
             "radar resources exceed budget"
         );
         let result: Self = serde_json::from_slice(&std::fs::read(path)?)?;
@@ -131,11 +153,56 @@ impl RadarResources {
                     .sources_sha256
                     .iter()
                     .all(|s| s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit()))
-                && result.radios.iter().map(|r| r.native_id).eq([1, 3])
-                && result.radios[0].weapon != result.radios[1].weapon
+                && (2..=28).contains(&result.radios.len())
+                && [1, 3].iter().all(|id| result.radio(*id).is_some())
+                && result
+                    .radios
+                    .iter()
+                    .map(|r| r.native_id)
+                    .collect::<BTreeSet<_>>()
+                    .len()
+                    == result.radios.len()
+                && result
+                    .radios
+                    .iter()
+                    .map(|r| r.weapon)
+                    .collect::<BTreeSet<_>>()
+                    .len()
+                    == result.radios.len()
+                && result
+                    .radios
+                    .iter()
+                    .all(|r| CATALOG.rewards.iter().any(|c| c.native_id == r.native_id))
+                && result.models.values().all(|v| (1..1024).contains(v))
+                && result.effects.values().all(|v| (1..400).contains(v))
+                && result.weapons.values().all(|w| (1..900).contains(&w.weapon)
+                    && w.weapon_type <= 6
+                    && w.weapon_class <= 32
+                    && w.clip_key.is_none_or(|v| v < 1024)
+                    && w.ammo_key.is_none_or(|v| v < 1024)
+                    && [
+                        w.switch.drop_msec,
+                        w.switch.raise_msec,
+                        w.switch.empty_drop_msec,
+                        w.switch.empty_raise_msec,
+                        w.fire_interval_msec
+                    ]
+                    .iter()
+                    .all(|v| *v <= 15000)
+                    && w.radius <= 1_000_000
+                    && w.inner_damage <= 1_000_000
+                    && w.outer_damage <= 1_000_000)
                 && result.radios.iter().all(|r| (1..900).contains(&r.weapon)
-                    && r.switch.valid()
-                    && (1..=15000).contains(&r.fire_interval_msec)),
+                    && [
+                        r.switch.drop_msec,
+                        r.switch.raise_msec,
+                        r.switch.empty_drop_msec,
+                        r.switch.empty_raise_msec
+                    ]
+                    .iter()
+                    .all(|v| *v <= 15000)
+                    && r.switch.raise_msec > 0
+                    && r.fire_interval_msec <= 15000),
             "radar map/build/resources mismatch"
         );
         Ok(result)
@@ -341,12 +408,16 @@ pub(crate) struct Streaks {
     enabled: bool,
     acceptance_seed: u8,
     radios_enabled: bool,
+    available: u64,
     radio_events: VecDeque<RadioEvent>,
     support: Vec<Support>,
 }
 impl Streaks {
     pub fn configure_radios(&mut self, actor: u8, previews: Previews) {
         self.radios_enabled = true;
+        if self.available == 0 {
+            self.available = (1 << 1) | (1 << 3);
+        }
         let state = &mut self.actors[usize::from(actor)];
         let owned =
             std::array::from_fn(|slot| {
@@ -359,6 +430,25 @@ impl Streaks {
         }
         state.previews = previews;
         state.radios_owned = owned;
+    }
+    pub fn enable_supported(&mut self, resources: &RadarResources) {
+        self.available = resources
+            .radios
+            .iter()
+            .filter(|r| SUPPORT_IDS.contains(&r.native_id))
+            .fold(0, |m, r| m | (1u64 << r.native_id));
+    }
+    pub fn emp_active(&self, team: u8, now: u32) -> bool {
+        self.support
+            .iter()
+            .any(|s| s.id == 14 && s.team != team && s.end > now)
+    }
+    pub fn sr71_active(&self, team: u8, now: u32) -> bool {
+        !self.emp_active(team, now)
+            && self
+                .support
+                .iter()
+                .any(|s| s.id == 19 && s.team == team && s.end > now)
     }
     pub fn radio_snapshot(
         &self,
@@ -389,7 +479,12 @@ impl Streaks {
             .filter(|(slot, _)| state.radios_owned[*slot])
     }
     pub fn try_radio(&mut self, actor: u8, team: u8, id: u8, now: u32) -> bool {
-        if !self.radios_enabled || !matches!(id, 1 | 3) || !matches!(team, 1 | 2) {
+        if !self.radios_enabled
+            || id >= 64
+            || self.available & (1u64 << id) == 0
+            || !matches!(team, 1 | 2)
+            || self.emp_active(team, now)
+        {
             return false;
         }
         let state = &mut self.actors[usize::from(actor)];
@@ -401,10 +496,14 @@ impl Streaks {
         }
         state.radios_owned[slot] = false;
         self.support.retain(|s| s.end > now);
+        if id == 14 {
+            self.support
+                .retain(|s| s.team == team || !matches!(s.id, 1 | 19));
+        }
         self.support.push(Support {
             team,
             id,
-            end: now.saturating_add(RADAR_MSEC),
+            end: now.saturating_add(if id == 14 { 60_000 } else { RADAR_MSEC }),
         });
         self.radio_events.push_back(RadioEvent::Called {
             actor,
@@ -423,10 +522,12 @@ impl Streaks {
         let blocked = self
             .support
             .iter()
-            .any(|s| s.team != team && s.id == 3 && s.end > now);
+            .any(|s| s.team != team && matches!(s.id, 3 | 14) && s.end > now);
         // Native PS+0x218: enable bit0, blocked bit1, scan mode bits2..3.
-        u8::from(uavs > 0)
-            | if uavs > 1 {
+        u8::from(uavs > 0 || self.sr71_active(team, now))
+            | if self.sr71_active(team, now) {
+                12
+            } else if uavs > 1 {
                 8
             } else if uavs == 1 {
                 4
@@ -484,7 +585,8 @@ impl Streaks {
         if self.radios_enabled {
             for slot in 0..3 {
                 let id = actor.previews.ids[slot];
-                if matches!(id, 1 | 3)
+                if id < 64
+                    && self.available & (1u64 << id) != 0
                     && actor.count >= u16::from(actor.previews.targets[slot])
                     && !actor.radios_granted[slot]
                 {
@@ -599,7 +701,10 @@ mod tests {
             sources_sha256: ["0".repeat(64), "1".repeat(64)],
             map: "mp_afghan".into(),
             ncs_crc: 123,
-            radios: [
+            models: Default::default(),
+            effects: Default::default(),
+            weapons: Default::default(),
+            radios: vec![
                 Radio {
                     native_id: 1,
                     weapon: 301,
@@ -744,6 +849,51 @@ mod tests {
         json["radios"][0]["switch"]["raise_msec"] = 0.into();
         write(&json);
         assert!(RadarResources::load(&path, "mp_afghan", 123).is_err());
+    }
+    #[test]
+    fn sr71_and_emp_have_independent_team_lifetimes_and_block_without_consuming_owned_rewards() {
+        let mut s = Streaks::default();
+        let mut r = radar_resources();
+        for (id, weapon) in [(14, 315), (19, 336)] {
+            r.radios.push(Radio {
+                native_id: id,
+                weapon,
+                switch: test_resources().switch,
+                fire_interval_msec: 800,
+            });
+        }
+        s.enable_supported(&r);
+        s.configure_radios(
+            0,
+            Previews {
+                ids: [1, 19, 14],
+                targets: [3, 8, 15],
+            },
+        );
+        s.configure_radios(
+            2,
+            Previews {
+                ids: [1, 19, 14],
+                targets: [3, 8, 15],
+            },
+        );
+        s.actors[0].radios_owned = [true, true, true];
+        s.actors[2].radios_owned = [true, true, true];
+        assert!(s.try_radio(0, 1, 19, 1000));
+        assert_eq!(s.radar_flags(1, 1000), 13);
+        assert!(s.sr71_active(1, 1000));
+        assert!(s.try_radio(2, 2, 14, 2000));
+        assert!(s.emp_active(1, 2000));
+        assert_eq!(s.radar_flags(1, 2000), 2);
+        assert!(!s.sr71_active(1, 2000));
+        assert!(!s.try_radio(0, 1, 1, 3000));
+        assert_eq!(s.owned_radios(0).collect::<Vec<_>>(), [(0, 1), (2, 14)]);
+        s.credit(5000, 2, 1, None);
+        assert!(s.emp_active(1, 61999));
+        assert!(!s.emp_active(1, 62000));
+        assert_eq!(s.radar_flags(1, 62000), 0);
+        assert!(s.try_radio(0, 1, 1, 62000));
+        assert_eq!(s.radar_flags(1, 62000), 5);
     }
     #[test]
     fn nuclear_called_text_has_a_literal_caller_argument_and_cannot_split_commands() {

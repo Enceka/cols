@@ -2090,7 +2090,8 @@ impl PreparedGameState {
             tdm.props =
                 crate::game_props::Props::new(resources.clone(), self.collision.as_ref().unwrap());
         }
-        if self.radar_resources.is_some() {
+        if let Some(resources) = &self.radar_resources {
+            tdm.streaks.enable_supported(resources);
             tdm.streaks.configure_radios(0, self.player_streak_previews);
         }
         if let Some(resources) = &self.nuke_resources {
