@@ -36,29 +36,29 @@ impl Definition {
         })
     }
 }
+const RADAR_FLIGHT_MSEC: u32 = 30_000;
+const RADAR_HEIGHT_ABOVE_ANCHOR: f32 = 3000.0;
+const RADAR_HALF_LENGTH: f32 = 3000.0;
+
 #[derive(Clone, Copy)]
-struct Orbit {
-    center: [f32; 3],
-    radius: f32,
-    phase: f32,
+struct StraightFlight {
+    start: [f32; 3],
+    end: [f32; 3],
 }
-impl Orbit {
+impl StraightFlight {
     fn pose(self, elapsed: u32) -> ([f32; 3], [u16; 3]) {
-        let theta = self.phase + elapsed as f32 * 0.001 * 200.0 / self.radius;
-        let origin = [
-            self.center[0] + self.radius * theta.cos(),
-            self.center[1] + self.radius * theta.sin(),
-            self.center[2],
-        ];
-        let yaw = ((theta + std::f32::consts::FRAC_PI_2) * 65536.0 / std::f32::consts::TAU).round()
-            as i32 as u16;
+        let fraction = elapsed.min(RADAR_FLIGHT_MSEC) as f32 / RADAR_FLIGHT_MSEC as f32;
+        let delta: [f32; 3] = std::array::from_fn(|i| self.end[i] - self.start[i]);
+        let origin = std::array::from_fn(|i| self.start[i] + delta[i] * fraction);
+        let yaw =
+            (delta[1].atan2(delta[0]) * 65536.0 / std::f32::consts::TAU).round() as i32 as u16;
         (origin, [0, yaw, 0])
     }
 }
 pub(crate) struct FlightPlan {
     entity: u16,
     definition: Definition,
-    orbit: Orbit,
+    route: StraightFlight,
 }
 struct Flight {
     plan: FlightPlan,
@@ -102,41 +102,62 @@ impl Airspace {
         let entity = (FIRST_ENTITY..END_ENTITY)
             .find(|id| !self.flights.iter().any(|f| f.plan.entity == *id))
             .ok_or(Failure::Capacity)?;
-        // Validate the complete swept orbit before consuming an earned reward.
-        // Bounds include a chord margin so the space between samples is clear.
-        let center = r
-            .air_route
-            .as_ref()
-            .map_or([origin[0], origin[1], origin[2] + 1500.0], |route| {
-                route.center
-            });
-        for radius in [1200.0, 800.0, 600.0] {
-            let orbit = Orbit {
-                center,
-                radius,
-                phase: 0.0,
+        // The map anchor is an airstrike datum, not a recovered UAV altitude.
+        // High, level passes implement the required flight shape; the numeric
+        // offset, speed and headings remain explicit compatibility parameters.
+        let anchor = r.air_route.as_ref().map_or(origin, |r| r.center);
+        let height = anchor[2] + RADAR_HEIGHT_ABOVE_ANCHOR;
+        let lane = f32::from(entity - FIRST_ENTITY) * 450.0;
+        for direction in [[1.0, 0.0], [0.0, 1.0], [-1.0, 0.0], [0.0, -1.0]] {
+            let center = [
+                anchor[0] - direction[1] * lane,
+                anchor[1] + direction[0] * lane,
+                height,
+            ];
+            let route = StraightFlight {
+                start: [
+                    center[0] - direction[0] * RADAR_HALF_LENGTH,
+                    center[1] - direction[1] * RADAR_HALF_LENGTH,
+                    height,
+                ],
+                end: [
+                    center[0] + direction[0] * RADAR_HALF_LENGTH,
+                    center[1] + direction[1] * RADAR_HALF_LENGTH,
+                    height,
+                ],
             };
-            let clear = (0..128).all(|step| {
-                let phase = step as f32 * std::f32::consts::TAU / 128.0;
-                let route = Orbit { phase, ..orbit };
-                let (p, a) = route.pose(0);
-                let shape =
-                    Collider::new(entity, p, a, definition.bounds.min, definition.bounds.max);
-                let margin = radius * std::f32::consts::TAU / 128.0;
-                collision.bounds_clear(shape.min.map(|v| v - margin), shape.max.map(|v| v + margin))
-            });
-            if clear {
+            let (start, angles) = route.pose(0);
+            let (end, _) = route.pose(RADAR_FLIGHT_MSEC);
+            let a = Collider::new(
+                entity,
+                start,
+                angles,
+                definition.bounds.min,
+                definition.bounds.max,
+            );
+            let b = Collider::new(
+                entity,
+                end,
+                angles,
+                definition.bounds.min,
+                definition.bounds.max,
+            );
+            let min = std::array::from_fn(|i| a.min[i].min(b.min[i]));
+            let max = std::array::from_fn(|i| a.max[i].max(b.max[i]));
+            // A constant orientation makes this conservative swept volume
+            // cover the entire pass, rather than isolated sampled positions.
+            if collision.bounds_clear(min, max) {
                 return Ok(FlightPlan {
                     entity,
                     definition,
-                    orbit,
+                    route,
                 });
             }
         }
         Err(Failure::FlightPath)
     }
     pub fn launch(&mut self, plan: FlightPlan, source: SupportFlight, collision: &Collision) {
-        let (origin, angles) = plan.orbit.pose(0);
+        let (origin, angles) = plan.route.pose(0);
         let health = plan.definition.health;
         tracing::info!(entity=plan.entity,owner=source.actor,id=source.id,team=source.team,origin=?origin,"radar aircraft launched");
         self.flights.push(Flight {
@@ -160,7 +181,7 @@ impl Airspace {
         for flight in &mut self.flights {
             let (origin, angles) = flight
                 .plan
-                .orbit
+                .route
                 .pose(now.saturating_sub(flight.source.start));
             flight.origin = origin;
             flight.angles = angles;
@@ -334,7 +355,7 @@ mod tests {
             serde_json::json!({"center":[0,0,-10],"half":[5000,5000,10],"contents":1,"planes":[]}),
         ];
         if sky {
-            brushes.push(serde_json::json!({"center":[0,0,1750],"half":[5000,5000,1000],"contents":1,"planes":[]}));
+            brushes.push(serde_json::json!({"center":[0,0,3000],"half":[10000,10000,1000],"contents":1,"planes":[]}));
         }
         std::fs::write(f.path(),serde_json::to_vec(&serde_json::json!({"schema_version":1,"read_only":true,"client_sha256":codol_protocol::CLIENT_SHA256,
             "map":"maps/mp/test.d3dbsp","ncs_crc":0,"brushes":brushes,"triangles":[]})).unwrap()).unwrap();
@@ -366,22 +387,46 @@ mod tests {
         air.advance(2000, false, &[key], &c);
         let moving = air.snapshots()[0];
         assert_ne!(moving.origin, initial.origin);
-        assert_ne!(moving.angles, initial.angles);
-        assert_eq!(moving.origin[2], 1500.0);
+        assert_eq!(moving.angles, initial.angles);
+        assert_eq!(moving.origin[1], initial.origin[1]);
+        assert!((moving.origin[0] - initial.origin[0] - 200.0).abs() < 0.01);
+        assert_eq!(moving.origin[2], 3000.0);
         let trace = c.raycast(
-            [moving.origin[0], moving.origin[1], 1000.0],
-            [moving.origin[0], moving.origin[1], 2000.0],
+            [moving.origin[0], moving.origin[1], 2500.0],
+            [moving.origin[0], moving.origin[1], 3500.0],
         );
         assert_eq!(trace.prop_entity, Some(448));
         air.advance(31000, false, &[key], &c);
         assert!(air.snapshots().is_empty());
         assert_eq!(
             c.raycast(
-                [moving.origin[0], moving.origin[1], 1000.0],
-                [moving.origin[0], moving.origin[1], 2000.0]
+                [moving.origin[0], moving.origin[1], 2500.0],
+                [moving.origin[0], moving.origin[1], 3500.0]
             )
             .prop_entity,
             None
+        );
+    }
+    #[test]
+    fn whole_straight_pass_rejects_an_obstacle_between_clear_endpoints() {
+        let c = collision(false);
+        c.replace_props(&[Collider::new(
+            256,
+            [0.0, 0.0, 3000.0],
+            [0; 3],
+            [-10.0; 3],
+            [10.0; 3],
+        )]);
+        assert!(
+            Airspace::default()
+                .plan_radar(&test_resources(), 1, [0.0; 3], &c)
+                .is_err()
+        );
+        c.replace_props(&[]);
+        assert!(
+            Airspace::default()
+                .plan_radar(&test_resources(), 1, [0.0; 3], &c)
+                .is_ok()
         );
     }
     #[test]
@@ -414,7 +459,7 @@ mod tests {
         air.launch(plan, b, &c);
         c.replace_props(&[]);
         assert_eq!(
-            c.raycast([1200.0, 0.0, 1000.0], [1200.0, 0.0, 2000.0])
+            c.raycast([-3000.0, 0.0, 2500.0], [-3000.0, 0.0, 3500.0])
                 .prop_entity,
             Some(448)
         );
@@ -443,10 +488,12 @@ mod tests {
         let air = Airspace::default();
         for id in [1, 3] {
             let plan = air.plan_radar(&r, id, [4144.0, 2580.0, -12.0], &c).unwrap();
-            assert_eq!(plan.orbit.center, r.air_route.as_ref().unwrap().center);
+            let anchor = r.air_route.as_ref().unwrap().center;
+            assert_eq!(plan.route.start[2], anchor[2] + RADAR_HEIGHT_ABOVE_ANCHOR);
+            assert_eq!(plan.route.end[2], plan.route.start[2]);
             println!(
-                "id={id} radius={} center={:?}",
-                plan.orbit.radius, plan.orbit.center
+                "id={id} start={:?} end={:?}",
+                plan.route.start, plan.route.end
             );
         }
     }

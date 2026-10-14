@@ -439,7 +439,6 @@ pub(crate) fn called_message(name: &str) -> Vec<u8> {
     format!("e \"\u{14}MP_TACTICAL_NUKE_CALLED\u{15}\u{16}{name}\"").into_bytes()
 }
 
-#[derive(Clone, Copy)]
 struct Actor {
     count: u16,
     best: u16,
@@ -448,7 +447,7 @@ struct Actor {
     granted: bool,
     owned: bool,
     previews: Previews,
-    radios_owned: [bool; 3],
+    inventory: crate::game_reward_inventory::Inventory,
     radios_granted: [bool; 3],
 }
 impl Default for Actor {
@@ -461,7 +460,7 @@ impl Default for Actor {
             granted: false,
             owned: false,
             previews: Previews::default(),
-            radios_owned: [false; 3],
+            inventory: Default::default(),
             radios_granted: [false; 3],
         }
     }
@@ -499,17 +498,10 @@ impl Streaks {
             self.available = (1 << 1) | (1 << 3);
         }
         let state = &mut self.actors[usize::from(actor)];
-        let owned =
-            std::array::from_fn(|slot| {
-                state.previews.ids.iter().enumerate().any(|(old, &id)| {
-                    id != 0 && id == previews.ids[slot] && state.radios_owned[old]
-                })
-            });
         if state.previews != previews {
             state.radios_granted = [false; 3];
         }
         state.previews = previews;
-        state.radios_owned = owned;
     }
     /// Explicit isolated diagnostic stock, never reported as earned kills.
     pub(crate) fn acceptance_supply_support(&mut self, actor: u8, id: u8) {
@@ -521,7 +513,8 @@ impl Streaks {
                 targets: [0; 3],
             },
         );
-        self.actors[usize::from(actor)].radios_owned[0] = true;
+        let state = &mut self.actors[usize::from(actor)];
+        assert!(state.inventory.grant(actor, id, state.death));
         tracing::info!(
             actor,
             id,
@@ -561,11 +554,11 @@ impl Streaks {
         resources: &RadarResources,
         snapshot: &mut StreakSnapshot,
     ) {
-        let state = self.actors[usize::from(actor)];
+        let state = &self.actors[usize::from(actor)];
         state.previews.apply(snapshot);
         for slot in 0..3 {
             if state.alive
-                && state.radios_owned[slot]
+                && state.inventory.contains(state.previews.ids[slot])
                 && let Some(radio) = resources.radio(state.previews.ids[slot])
             {
                 snapshot.action_types[slot + 1] = 1;
@@ -581,7 +574,7 @@ impl Streaks {
             .iter()
             .copied()
             .enumerate()
-            .filter(|(slot, _)| state.radios_owned[*slot])
+            .filter(|(_, id)| state.inventory.contains(*id))
     }
     pub fn can_radio(&self, actor: u8, team: u8, id: u8, now: u32) -> bool {
         if !self.radios_enabled
@@ -597,15 +590,58 @@ impl Streaks {
         let Some(slot) = state.previews.ids.iter().position(|v| *v == id) else {
             return false;
         };
-        state.alive && state.radios_owned[slot]
+        state.alive && state.inventory.contains(state.previews.ids[slot])
+    }
+    pub fn reserve_radio(
+        &mut self,
+        actor: u8,
+        team: u8,
+        id: u8,
+        now: u32,
+    ) -> Option<crate::game_reward_inventory::Ticket> {
+        if !self.can_radio(actor, team, id, now) {
+            return None;
+        }
+        let state = &mut self.actors[usize::from(actor)];
+        state.inventory.reserve(actor, id, state.death)
+    }
+    pub fn cancel_radio(
+        &mut self,
+        actor: u8,
+        ticket: crate::game_reward_inventory::Ticket,
+    ) -> bool {
+        self.actors
+            .get_mut(usize::from(actor))
+            .is_some_and(|s| s.inventory.cancel(ticket))
     }
     pub fn try_radio(&mut self, actor: u8, team: u8, id: u8, now: u32) -> bool {
+        let Some(ticket) = self.reserve_radio(actor, team, id, now) else {
+            return false;
+        };
+        if self.commit_radio(actor, team, ticket, now) {
+            return true;
+        }
+        self.cancel_radio(actor, ticket);
+        false
+    }
+    pub fn commit_radio(
+        &mut self,
+        actor: u8,
+        team: u8,
+        ticket: crate::game_reward_inventory::Ticket,
+        now: u32,
+    ) -> bool {
+        let id = ticket.native_id();
         if !self.can_radio(actor, team, id, now) {
             return false;
         }
         let state = &mut self.actors[usize::from(actor)];
-        let slot = state.previews.ids.iter().position(|v| *v == id).unwrap();
-        state.radios_owned[slot] = false;
+        if !state
+            .inventory
+            .commit(ticket, actor, state.death, state.alive)
+        {
+            return false;
+        }
         self.support.retain(|s| s.end > now);
         if id == 14 {
             self.support
@@ -722,6 +758,7 @@ impl Streaks {
         victim_state.alive = false;
         victim_state.granted = false;
         victim_state.radios_granted = [false; 3];
+        victim_state.inventory.invalidate_use();
         let Some(attacker) = attacker.filter(|a| *a != victim) else {
             return;
         };
@@ -740,8 +777,7 @@ impl Streaks {
                     && !actor.radios_granted[slot]
                 {
                     actor.radios_granted[slot] = true;
-                    if !actor.radios_owned[slot] {
-                        actor.radios_owned[slot] = true;
+                    if actor.inventory.grant_natural(attacker, id, actor.death) {
                         self.radio_events.push_back(RadioEvent::Earned {
                             actor: attacker,
                             id,
@@ -769,7 +805,7 @@ impl Streaks {
         self.actors[usize::from(actor)].best
     }
     pub fn snapshot(&self, actor: u8, weapon: u16) -> StreakSnapshot {
-        let actor = self.actors[usize::from(actor)];
+        let actor = &self.actors[usize::from(actor)];
         let mut result = StreakSnapshot {
             progress: actor.count.min(255) as u8,
             ..Default::default()
@@ -833,7 +869,7 @@ impl Streaks {
     pub fn clear_owned(&mut self) {
         for actor in &mut self.actors {
             actor.owned = false;
-            actor.radios_owned = [false; 3];
+            actor.inventory.clear();
         }
         self.support.clear();
     }
@@ -927,7 +963,9 @@ mod tests {
                     targets: [3, 4, 0],
                 },
             );
-            s.actors[usize::from(actor)].radios_owned = [true, true, false];
+            let state = &mut s.actors[usize::from(actor)];
+            assert!(state.inventory.grant(actor, 1, state.death));
+            assert!(state.inventory.grant(actor, 3, state.death));
         }
         assert!(s.try_radio(0, 1, 1, 1000));
         assert_eq!(s.radar_flags(1, 1000), 5);
@@ -956,7 +994,9 @@ mod tests {
                     targets: [3, 4, 0],
                 },
             );
-            s.actors[usize::from(actor)].radios_owned = [true, true, false];
+            let state = &mut s.actors[usize::from(actor)];
+            assert!(state.inventory.grant(actor, 1, state.death));
+            assert!(state.inventory.grant(actor, 3, state.death));
         }
         assert!(s.try_radio(0, 1, 1, 1000));
         assert!(s.try_radio(1, 1, 1, 2000));
@@ -1010,6 +1050,63 @@ mod tests {
         assert_eq!(s.owned_radios(0).collect::<Vec<_>>(), [(0, 3)]);
     }
     #[test]
+    fn independent_reward_instances_stack_across_lives_and_class_changes_keep_stock() {
+        let mut s = Streaks::default();
+        let preview = Previews {
+            ids: [1, 0, 0],
+            targets: [2, 0, 0],
+        };
+        s.configure_radios(0, preview);
+        kill(&mut s, 1);
+        kill(&mut s, 2);
+        s.configure_radios(
+            0,
+            Previews {
+                ids: [3, 0, 0],
+                targets: [4, 0, 0],
+            },
+        );
+        s.configure_radios(0, preview);
+        kill(&mut s, 3);
+        assert!(s.try_radio(0, 1, 1, 3500));
+        assert!(!s.try_radio(0, 1, 1, 3501));
+        s.credit(4000, 0, 1, None);
+        s.spawn(0);
+        kill(&mut s, 4);
+        kill(&mut s, 5);
+        s.credit(6000, 0, 2, None);
+        s.spawn(0);
+        kill(&mut s, 6);
+        kill(&mut s, 7);
+        assert!(s.try_radio(0, 1, 1, 8000));
+        assert!(s.try_radio(0, 1, 1, 8001));
+        assert!(!s.try_radio(0, 1, 1, 8002));
+        assert_eq!(s.support_flights(8002).len(), 3);
+    }
+    #[test]
+    fn deferred_radio_permission_is_revoked_by_death_without_losing_the_stock() {
+        let mut s = Streaks::default();
+        s.configure_radios(
+            0,
+            Previews {
+                ids: [1, 3, 0],
+                targets: [2, 3, 0],
+            },
+        );
+        kill(&mut s, 1);
+        kill(&mut s, 2);
+        let pending = s.reserve_radio(0, 1, 1, 2500).unwrap();
+        kill(&mut s, 3);
+        assert!(s.commit_radio(0, 1, pending, 3500));
+        assert!(!s.commit_radio(0, 1, pending, 3501));
+        let pending = s.reserve_radio(0, 1, 3, 3600).unwrap();
+        s.credit(4000, 0, 1, None);
+        s.spawn(0);
+        assert!(!s.commit_radio(0, 1, pending, 4500));
+        assert!(s.try_radio(0, 1, 3, 4501));
+        assert!(!s.cancel_radio(0, pending));
+    }
+    #[test]
     fn radar_bindings_reject_wrong_map_crc_duplicates_and_bad_timing() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("radar.json");
@@ -1058,8 +1155,12 @@ mod tests {
                 targets: [3, 8, 15],
             },
         );
-        s.actors[0].radios_owned = [true, true, true];
-        s.actors[2].radios_owned = [true, true, true];
+        for actor in [0, 2] {
+            let state = &mut s.actors[usize::from(actor)];
+            for id in [1, 19, 14] {
+                assert!(state.inventory.grant(actor, id, state.death));
+            }
+        }
         assert!(s.try_radio(0, 1, 19, 1000));
         assert_eq!(s.radar_flags(1, 1000), 13);
         assert!(s.sr71_active(1, 1000));

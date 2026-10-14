@@ -69,7 +69,8 @@ partial class ClientAssets {
                 if(!((source&0x7ff)>=384&&(source&0x7ff)<448)&&name!="sentry_minigun_fire"&&name!="sentry_minigun_cooldown")continue;
                 sounds.Add(Obj("slot",channel,"source",source,"alias",name,"handle",U(channels,at+0x20),"active_byte",channels[at+0x94]));
             }
-            frames.Add(Obj("time",r.Word(cg+0xae4c8),"health",r.Word(cg+0x190),"origin",Floats(r.Read(cg+0x1c,12),0,3),"yaw",Floats(r.Read(cg+0x150,4),0,1)[0],"pitch",Floats(r.Read(cg+0x14c,4),0,1)[0],"props",props,"missiles",missiles,"effects",r.EffectStates(),"device_sounds",sounds));
+            uint radarGetter=(cg+0x228)^r.Word(cg+0x22c)^r.Word(0x00ce5188);
+            frames.Add(Obj("time",r.Word(cg+0xae4c8),"health",r.Word(cg+0x190),"origin",Floats(r.Read(cg+0x1c,12),0,3),"yaw",Floats(r.Read(cg+0x150,4),0,1)[0],"pitch",Floats(r.Read(cg+0x14c,4),0,1)[0],"props",props,"missiles",missiles,"radar_flags",r.RadarFlags(cg+0x218,radarGetter),"effects",r.EffectStates(),"device_sounds",sounds));
             System.Threading.Thread.Sleep(50);
         }
         var s=new JavaScriptSerializer();s.MaxJsonLength=16*1024*1024;Console.WriteLine(s.Serialize(Obj("schema_version",1,"read_only",true,"frames",frames)));
