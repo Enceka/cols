@@ -30,13 +30,13 @@
 
 其余 9 条开放剧情图各有独立 `main/video/<map>_load.bk2 / _outro.bk2` 文件。货轮没有同名外置影片，不能因此判断首关资源损坏或虚构该文件依赖。关闭的 `coop_defense_mp_suburbs` 未在清单观察到上述三个 fastfile 路径。
 
-IFS 清单中没有独立 `.gsc/.csc` 路径。这只说明清单没有列出散装脚本；脚本仍可能位于 fastfile 内部。当前没有取得或验证本版完整剧情 GSC、触发图和依赖清单，也没有验证容器块完整性与补丁合并结果。不能把 fastfile 名称、影片文件存在或同底图的 TDM 碰撞当作完整剧情资源证据。
+IFS 清单中没有独立 `.gsc/.csc` 路径。这只说明清单没有列出散装脚本；脚本仍可能位于 fastfile 内部。首关已有脚本／FX资源捕获，但本版完整剧情GSC、触发图和依赖闭包尚未验证，也没有验证容器块完整性与补丁合并结果。不能把 fastfile 名称、影片文件存在或同底图的 TDM 碰撞当作完整剧情资源证据。
 
 ## 开局分配与密钥
 
-真实首关既有采集 `client-1791288403789` 的 `ui-1791288587762.png` 显示选中“身份不明”并停在“战斗开始”。packet 039/041/042 依次为 `11/13` 建 channel、`21/5` 查询游戏服、`11/4` 房间消息；所有已记录的业务帧均未出现 `21/1`。查询的实际参数为 `query=1, offset=0, maximum=10, build=-688906341`，没有地图字段。这一条采集不证明全部剧情关卡流程一致。
+真实首关既有采集  的 原生画面证据 显示选中“身份不明”并停在“战斗开始”。packet 039/041/042 依次为 `11/13` 建 channel、`21/5` 查询游戏服、`11/4` 房间消息；所有已记录的业务帧均未出现 `21/1`。查询的实际参数为 `query=1, offset=0, maximum=10, build=-688906341`，没有地图字段。这一条采集不证明全部剧情关卡流程一致。
 
-默认 `rooms.rs` 的 `21/5` 分支要求 `channel.game` 存在，密钥来自客户端 `21/1` 描述；缺少描述就返回 `game_allocation_requires_live_key`。显式 `--story-capture-map coop_training_mp_cargoship` 允许拥有者的单人 channel 不经 `21/1` 分配随机 security ID/key；分配与登录身份/channel/build 绑定，重试复用，退出、换登录和过期撤销。它没有改变默认 TDM 前置条件。
+默认 `backend/rooms/mod.rs` 的 `21/5` 分支要求 `channel.game` 存在，密钥来自客户端 `21/1` 描述；缺少描述就返回 `game_allocation_requires_live_key`。显式 `--story-capture-map coop_training_mp_cargoship` 允许拥有者的单人 channel 不经 `21/1` 分配随机 security ID/key；分配与登录身份/channel/build 绑定，重试复用，退出、换登录和过期撤销。它没有改变默认 TDM 前置条件。
 
 本版客户端的静态消费者支持进一步恢复这个路径：
 
@@ -61,7 +61,7 @@ IFS 清单中没有独立 `.gsc/.csc` 路径。这只说明清单没有列出散
 | 任务与表现 | 已有声音、动态物件及部分 HUD/事件基础 | 触发器、目标、字幕、镜头、演出、成功/失败和检查点 |
 | 进度 | 档案读取/持久化与本版 schema 研究工具 | 服务端权威通关结果、解锁写入及重登验收 |
 
-具体代码限制：`game_map_registry.rs` 的目录只含 TDM 身份；`game_state.rs` 要求捕获的 TDM 地图、`mode=war / zone=mp / playlist=0`；`game_map_selection.rs` 的显式开局只接受 `war` 与 MP/当前目录地图；`game_server.rs` 的资源采集还限制原生 TDM。`game_match.rs` 为 `TdmMatch`，胜负按分数/时限运行。剧情准入应接在这些边界上，保持现有 TDM 检查，不全局放宽验证或让剧情继承 TDM 胜负。
+目录及可玩世界按地图／模式校验，正常目录接受已准备的 `war`／`cha`；剧情资源初始化使用独立 `story_resource_state`，不向TDM目录写入剧情世界。`TdmMatch`按分数／时限运行，不能作为`coop`任务胜负规则。
 
 建议为 Rust 玩法增加独立的剧情状态，使用经过本版证据确认的触发事件与资源标识；首关可先实现所需的有限任务状态机。若要运行完整原始 GSC，则还需本版脚本格式、VM、原生方法、线程/notify 与角色系统的独立实现。没有完整脚本数据时，不能把猜测出来的任务流程标为原剧情恢复。
 
@@ -71,29 +71,29 @@ IFS 清单中没有独立 `.gsc/.csc` 路径。这只说明清单没有列出散
 
 本版 `mp/unlockFlags.csv` 将货轮完成标记映射到编号150，其它现存剧情标记在151～160，并保留161/162的额外剧情标记；编号顺序不等于章节顺序。实际准入读取`mp/playersecuredata.def v19`的`unlockFlagsNew` Int16字段，最低值1；旧`unlockFlags`布尔字段不能单独恢复准入。独立测试账号已按这13个标记解锁，本版10个可见关卡的菜单已验证；实际胜局提交/持久化协议仍未验证。
 
-当前 `services.rs` 没有支持私有档案 RPC 写入，游戏 `stats` 上传也明确不是权威档案更新。剧情成功结果需要服务端确认、幂等保存，按本版 schema/CRC/投影构造私有档案，并核对下一关解锁、失败不解锁、重试和重登行为。不能用全解锁测试账号的界面作为通关持久化证据。
+当前私有档案RPC不支持任意写入，游戏 `stats` 上传也明确不是权威档案更新。剧情成功结果需要服务端确认、幂等保存，按本版 schema/CRC/投影构造私有档案，并核对下一关解锁、失败不解锁、重试和重登行为。不能用全解锁测试账号的界面作为通关持久化证据。
 
-## 建议的首关验收顺序
+## 首关玩法的剩余验收
 
-1. 在独立服务数据目录恢复无 `21/1` 的分配；从原生首关入口实采返回结果、booking、开局命令及 DTLS，确认客户端使用同一分配的 key。正常账号与当前 TDM 服务继续保留。
-2. 只绑定 `coop_training_mp_cargoship / coop`，取得本图资源顺序、CRC、实体、碰撞和真实开始点；验收加载与出生。取得失败时保留具体阻塞，不回退阿富汗等 TDM 图。
+1. 以已通过的独立分配、握手和初始化为基础，校验首关资源依赖闭包；正常账号和TDM资源保持隔离。
+2. 只绑定 `coop_training_mp_cargoship / coop`，复用已采资源顺序、CRC、实体和碰撞，恢复真实开始点并验收出生。取得失败时保留具体阻塞，不回退阿富汗等 TDM 图。
 3. 取得本版首关脚本/触发数据与角色资源，逐项恢复一段能结束的实际任务流程，包括任务开始、目标触发、角色行动、死亡/失败、重试和成功。载具、镜头与脚本动画按实际依赖决定实现次序。
 4. 验收首关成功后第二关解锁、失败不解锁、重复结算不重复发奖及重登保留进度，再扩展后续剧情。多人 PVE 应独立评估；本版剧情表的玩家上限为 1。
 
 ## 证据与复核
 
-原始捕获、反编译输出和资源表留在忽略目录，不发布剧情脚本、文本、影片、账号或密钥。首关新采集已通过原生分配/握手、stats及gamestate资源初始化，CRC复算一致；没有出生或通关证据。完整结果见[剧情资源采集](STORY_RESOURCE_CAPTURE.md)。
+原始捕获、反编译输出和资源表留在忽略目录，不发布剧情脚本、文本、影片、账号或密钥。首关采集已通过原生分配/握手、stats及gamestate资源初始化，CRC复算一致；没有出生或通关证据。完整结果见[剧情资源采集](STORY_RESOURCE_CAPTURE.md)。
 
 本地汇总为 `research-output/story-study/evidence.json`，记录来源哈希、版本列、最小关卡元数据、fastfile 清单观察、外置影片存在性、完成标记的 schema 位置及旧抓包查询。可在 `server/` 运行 `python3 research-output/story-study/analyze.py` 重算；脚本只读取本地证据，不调用客户端。
 
 ### 准备与采集入口
 
-`tools/prepare_story.py` 从只读前端、私有档案定义及 IFS 清单生成 `catalog.json` 和 `first-map.json`。它按版本列2保留开放/关闭状态、原始章节顺序、单人容量和完成标记的 schema 位置；不会生成可游玩的世界或写入 TDM 目录。当前本地准备位于 `research-output/story-integration-preparation/`，仍明确标记资源准备和剧情玩法未验证。
+`tools/prepare_story.py` 从只读前端、私有档案定义及 IFS 清单生成 `catalog.json` 和 `first-map.json`。它按版本列2保留开放/关闭状态、原始章节顺序、单人容量和完成标记的 schema 位置；不会生成可游玩的世界或写入 TDM 目录。本机元数据目录为 `research-output/story-integration-preparation/`；首关资源初始化和独立CRC已验证，完整依赖闭包与剧情玩法仍未验证。
 
 ```sh
 python3 tools/prepare_story.py \
-  --frontend research-output/gamehub/client-1791827405139/frontend-assets-1791827623712.json \
-  --assets research-output/gamehub/client-1791824837703/client-assets-1791825042989.json \
+  --frontend ASSETS_JSON \
+  --assets ASSETS_JSON \
   --resource-lists research-output/ifs-lists-3.3.3.3.json \
   --output research-output/story-preparation-new
 
@@ -113,9 +113,9 @@ python3 tools/gamehub_run.py client --prefix-name wine10-story-capture --seconds
 
 主要依据：
 
-- `research-output/gamehub/client-1791827405139/frontend-assets-1791827623712.json`：只读前端、79×37 地图表、当前版本列。
+- 只读资源采集：只读前端、79×37 地图表、当前版本列。
 - `research-output/remaining-map-analysis/frontend-source/scripts/codo/` 下 `constants/table/Map.as`、`constants/QuickMatchType.as`、`constants/TutorialMap.as`、`services/MatchService.as`：表字段、剧情分类、首关绑定、准入与解锁消费者。
-- `research-output/gamehub/client-1791824837703/client-assets-1791825042989.json`：本版 unlockFlags 表与私有档案 schema；不读取账号通关值。
+- 只读资源采集：本版 unlockFlags 表与私有档案 schema；不读取账号通关值。
 - `research-output/ifs-lists-3.3.3.3.json`：IFS 路径观察，范围限制见 [资源准备](MAP_RESOURCE_PREPARATION.md)。
-- `research-output/gamehub/client-1791288403789/auth-captures/.../lobby/000001/`：已有首关业务采集，进一步背景见 [房间](ROOM_PROGRESS.md)。
+- `000001`：已有首关业务采集，进一步背景见 [房间](ROOM_PROGRESS.md)。
 - `research-output/ghidra/story-security-flow.c`、`story-query-callers.c`、`story-selected-session.c`、`story-security-endpoint.c`、`matchmaking-record.c`、`matchmaking-base.c`：固定客户端静态消费者，地址均为首选映像 VA；不是运行时实机完成证明。

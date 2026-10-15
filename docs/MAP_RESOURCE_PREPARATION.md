@@ -8,21 +8,21 @@
 
 碰撞导出按本版BSP世界根的实际引用筛选刷子和地形AABB，记录`world_membership`。旧缓存缺少这一证明时，批量工具仅补采碰撞并复用其余资源。核弹镇、货轮和航站楼已用该范围重新准备并通过后台检查；归属、池编号与消费者证据见`WORLD_COLLISION_SCOPE.md`。
 
-`mp_bog_sh`的CRC3785594714在资源计算与原生初始化后读数一致。捕获11,139个碰撞刷、18,800个三角形、8+8出生点，`compass_map_mp_bog_sh`有非默认1024×1024贴图。76个Bot模型从184开始，玩家外观从260开始；原生正式对局的12名角色模型／动画树、11个Bot位置变化及71次击杀已有只读证据。玩家一次2秒W输入移动约210单位。本轮无截图，不将元数据或特效／模型实例当作完整观感验收。
+`mp_bog_sh`的CRC3785594714在资源计算与原生初始化后读数一致。捕获11,139个碰撞刷、18,800个三角形、8+8出生点，`compass_map_mp_bog_sh`有非默认1024×1024贴图。76个Bot模型从184开始，玩家外观从260开始；原生正式对局的12名角色模型／动画树、11个Bot位置变化及71次击杀已有只读证据。玩家一次2秒W输入移动约210单位。不将元数据或特效／模型实例当作完整观感验收。
 
 该图的射击／视线阻挡体覆盖部分可行走地面。导航地面查询使用玩家碰撞掩码，射击／视线掩码保持原样。全16个出生点连接到5,524个导航节点，两队有84节点行走路径；合成阻挡体回归及真实碰撞定向检查通过，原生修复后Bot追击／攻击和击杀已有实采。
 
-证据见`bog-resource-paths.json`、`bog-native-live-proof.json`、`bog-navigation-captured-proof.json`及引用实验。`bog-navigation-final-check.log`确认443项Rust、57项Python及fmt／Clippy通过；真实碰撞忽略测试另行通过，`bog-navigation-release.log`确认release构建通过。资料使用隔离副本，账号／库存／钱包恢复证明见`map-expansion-account-proof.json`。
+证据见`bog-resource-paths.json`、`bog-native-live-proof.json`、`bog-navigation-captured-proof.json`及引用实验。`bog-navigation-final-check.log`确认Rust／Python及fmt／Clippy通过；真实碰撞忽略测试另行通过，`bog-navigation-release.log`确认release构建通过。资料使用隔离副本，账号／库存／钱包恢复证明见`map-expansion-account-proof.json`。
 
 交叉火力CRC2280019615，17,283碰撞刷、34,653三角形、15+15出生点和非默认1024贴图已捕获；原生短局113.13秒通过，12名人物／结算、本图ID5、同生命周期移动123.32单位，AAR1000:700与服务日志一致。庄园CRC3023076187，原生短局166.24秒通过。证据为`crossfire-native-fast-proof-v3.json`及`native-map-eight-acceptance/acceptance/mp_estate_tropical-native.json`；两图已进入正常目录。
 
 杂草丛生实际使用`compass_map_mp_overgrown_dlc`。别名仍要求该图捕获SHA／CRC及非默认1024贴图证明；缺少或属于其它地图的证明继续拒绝。准备文件为`map-batch-automation-acceptance/mp_overgrown-state.json`，由保留采集重新准备，无需重启采集客户端。
 
-贫民窟CRC3314487911、山景别墅CRC78003556及杂草丛生CRC692567894已通过原生短局，并进入正常目录。山景别墅→贫民窟在`client-1791791475509`同一客户端／房间连续完成，两局198.65／164.00秒；杂草丛生157.38秒。三图均有12名角色、同生命周期移动、非默认小地图及12行结算；AAR胜负／比分与服务日志一致，见`map-batch-new-native-score-proof.json`。
+贫民窟CRC3314487911、山景别墅CRC78003556及杂草丛生CRC692567894已通过原生短局，并进入正常目录。山景别墅→贫民窟在同一客户端／房间连续完成，两局198.65／164.00秒；杂草丛生157.38秒。三图均有12名角色、同生命周期移动、非默认小地图及12行结算；AAR胜负／比分与服务日志一致，见`map-batch-new-native-score-proof.json`。
 
 正常目录另新增锈迹之地CRC1969495731、核弹镇CRC1765105316、货轮CRC3526583374及航站楼CRC3031257094，均有12人原生对局、同生命周期移动、小地图和结算证据，AAR胜负／比分与服务日志一致。核弹镇→货轮在同一客户端／房间合计294.77秒，航站楼161.70秒；证据为`world-collision-thirteen-map-admission.json`及所引用原生报告。
 
-批量配置与自动准备／验收见`FAST_MAP_ACCEPTANCE.md`。正常22图与26条身份配置分别统计。暴风雨CRC2021322058、伏击CRC982376201、靶场CRC1689093357已有独立世界碰撞和原生短局。伏击实际使用本图捕获的`compass_map_mp_convoy`非默认1024贴图，仍要求本图SHA、CRC及角点证明；名称别名不豁免资源检查。废弃都市CRC255035120、滨海镇CRC4259817884已完成原生短局；前者使用13／10个本图碰撞有效原始出生点，依据见`CAPTURED_MAP_STARTS.md`。潜艇基地CRC3503358511已完成原生小地图请求和短局验收。证据为`room-storm-admission.json`、`room-sixteen-map-admission.json`、`eighteen-map-admission.json`及`nineteen-map-admission.json`。
+批量配置与自动准备／验收见`FAST_MAP_ACCEPTANCE.md`。已准备23张TDM图与26条身份分别统计，竞技场4人TDM仅作诊断、PVE目标暂缓。暴风雨CRC2021322058、伏击CRC982376201、靶场CRC1689093357已有独立世界碰撞和原生短局。伏击实际使用本图捕获的`compass_map_mp_convoy`非默认1024贴图，仍要求本图SHA、CRC及角点证明；名称别名不豁免资源检查。废弃都市CRC255035120、滨海镇CRC4259817884已完成原生短局；前者使用13／10个本图碰撞有效原始出生点，依据见`CAPTURED_MAP_STARTS.md`。潜艇基地CRC3503358511已完成原生小地图请求和短局验收。证据为`room-storm-admission.json`、`room-sixteen-map-admission.json`、`eighteen-map-admission.json`及`nineteen-map-admission.json`。
 
 高楼和潜艇基地的受限初始化请求均读到本图1024×1024、非默认小地图材质，详见`RESOURCE_COMPASS_REQUESTS.md`。高楼已接169块原生玻璃破碎及有界单向落差路径，60秒后台交战／重生与原生短局均通过，见`HIGHRISE_TRAVERSAL.md`及`highrise-map-admission/admission.json`；原生AI翻越、跳上和梯子动作仍待实现。潜艇基地已通过。两个黑房的当前原生箭头循环尚未选到，继续核对入口／过滤条件；竞技场容量需独立核对；三张未观察到路径的地图继续资源盘点。其余6图及已准备图的完整观感和长期稳定性继续分别验收。路径观察不能替代本图初始化和依赖验证。
 

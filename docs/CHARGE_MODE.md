@@ -4,17 +4,17 @@
 
 默认 `research-output/native-tdm-map-catalog.json` 含23份战术准备及9份冲锋准备。原生入口为“玩 → 多人竞技 → 创建房间 → 冲锋团队竞技”，用地图预览箭头选已准备地图，再点准备，11名 Bot 加入组成12人房间。初选地图受原生保留状态影响，服务端不改本版开启标志。
 
-核弹小镇准备为 `research-output/charge-mode-20261015/mp_nuked-ready-state.json`，正常7500分／600000ms。资源来自实际进入 `cha/mp_nuked` 的只读捕获：NCS初始化完成，实际CRC为1765105316；碰撞、武器、角色、服饰及真实小地图材质均核对本图身份。初始化探测元数据不参与正常游玩，也不作为资源准备证明。
+核弹小镇准备为 `mp_nuked-ready-state.json`，正常7500分／600000ms。资源来自实际进入 `cha/mp_nuked` 的只读捕获：NCS初始化完成，实际CRC为1765105316；碰撞、武器、角色、服饰及真实小地图材质均核对本图身份。初始化探测元数据不参与正常游玩，也不作为资源准备证明。
 
 本图提供9／9个冲锋开局点，站立碰撞筛选后的基地复活池保留8／9个点。开局和15秒宽限使用本队开局阵型，之后从本队 `mp_cha_spawn_axis`／`mp_cha_spawn_allies` 池复活；不借用战术共享点，不因敌人推进改到对方基地。5秒冻结准备与背包窗口见[团队竞技流程](MATCH_FLOW_AND_SPAWNS.md)。
 
 语音按本图NCS及实际 voice-assets 捕获准备，模式介绍绑定 `uk_1mc_charge`／`ab_1mc_charge`；4个场景物件按 props-assets、实体及注册槽位准备。完整声音与物件效果体验独立验收。
 
-`native-acceptance.json` 的原生短局确认12名角色及动画树、非默认小地图、同一条命移动146.19单位、实际交战与12行结算。AAR地图ID9、模式ID15，比分1000:700；该局复用了上一局返回的冲锋房间，结算后原生箭头往返通过。`replay/1792021326049345000.json` 另采到58帧准备冻结位，冻结期间位置范围为0。完整倒计时观感、冻结换包及冲锋语音听感见 `REVIEW_PENDING.md`。
+`native-acceptance.json` 的原生短局确认12名角色及动画树、非默认小地图、同一条命移动146.19单位、实际交战与12行结算。AAR地图ID9、模式ID15，比分1000:700；该局复用了上一局返回的冲锋房间，结算后原生箭头往返通过。原生状态采样另确认58帧准备冻结位，冻结期间位置范围为0。完整倒计时观感、冻结换包及冲锋语音听感见 `REVIEW_PENDING.md`。
 
 `normal-native-acceptance.json` 另确认正常配置、最终语音／物件准备下同生命移动101.41单位、弹匣30→28及换弹恢复30，原生快照含4个物件，实际音频通道观察到 `ab_spawn_music`。原生冻结房间分配的玩家对局阵营为1；第二条命首次观察位于 `[1392,1080,-58.95]`，与本队固定基地点水平位置相同，距开局阵型最近点251.85单位，采样时已超过15秒宽限。后续连续帧在移动之后取得，不能当成精确出生瞬间。
 
-完整32份目录（23份战术、9份冲锋）的后台加载及60秒模拟全部通过，加载6323ms，见 `remaining-mixed-server-acceptance.json`；9份冲锋的独立后台检查亦通过。完整目录使用当前工作区源码快照，指纹见 `remaining-worktree-source-provenance.json`。导航在条目首次创建对局时生成并缓存，见 `BACKEND_STARTUP.md`；正常入口等待地图就绪的上限为240秒。地图工具65项Python检查、小地图模块5项Rust回归、独立参考源fmt／Clippy／发布构建及当前工作区编译通过。既有全量Rust报告的 `observe::enforces_byte_budget_and_idle_timeout` 失败尚无修复验收，本轮Rust回归范围为小地图模块。正常账号20份文件摘要不变；21个自有诊断实验均结束，其中1个在应用CA前启动失败，其余20个均已恢复临时CA，见 `remaining-owned-cleanup.json` 和 `remaining-normal-service-integrity.json`。
+完整32份目录（23份战术、9份冲锋）有后台加载及逐图60秒模拟验证，9份冲锋亦单独检查。导航在条目首次创建对局时生成并缓存，见[启动边界](BACKEND_STARTUP.md)。原生短局验证12人模型、同命移动、模式15结算与返回；完整声音／画面与长期运行另做专项复核，诊断配置不覆盖正常账号和准备。
 
 扩图使用 `prepare_tdm_map.py --mode cha` 和本模式实际初始化捕获，再执行 `prepare-map-starts`、语音／物件绑定、`verify-maps` 及独立原生短局。缺少冲锋 `_start` 时只使用同队真实冲锋基地点；没有冲锋点池则拒绝准备。采集参数为 `--resource-capture-map MAP --resource-capture-mode cha`，默认仍为 `war`。混合诊断目录可用 `verify_native_maps.py --mode cha` 选择冲锋，短局准备不会覆盖同图战术文件。
 
@@ -24,9 +24,9 @@
 
 ```sh
 python3 tools/audit_charge_maps.py \
-  --capture-index research-output/charge-mode-20261015/extension-spawn-resource-audit.json \
+  --capture-index CAPTURE_INDEX_JSON \
   --catalog research-output/native-tdm-map-catalog.json \
-  --output research-output/charge-mode-20261015/charge-spawn-coverage.json
+  --output NEW_OUTPUT_JSON
 ```
 
 正常冲锋地图及原生证据：

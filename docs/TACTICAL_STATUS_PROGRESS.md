@@ -4,7 +4,7 @@
 
 ## 原生资源与传输
 
-`fixtures/protocol/tactical-status-3.3.3.3.json`由安全屋只读`tactical-assets-1791721644930.json`派生。NCS category7有8个继承名字，闪光`flashbang_mp`为index5，震撼`concussion_grenade_mp`为index1。Named shock参数数组16项、stride0x268，实际原文为`shock/NAME.shock`；直接使用本版继承绑定，不向gamestate重复广播这些已类型化名字。
+`fixtures/protocol/tactical-status-3.3.3.3.json`由安全屋只读只读资源采集派生。NCS category7有8个继承名字，闪光`flashbang_mp`为index5，震撼`concussion_grenade_mp`为index1。Named shock参数数组16项、stride0x268，实际原文为`shock/NAME.shock`；直接使用本版继承绑定，不向gamestate重复广播这些已类型化名字。
 
 闪光原生screen_type1，白屏／截图衰减常数3500／1000ms；震撼screen_type0、look_control与movement启用、75度每秒的俯仰／水平限制及0.1鼠标敏感度。实际参数和原文哈希保留在fixture，不能把视觉衰减常数当成命中状态的生产持续时间。
 
@@ -22,7 +22,7 @@ Bot闪光期间不获取／使用当前可见目标，保留最后已知位置�
 
 ## 验证
 
-`tactical-final-check.log`：397项Rust、52项Python、fmt／Clippy通过。覆盖独立PS表解码、hint2边界／清零、Named取消、事件复用清除烟雾flags、回放重基、抗性／朝向／世界遮挡、队友过滤、死亡重置及Bot实际移动／转向与恢复。`prepare_tactical.py`从实际捕获重新派生的结构与fixture一致。
+`tactical-final-check.log`：Rust／Python及fmt／Clippy通过。覆盖独立PS表解码、hint2边界／清零、Named取消、事件复用清除烟雾flags、回放重基、抗性／朝向／世界遮挡、队友过滤、死亡重置及Bot实际移动／转向与恢复。`prepare_tactical.py`从实际捕获重新派生的结构与fixture一致。
 
 `tactical-flash-no-mask-proof.json`和`tactical-flash-mask-proof.json`分别记录隔离账号两组400帧近距离Q投出。无面具原生index5／duration3824ms，106帧状态、209帧Named取消；带面具385ms，12帧状态、301帧取消。两者客户端CG缓存均读到对应参数指针／begin／duration，投掷物1→0，玩家99／100生命；无面具47帧读到真实`viewmodel_m84`，世界`explosions/flashbang`亦生成。两组几何／朝向并非逐位相同，倍率按服务端日志与状态参数确认，不把时间比值单独当作官方公式证明。
 

@@ -31,7 +31,7 @@
 
 `uk_m1_`、`uk_m2_`、`uk_f1_`、`uk_f2_`、`ab_m1_`、`ab_m2_`、`ab_f1_`、`ab_f2_` 各有 52 个名字，共 416 个角色声音名字。`uk_1mc_`／`ab_1mc_` 为指挥官播报；`rb_1mc_`、`za_` 等其它模式声音保留于完整清单。
 
-以下例子来自阿富汗已初始化捕获 `client-1791342759140/net-constants-1791342878732.json`，NCS CRC 为 `0x1f3a0a82`，捕获 SHA-256 为 `d551f582aad7f759ce074a3a777d71cc71bf72cf3bb84a12ff95aae53164b20f`。其它地图按各自目录查找。
+以下例子来自阿富汗已初始化捕获 原生状态采样，NCS CRC 为 `0x1f3a0a82`，捕获 SHA-256 为 `d551f582aad7f759ce074a3a777d71cc71bf72cf3bb84a12ff95aae53164b20f`。其它地图按各自目录查找。
 
 | 候选事件 | TF／UK alias 与 selector | SC／AB alias 与 selector |
 | --- | --- | --- |
@@ -64,16 +64,16 @@ AlphaBuild `_music_and_dialog.gsc` 认为旧客户端缺少模式播报；本版
 
 `0x4555c0` 在非 `zm` 模式注册 `<prefix>mp_sprint` 到 VA `0x01a1f7f4`，并注册普通或带 `_f` 的狙击吸气、呼气、喘气到 `0x01a1bdfc`／`0x01a1be00`／`0x01a1be04`。prefix 初始化这些自动声音，不会自动产生换弹、投掷和击杀喊话；本地疾跑／呼吸不应另排服务器声音。
 
-本版实际 `mp/factiontable.csv` 的第7列确认taskforce_141→UK_、shadow_company→AB_；无需再以Alpha表为唯一依据。角色包到编号1／2的官方完整映射仍待恢复。配置 `voice_variant` 明确选择共享的1或2，默认1，不声称已恢复官方逐角色编号。`game_appearance` 已恢复包的 gender／原生 faction；接口让调用方明确提供 variant，不根据模型名字猜编号。Axis／Allies、房间阵营和角色原生 faction 的枚举不同，复用已有房间／外观转换。
+本版实际 `mp/factiontable.csv` 的第7列确认taskforce_141→UK_、shadow_company→AB_；无需再以Alpha表为唯一依据。角色包到编号1／2的官方完整映射仍待恢复。配置 `voice_variant` 明确选择共享的1或2，默认1，不声称已恢复官方逐角色编号。`content/characters` 已恢复包的 gender／原生 faction；接口让调用方明确提供 variant，不根据模型名字猜编号。Axis／Allies、房间阵营和角色原生 faction 的枚举不同，复用已有房间／外观转换。
 
 | 接入位置 | 事件来源与边界 |
 | --- | --- |
 | 玩家出生与换角色 | 按已提交的角色资料发本地 prefix；Bot 喊话按各自资料选 alias，不能反复设置本地 prefix 模拟 Bot |
-| `game_connection` 首个快照 ACK 与 HUD 规则就绪 | 已按连接／对局维护一次性状态；首个快照和HUD规则ACK后播放入场音乐与模式介绍，模式命令ACK后留出间隔再播开战指令；重复快照不重复介绍模式，结算取消尚未播出的开战指令 |
-| `game_player` 实际进入换弹状态 | 消费权威事件环的RELOAD_START_NOTIFY；按每位角色序号识别开始，持键、重传和逐发补弹不重复喊同一次开始 |
-| `game_grenade` 实际生成投掷物 | 投掷物实际launch成功后选语音，失败、准备阶段、死亡掉落和手中爆炸不喊投出；未知类型不猜其它语音 |
-| `game_combat`／`game_match` 伤害、死亡、击杀提交 | 已接玩家实际受伤和已提交死亡；击杀确认延迟750ms，按出生／死亡代数绑定原身体，死亡、重生、回放或结算取消；Bot非致命受伤喊话尚未接入 |
-| `game_match`／`advance_match_summary` | 最终回放结束后、前三名／结算展示前，按实际赢家播一次胜负或平局；领先变化和时间／分数提醒仅在候选目录中，尚未接触发 |
+| `transport/game/connection` 首个快照 ACK 与 HUD 规则就绪 | 已按连接／对局维护一次性状态；首个快照和HUD规则ACK后播放入场音乐与模式介绍，模式命令ACK后留出间隔再播开战指令；重复快照不重复介绍模式，结算取消尚未播出的开战指令 |
+| `game/player` 实际进入换弹状态 | 消费权威事件环的RELOAD_START_NOTIFY；按每位角色序号识别开始，持键、重传和逐发补弹不重复喊同一次开始 |
+| `game/weapons/grenade` 实际生成投掷物 | 投掷物实际launch成功后选语音，失败、准备阶段、死亡掉落和手中爆炸不喊投出；未知类型不猜其它语音 |
+| `game/combat`／`game/modes/tdm` 伤害、死亡、击杀提交 | 已接玩家实际受伤和已提交死亡；击杀确认延迟750ms，按出生／死亡代数绑定原身体，死亡、重生、回放或结算取消；Bot非致命受伤喊话尚未接入 |
+| `game/modes/tdm`／`advance_match_summary` | 最终回放结束后、前三名／结算展示前，按实际赢家播一次胜负或平局；领先变化和时间／分数提醒仅在候选目录中，尚未接触发 |
 
 指挥官和音乐可对指定听众使用 `p`。角色喊话若保留位置，应走 EV3／源实体，并由服务器过滤听众。参考 `_battlechatter_mp.gsc` 使用同队、排除发声者、附近同时只一人说话、约 2 秒占用和 1000 单位范围；当前对换弹／投掷／击杀喊话采用该参考节流策略，尚未确认为本版官方规则。受伤音按角色和生命代数单独节流2000ms，受伤／死亡不占用队伍喊话的间隔；自伤后紧接闪光投掷已实采两种声音均播放。默认排除发声者自身，可用 `hear_self_chatter` 在独立验听准备中包含自己。回放期间仍推进角色事件游标，退出回放不补喊旧换弹；延迟喊话同时检查实际生命代数，漏掉死亡帧也不会落到新身体。资源采集模式不产生新语音。
 
@@ -82,9 +82,9 @@ AlphaBuild `_music_and_dialog.gsc` 认为旧客户端缺少模式播报；本版
 [ClientVoice.cs](../tools/ClientVoice.cs) 通过当前 asset hash 的 type11 收集 alias 头、变体数量和未解码字段候选，读取相关 GSC／CSV 与自动声音句柄。仅使用已有 `VM_READ` 权限，无游戏函数调用或内存写入。
 
 ```sh
-python3 tools/client_state.py --build --prefix-name wine10-loadout-build-20261007
-python3 tools/client_state.py --experiment research-output/gamehub/实际实验/experiment.json --voice-assets
-python3 tools/client_state.py --experiment research-output/gamehub/实际实验/experiment.json --net-constants
+python3 tools/client_state.py --build --prefix-name PROBE_PREFIX
+python3 tools/client_state.py --experiment EXPERIMENT_JSON --voice-assets
+python3 tools/client_state.py --experiment EXPERIMENT_JSON --net-constants
 ```
 
 编译使用独立prefix。当前资源文件能正常读取，`ff_init_common_gfx_V43.ifs`的SHA-256为`a4bac3f12ef090773ee5fc5017e5f88dae600f2d81005e0f67257c02b78ff667`。原生验收只修改诊断账号副本的角色／投掷物和短局时限，普通账号资料未作诊断写入；各已结束诊断核对了证书恢复。
@@ -95,11 +95,11 @@ macOS音频通过ScreenCaptureKit仅捕获指定游戏进程，没有使用麦�
 
 | 实际实验 | 已核对内容 |
 | --- | --- |
-| `client-1791887222484`／安全屋 | UK入场音乐和开战指令；UK_M1换弹，Bot女声击杀喊话；用户确认开场／换弹声音正常 |
-| `client-1791887684896`／安全屋 | 角色649使用AB_F1前缀，三种狙击呼吸资源均带_f；女声换弹与Bot死亡喊话；本版factiontable实读 |
-| `client-1791888891468`／坠机之地 | AB模式介绍→开战指令；女声手雷与换弹；最终回放→前三名→胜局结算，胜利音乐与mission_success各一个handle |
-| `client-1791889211040`／坠机之地 | 女声手雷、闪光、换弹和实际受伤；源实体0的selector882／881／890／905均出现原生声音事件；闪光投出不被受伤音节流；胜局回放／结算再次完整通过 |
-| `client-1791889650864`／坠机快速入口 | UK_F1前缀和女性呼吸资源；TF女声手雷／换弹；TF胜利音乐与mission_success，AAR玩家及赢家均为team2 |
+| 安全屋 | UK入场音乐和开战指令；UK_M1换弹，Bot女声击杀喊话；用户确认开场／换弹声音正常 |
+| 安全屋 | 角色649使用AB_F1前缀，三种狙击呼吸资源均带_f；女声换弹与Bot死亡喊话；本版factiontable实读 |
+| 坠机之地 | AB模式介绍→开战指令；女声手雷与换弹；最终回放→前三名→胜局结算，胜利音乐与mission_success各一个handle |
+| 坠机之地 | 女声手雷、闪光、换弹和实际受伤；源实体0的selector882／881／890／905均出现原生声音事件；闪光投出不被受伤音节流；胜局回放／结算再次完整通过 |
+| 坠机快速入口 | UK_F1前缀和女性呼吸资源；TF女声手雷／换弹；TF胜利音乐与mission_success，AAR玩家及赢家均为team2 |
 
 角色声音选到的真实文件目录包含`voiceovers/codo_mp/sc/f1`，不是仅根据alias名字推测性别。声音事件eType25的latch经历0→1，同一事件跨多个快照保留同一身份；模式／开战／胜利在各自阶段分别只有一个播放handle。当前声卡输出录音约114..117秒，能量非零且峰值小于1，没有量化削波；用户确认模式介绍与开战指令两段都完整播放，开场／换弹声音正常；具体音量偏好仍可按设置调整。
 
@@ -107,7 +107,7 @@ macOS音频通过ScreenCaptureKit仅捕获指定游戏进程，没有使用麦�
 
 ```sh
 python3 tools/prepare_voice.py \
-  research-output/gamehub/client-1791342759140/net-constants-1791342878732.json \
+  NEW_OUTPUT_JSON \
   --game-state research-output/tdm-afghan-hud-state.json \
   --output research-output/voice-diagnostic/mp_afghan-voices.json \
   --state-output research-output/voice-diagnostic/mp_afghan-state.json

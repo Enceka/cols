@@ -8,7 +8,7 @@
 
 启动器启动两个自有进程：
 
-- `serve-auth`：使用 `--local-title-id`、`--service-data-dir`、`--lobby-bind`、`--stun-bind`、`--stun-alt`、`--game-bind`、`--game-state`、`--game-map-catalog`、`--native-bot-rooms`、`--continuous-play`。
+- `serve-auth`：使用 `--local-title-id`、`--service-data-dir`、`--lobby-bind`、`--stun-bind`、`--stun-alt`、`--game-bind`、`--game-state`、`--game-map-catalog`、`--native-bot-rooms` 或 `--room-bot-fill`、`--continuous-play`。
 - `observe --config`：单独监听 IIPS 资源请求，记录请求但不提供游戏资源。
 
 两个命令可传入 `--launcher-ready-file PATH`。不传时保留原命令行行为。启动器为每次会话选择新的外部目录，不复用旧记录。
@@ -32,7 +32,7 @@
 | `title_id` | 必须与临时 `dwauth.ini` 和账号目录选择一致 |
 | `auth`、`lobby`、`stun`、`stun_alt`、`game` | 实际绑定地址，须与本次配置一致；端口0时报告操作系统分配的实际端口 |
 | `game_state_loaded`、`map_catalog_loaded` | 地图准备和目录已成功加载 |
-| `native_bot_rooms`、`continuous_play` | 本地人机和连续游玩已配置 |
+| `native_bot_rooms`、`room_bot_fill`、`continuous_play` | 单真人兼容或指定补位人数，以及连续游玩配置 |
 
 `tcp_observer` 的 `listeners` 为名称到实际地址的对象；本地启动器要求只有 `resources`，地址与 IIPS 配置一致。
 
@@ -55,7 +55,7 @@
 
 启动器不自行实现这些业务RPC，不绕过新房间准入，不保存或制造网络会话凭据。正常账号路径和CLI入口沿用现有约定。房间Bot外观来自当前地图的 `match_config.roster[*].room_loadouts`；旧准备缺少该字段时加载仍可成功，但没有对应房间装配，需按[房间Bot角色展示](ROOM_BOT_AVATARS.md)准备。
 
-目录拆分不等于已经实现真人共享对局。房间浏览和成员消息、模拟Bot展示与真人共享世界是不同能力；当前单局限制见[模块结构](SERVER_MODULARIZATION_PLAN.md)。成长和聊天的可用范围以相应业务文档与验收为准，不由启动器声明启用。
+共享世界已实现并有核心双端验收，见[多人](MULTICLIENT_ACCEPTANCE.md)。启动器各会话仍管理自己的本地后端；正式连接共享服务器的交互入口尚需单独实现。房间消息、Bot展示和共享玩法的验收范围分别记录。成长和聊天的可用范围以相应业务文档与验收为准，不由启动器声明启用。
 
 ## 验证
 
@@ -69,4 +69,4 @@ python3 tools/check_architecture.py
 
 启动契约测试直接运行真实二进制，使用合成地图和临时证书，在关闭日志时核对实际地址及进程身份；错误地图目录不得产生成功记录。启动器回归覆盖不匹配PID、版本、端点及仅有日志时拒绝启动，并检查客户端配置未被修改。完整原生画面和操作仍需独立实机验证。
 
-本机macOS/Wine10样本已通过该就绪契约完成认证、大厅6772项库存、12人Bot房间及原生角色/武器装配、阿富汗地图进入、移动、射击、换弹和结算。会话结束恢复INI/CA，受检文件无差异，独立诊断期间正常账号资料摘要一致。该验证不覆盖Windows、公网联机、真人共享世界或全部新增业务。
+本机macOS/Wine10样本已通过该就绪契约完成认证、大厅6772项库存、12人Bot房间及原生角色/武器装配、阿富汗地图进入、移动、射击、换弹和结算。会话结束恢复INI/CA，受检文件无差异，独立诊断期间正常账号资料摘要一致。此处启动契约的本机验证不覆盖Windows、公网联机或全部业务；共享世界和远端Linux核心验收见[多人](MULTICLIENT_ACCEPTANCE.md)与[远端](REMOTE_LINUX_ACCEPTANCE.md)。

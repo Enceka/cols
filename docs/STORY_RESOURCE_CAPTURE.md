@@ -8,7 +8,7 @@
 
 `coop_training_mp_cargoship / coop`已通过真实首关入口完成：无`21/1`的随机security ID/key分配、`mmbook`、原生`mmstart`、随机P-224握手、认证DATA、challenge/connect、stats上传及gamestate资源初始化。初始化采集状态为9，没有发布出生或玩法快照。
 
-原生开局使用单人容量、难度0，最后的`2654`参数为空。`story_capture.rs`只为这个已捕获的空参数形式补校验，其它缺值、重复设置和不支持的命令继续拒绝。首关加载的底图资源名是`maps/mp/mp_cargoship.d3dbsp`；剧情标识与共享BSP标识必须分开保存，不能按TDM地图名过滤剧情实体。
+原生开局使用单人容量、难度0，最后的`2654`参数为空。`backend/rooms/admission/story_capture.rs`只为这个已捕获的空参数形式补校验，其它缺值、重复设置和不支持的命令继续拒绝。首关加载的底图资源名是`maps/mp/mp_cargoship.d3dbsp`；剧情标识与共享BSP标识必须分开保存，不能按TDM地图名过滤剧情实体。
 
 原生实测与独立复算一致：NCS CRC **2662333828**，公共dvar CRC **3451066449**，59个有效常量资产、3515条常量。63条捕获记录包含默认/不参与校验条目，不能把63当作CRC资产数。
 
@@ -22,7 +22,7 @@
 
 FX脚本包括共享货轮和首关的效果入口/createfx内容。**完整任务GSC、敌人/NPC行为、任务触发、检查点、胜败与通关提交仍未验证**。`animlist`与实体数据可以提供依赖线索，不能等同任务执行逻辑。客户端常量基线文件也不代表服务器已实现角色行为。
 
-完整捕获位于忽略目录`research-output/story-resources-20261014/cargo-initialized/`，`capture-summary.json`保存最小汇总，`verified-preparation/`保存复算后的准备文件。各捕获文件有内容哈希；原始脚本、资源、账号和握手材料不加入Git或发布。初始化前的等待记录保留在`result.json`；最终六项资源采集没有资源读取错误。此前仅传输采集的未初始化结果单独保留，不替代初始化证据。
+完整捕获位于本机忽略目录的`cargo-initialized/`，`capture-summary.json`保存最小汇总，`verified-preparation/`保存复算后的准备文件。各捕获文件有内容哈希；原始脚本、资源、账号和握手材料不加入Git或发布。初始化前的等待记录保留在`result.json`；最终六项资源采集没有资源读取错误。未初始化的传输结果不能替代资源初始化证据。
 
 ## 工具与入口
 
@@ -37,11 +37,11 @@ FX脚本包括共享货轮和首关的效果入口/createfx内容。**完整任�
 python3 tools/unlock_story.py --assets <只读schema捕获> \
   --service-data-dir <独立测试服务目录> --user-id <测试UID> --apply
 
-python3 tools/client_state.py --build --prefix-name wine10-probe-roster-20261010
+python3 tools/client_state.py --build --prefix-name PROBE_PREFIX
 python3 tools/capture_story.py --experiment <活动experiment.json> \
   --probe .tools/ReadClientState.exe --output <新采集目录>
 ```
 
-初始化采集的真实实验是`client-1791962675004`，会话已正常清理，连接配置和两处临时CA已恢复。只读源字段/脚本存在性、CRC复算、采集哈希和测试解锁的字节保留均已核对；独立工作树fmt/Clippy及完整Rust/Python检查通过。原生菜单、握手和资源初始化是本次实机范围，未执行完整剧情玩法。
+初始化采集的真实实验是，会话已正常清理，连接配置和两处临时CA已恢复。只读源字段/脚本存在性、CRC复算、采集哈希和测试解锁的字节保留均已核对；独立工作树fmt/Clippy及完整Rust/Python检查通过。原生菜单、握手和资源初始化是本次实机范围，未执行完整剧情玩法。
 
-本机启动还遇到公共资源`ff_init_common_gfx_V43.ifs`文件对象的系统`open()`阻塞。已保留此前目标，采用用户本机已有缓存的完整哈希一致内容创建新文件对象恢复启动，记录于`story-integration-preparation/resource-recovery.json`。没有修改EXE/DLL或资源字节，也没有由此推定文件系统根因。
+文件访问阻塞与配置／证书恢复见[客户端启动](CLIENT_STARTUP_RECOVERY.md)，不改变EXE／DLL或资源内容。

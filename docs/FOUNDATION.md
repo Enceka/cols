@@ -1,104 +1,81 @@
 # 工程基础与运行手册
 
-更新：2026-10-06。本文件保留工程基础说明；认证与传输见 [AUTH_LOBBY_PROGRESS.md](AUTH_LOBBY_PROGRESS.md)，最新文件服务与公共配置阻塞点见 [SERVICE_INITIALIZATION.md](SERVICE_INITIALIZATION.md)。玩家档案、背包和完整大厅界面仍未完成。
+目标为固定 3.3.3.3 客户端与纯 Rust 服务端。运行能力和验收范围见[功能状态](REFERENCE_ALIGNMENT.md)，完整文档入口见[索引](README.md)。所有命令从 `server/` 根目录运行。
 
-后续已完成公共档案真实重登、空目录与余额/附件初始化；当前接续请读 [ONBOARDING_PROGRESS.md](ONBOARDING_PROGRESS.md)。41 项 Rust、5 项 Python 测试通过；下文描述基础观测/存储阶段。
+## 工程与依赖
 
-**现有实现**
-
-| 路径 | 内容 |
+| 路径 | 职责 |
 | --- | --- |
-| `crates/protocol` | 配置、TLS/AUTH、票据、协议 210 握手与加密帧、UDP 发现、tagged 任务及回执 |
-| `crates/server` | 观察器、TLS/HTTP AUTH、票据绑定、大厅与 STUN、本地时间/文件服务、捕获与协作退出 |
-| `configs/local.toml` | 两个仅监听回环地址的研究端点；端口不代表官方值 |
-| `fixtures/client-3.3.3.3.json` | 9 个文件的固定指纹、7 个字符串锚点 |
-| `fixtures/resources-3.3.3.3.json` | 362 个本地 IIPS 文件的大小和 SHA-256，属于本地参考值 |
-| `tools/verify_client.py` | 样本哈希、版本清单、资源文件名/大小/文件头检查，可选全量资源哈希比较 |
-| `tools/analyze.py` | 启动器 CIL 解码、指定 RVA 的 x86 反汇编、可执行节中的绝对地址候选引用 |
-| `tools/check_capture.py` | 采集事件连续性、结束记录、字节数和内容哈希核验 |
-| `tools/check.sh` | 格式、Clippy、Rust 和 Python 测试的统一入口 |
-| `.github/workflows/check.yml` | macOS/Linux CI 定义；本轮只执行了本机验证，尚未运行远程 CI |
+| `crates/protocol/` | AUTH、协议 210、任务编码、游戏加密通道、gamestate、快照和输入编解码 |
+| `crates/server/src/` | 应用组合、业务、资源、玩法、传输、存储和管理面板 |
+| `configs/` | 观察服务 TOML 与公共配置模板 |
+| `fixtures/` | 固定客户端指纹、脱敏协议向量与必要资源元数据 |
+| `tools/` | 构建检查、资源准备、只读探针及原生客户端实验工具 |
+| `client-work/`、`research-output/` | 忽略的客户端副本、私有服务资料、采集及验证结果 |
 
-observe 命令记录原始 TCP 字节流。操作系统的一次 `read` 可能对应半个、一个或多个协议消息，`stream_chunk` 不代表游戏报文边界；该命令仍不回包。serve-auth 则已支持 Rust 进程内的 OpenSSL TLS/HTTP、100 Continue、本地票据、协议 210 及可选 STUN/业务服务。
-
---service-data-dir 启用时间、透明用户文件持久化和操作者提供的公共文件。未知任务明确失败，以保持客户端 FIFO；默认观察模式只回复首条注册任务。玩家/背包模型、SQLite 及完整大厅业务尚未实现。真实客户端当前因必需公共配置缺失退出。
-
-**构建与检查**
-
-固定 Rust 1.96.0，依赖解析记录在 Cargo.lock。此机器的 Homebrew `rustc 1.97.1` 因 LLVM 符号不匹配启动失败；已使用 rustup 安装独立的 1.96.0，并通过项目脚本显式设置 PATH、RUSTC 和 RUSTDOC。没有替换 Homebrew 安装或更改全局 Rust 默认值。
+Rust 固定为 1.96.0，依赖由 `Cargo.lock` 锁定。`tools/cargo.sh` 显式选择 rustup 的编译器，避免本机其它 Rust/LLVM 安装影响构建。需要 OpenSSL；静态分析工具依赖单独的 Python 环境。源码职责和依赖方向见[模块结构](SERVER_MODULARIZATION_PLAN.md)。
 
 ```sh
+rustup toolchain install 1.96.0 --profile minimal --component rustfmt,clippy
+python3 -m venv .venv
+.venv/bin/python -m pip install -r tools/requirements.txt
+mkdir -p research-output
+sh tools/cargo.sh build --locked --workspace --release
 sh tools/check.sh
-sh tools/cargo.sh build --locked --workspace
-sh tools/cargo.sh run --locked -p codol-server -- check-config
 ```
 
-当前通过 32 项 Rust、5 项 Python 测试，覆盖观察器、AUTH/TLS、票据独立向量、大厅认证与加密、UDP、任务 FIFO、文件持久化与身份隔离。socket 测试使用合成流量；真实客户端实验单独记录，不能由这些测试替代。
+`check.sh` 运行架构检查、fmt、严格 Clippy、Rust 测试与 Python 测试。普通测试不要求游戏资源；`ignored` 资源检查按专题提供本机资料后显式执行。测试通过只证明对应行为，不替代原生画面、听感或有效业务决策。
 
-另已对编译后的 CLI 做独立进程验证：启动两个临时 TCP 端口、发送合成二进制、确认没有应用层回包、发送 SIGINT、检查进程正常退出并核对完整采集；生成配置及拒绝覆盖已有文件也已验证。本地结果摘要位于 research-output/cli-smoke-result.json，临时监听器均已关闭。
+所有构建在本机完成；Linux 使用交叉编译，云主机只部署和联调。远端方法及边界见[Linux 验收](REMOTE_LINUX_ACCEPTANCE.md)。
 
-**样本及研究工具**
+## 游戏运行与数据
+
+[本地游玩](LOCAL_PLAY.md)提供已有环境的入口；[本地新玩家](LOCAL_PLAYER.md)说明独立账号模板和存档。[原生启动器接口](NATIVE_LAUNCHER.md)定义服务就绪契约。`serve-auth --help` 列出认证、大厅、STUN、游戏 UDP、地图目录和 Bot 配置；缺少本机资源时先按[地图准备](MAP_RESOURCE_PREPARATION.md)生成，不能借用其它地图 CRC。
+
+文档中的 `EXPERIMENT_JSON`、`ASSETS_JSON`、`CAPTURE_JSON`、`GAME_STATE_JSON`、`CATALOG_JSON` 等是实际输入文件的占位符；`GAME_PREFIX`、`PROBE_PREFIX` 分别替换为已准备的游戏环境和探针构建环境。探针编译在其目标 prefix 没有客户端运行时执行，采样则要求实验仍在运行。只读探针不调用游戏函数、不改写游戏内存，见[客户端诊断](ONBOARDING_PROGRESS.md)。
+
+## 观察与捕获
+
+```sh
+sh tools/cargo.sh run --locked -p codol-server -- check-config
+sh tools/cargo.sh run --locked -p codol-server -- observe --config configs/local.toml
+```
+
+观察器记录 TCP 字节流，不回游戏协议包。一次 `read` 可以包含半个或多个消息，`stream_chunk` 不是报文边界。配置相对路径以 TOML 所在目录解析；监听器必须全部绑定成功。Ctrl-C 刷新捕获并关闭会话。
+
+默认同时 16 个会话，单次最多 128 个会话，每会话最多 1 MiB／4096 次读取，空闲 10 秒、总时长 30 秒。这是观察器预算；正常游玩使用独立的持续运行模式。
+
+```text
+captures/run-<id>/
+  run.json
+  000001-endpoint_a.bin
+  000001-endpoint_a.jsonl
+```
+
+```sh
+python3 tools/check_capture.py CAPTURE_RUN_DIRECTORY
+```
+
+停止采集后核对连续性、结束事件、字节数和哈希；这些不能独自证明协议正确。`target_client_sha256` 标识预期样本，不证明对端程序身份。原始流量、票据、私钥及账号数据只保存在忽略目录。
+
+## 样本研究
 
 ```sh
 python3 tools/verify_client.py > research-output/client-verification.json
 python3 tools/verify_client.py --hash-resources > research-output/client-verification-full.json
 .venv/bin/python tools/analyze.py launcher > research-output/launcher-il.json
-.venv/bin/python tools/analyze.py native --rva 0x241efc --size 0x8c > research-output/dwauth-reader.json
-.venv/bin/python tools/analyze.py refs --va 0x3746910 > research-output/endpoint-b-refs.json
+.venv/bin/python tools/analyze.py native --rva 0x241efc --size 0x8c
+.venv/bin/python tools/analyze.py refs --va 0x3746910
 ```
 
-全量资源比较要读取约 10 GB 文件，得到的是“与本地参考样本一致”，不是官方完整性验证。当前尚未验证 IIPS 内部索引、缓存块或资源解压结果。安装器本身已计算哈希，但没有运行或解包验证。
+全量资源哈希需要读取约 10 GB，只证明与本地参考一致。IIPS 内部块、最终覆盖视图和依赖闭包须独立验证。反汇编需要正确指令边界；绝对地址字节匹配只是候选，必须核对指令和消费者。
 
-原生工具需要调用者提供正确的指令起始 RVA；输出中的 `instruction_boundary_verified=false` 提醒该工具不会自动证明函数边界。`refs` 是绝对 32 位字节模式搜索，可能误命中指令或数据，必须继续检查周围代码。每次分析前工具均核对目标样本哈希，阻止把旧地址用于其他版本。
-
-使用的第三方 Python 工具为 [dnfile](https://github.com/malwarefrank/dnfile)、[dncil](https://github.com/mandiant/dncil)、pefile 与 Capstone，版本固定于 tools/requirements.txt。完整 CIL/反汇编输出保存在本地 research-output，主要结论及重现命令保存在 docs。
-
-**运行观测服务**
+`bootstrap` 生成新的实验 `dwauth.ini`，不覆盖已有文件：
 
 ```sh
-sh tools/cargo.sh run --locked -p codol-server -- observe --config configs/local.toml
-```
-
-启动时检查全部监听地址；任一绑定失败就整体失败，不会只启动一半端点。配置中的 capture_dir 相对于 TOML 文件所在目录解释。监听地址必须是明确的 IP 和端口。研究用客户端副本可以连接这些地址，但收到的只有正常 TCP 行为，没有游戏认证响应。
-
-默认限制：全局同时 16 个会话，一次运行最多记录 128 个会话，每会话最多 1 MiB、4096 次读取，空闲 10 秒、总时长 30 秒。达到单会话限制会关闭该连接并记录原因；达到运行会话总数后停止接受新采集会话，使用 Ctrl-C 结束这次运行。并发超过限制时立即丢弃新接受的连接。每次运行创建新目录，已有数据不被覆盖。
-
-输出格式：
-
-```text
-captures/run-<unix_ms>-<pid>/
-  run.json                     版本、目标样本、配置与实际监听地址
-  000001-endpoint_a.bin         此连接的 client_to_server 连续字节
-  000001-endpoint_a.jsonl       开始、读取区间、结束及内容 SHA-256
-```
-
-`target_client_sha256` 仅标识实验预期样本，不证明连接对端的实际程序身份。对端地址、连接号及端点名用于区分会话。`peer_eof`、`shutdown`、`byte_limit`、`chunk_limit`、`idle_timeout`、`session_timeout`、`read_error` 是可能的结束原因。限额或退出造成的截断不能当成完整游戏消息。
-
-Ctrl-C 会让已有记录完成文件刷新和结束事件。磁盘错误会使运行失败；缺少结束事件的记录是未完成采集。这里的 flush 不提供断电时的磁盘持久性保证。校验一次已停止的运行：
-
-```sh
-python3 tools/check_capture.py captures/run-实际时间-实际进程号
-```
-
-采集核验只证明保存内容的连续性及哈希一致，不证明协议正确。进行中的记录通常尚无结束事件，应在停止运行后校验。
-
-**生成实验配置**
-
-```sh
-mkdir -p research-output
 sh tools/cargo.sh run --locked -p codol-server -- bootstrap \
-  --config configs/local.toml \
-  --host 127.0.0.1 \
-  --title-id-hex 0 \
-  --output research-output/dwauth.ini
+  --config configs/local.toml --host 127.0.0.1 \
+  --title-id-hex 3ea --output research-output/dwauth.ini
 ```
 
-这里的 `0` 是研究取值，不能据此期待认证成功。字段现已动态确认为 title_id，端点 B 已确认 HTTPS AUTH，端点 A 职责尚未确认。工具强制显式提供 title ID 并拒绝覆盖已有文件；旧选项 --context-hex 保留为别名，不会自动修改 CODOL 原件。
-
-只有在运行副本和端点配置就绪后，才将实验文件放入该副本。虚拟机中的 `127.0.0.1` 指向虚拟机自身；如果客户端在虚拟机而服务在 Mac 上，需配置实际可达的宿主机地址，并相应调整监听地址。
-
-**环境与下一步**
-
-已确认：Mac 为 arm64，Rust 原生构建及 Java 17/21/25 可用，静态工具在 .venv。用户随后准备好了 Parallels，Windows 状态已变为 running，当前用户来宾命令可用。本轮主要改用已有 GameHub 引擎 10，已运行客户端研究副本到 HTTPS AUTH；原启动器和 CrossProxy 没有在本轮执行。
-
-下一个实质目标：恢复目标版必需公共配置 configs_s.info 和 release playlist 的解密及内容解析，继续推进目录、玩家档案与背包；具体入口见 SERVICE_INITIALIZATION.md。
+本版 title ID 为 1002（`3ea`）。虚拟机内的 loopback 指向来宾自身，连接宿主机需提供实际可达地址。日常游戏优先使用启动器的配置备份、证书恢复和进程归属管理，不能直接覆盖原始客户端。

@@ -2,7 +2,7 @@
 
 纯 Rust 从本版档案读取当前角色／背包的三色技能，按真实 marketplace 身份校验所有权和颜色。`0x593040` 对正整数记录减一；武器和配件保持各自编码。空记录0／1清空技能，六个字段的实际偏移来自本版60项背包布局，额外通配技能的槽位规则尚未恢复。
 
-`fixtures/protocol/passive-skills-3.3.3.3.json` 由只读 `client-assets-1791705870450.json` 派生，包含25个可选技能及143行能力定义。技能行中的增量先合并，再加能力默认值并按表中上下限钳位。客户端能力按表的发布标志写入5个MSB优先位图和30个浮点参数；服务器专用能力另行保留，不能套用旧版128项限制。
+`fixtures/protocol/passive-skills-3.3.3.3.json` 由只读 只读资源采集 派生，包含25个可选技能及143行能力定义。技能行中的增量先合并，再加能力默认值并按表中上下限钳位。客户端能力按表的发布标志写入5个MSB优先位图和30个浮点参数；服务器专用能力另行保留，不能套用旧版128项限制。
 
 原生 clientState 字段2..6对应+0x88..0x98，数值字段7..15／55..75对应+0x9c..0x110；`0x525356`及`0x4e1a10`装入clientInfo，预测读取PS+0x4cc／+0x4e0。普通快照支持能力变更及清除，并使用已确认帧中实际能力作delta基线。PS字段123..125是96位LSB优先的技能编号位图，与160位MSB优先的能力位图分开。回放保留实际装备中的技能位图及参数，玩家的clientInfo能力不因观看Bot被覆盖。
 
@@ -10,27 +10,27 @@
 
 玩家落地伤害使用本版`0x417cf0`／`0x417e30`的冲击能量：128单位开始伤害、300单位达到100点，surface0x1000封顶10点、surface1免伤。伤害落地的减速计时最多2000ms，写PS+0x8／field52并保留PM flag0x80；普通落地及痛苦落地按本版145／146／147事件和表面编号打包。实际胶囊接地只生成一次落地，重复命令和已站稳状态不重复判伤。轻装的`modFallDamageScale=0`免除生命伤害，原生落地事件仍携带移动阶段的原始能量。
 
-坠落死亡只增加死亡数，不扣个人／队伍分，不产生个人击杀回放；尸体、正确MOD13／913坠落图标和重生沿用本局生命周期。自身手雷死亡扣个人100分、队伍分不变。计分区分及技能防御倍率来自参考多人脚本，不能称本版生产脚本已恢复。`client-1791760720671`在2737ms记录原始／实际100点致命坠落及独立环境死亡分支，原生EV147／3213、PM_DEAD8及第二条命100生命已有实采；个人／队伍分不变有记分板回归，未额外截图验收比分。轻装`client-1791760166936`确认13个命令稳定的存活落地样本、EV147／3213及技能bit3。Bot在坠落前已造成伤害，轻装落地后仍存活，之后Bot击杀不计作坠落死亡证据。见`landing-score-fixed-proof.json`、`landing-lightweight-proof.json`；本图只读碰撞生成了诊断高台路线，正常出生配置不被覆盖，正常账号19个文件一致。俯冲及完整落地镜头／声音仍需接入或复核。
+坠落死亡只增加死亡数，不扣个人／队伍分，不产生个人击杀回放；尸体、正确MOD13／913坠落图标和重生沿用本局生命周期。自身手雷死亡扣个人100分、队伍分不变。计分区分及技能防御倍率来自参考多人脚本，不能称本版生产脚本已恢复。在2737ms记录原始／实际100点致命坠落及独立环境死亡分支，原生EV147／3213、PM_DEAD8及第二条命100生命已有实采；个人／队伍分不变有记分板回归，未额外截图验收比分。轻装确认13个命令稳定的存活落地样本、EV147／3213及技能bit3。Bot在坠落前已造成伤害，轻装落地后仍存活，之后Bot击杀不计作坠落死亡证据。见`landing-score-fixed-proof.json`、`landing-lightweight-proof.json`；本图只读碰撞生成了诊断高台路线，正常出生配置不被覆盖，正常账号19个文件一致。俯冲及完整落地镜头／声音仍需接入或复核。
 
-TDM Bot也接入同一落地生命判伤及对应持有者的技能倍率；致命落地取消本帧开火、记录环境死亡、尸体并在3秒后重生，不奖励击杀分。分段物理移动的落地事件保留到该帧统一消费，重复帧不重复判伤；事件时间和非零冲刺／姿态时钟从内部物理时钟重基到权威时间。普通／轻装、死亡／重生及跨时钟边界有回归。`bot-landing-captured-proof.json`使用安全屋真实碰撞及已解析职业武器，确认Bot1在2700ms坠落、持枪355、死亡数1且个人／队伍分均0；这是定向服务器模拟，不是原生动画／声音验收。`bot-landing-final-check.log`确认431项Rust、52项Python及fmt／Clippy通过，真实碰撞验证另行通过。
+TDM Bot也接入同一落地生命判伤及对应持有者的技能倍率；致命落地取消本帧开火、记录环境死亡、尸体并在3秒后重生，不奖励击杀分。分段物理移动的落地事件保留到该帧统一消费，重复帧不重复判伤；事件时间和非零冲刺／姿态时钟从内部物理时钟重基到权威时间。普通／轻装、死亡／重生及跨时钟边界有回归。`bot-landing-captured-proof.json`使用安全屋真实碰撞及已解析职业武器，确认Bot1在2700ms坠落、持枪355、死亡数1且个人／队伍分均0；这是定向服务器模拟，不是原生动画／声音验收。`bot-landing-final-check.log`确认Rust／Python及fmt／Clippy通过，真实碰撞验证另行通过。
 
 冲刺体力及马拉松已接本版消费者：普通默认4秒，实际武器的WeaponDef+0x7d0缩放时长；`modSprintTime=-1`为无限，`modAlwaysSprint`和`modSprintForceRecoverTime`保留本版语义。服务端处理耗尽、恢复、释放按键及动作打断，并发布PS+0x23c..0x24c的五个字段；两项bool走hint2尾部，起止时间走-97绝对时钟，回放只重基非零时钟。脚步按实际冲刺状态选择，耗尽后不继续发送冲刺脚步。
 
-安全屋隔离实测普通冲刺持续4005ms后耗尽，体力字段4000、释放门槛及delay均为1；马拉松连续6269ms仍在冲刺、原生无限体力字段16383、技能bit8激活。全程无截图，正常账号19文件完全相同。证据见`research-output/sprint-live-proof.json`与`sprint-account-restoration-proof.json`；`native-sprint-final-check.log`确认417项Rust、52项Python及fmt／Clippy通过。
+安全屋隔离实测普通冲刺持续4005ms后耗尽，体力字段4000、释放门槛及delay均为1；马拉松连续6269ms仍在冲刺、原生无限体力字段16383、技能bit8激活。全程无截图，正常账号19文件完全相同。证据见`research-output/sprint-live-proof.json`与`sprint-account-restoration-proof.json`；`native-sprint-final-check.log`确认Rust／Python及fmt／Clippy通过。
 
 第一人称冲刺按本版`0x4283c0`／`0x428440`／`0x428490`发布state23／24／25与animation25／26／27。收枪／抬枪时长分别来自WeaponDef+0x76c／+0x774，循环为零计时；敏捷／运动员的`modWeaponRecoveryTimeScale`聚合为1.5，原生抬枪时长除以该值并截断，500ms→333ms。输入先推进移动，再执行武器状态机，近战接近仍在动作开始后的下一条命令移动。切枪保留每把枪的冲刺计时，抬枪期间不会提前扣弹。
 
-正常账号安全屋`client-1791739197058`的400帧只读采样中，命令稳定且玩家存活的state23／24／25分别有9／25／6帧，均读到对应原生animation和完整组合枪模型，见`sprint-weapon-live-proof.json`；没有额外截图，不声称完整手部／枪械姿态已视觉验收。`native-sprint-weapon-check.log`确认419项Rust、52项Python及fmt／Clippy通过。蹲伏起跑的原生站立净空转换与特殊模式门槛仍需恢复。
+正常账号安全屋的400帧只读采样中，命令稳定且玩家存活的state23／24／25分别有9／25／6帧，均读到对应原生animation和完整组合枪模型，见`sprint-weapon-live-proof.json`；没有额外截图，不声称完整手部／枪械姿态已视觉验收。`native-sprint-weapon-check.log`确认Rust／Python及fmt／Clippy通过。蹲伏起跑的原生站立净空转换与特殊模式门槛仍需恢复。
 
-`passive-skills-check.log`：365项Rust、52项Python及fmt／Clippy通过。回归覆盖非连续背包偏移、减一编码、所有权／颜色校验、共同能力合并、开镜和切枪实际时钟、重复命令、原生字段解码以及移除能力后的delta清零。
+`passive-skills-check.log`：Rust／Python及fmt／Clippy通过。回归覆盖非连续背包偏移、减一编码、所有权／颜色校验、共同能力合并、开镜和切枪实际时钟、重复命令、原生字段解码以及移除能力后的delta清零。
 
 原生技能显示消费者 `0x508d59`／`0x508da2`读取PS+0x4c0..0x4c8的96个技能位。当前盲眼／拾荒者／战术面具对应技能位图`0x204,0x04000000,0`，能力位图为`0x20000800,0,0,0,0`；两组使用不同位序。技能位图在首次HUD规则ACK后发布，能力不延迟。保留gamestate原生3059=1，避免新技能通知时间触发中央获得技能演出；`0x609bf0`在缓存时间为0时直接绘制静态旁栏图标。
 
-旁栏的HUD operator239读取PS+0x4bc，并回退`cl_isHostAsSpectator`。该bool是字段122／codec-57／hint2，按原生尾部独立编码。技能发布后在存活期间持续显示，死亡、回放、前三名和结算隐藏，重生恢复显示。安全屋隔离实验`client-1791760393744`确认第二条命的技能位图`0x204,0x04000000,0`、缓存9／2／58及显示位1；复活后等待超过5.2秒的一张截图仍显示枪械旁三枚静态图标，没有中央获得技能通知。证据见`research-output/persistent-perk-respawn-proof.json`。`passive-respawn-loadout-check.log`确认429项Rust、52项Python及fmt／Clippy通过。
+旁栏的HUD operator239读取PS+0x4bc，并回退`cl_isHostAsSpectator`。该bool是字段122／codec-57／hint2，按原生尾部独立编码。技能发布后在存活期间持续显示，死亡、回放、前三名和结算隐藏，重生恢复显示。安全屋隔离实验确认第二条命的技能位图`0x204,0x04000000,0`、缓存9／2／58及显示位1；复活后等待超过5.2秒的一张截图仍显示枪械旁三枚静态图标，没有中央获得技能通知。证据见`research-output/persistent-perk-respawn-proof.json`。`passive-respawn-loadout-check.log`确认Rust／Python及fmt／Clippy通过。
 
 右上角持续“…”是原生`exp_bar`的等待动画，HUD operator263读取byte0x0318b16b。后端在真实档案加载、gamestate完成、首次快照及HUD规则ACK后，通过经过认证的游戏DATA连接发送固定通知`serverWillWriteProfile`。原生连接外通知入口`0x4671b0`经`0x466790`／`0x62d340`调用已注册的type1处理器`0x5fa580`，切换档案持久化归属并使经验HUD就绪；通知不走按首字符分派的svc_serverCommand，也不直接写客户端标志或调用原生函数。
 
-正常账号安全屋`client-1791740234895`确认就绪位0→1，截图同时显示原生70级经验条、没有循环点号，以及枪械旁三枚技能图标。证据见`profile-ready-live-proof.json`；真实账号／库存／钱包一致，只有客户端自然上传的设置文件变化，见`profile-ready-account-proof.json`。`profile-ready-check.log`确认420项Rust、52项Python及fmt／Clippy通过。该通知完成显示就绪，不增加经验；对局经验奖励、等级进度结算及更新协议仍需实现。
+正常账号安全屋确认就绪位0→1，截图同时显示原生70级经验条、没有循环点号，以及枪械旁三枚技能图标。证据见`profile-ready-live-proof.json`；真实账号／库存／钱包一致，只有客户端自然上传的设置文件变化，见`profile-ready-account-proof.json`。`profile-ready-check.log`确认Rust／Python及fmt／Clippy通过。该通知完成显示就绪，不增加经验；对局经验奖励、等级进度结算及更新协议仍需实现。
 
 战术面具的闪光／震撼倍率已按参考脚本接入，实际聚合0.1来自本版表；原生字段、Shader和控制预设来自本版捕获，官方生产公式尚未恢复。闪光的无面具3824ms／面具385ms及真实CG缓存、Named清除已有隔离实采；见 `TACTICAL_STATUS_PROGRESS.md`。
 

@@ -8,6 +8,6 @@
 
 `highrise-glass-acceptance/server-drops-60.json`记录60秒模拟的11个Bot移动、14块玻璃破碎、5次击杀、4次重生及前三名地面场景生成。`highrise-native-acceptance-retry/native.json`的原生短局162.22秒确认12名角色／动画树、真实小地图、同生命周期移动142.52单位和12行结算；AAR200:300、Allies获胜与服务端一致，结算后成功验证原生箭头往返且保留房间。自动流程0截图，完整观感仍需专项复核。
 
-真实实体另含124对`node_negotiation_begin`／`node_negotiation_end`，`highrise-traversal-resource-evidence.json`保留原始实体SHA及配对：35条`jumpdown_40`、31条`mantle_on_40`、24条`jumpdown_96`、19条`jump_up_80`，以及其它跳上／翻越和一条梯子连接。`highrise-traversal-physics.json`记录553次隔离候选运动，不改正常对局；它不代表已接入全部原生AI动作。这是此前未主动跳跃时的研究边界。2026-10-13已接物理验证的普通跳跃、助跑和路线变化，详见[BOT_NAVIGATION_PROGRESS.md](BOT_NAVIGATION_PROGRESS.md)；普通跳跃不等同于原生翻越、80单位跳上或梯子动作，专用动作动画仍待接入。
+真实实体另含124对`node_negotiation_begin`／`node_negotiation_end`，`highrise-traversal-resource-evidence.json`保留原始实体SHA及配对：35条`jumpdown_40`、31条`mantle_on_40`、24条`jumpdown_96`、19条`jump_up_80`，以及其它跳上／翻越和一条梯子连接。`highrise-traversal-physics.json`记录553次隔离候选运动，不改正常对局；它不代表已接入全部原生AI动作。已接物理验证的普通跳跃、助跑和路线变化，详见[BOT_NAVIGATION_PROGRESS.md](BOT_NAVIGATION_PROGRESS.md)；普通跳跃不等同于原生翻越、80单位跳上或梯子动作，专用动作动画仍待接入。
 
 正常会话已恢复，6772库存与原始资源保留。20图后台批量均通过；地图完整视觉／听感和长时间稳定性另行复核，不能把本图通过写为26图全部通过。

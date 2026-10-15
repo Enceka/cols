@@ -30,8 +30,8 @@ clientState字段30／37为rank／prestige，39／40／41／42为icon／title／
 
 - `top-players-three-map-geometry.log`：三图独立碰撞中的落地和可见站位、完整人物与名片快照预算；不等于逐图视觉验收。
 - `top-players-scene-live-proof.json`／`top-players-repeat-proof.json`：真实前三名和玩家70级名片、固定镜头、观战名片隐藏、两局刷新与结算返回。
-- `podium-twelve-player-live-proof.json`：`client-1791703252178` 三个原生DObj、正确donor4／6／9、站立节点395及脚底位置；`ui-1791703564613.png`确认三人持枪站立，`ui-1791703917748.png`确认完整6v6败局结算、玩家仅一行。AAR和原生界面缓存均为12人，展示→比分→返回完整通过。
-- `pose-tree-final-check.log`：361 Rust／52 Python、fmt/Clippy通过；回归覆盖原始12人保留、三名donor／站立姿态、8种位池对齐下的显式姿态编码，以及三图529字节展示快照预算。
+- `podium-twelve-player-live-proof.json`： 三个原生DObj、正确donor4／6／9、站立节点395及脚底位置；原生画面证据确认三人持枪站立，原生画面证据确认完整6v6败局结算、玩家仅一行。AAR和原生界面缓存均为12人，展示→比分→返回完整通过。
+- `pose-tree-final-check.log`：Rust／Python及fmt／Clippy通过；回归覆盖原始12人保留、三名donor／站立姿态、8种位池对齐下的显式姿态编码，以及三图529字节展示快照预算。
 
 四图真实准备的地面排名场景均通过`fast-four-map-podium-proof.json`；Bog→坠机同一客户端两局的最终回放、排名打开／ACK／关闭与AAR见`quick-native-podium-two-map-proof.json`及对应实验日志。合成回归覆盖武器专用体内仍可站立的场景，不能用射击起点在阻挡体内替代人物通路判断。
 

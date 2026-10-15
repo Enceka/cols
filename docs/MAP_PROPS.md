@@ -16,4 +16,4 @@
 
 阿富汗的原生验收通过Rust启动器完成：11个真实物件创建了原生DObj；正常射击触发油桶点燃、火焰、爆炸与消失，附近两个油桶连锁爆炸并造成一次真实玩家死亡。车辆正常扣血至零，客户端模型192切为191，实际画面保留损毁车体，爆炸使玩家生命降至4。原生FX环确认油桶和车辆特效，声音听感尚未逐项验收。其余13图资源绑定与23图后台运动／伤害／重生验证通过，不扩大为逐物件原生验收。
 
-源码与合成回归可提交；完整捕获、物件表、模型边界、配置、声音样本及截图均在忽略目录 `research-output/props-native-20261014/`。`barrel-result.json`、`vehicle-result.json`、`map-coverage.json`与 `maps-with-props-60s.json`保留对应证据。
+源码与合成回归可提交；完整捕获、物件表、模型边界、配置、声音样本及截图均在忽略目录 原生状态采样。`barrel-result.json`、`vehicle-result.json`、`map-coverage.json`与 `maps-with-props-60s.json`保留对应证据。

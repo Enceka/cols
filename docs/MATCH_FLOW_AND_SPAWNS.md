@@ -47,4 +47,4 @@ python3 tools/prepare_match_flow.py \
 
 代码验证覆盖准备期限、正式时限、冻结输入／弹药／换枪、资源 ACK 后即刻配装、未交战宽限／受伤／射击关闭窗口、两阵营动态换点、死亡敌人排除、朝向配对及冲锋不换基地。原生只读模式资源与协议布局证据、后台地图模拟与实际新流程的视觉／听感验收分别记录；新倒计时、解冻、宽限换包和动态复活体验见 `REVIEW_PENDING.md`。
 
-`research-output/match-flow-verified-20261015/evidence.json`及各图出生筛选报告记录23份准备、501个保留共享点（包含竞技场4人诊断准备，不代表PVE验收）。正常准备已绑定这些点和5000／15000ms配置，7500分／600000ms保持不变；原文备份和SHA核对见同目录`normal-integration.json`。`match-flow-map-simulation-final-20261015.json`的23份60秒后台模拟全部通过，合计245名Bot达到移动门槛、449次击杀和418次复活；这是后台功能证据。完整架构／fmt／Clippy／Rust／Python检查见`match-flow-final-check.log`，优化构建见`match-flow-release.log`。
+`evidence.json`及各图出生筛选报告记录23份准备、501个保留共享点（包含竞技场4人诊断准备，不代表PVE验收）。正常准备已绑定这些点和5000／15000ms配置，7500分／600000ms保持不变；原文备份和SHA核对见同目录`normal-integration.json`。原生状态采样的23份60秒后台模拟全部通过，合计245名Bot达到移动门槛、449次击杀和418次复活；这是后台功能证据。完整架构／fmt／Clippy／Rust／Python检查见`match-flow-final-check.log`，优化构建见`match-flow-release.log`。

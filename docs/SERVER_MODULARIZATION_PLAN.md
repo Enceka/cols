@@ -28,11 +28,15 @@ crates/server/src/
 │   │       ├── mod.rs              # Connection、同步状态与入口
 │   │       ├── channel.rs          # 原生握手、命令解码与连接阶段
 │   │       ├── replication.rs      # 快照、delta 与 ACK 基线
-│   │       ├── loadout.rs          # 配装确认与出生时生效
+│   │       ├── shared.rs           # 共享真人对局的输入与复制桥接
+│   │       ├── latency.rs          # native 序号／ACK RTT采样与发布
+│   │       ├── loadout.rs          # 配装确认、开局宽限与下次出生应用
 │   │       ├── input.rs            # 输入队列与当前局内行为桥接
 │   │       ├── matchplay.rs        # 训练/TDM 推进与重生桥接
 │   │       ├── world.rs            # 投掷物、动态物件的局内桥接
 │   │       ├── rewards.rs          # 奖励调用与核弹流程桥接
+│   │       ├── progression.rs      # 完局经验提交与可靠提醒
+│   │       ├── weapon_drops.rs     # 掉枪、提示、拾取与资源确认
 │   │       └── presentation.rs    # 提示、语音、击杀和结算表现
 │   ├── stun/
 │   └── http.rs
@@ -51,13 +55,15 @@ crates/server/src/
 │       └── admission/              # 分配、预订、开局校验与租约
 ├── game/
 │   ├── session/
-│   │   ├── local_world.rs          # 一份本地世界的权威可变状态
+│   │   ├── local_world.rs          # 单真人兼容世界的权威可变状态
+│   │   ├── shared/                 # 房间共享世界、真人输入、Bot与投掷物
 │   │   ├── weapon_registry.rs      # 对局资源索引分配
 │   │   ├── catalog.rs              # 已准备的地图/模式与 playlist 绑定
 │   │   └── prepared/               # schema、加载验证、配装、实体与报文装配
 │   ├── world/
 │   │   ├── collision/              # 几何查询、玻璃与动态物件碰撞
 │   │   ├── props.rs
+│   │   ├── weapon_drops.rs         # 权威地面枪与弹药交换
 │   │   └── math.rs
 │   ├── player/                     # 移动、冲刺、落地、生命与背包选择
 │   ├── weapons/
@@ -72,16 +78,21 @@ crates/server/src/
 │   │   ├── grenade/
 │   │   └── smoke.rs
 │   ├── combat/                     # 命中、伤害、命中区域
+│   ├── progression/                # 玩法击杀去重与可信经验输入
 │   ├── ai/                         # 控制、导航、装备、动画
 │   ├── status/                     # 技能、闪光/震撼、毒气、EMP
-│   ├── rewards/                    # 连杀、部署物、空中奖励、拾取
+│   ├── rewards/                    # 循环进度、稳定库存、雷达／EMP、部署、空投、选点及远控
 │   ├── presentation/               # 语音、反馈、回放、结算展示
 │   └── modes/tdm/
-│       ├── config.rs               # 阵营、出生、名单、计分与时限配置
+│       ├── config.rs               # 模式、准备／宽限、出生、名单、计分与时限配置
+│       ├── spawns.rs               # 固定基地与战术共享点池选点
 │       ├── rules.rs                # 计分终局、计时与胜负规则
 │       ├── mod.rs                  # TdmMatch 及模式生命周期
 │       ├── bots.rs                 # TDM 中的 Bot 调度
 │       ├── combat.rs               # TDM 击杀归因与战斗编排
+│       ├── aircraft.rs             # 攻击飞行器与模式交互
+│       ├── location_strikes.rs     # 选点、范围判伤与爆炸
+│       ├── remote.rs               # 远控生命周期与原生命归属
 │       └── rewards.rs              # TDM 奖励与世界对象编排
 ├── content/
 │   ├── maps/                       # 原生地图标识、开局选择解析、小地图定义
@@ -145,13 +156,13 @@ crates/server/src/
 
 ## 保留的运行边界
 
-当前结构不是多人共享世界实现。每个连接仍持有自己的 `LocalWorld`，多人房间开局限制保持现有规则。将世界交给对局注册表持有、为多个连接绑定同一个 `MatchId`、保证一局只推进一次，需要单独的共享对局改造及双客户端验收。
+支持的多人房间由 `game/session/shared` 持有共享权威世界，游戏接入绑定各真人准入与接收者映射；每个连接保留独立加密、输入、ACK和复制历史。单真人兼容路径仍使用 `LocalWorld`。核心双客户端及Linux成品联调已通过，具体边界见[多人验收](MULTICLIENT_ACCEPTANCE.md)。
 
 模拟与原生 ACK、资源初始化、输入消费顺序仍在 `transport/game/connection` 的桥接模块中协调。`PreparedGameState` 仍包含运行时构造和本版报文投影，因此留在 `game/session/prepared`，没有将其标为纯只读内容。Bot/奖励的通用实现位于共用玩法模块，TDM 模式目录内仍保留对这些系统的编排。
 
-后续进一步收紧边界时，优先将桥接中的世界推进迁入对局运行时，通过输入与输出事件对接复制层；不能仅靠共享一个 `Arc<LocalWorld>` 或把一个连接的 ACK 当作整局时钟解决多人同步。慢连接、重连、换图与房主退出需要独立生命周期规则。
+桥接中的模拟、ACK与资源顺序仍需继续收紧，通过输入／输出事件对接复制层；不能把单连接ACK当成整局时钟。共享世界保证单次推进；中途背包、个人回放、经验、慢连接和完整重连仍按各自边界验证。
 
-当前不改变单局时钟、协议字节、ACK/重发、配装在出生时生效、账号 schema 和购买一致性；不通过目录拆分启用尚未支持的剧情玩法或多人开局。
+目录边界本身不改变对局时钟、协议、ACK/重发、账号 schema 和购买一致性；配装按准备／未交战宽限即时应用，其它活动条命在出生时应用，见 `MATCH_FLOW_AND_SPAWNS.md`。不通过目录拆分启用尚未支持的剧情、模式或装备。
 
 ## 检查与验收
 

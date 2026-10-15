@@ -4,15 +4,7 @@
 `e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b`。
 下面的地址均为该 PE32 样本的 VA，不能套用 AlphaBuild 的 C1 地址或结构。
 
-当前已接入基础 MP 房间查询、稳定分页、认证成员加入／退房、名单获取及跨连接
-消息投递。创建和地图状态继续使用原生描述，单人 Bot 房间仍按当前完整人数和容量
-处理。原生界面的列表显示、两个真实游戏客户端入房仍需单独验收；多人共享对局尚
-未实现，多个真人成员的房间明确拒绝游戏服分配，不把独立玩家世界当作共享对局。
-
-本机已实测两个独立原生窗口，但认证 UID 冲突会撤销另一端的大厅连接。
-原生分页查询第三项实际为 16、页大小为 30，当前回包为
-`unsupported_browser_criteria`；单端创建房间已确认，双原生同房与对局尚未通过。
-证据、可复现检查及剩余边界见[双客户端验收](MULTICLIENT_ACCEPTANCE.md)。
+公共房间浏览、稳定分页、认证成员加入／退房、配装／队伍推送与共享对局已接入。两个原生客户端完成同房、真人替换Bot、共同进图、交火、结算和再开局，见[多人验收](MULTICLIENT_ACCEPTANCE.md)。本页保留本版线格式与路由约束，完整模式和装备不由核心联机证明。
 
 ## 原生入口与协议分工
 
@@ -162,102 +154,12 @@ Blob、delivery。SDK 名称使用 Base64，`0x6ca190`／`0x6d3830` 解码后交
 及状态交换，同时由服务端检查频道归属、真实发送者、接收者成员资格与容量；不能
 给真人伪造 Bot JoinResponse 作为多人入房完成的证据。
 
-## Rust 接入边界
+## Rust 接入与验收边界
 
-| 位置 | 当前行为 | 必要接入 |
-| --- | --- | --- |
-| `protocol/room_browser.rs` | query4 普通／分页请求及 `11/11` 参数解析 | 非默认筛选条件的语义 |
-| `protocol/room.rs` | 保留房主／地址／属性的列表记录 | 以 `21/12` 的最新描述显示地图／状态 |
-| `server/room_directory.rs` | 查询快照、真实成员、容量、加入确认、退房／过期清理 | 密码／邀请、房主迁移、更多参与者命令 |
-| `server/services.rs` | 本连接 push 与指定目标连接的 delivery 分开 | 完整昵称来源 |
-| `server/lobby_delivery.rs` | 每个认证连接64条有界邮箱；满队列关闭慢连接并清理成员 | 更多压力与长时间验证 |
-| `server/lobby_server.rs` | 单个writer处理RPC与邮箱；读取半包期间保持同一读future | 原生双客户端验收 |
-| `server/session.rs` | 新登录撤销旧票据；旧连接不能通过有效MAC恢复已撤销身份 | 更多异常退出／重连组合 |
-| `server/game_server.rs` | 现有单人准入／世界 | 每名真人席位与共享权威世界 |
+房间业务由 `backend/rooms` 维护权威成员和预留，`transport/lobby` 做请求／推送编码，`game/session/shared` 持有一局世界。每个真人保留独立准入、输入、ACK和复制历史，初始配装从各自账号读取，不能将单人世界分别启动后称为共享对局。
 
-跨连接 writer 同时消费 RPC 和邮箱，RPC 保持 FIFO transaction ID；push 不占
-transaction ID，却消耗目标连接自己的 S2C sequence。加入ACK及本连接成员通知先写出，
-随后发布跨连接通知。对方不发请求时，邮箱也能唤醒writer。关闭／替换连接和邮箱
-过载会清理对应成员；旧连接的退出不会删除替代它的新连接。每5秒清理过期成员。
+实际原生条件为 `[build, 0, 16, 0]`，第三项与创建描述的兼容性字段精确匹配；已核对的基础查询形状按各自校验处理，不忽略未知条件。房间列表只统计不可替换真人席位，内部名单显示真人和Bot总人数。`mmrsv`预留要求双方仍在线，并有30秒期限。
 
-当前基础查询仅接受 `[build, 0, 2, 0]`，按title与build查找活跃注册房间。其它尚未
-恢复语义的条件明确返回错误，不能静默忽略。参与者目前可发送JoinRequest、名单请求
-及准备／取消；房主负责JoinResponse、成员表与RoomInfo。参与者不能冒充房主发布
-这些权威记录。定向／广播均校验成员身份，游戏DATA与共享对局不在此处转发。
+原生显示、加入、真人配装和一致结算已验证；共享多人中途配装、个人回放、经验和完整装备仍需专项验收。远端Linux联调通过SSH转发完成，不等于公网UDP直连，见[远端验收](REMOTE_LINUX_ACCEPTANCE.md)。
 
-大厅可见、同房准备和同局同步是三个验收边界。现有 UDP Connection 各自持有
-CombatWorld，多个 peer 共用地址不能形成共享对局；需要将权威世界、计分、Bot、
-tick 与对局生命周期按房间持有，再为每位玩家保留独立输入、加密、ACK 和快照。
-
-当前研究大厅只允许 loopback 监听，游戏 UDP 也筛除非 loopback 来源。局域网部署
-还需核对客户端端点、启动器转发与监听策略；同机双客户端通过不能自动证明远端
-客户端可连接。
-
-## 原生验收与剩余工作
-
-1. 用两个不同认证身份的原生客户端验证房名、地图、人数、刷新和分页；覆盖空页、
-   满页末页、游标失效及房间删除。业务／TCP测试已覆盖这些路由的核心边界，原生
-   界面需要独立消费证据。
-2. 原生A开房→B搜索→B加入→两端名单一致→房主选图／换队→准备／取消→B退房。
-   不把SDK订阅回执或传输测试中的合成JoinResponse状态当作完整原生接纳。
-3. 扩展密码／邀请、参与者的其它命令、房主迁移及Bot预留／替换策略。满房拒绝、
-   重复加入、待接纳超时、旧票据撤销、异常断线与房主关闭已经接入并有代码验证。
-4. 每玩家游戏准入与共享世界仍未接入；后续验证互相可见、移动／伤害／计分同步、
-   结算返回及再开局。当前多真人成员房间明确拒绝游戏服分配。
-
-## 证据与复现
-
-房间浏览新增五项协议测试通过，覆盖格式与既有分配查询的隔离；协议模块
-Clippy（all-targets、warnings-as-errors）通过。这不是原生大厅可见或真人入房的
-验收。
-
-`room_browser_acceptance` 使用临时服务资料、两个合成身份与动态端口的真实
-GameAdmissions，直接调用 LocalServices。当前房主登记、普通查询、首屏分页和
-第二身份加入全部成功，报告为 `research-output/room-routes-acceptance.json`。
-
-真实TCP传输测试使用两名独立身份完成协议210认证；验证房间查询、加入、双成员
-名单、准备／取消、空闲连接成员通知及退房。消息在各自连接上验MAC和S2C序号，
-RPC transaction ID保持FIFO；另一个测试在C2S只送达两字节长度前缀时先收到S2C
-推送，随后仍完整读取原请求，验证不会因推送取消半包读取。
-
-代码证据为 `lobby_room_transport_tests.rs`、`room_directory_tests.rs`、
-`lobby_delivery.rs` 与 `session.rs` 的测试；检查日志保存在 `research-output/room-routes-*.log`。
-这些是业务／传输验收，不能替代原生客户端的列表呈现和真正双客户端加入。
-
-正常启动器的现存客户端已通过只读采样确认：前端 connection_state=0／frontend_state=5、6772 项库存，以及
-阿富汗房间／局内 state10 和 12 人名单。对应证据在
-`research-output/room-browser-live-acceptance/acceptance.json` 及其同目录；实际 Wine prefix 由现存 wineserver
-的 IPC inode 与 `native.verified.local.json` 匹配，不能默认使用另一个 native.local
-profile 的 prefix。验收未重启或停止现存客户端与正常服务端。公共列表的独立原生请求已在
-[双客户端验收](MULTICLIENT_ACCEPTANCE.md)中取得，但实际筛选条件被拒绝；
-正常单人 Bot 对局不构成公共列表或真人加入通过。
-
-- `fixtures/protocol/room-browser-synthetic.json`：本版消费者地址、独立 Python
-  tagged 编码生成的普通／分页／入房请求，以及合成创建描述与列表记录；只含
-  虚构 UID、游标与零密钥。
-- `research-output/ghidra/public-room-*.c/.asm/.log`：本版只读反编译与指令导出。
-  接入依据使用上述有确定边界的函数；Ghidra 在任意操作数字节上误建函数的输出
-  不作为语义证据。
-- 前端依据：`research-output/remaining-map-analysis/frontend-source/scripts/codo/`
-  下的 `tasks/ListRoomTask.as`、`tasks/JoinRoomTask.as`、`services/MatchService.as`、
-  `controllers/MatchController.as`、`views/MatchSelectPvpView.as`。
-
-复现主要静态链：
-
-```sh
-.tools/ghidra/ghidra_12.1.4_PUBLIC/support/analyzeHeadless \
-  research-output/ghidra codol3333 -process codoMP_client_shipRetail.exe \
-  -readOnly -noanalysis -scriptPath tools/ghidra \
-  -postScript DecompileTargets.java research-output/ghidra/room-browser-check.c \
-  6acf70 6e3200 6e3310 6d4810 a570d0 702520 7d0550 a558b0 \
-  a55700 701db0 68c790 6c9fe0 a4db00 a4ca40
-sh tools/cargo.sh test -p codol-protocol --locked room::browser
-sh tools/cargo.sh run --locked -p codol-server --example room_browser_acceptance -- \
-  research-output/room-routes-acceptance.json
-```
-
-业务验收命令在任一目标未满足时返回非零，输出实际 handler、错误码与结果数量；
-临时资料与动态端口在结束前清理。不会操作现存客户端、正常账号资料或正常端点。
-
-真实大厅展示、跨客户端加入、非首屏续页、密码／邀请及房主迁移仍须按上面的独立
-验收闭环确认。当前路由实现不把这些原生验收与共享对局项目标为已通过。
+最小独立向量为 `fixtures/protocol/room-browser-synthetic.json`，身份／密钥均为合成值；该向量只证明格式。原始请求、反编译及原生运行结果留在本机忽略目录，不随分发提供。

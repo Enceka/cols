@@ -6,7 +6,7 @@
 
 ## 本版原生路径
 
-`fixtures/protocol/scavenger-3.3.3.3.json` 来自固定客户端和只读注册表 `weapon-registry-1791729022220.json`。`tools/prepare_scavenger.py` 同时核对 PE 的 ITEM 字段表和运行态触碰常数。
+`fixtures/protocol/scavenger-3.3.3.3.json` 来自固定客户端和只读注册表 原生状态采样。`tools/prepare_scavenger.py` 同时核对 PE 的 ITEM 字段表和运行态触碰常数。
 
 - 实体为 ITEM3，字段表 `0xc543b8` 共61项。ES+0x98按 `weapon + 900 × modelSlot` 编码，本包为229／slot0。
 - `0x501320` 直接读取 WeaponDef+0x18 的模型指针；实际 DB type4 名为 `weapon_scavenger_grenadebag`，不能用 GENERAL 的模型NCS编号替代。scale=1，位置为静止轨迹，owner=2047。
@@ -28,6 +28,6 @@
 
 ## 验证
 
-`scavenger-live-proof.json`：隔离安全屋实验 `client-1791729497100`，400帧中341帧读到补给包及正确DObj；两次重生后接触已有死亡包，时刻9449／17399，原生备弹从90／45恢复到120／60，战术数量恢复至2。96个玩家普通视角样本为材质161、正确位置／尺寸及2500ms淡出；首个事件在原生主环中为sequence9／ID16／param229，首次图标在11972清零。后续服务端连续补给达到180／90上限。此证据不声称玩家主动击杀、独立听感或所有回放组合都已验收。本项未使用截图。
+`scavenger-live-proof.json`：隔离安全屋实验 ，400帧中341帧读到补给包及正确DObj；两次重生后接触已有死亡包，时刻9449／17399，原生备弹从90／45恢复到120／60，战术数量恢复至2。96个玩家普通视角样本为材质161、正确位置／尺寸及2500ms淡出；首个事件在原生主环中为sequence9／ID16／param229，首次图标在11972清零。后续服务端连续补给达到180／90上限。此证据不声称玩家主动击杀、独立听感或所有回放组合都已验收。本项未使用截图。
 
 回归覆盖无技能、满弹、当前枪资格、死亡拒绝、触碰边界、一次消耗、真实组余量、共享模式去重、战术数量、出生保护／自杀不掉包、包寿命／编号复用、各bit-pool对齐、指定基线删除和回放历史。完整检查见 `scavenger-final-check.log`。

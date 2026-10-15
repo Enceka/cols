@@ -8,6 +8,6 @@ Bot 的实际射击经过与玩家共用的武器状态机。M200（`cheytac_mp`
 
 本版 `mp/playeranim.script` 的 sniper 开火分支使用595／596，移动分支没有独立上身开火动作；脚本未提供独立 `rechamber` 事件块。当前武器拉栓状态及事件已接，但完整第三人称手部／枪栓观感仍需复核，不能仅凭节点正确声称每种姿态已复刻。
 
-验证：`research-output/bot-sniper-live-proof.json` 索引 `client-1791698973148` 的实际射击和状态日志。全部11个Bot使用真实M200，保留所有射击间隔，最小1550ms；Bot4实读state6的400ms、state7的1100ms和退壳600ms。只读 `grounding-1791699097436.json` 有88帧网络torso与原生torso lerp均为595，另有584换弹片段。`bot-sniper-full-clip-proof.json`记录配置600ms后的独立采样，原生595动作连续保持的采样窗口最高574ms，覆盖150ms以后的动作，非强制放慢动画速率。完整手部／枪栓和移动姿态仍需复核。
+验证：`research-output/bot-sniper-live-proof.json` 索引的实际射击和状态日志。全部11个Bot使用真实M200，保留所有射击间隔，最小1550ms；Bot4实读state6的400ms、state7的1100ms和退壳600ms。只读 原生状态采样 有88帧网络torso与原生torso lerp均为595，另有584换弹片段。`bot-sniper-full-clip-proof.json`记录配置600ms后的独立采样，原生595动作连续保持的采样窗口最高574ms，覆盖150ms以后的动作，非强制放慢动画速率。完整手部／枪栓和移动姿态仍需复核。
 
 正常三图名单继续使用各自准备的职业武器；全M200短局仅用于独立诊断。普通换弹动作见 `BOT_RELOAD_PROGRESS.md`。

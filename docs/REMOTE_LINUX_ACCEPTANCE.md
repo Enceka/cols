@@ -20,10 +20,10 @@ Tab 使用通过 native 序号／ACK 校验的游戏消息测量往返时间，E
 
 共享世界结束时仅释放房间的进行中约束，保留旧连接发送结算；下一次分配产生新 ID。房主完整名单明确移除旧 Bot 后，服务端重新进行原生 Bot 加入与队伍接纳，避免结算后补位被旧分配锁住。
 
-本机修复验证：455 项服务端测试通过、28 项资源依赖测试忽略，严格 Clippy 通过。原生探针仅做只读检查；输入使用普通游戏鼠标和键盘，EXE／DLL／资源内容未改写。
+## 验证与边界
 
-合入现有主线的独立版本另通过 468 项服务端测试、29 项忽略及严格 Clippy；结果见 `final-integration-tests.log` 和 `final-integration-clippy.log`。原生证据使用上述冻结的本机交叉编译产物，不替代其它后续主线功能的原生回归。
+本机协议／服务端测试及严格Clippy覆盖共享对局、实际RTT和结算后分配释放。原生探针只读，交火使用普通游戏键鼠；EXE／DLL与资源内容不改写。冻结的Linux产物在上传前后核对SHA，不能用后续源码回归替代该产物的原生证据。
 
-证据位于忽略目录 `research-output/remote-multiplayer-acceptance-20261015/`：`remote-udp-probe.json`、`linux-binary-repaired.json`、`local-repair-tests.log`、`local-repair-clippy.log`，以及两轮 native 目录内的 `remote-proof.json`、`remote-pvp-proof.json`、`tab-ping-proof.json` 和 `reopen-proof.json`。
+原始证据位于本机忽略目录，包含 `remote-udp-probe.json`、`remote-proof.json`、`remote-pvp-proof.json`、`tab-ping-proof.json` 和 `reopen-proof.json`。清理核对INI／CA恢复、临时客户端基线和自有隧道／服务退出；不记录测试主机连接信息。
 
-测试期间在云主机构建阶段遇到 SSH 无响应，后续改为本机交叉编译，根因未经系统级诊断确认。原生加载／结束边界有被严格解码拒绝的过渡输入和一个未支持的参与者消息，不影响上述已核验流程；完整模式、装备、公网 UDP 直连仍需分别验收。测试游戏、隧道和自建服务已关闭，两套临时客户端的连接配置和证书恢复到摘要一致的隔离基线，未操作日常客户端。中断后遗留配置的私有副本与恢复摘要保存在 `cleanup-proof.json` 和 `configuration-recovery/`。
+完整模式、装备、公网UDP直连和真实丢包条件尚未验收。Linux成品联调与本机核心验收各自说明范围，见[多人](MULTICLIENT_ACCEPTANCE.md)。

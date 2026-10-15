@@ -1,6 +1,6 @@
 # 原生小地图资源请求
 
-2026-10-13高楼／潜艇基地的底图投影比例缺项已修复并原生核对，见[小地图投影](MINIMAP_PROJECTION_PROGRESS.md)。真实材质加载与投影正确性分别验收，不能仅凭1024尺寸判定底图比例正确。
+高楼／潜艇基地的底图投影比例缺项已修复并原生核对，见[小地图投影](MINIMAP_PROJECTION_PROGRESS.md)。真实材质加载与投影正确性分别验收，不能仅凭1024尺寸判定底图比例正确。
 
 高楼和潜艇基地的原始初始化采集仅看到4×4默认小地图材质，资源列表却有本图贴图路径。`--resource-compass-probe`让客户端通过正常gamestate的CS2037／2038请求本图候选材质，随后只读采集真实材质及贴图；不调用客户端函数、不改内存、不生成或替换客户端资源。
 
@@ -14,4 +14,4 @@
 
 竞技场候选请求已读到本图512×512非默认贴图；CRC2197734643及实体角点独立核对，四人原生玩法通过，见`arena-admission/admission.json`。
 
-废墟的Convoy及西部乐园的 `compass_map_mp_boomtown` 请求已分别采到本图1024×1024、非默认真实贴图。西部乐园CRC4260250573，补采来源见 `charge-mode-20261015/mp_boomtown-compass-refresh.json`；两图均已完成冲锋原生12人短局、模式15结算和返回，见 `CHARGE_MODE.md`。`verify_native_maps.py --prepare` 同时规范化语音、物件、核弹及雷达等资源文件路径，短局副本保留正常准备引用的实际文件。
+废墟的Convoy及西部乐园的 `compass_map_mp_boomtown` 请求已分别采到本图1024×1024、非默认真实贴图。西部乐园CRC4260250573，补采来源见 `mp_boomtown-compass-refresh.json`；两图均已完成冲锋原生12人短局、模式15结算和返回，见 `CHARGE_MODE.md`。`verify_native_maps.py --prepare` 同时规范化语音、物件、核弹及雷达等资源文件路径，短局副本保留正常准备引用的实际文件。

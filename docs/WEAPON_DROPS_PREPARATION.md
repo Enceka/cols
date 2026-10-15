@@ -94,12 +94,12 @@ AlphaBuild 的 packed selector 使用 `weapon + 700×slot`，本版使用 **`wea
 | --- | --- |
 | `game/weapons/held/dropped.rs` | 每条生命只封存一次死亡枪；空匣拒绝；临时奖励设备取其保存的普通枪；变形归一到父形态并携带替代模式、真实弹药、射速／伤害／换弹／移动参数；拾取保留拾取者技能与投掷物 |
 | `game/world/weapon_drops.rs` | 独立世界集合，16把／60秒、按离活跃玩家更远的物品回收；重力、碰撞、落地、支撑消失后继续下落；原掉落者1000ms排除；同ammo key自动取弹与F换枪分流 |
-| `game/modes/tdm/combat.rs`、`connection/weapon_drops.rs` | 读取死者当前普通枪和弹药，使用实际开局宽限；玩家／Bot死亡接入；重复击杀排空不重复生成；不会把凶器当掉落枪 |
-| `snapshot/weapon_drops.rs` | ITEM3实体1024..1087；组合编号保留slot0、位置／原始浮点角度、owner、编号代际和显式删除；命中事件分配器避开此区间 |
-| `snapshot/mod.rs` | 发布本版提示字段67／78／80，字符串-1；第四个hint2图标字段保持0；提示值为实际组合编号+4，消失时清除 |
-| `connection/weapon_drops.rs` | F新按下沿完成交换，旧枪留在地面；可靠命令`a <weapon>`同步客户端选枪；可靠窗口满时延后整个拾取，避免只有服务端换枪 |
-| `snapshot/corpse.rs / held_weapon.rs` | 保留尸体动画使用的武器定义，但已掉枪的尸体不再生成重复手持枪模型；前三名姿态仍正常持枪 |
-| `presentation/replay.rs`、连接快照历史 | 归档当时的地面枪集合，使用已确认基线编码；个人／最终回放读取历史，期间禁止实际拾取并隐藏使用提示 |
+| `game/modes/tdm/combat.rs`、`transport/game/connection/weapon_drops.rs` | 读取死者当前普通枪和弹药，使用实际开局宽限；玩家／Bot死亡接入；重复击杀排空不重复生成；不会把凶器当掉落枪 |
+| `crates/protocol/src/game/snapshot/weapon_drops.rs` | ITEM3实体1024..1087；组合编号保留slot0、位置／原始浮点角度、owner、编号代际和显式删除；命中事件分配器避开此区间 |
+| `crates/protocol/src/game/snapshot/mod.rs` | 发布本版提示字段67／78／80，字符串-1；第四个hint2图标字段保持0；提示值为实际组合编号+4，消失时清除 |
+| `transport/game/connection/weapon_drops.rs` | F新按下沿完成交换，旧枪留在地面；可靠命令`a <weapon>`同步客户端选枪；可靠窗口满时延后整个拾取，避免只有服务端换枪 |
+| `crates/protocol/src/game/snapshot/corpse.rs`与`crates/protocol/src/game/snapshot/held_weapon.rs` | 保留尸体动画使用的武器定义，但已掉枪的尸体不再生成重复手持枪模型；前三名姿态仍正常持枪 |
+| `game/presentation/replay.rs`、连接快照历史 | 归档对应帧的地面枪集合，使用已确认基线编码；个人／最终回放读取历史，期间禁止实际拾取并隐藏使用提示 |
 
 换枪保存右弹匣和备弹，不补满；同ammo key仍有其它持有枪时，旧枪仅带走剩余持有容量之外的备弹，避免复制同一个共享池。拾得武器属于当前生命，不修改账号背包或出生装配模板；普通重生恢复保存的背包。
 
@@ -109,37 +109,24 @@ AlphaBuild 的 packed selector 使用 `weapon + 700×slot`，本版使用 **`wea
 
 ## 验证
 
-协议回归按本版字段表独立解码，覆盖所有bit-pool起点、创建、位置／角度更新、交换、owner清除、编号复用与删除，以及提示字段和清除。ITEM角度使用绝对LE32浮点数；实体1024..1087置于较低编号命中事件之后、较高编号命中事件及声音／拾荒包之前。混合删除回归确认原生基线合并不会先继承地面枪再遇到其更新或删除，旧顺序会在1024之前读到1088并使该回归失败。服务端覆盖空匣、部分弹药、变形父枪、临时奖励设备、共享备弹、不超过容量补弹、死亡拒绝、原掉落者期限、F边沿、碰撞落地、到期和数量限制；尸体已掉枪后不再重复持枪。
+协议回归按本版字段表独立解码，覆盖所有bit-pool起点、创建、位置／角度更新、交换、owner清除、编号复用与删除，以及提示字段和清除。ITEM角度使用绝对LE32浮点数；实体1024..1087置于较低编号命中事件之后、较高编号命中事件及声音／拾荒包之前。混合删除回归确认原生基线合并不会先继承地面枪再遇到其更新或删除，回归验证编号1024..1087与更高事件编号的合并顺序。服务端覆盖空匣、部分弹药、变形父枪、临时奖励设备、共享备弹、不超过容量补弹、死亡拒绝、原掉落者期限、F边沿、碰撞落地、到期和数量限制；尸体已掉枪后不再重复持枪。
 
-`captured_shooting_death_drop_and_use_exchange_preserve_real_weapon_identity` 使用本机采集的阿富汗碰撞、武器装配和只读账号副本，执行实际武器射击／判伤／死亡队列／掉枪／提示／F换枪／可靠选枪与快照生成。证明掉落的是死者组合编号361，凶器为352；在死亡时刻2300生成实体1024，拾取弹匣25／备弹75，旧枪352保留射击后的弹匣17并回到地面。测试还覆盖重复排空、F重复输入，以及可靠窗口满时拒绝半次交换。证据在 `research-output/weapon-drops-20261015/captured-gameplay-proof.json`。这些是实际采集资源上的服务端集成验证，不能替代原生画面和声音。
+`captured_shooting_death_drop_and_use_exchange_preserve_real_weapon_identity` 使用本机采集的阿富汗碰撞、武器装配和只读账号副本，执行实际武器射击／判伤／死亡队列／掉枪／提示／F换枪／可靠选枪与快照生成。证明掉落的是死者组合编号361，凶器为352；在死亡时刻2300生成实体1024，拾取弹匣25／备弹75，旧枪352保留射击后的弹匣17并回到地面。测试还覆盖重复排空、F重复输入，以及可靠窗口满时拒绝半次交换。证据在 `captured-gameplay-proof.json`。这些是实际采集资源上的服务端集成验证，不能替代原生画面和声音。
 
-原生验收证据在 `research-output/weapon-drops-native-20261015/native-proof.json`，对应隔离实验 `run-1792049865820818000/experiment.json`。未修改的本版客户端通过普通射击产生死亡掉枪，实体1025保留死者的组合编号358（AK117），凶器为352（AK117熔岩）；客户端显示地面模型、武器图标／名称和“按F更换武器”提示，cursorHint为362。F拾取后实际切到358，弹匣30／备弹90，旧熔岩枪留在地面；原持有人短暂排除结束后，提示变为356，再按F切回352，弹匣仍为19、备弹仍为90，副武器备弹45也未改变。四张原生截图与各阶段只读playerState采样一并保存，画面已核对。
+原生验收证据在 `native-proof.json`，对应隔离实验 `experiment.json`。未修改的本版客户端通过普通射击产生死亡掉枪，实体1025保留死者的组合编号358（AK117），凶器为352（AK117熔岩）；客户端显示地面模型、武器图标／名称和“按F更换武器”提示，cursorHint为362。F拾取后实际切到358，弹匣30／备弹90，旧熔岩枪留在地面；原持有人短暂排除结束后，提示变为356，再按F切回352，弹匣仍为19、备弹仍为90，副武器备弹45也未改变。四张原生截图与各阶段只读playerState采样一并保存，画面已核对。
 
 换枪后的centity有效位筛选曾漏报画面中仍可见的地面枪，该筛选不作为交换成功的单独依据；回取结论来自截图、原生提示、实际选枪及弹药池对照。声音未作听感验收，也不以事件编号或模型数据代替声音结论。
 
-`native-field-codecs.c`保留本版`-78`分派到`0x5a313d`直接读32位值的消费者；错误的短角度布局会使后续玻璃尾部读取溢出，出现`156 -1`，截图见`native-fatal.png`。当前角度编码和混合实体顺序均有独立回归。基于当前提交基线的隔离树通过协议170项、服务端451项测试与Clippy全部目标检查，实际输出为`final-head-tests.log`、`final-head-clippy.log`；真实采集资源集成测试另见`final-head-captured.log`。诊断客户端已停止，临时配置和证书已恢复，原始客户端与账号数据未修改。
+`native-field-codecs.c`保留本版`-78`分派到`0x5a313d`直接读32位值的消费者；错误的短角度布局会使后续玻璃尾部读取溢出，出现`156 -1`，截图见`native-fatal.png`。当前角度编码和混合实体顺序均有独立回归。协议、服务端、严格Clippy及真实采集资源集成检查分别保留结果。诊断客户端已停止，临时配置和证书已恢复，原始客户端与账号数据未修改。
 
-## 可复核证据
+## 证据与复现
 
-本机原始证据位于忽略目录 `research-output/weapon-drops-20261015/`：
-
-- `native-consumers.c`：以 `0x4127d0 / 0x412970 / 0x501550 / 0x501320` 为入口的资格和模型消费者。
-- `native-pickup-rules.c`：持有枪查找、兼容弹药和组合模型展开。
-- `native-hint-verified.c`、`native-hint-display.c`：真实入口 `0x44b470 / 0x44b520 / 0x44bc10`，以及接触预测。
-- `native-instructions.asm`：原始指令复核，包含 `0x44b520` 完整入口及 `0x501320` 的组合分支。
-- `capture_static.py`、`static-summary.json`：固定样本、字段表和字符串校验，以及参考文件SHA。
-
-`native-hint.c` 的 `0x44b614 / 0x44b6a5` 与 `native-consumers.c` 的 `0x5016a0` 是指令中部探索导出，不作为函数语义证据。有效入口已用原始序言、调用点和完整函数重查；反编译的寄存器参数及返回类型仍须对照指令。
-
-可重导出核心消费者：
+本版字段、ITEM组合模型和cursorHint消费者见 `fixtures/protocol/weapon-drops-3.3.3.3.json`。原始汇编、字段解码、`captured-gameplay-proof.json`及`native-proof.json`保存在本机忽略目录，不包含于分发产物。
 
 ```sh
-.tools/ghidra/ghidra_12.1.4_PUBLIC/support/analyzeHeadless \
-  research-output/ghidra codol3333 -process codoMP_client_shipRetail.exe \
-  -readOnly -noanalysis -scriptPath tools/ghidra \
-  -postScript DecompileTargets.java research-output/weapon-drops-20261015/recheck.c \
-  501550 501320 42e6d0 412600 4128c0 4127d0 4514f0 44b470 44b520 44bc10
-.venv/bin/python research-output/weapon-drops-20261015/capture_static.py
+sh tools/cargo.sh test --locked -p codol-server \
+  captured_shooting_death_drop_and_use_exchange_preserve_real_weapon_identity \
+  -- --ignored --nocapture
 ```
 
-固定样本静态证据、服务端集成验证和原生验收范围分别记录；上表列出的未验收项不由代码测试或参考实现代替。
+该测试要求本机已准备的真实地图和隔离账号。服务端验证和原生画面分别记录；原生掉枪、F交换和弹药保留已有验收，完整声音及特殊武器仍在[复核清单](REVIEW_PENDING.md)。

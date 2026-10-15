@@ -26,7 +26,7 @@ sh tools/cargo.sh run --locked -p codol-server -- admin \
 
 配置页读写启动时指定的观察配置文件。校验沿用 `Config::validate`，保留 TOML 注释和原始文本。保存前检查 SHA-256 文件版本，原文件备份到同目录的 `*.toml.backup-*`，通过同目录临时文件替换配置，并保留原文件权限。外部修改导致版本冲突时保留草稿，可导出后重新加载。⌘/Ctrl-S 保存。配置保存后需通过原启动流程重新启动观察服务才能生效；AUTH、游戏服务的 CLI 参数和 publisher 文件不属于此编辑器。
 
-面板只允许绑定 loopback，校验请求 Host 与 Origin，写入接口要求 JSON；未提供远程访问和账号认证。页面资源随二进制编译内置，修改 `crates/server/admin/` 后需重新编译。
+面板只允许绑定 loopback，校验请求 Host 与 Origin，写入接口要求 JSON；未提供远程访问和账号认证。页面资源随二进制编译内置，修改 `crates/server/src/admin/` 后需重新编译。
 
 验证：
 
