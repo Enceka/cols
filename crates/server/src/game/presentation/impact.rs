@@ -148,10 +148,10 @@ impl ImpactEvents {
         let entity_number = if !(first..end).contains(&self.next_entity) {
             first
         } else if (codol_protocol::game::snapshot::props::FIRST_ENTITY
-            ..codol_protocol::game::snapshot::props::END_ENTITY)
+            ..codol_protocol::game::snapshot::weapon_drops::END_ENTITY)
             .contains(&self.next_entity)
         {
-            codol_protocol::game::snapshot::props::END_ENTITY
+            codol_protocol::game::snapshot::weapon_drops::END_ENTITY
         } else if (1648..1664).contains(&self.next_entity) {
             1664
         } else {

@@ -8,6 +8,9 @@ use codol_protocol::game::snapshot::events;
 use codol_protocol::game::snapshot::events::EventQueue;
 
 mod parameters;
+pub(crate) use dropped::DroppedWeapon;
+#[cfg(test)]
+pub(crate) use dropped::tests::gun as drop_test_gun;
 use parameters::reloading;
 pub(crate) use parameters::{
     AdsTiming, AlternateTiming, AmmoLimits, MeleeApproach, MeleeChargeTiming, MeleeTiming,
@@ -92,6 +95,7 @@ struct RewardWeapon {
 
 #[derive(Debug, Clone)]
 pub(crate) struct HeldWeapons {
+    death_weapon_taken: bool,
     offhands: [Option<crate::game::weapons::grenade::Equipped>; 2],
     selected_offhand: Option<usize>,
     grenade_time: u16,
@@ -159,6 +163,7 @@ impl HeldWeapons {
             });
         }
         Self {
+            death_weapon_taken: false,
             offhands: [None, None],
             selected_offhand: None,
             grenade_time: 0,
@@ -530,3 +535,5 @@ mod rewards;
 mod ammunition;
 
 mod aim;
+
+mod dropped;

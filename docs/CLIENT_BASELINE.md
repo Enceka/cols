@@ -1,5 +1,15 @@
 # CODOL 本地样本预调查
 
+**死亡武器掉落与原生拾取提示**
+
+固定3.3.3.3样本的只读指令和字段表确认：ITEM3的`ES+0x98`使用`weapon + 900×modelSlot`，
+`0x501550 / 0x501320 / 0x42e6d0`分发普通／组合世界枪模型；AlphaBuild旧版使用700，不能照搬。
+`0x44b470 / 0x44b520 / 0x44bc10`读取原生cursorHint并生成`+activate`的拾取／交换提示，
+普通武器提示值为`weapon+4`。本版提示字段位于PS+`0x204 / 0x208 / 0x20c / 0x210`，
+依次为提示编号、signed8字符串、目标实体和另一种图标分支，较Alpha对应布局提前4字节。
+与Alpha死亡脚本、弹药移交、60秒删除及原生物品物理的对照见[死亡武器掉落研究](WEAPON_DROPS_PREPARATION.md)。
+Rust已接普通死亡枪、原生提示字段与库存／弹药交换，真实采集资源集成验证通过；本版官方生产规则与原生画面／声音仍未验收。
+
 首次检查日期：2026-10-06。以下保留第一轮工作区、PE、字符串和资源基线；同日后续静态及动态补充见文末、[BOOTSTRAP_FINDINGS.md](BOOTSTRAP_FINDINGS.md) 和 [GAMEHUB_DEBUG.md](GAMEHUB_DEBUG.md)。当前已执行 GameHub 中的客户端研究副本并捕获 AUTH 流量，原件未修改。
 
 工作区：`/Volumes/Projects/codol`。检查时 `server/` 为尚无提交的 Git 仓库，没有服务端代码。工作区及其父路径未发现适用的 AGENTS.md。

@@ -24,6 +24,8 @@ pub struct CorpseSnapshot {
     pub legs_animation: u16,
     pub torso_animation: u16,
     pub weapon: u16,
+    /// Preserve the animation weapon while omitting its linked hand model.
+    pub weapon_dropped: bool,
     pub present: bool,
     pub phase: CorpsePhase,
     /// Advances once per actual death. Its low bit toggles the native teleport
@@ -313,6 +315,7 @@ mod tests {
             legs_animation: 47,
             torso_animation: 47,
             weapon: 352,
+            weapon_dropped: false,
             present: true,
             phase: CorpsePhase::Playing,
             death_sequence: 1,

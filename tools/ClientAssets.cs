@@ -973,10 +973,11 @@ partial class ClientAssets {
         }
         return missiles;
     }
-    object BagStates() {
+    object BagStates() { return ItemStates(1740,1800); }
+    object ItemStates(uint first,uint end) {
         uint slot=Word(0x07817bb0);if(slot>=256)throw new Exception("invalid item entity slot");
         uint entities=Word(0x01a19510+slot*4)^0x2168f672;var bags=new List<object>();
-        for(uint id=1740;id<1800;id++) {
+        for(uint id=first;id<end;id++) {
             uint entity=entities+id*0x238;
             if((Word(entity+0x204)&1)==0||Word(entity+0xf4)!=3)continue;
             uint handle=BitConverter.ToUInt16(Read(0x02ef4858+id*2,2),0);var models=new List<string>();
@@ -1076,6 +1077,9 @@ partial class ClientAssets {
                 "render_angles",Floats(r.Read(cg+0xb2688,12),0,3),
                 "cmd_angles",new uint[]{r.Word(input+0x365c+(command&255)*44+8),r.Word(input+0x365c+(command&255)*44+12)},
                 "cmd_weapons",new uint[]{BitConverter.ToUInt16(r.Read(input+0x365c+(command&255)*44+0x14,2),0),BitConverter.ToUInt16(r.Read(input+0x365c+(command&255)*44+0x16,2),0),BitConverter.ToUInt16(r.Read(input+0x365c+(command&255)*44+0x18,2),0)},
+                "weapon_drops",r.ItemStates(1024,1088),
+                "cursor_hint",U(ps,0x204),"cursor_hint_entity",U(ps,0x20c),"cursor_hint_string",unchecked((sbyte)ps[0x208]),
+                "server_cursor_hint",U(serverPs,0x204),
                 "paired_weapon",U(ps,0x344),"ads_fraction",BitConverter.ToSingle(ps,0x34c),
                 "server_command_time",U(serverPs,0),"server_origin",Floats(serverPs,0x1c,3),
                 "server_velocity",Floats(serverPs,0x28,3),"server_spawn_count",U(serverPs,0x19c),

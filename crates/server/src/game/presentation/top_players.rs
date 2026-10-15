@@ -95,6 +95,7 @@ impl Scene {
                         legs_animation: actor.legs_animation,
                         torso_animation: 0,
                         weapon: actor.weapon,
+                        weapon_dropped: false,
                         present: true,
                         phase: codol_protocol::game::snapshot::corpse::CorpsePhase::Posed,
                         death_sequence: 1,

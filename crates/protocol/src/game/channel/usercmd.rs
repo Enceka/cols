@@ -3,6 +3,10 @@
 use crate::game::channel::wire::Reader;
 use crate::lobby::channel::LobbyError;
 
+/// Target 3.3.3.3 +activate (default F). Native command-ring capture observed
+/// 0x02000008 while held; the high input flag is independent of the use bit.
+pub const BUTTON_USE: u32 = 0x8;
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct UserCommand {
     pub time: u32,

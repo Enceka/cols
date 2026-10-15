@@ -10,6 +10,10 @@ mod loadout;
 
 #[derive(Default)]
 pub(crate) struct SnapshotWorld<'a> {
+    pub weapon_drops: &'a [codol_protocol::game::snapshot::weapon_drops::WeaponDropSnapshot],
+    pub weapon_drop_baselines:
+        &'a [codol_protocol::game::snapshot::weapon_drops::WeaponDropSnapshot],
+    pub weapon_hint: Option<codol_protocol::game::snapshot::weapon_drops::WeaponHint>,
     pub props: &'a [codol_protocol::game::snapshot::props::PropSnapshot],
     pub prop_baselines: &'a [codol_protocol::game::snapshot::props::PropSnapshot],
     pub view_offset: [u16; 3],

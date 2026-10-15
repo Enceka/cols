@@ -652,6 +652,7 @@ mod tests {
                 legs_animation: 47,
                 torso_animation: 47,
                 weapon: 352 + i,
+                weapon_dropped: false,
                 present: true,
                 phase: CorpsePhase::Playing,
                 death_sequence: 1,

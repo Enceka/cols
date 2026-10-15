@@ -119,6 +119,7 @@ impl Connection {
             self.advance_match(server_time)?;
             self.advance_grenades(server_time)?;
             self.advance_props(server_time)?;
+            self.advance_weapon_drops(server_time)?;
         } else {
             self.advance_bot(server_time)?;
         }
@@ -237,6 +238,7 @@ impl Connection {
         }
         let mut smokes = self.world.smoke.snapshots(server_time);
         let mut bags = self.world.scavenger.snapshots();
+        let mut weapon_drops = self.world.weapon_drops.snapshots();
         let mut shellshock = self.world.tactical.snapshot(server_time);
         if self.world.tdm.is_some() {
             impacts.sort_by_key(|i| {
@@ -420,6 +422,7 @@ impl Connection {
                 .record(crate::game::presentation::replay::Frame {
                     props: props.clone(),
                     bags: bags.clone(),
+                    weapon_drops: weapon_drops.clone(),
                     smokes: smokes.clone(),
                     missiles: missiles.clone(),
                     time: server_time,
@@ -450,6 +453,7 @@ impl Connection {
             impacts.clear();
             obituaries.clear();
             bags.clear();
+            weapon_drops.clear();
             hit_feedback = None;
         }
         let playback = self.replay.sample(server_time);
@@ -494,6 +498,7 @@ impl Connection {
             missiles = playback.frame.missiles;
             smokes = playback.frame.smokes;
             bags = playback.frame.bags;
+            weapon_drops = playback.frame.weapon_drops;
             obituaries = playback.frame.obituaries;
             hit_feedback = state.feedback_resources().map(|resources| {
                 let mut feedback = crate::game::presentation::feedback::Feedback::default();
@@ -595,6 +600,13 @@ impl Connection {
                     .as_ref()
                     .and_then(|m| m.preparation_hud(server_time)),
                 perk_display: perk_display && replay_wire.is_none() && !top_players_scene,
+                weapon_drops: &weapon_drops,
+                weapon_drop_baselines: previous.as_ref().map_or(&[], |h| h.weapon_drops.as_slice()),
+                weapon_hint: if replay_wire.is_none() && !top_players_scene {
+                    self.ground_weapon_hint(server_time)
+                } else {
+                    None
+                },
                 bags: &bags,
                 bag_baselines: previous.as_ref().map_or(&[], |h| h.bags.as_slice()),
                 shellshock,
@@ -691,6 +703,7 @@ impl Connection {
                 props,
                 sounds: if full { Vec::new() } else { sounds },
                 bags,
+                weapon_drops,
                 smokes,
                 missiles,
                 local_abilities: self.world.player.as_ref().map(|p| p.equipment().abilities),

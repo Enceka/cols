@@ -74,6 +74,7 @@ impl View {
 }
 #[derive(Clone)]
 pub(crate) struct Frame {
+    pub weapon_drops: Vec<codol_protocol::game::snapshot::weapon_drops::WeaponDropSnapshot>,
     pub props: Vec<codol_protocol::game::snapshot::props::PropSnapshot>,
     pub bags: Vec<codol_protocol::game::snapshot::scavenger::BagSnapshot>,
     pub smokes: Vec<codol_protocol::game::snapshot::smoke::SmokeSnapshot>,
@@ -367,6 +368,7 @@ mod tests {
             events: None,
         };
         Frame {
+            weapon_drops: vec![],
             props: Vec::new(),
             bags: vec![],
             smokes: vec![],

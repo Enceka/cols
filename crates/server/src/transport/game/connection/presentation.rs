@@ -250,6 +250,7 @@ impl Connection {
             {
                 tracing::info!(time = kill.time, entity = bag.entity_number, victim = kill.victim.client_index, origin = ?bag.origin, "scavenger bag dropped");
             }
+            let weapon_dropped = !nuclear && self.drop_death_weapon(kill);
             if !kill.falling && !nuclear {
                 self.last_kill = Some(kill);
             }
@@ -284,6 +285,7 @@ impl Connection {
                 .as_ref()
                 .unwrap()
                 .corpse(kill.victim, kill.sequence);
+            corpse.weapon_dropped = weapon_dropped;
             corpse.entity_number = if kill.victim.client_index == 0 {
                 20
             } else {

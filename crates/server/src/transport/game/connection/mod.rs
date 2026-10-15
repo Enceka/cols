@@ -109,6 +109,7 @@ pub(crate) struct Connection {
 
 #[derive(Clone)]
 struct WorldHistory {
+    weapon_drops: Vec<codol_protocol::game::snapshot::weapon_drops::WeaponDropSnapshot>,
     props: Vec<codol_protocol::game::snapshot::props::PropSnapshot>,
     sounds: Vec<codol_protocol::game::snapshot::sound::SoundSnapshot>,
     bags: Vec<codol_protocol::game::snapshot::scavenger::BagSnapshot>,
@@ -303,3 +304,5 @@ mod matchplay;
 mod rewards;
 
 mod world;
+
+mod weapon_drops;

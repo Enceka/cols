@@ -1,6 +1,16 @@
 use super::*;
 
 impl TdmMatch {
+    pub(crate) fn take_death_weapon(
+        &mut self,
+        client: u8,
+    ) -> Option<crate::game::weapons::held::DroppedWeapon> {
+        let bot = self.bots.get_mut(usize::from(client.checked_sub(1)?))?;
+        if bot.health != 0 {
+            return None;
+        }
+        bot.weapon.as_mut()?.take_death_weapon()
+    }
     pub(super) fn credit(
         &mut self,
         now: u32,

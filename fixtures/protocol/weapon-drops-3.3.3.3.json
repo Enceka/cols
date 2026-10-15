@@ -1,0 +1,218 @@
+{
+  "schema_version": 1,
+  "client_sha256": "e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b",
+  "evidence_kind": "fixed-client static consumers and local AlphaBuild source review",
+  "native_gameplay_acceptance": false,
+  "native_item": {
+    "entity_type": 3,
+    "field_table_va": "0xc543b8",
+    "field_table_sha256": "1db9b176f818cfffa8ce773d150de007c8eeef3f2f8252a8cd6ac5f1007bd3ad",
+    "packed_weapon_offset": "0x98",
+    "packed_weapon_field": 19,
+    "packed_weapon_bits": 11,
+    "weapon_stride": 900,
+    "world_model_slot_for_composed_weapons": 0,
+    "owner_offset": "0x80",
+    "owner_field": 30,
+    "owner_bits": 11,
+    "full_field_layout_reference": "scavenger-3.3.3.3.json"
+  },
+  "native_cursor_hint": {
+    "field_table_va": "0xc55f70",
+    "field_table_sha256": "56b46d3430513982131602b42ce6a8f9c376320b2de8e383627676c88d9c2495",
+    "weapon_bias": 4,
+    "draw_weapon_hint_range": [
+      5,
+      904
+    ],
+    "fields": [
+      {
+        "name": "cursor_hint",
+        "index": 67,
+        "offset": "0x204",
+        "codec_bits": 11,
+        "hint": 0
+      },
+      {
+        "name": "cursor_hint_entity",
+        "index": 78,
+        "offset": "0x20c",
+        "codec_bits": 11,
+        "hint": 0
+      },
+      {
+        "name": "cursor_hint_string",
+        "index": 80,
+        "offset": "0x208",
+        "codec_bits": -8,
+        "hint": 0
+      },
+      {
+        "name": "alternate_icon",
+        "index": 98,
+        "offset": "0x210",
+        "codec_bits": 1,
+        "hint": 2
+      }
+    ]
+  },
+  "native_consumers": {
+    "item_model_dispatch": "0x501550",
+    "world_weapon_model": "0x501320",
+    "composed_model_builder": "0x42e6d0",
+    "item_touch_bounds": "0x412600",
+    "item_grab_eligibility": "0x4128c0",
+    "weapon_grab_eligibility": "0x4127d0",
+    "compatible_ammo_pool": "0x42f420",
+    "weapon_ammo_remaining": "0x4126a0",
+    "owned_weapon_lookup": "0x410300",
+    "owned_weapon_predicate": "0x410350",
+    "prediction_touch_pickup": "0x4514f0",
+    "cursor_hint_copy": "0x44b470",
+    "cursor_weapon_prompt": "0x44b520",
+    "cursor_hint_draw": "0x44bc10"
+  },
+  "native_input": {
+    "binding": "+activate",
+    "button_mask": 8,
+    "default_key": "F",
+    "evidence_reference": "existing native capture documented in channel/usercmd.rs"
+  },
+  "native_event_names": {
+    "item_pickup": 16,
+    "ammo_pickup": 17,
+    "evidence_reference": "native-event-names-3.3.3.3.json",
+    "weapon_swap_event_dynamic_verified": false
+  },
+  "native_touch_bounds": {
+    "player_minus_item_min": [
+      -36,
+      -36,
+      -88
+    ],
+    "player_minus_item_max": [
+      36,
+      36,
+      18
+    ],
+    "scope": "prediction touch eligibility, not a recovered use-scan radius"
+  },
+  "native_strings": {
+    "+activate": "0xc5f690",
+    "PLATFORM_PICKUPNEWWEAPON": "0xc5f6a4",
+    "PLATFORM_SWAPWEAPONS": "0xc5f6c0"
+  },
+  "instruction_anchors": [
+    {
+      "va": "0x501320",
+      "bytes": "558bec81ec9c050000",
+      "meaning": "world weapon model consumer function entry"
+    },
+    {
+      "va": "0x501550",
+      "bytes": "558bec83ec14a1ac7b",
+      "meaning": "ITEM packed selector dispatch function entry"
+    },
+    {
+      "va": "0x5013c5",
+      "bytes": "8b548e18",
+      "meaning": "WeaponDef world_model[model_slot] load"
+    },
+    {
+      "va": "0x50145b",
+      "bytes": "e870d2f2ff",
+      "meaning": "composed world models call 0x42e6d0"
+    },
+    {
+      "va": "0x44b470",
+      "bytes": "a1a87b81078b",
+      "meaning": "copy cursor-hint PS fields into client cache"
+    },
+    {
+      "va": "0x44b48e",
+      "bytes": "8b8804020000",
+      "meaning": "read PS+0x204 cursor hint"
+    },
+    {
+      "va": "0x44b520",
+      "bytes": "558bec81ec10010000",
+      "meaning": "pickup/swap text consumer entry"
+    },
+    {
+      "va": "0x44b56f",
+      "bytes": "83e804",
+      "meaning": "subtract weapon hint bias 4"
+    },
+    {
+      "va": "0x44b613",
+      "bytes": "b8a4f6c500",
+      "meaning": "load native pickup text key"
+    },
+    {
+      "va": "0x44bf01",
+      "bytes": "e81af6ffff",
+      "meaning": "hint draw calls text consumer"
+    },
+    {
+      "va": "0x4128c0",
+      "bytes": "558bec538b5d",
+      "meaning": "item eligibility function entry"
+    },
+    {
+      "va": "0x4514f0",
+      "bytes": "558bec515356",
+      "meaning": "predictive touch pickup function entry"
+    }
+  ],
+  "alpha_reference": {
+    "client_version": "1.1.1.13",
+    "item_weapon_stride": 700,
+    "cursor_hint_offsets": {
+      "hint": "0x208",
+      "string": "0x20c",
+      "entity": "0x210",
+      "alternate_icon": "0x214"
+    },
+    "death_weapon_lifetime_seconds": 60,
+    "max_dropped_weapons_default": 16,
+    "max_dropped_weapons_dvar_range": [
+      2,
+      32
+    ],
+    "dropper_repickup_delay_msec": 1000,
+    "source_files": [
+      {
+        "path": "bin/home/codol_rawfiles/maps/mp/gametypes/_weapons.gsc",
+        "sha256": "a0958f8f9b1d7400ada0d5c962f128a3aed70888f6320a3941432ce53cb16648"
+      },
+      {
+        "path": "bin/home/codol_rawfiles/maps/mp/gametypes/_damage.gsc",
+        "sha256": "9eb42424335028bc6ac255343996ce6ef1c7939684cec3769b6bd8e6d202ad9d"
+      },
+      {
+        "path": "src/asmsource/_g_items.asm",
+        "sha256": "0a52cf7a0f39608c20a853434e0e79dbe643501f75f112e22425c33c9203867d"
+      },
+      {
+        "path": "src/codol/weapon/codol_weapon_slots.h",
+        "sha256": "a5d5dafa79bc064ecb00e605e091336b015fca6d0c357fc104d1247f0e1022c8"
+      },
+      {
+        "path": "src/codol/snapshot/codol_usehint_wire.h",
+        "sha256": "8acea992c87c5e1c6a4d3c9252d56ff4ecbe5d62437114cc67e7708d44f20b18"
+      },
+      {
+        "path": "src/g_sv_main.c",
+        "sha256": "ab172c1d4a25e0af935ebb7278aa95be7094849edfcfd0ceb01d5d54ad7bba2e"
+      }
+    ]
+  },
+  "unresolved": [
+    "3.3.3.3 official death-drop producer and exact script policy",
+    "3.3.3.3 authoritative use-scan range, hold duration and target priority",
+    "ordinary death weapon models, native prompt, ammo transfer and sound in a live client",
+    "full two-hand and alternate-mode ammo transfer",
+    "drop physics, moving-ground behavior and lifecycle parity",
+    "special deaths, shield, launcher, GPS and special weapon behavior"
+  ]
+}

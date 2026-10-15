@@ -271,6 +271,9 @@ impl PreparedGameState {
             equipment,
             angles,
             codol_protocol::game::snapshot::WorldSnapshot {
+                weapon_drops: world.weapon_drops,
+                weapon_drop_baselines: world.weapon_drop_baselines,
+                weapon_hint: world.weapon_hint,
                 props: world.props,
                 prop_baselines: world.prop_baselines,
                 view_offset: world.view_offset,

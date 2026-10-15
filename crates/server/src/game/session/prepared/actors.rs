@@ -89,6 +89,7 @@ impl PreparedGameState {
             legs_animation: animation,
             torso_animation: animation,
             weapon: player.weapon,
+            weapon_dropped: false,
             present: true,
             phase: codol_protocol::game::snapshot::corpse::CorpsePhase::Playing,
             death_sequence: sequence,

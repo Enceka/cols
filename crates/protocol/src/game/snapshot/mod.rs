@@ -253,6 +253,9 @@ pub fn player_frame_with_motion(
             perk_display: false,
             local_abilities: None,
             destroyed_glass: &[],
+            weapon_drops: &[],
+            weapon_drop_baselines: &[],
+            weapon_hint: None,
             bags: &[],
             bag_baselines: &[],
             smokes: &[],
@@ -292,6 +295,9 @@ pub fn player_frame_with_motion(
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct WorldSnapshot<'a> {
+    pub weapon_drops: &'a [weapon_drops::WeaponDropSnapshot],
+    pub weapon_drop_baselines: &'a [weapon_drops::WeaponDropSnapshot],
+    pub weapon_hint: Option<weapon_drops::WeaponHint>,
     pub props: &'a [crate::game::snapshot::props::PropSnapshot],
     pub prop_baselines: &'a [crate::game::snapshot::props::PropSnapshot],
     /// PS+0xa0..0xa8, fields70/45/191, native short-angle codec -100.
@@ -358,6 +364,14 @@ pub fn player_frame_with_world(
     world: WorldSnapshot<'_>,
 ) -> Result<Vec<u8>, LobbyError> {
     let motion = world.motion;
+    if world.weapon_hint.is_some_and(|h| {
+        !h.valid()
+            || motion.is_none()
+            || world.replay.is_some()
+            || world.vitals.is_some_and(|v| v.health == 0)
+    }) {
+        return Err(LobbyError("invalid ground weapon hint"));
+    }
     let shellshock = world.shellshock;
     let vitals = world.vitals;
     if shellshock.is_some_and(|s| s.index > 15 || motion.is_none()) {
@@ -564,6 +578,21 @@ pub fn player_frame_with_world(
     }
     let mut fields = Vec::new();
     if let Some(origin) = origin {
+        if motion.is_some() {
+            fields.extend([
+                (
+                    67,
+                    world.weapon_hint.map_or(0, |h| u32::from(h.weapon) + 4),
+                    11,
+                ),
+                (
+                    78,
+                    world.weapon_hint.map_or(2047, |h| u32::from(h.entity)),
+                    11,
+                ),
+                (80, 255, 8), // native signed8 -1: use the weapon's own prompt
+            ]);
+        }
         // Target field table 0xc55f70. Hint-2 fields use the later tail pass.
         // Equipment and angles must also be reflected in the input delta base.
         fields.extend([
@@ -1124,6 +1153,15 @@ pub fn player_frame_with_world(
             world.bag_baselines
         },
     )?;
+    weapon_drops::write(
+        &mut out,
+        world.weapon_drops,
+        if establish_baseline {
+            &[]
+        } else {
+            world.weapon_drop_baselines
+        },
+    )?;
     if world.delta_distance == 0 {
         crate::game::snapshot::obituary::write_obituaries(
             &mut out,
@@ -1247,6 +1285,43 @@ mod tests {
     use crate::game::channel::wire::Reader;
     use crate::game::snapshot::events::EventQueue;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn ground_weapon_hint_uses_current_ps_fields_and_clears_on_the_next_view() {
+        for hint in [
+            Some(weapon_drops::WeaponHint {
+                weapon: 352,
+                entity: 1024,
+            }),
+            None,
+        ] {
+            let packet = player_frame_with_world(
+                10000,
+                9950,
+                Some([0.0; 3]),
+                false,
+                None,
+                [0; 3],
+                WorldSnapshot {
+                    motion: Some(authoritative_motion()),
+                    weapon_hint: hint,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let mut r = Reader::new(&packet);
+            assert_eq!(r.u8().unwrap(), 0);
+            assert_eq!(r.u32().unwrap(), 10000);
+            r.u8().unwrap();
+            r.u8().unwrap();
+            assert_eq!(r.bits(2).unwrap(), 2);
+            let (fields, _) = read_fields(&mut r);
+            assert_eq!(fields[&67], hint.map_or(0, |h| u32::from(h.weapon) + 4));
+            assert_eq!(fields[&78], hint.map_or(2047, |h| u32::from(h.entity)));
+            assert_eq!(fields[&80], 255);
+            assert_eq!(fields[&98], 0);
+        }
+    }
 
     // An independent reader driven by the extracted target table. The event
     // widths used here are measured entries from 0xc56d70, not writer helpers.
@@ -2932,3 +3007,4 @@ pub mod smoke;
 pub mod sound;
 pub mod stats;
 pub mod target;
+pub mod weapon_drops;
