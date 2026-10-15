@@ -1,0 +1,90 @@
+{
+  "schema_version": 1,
+  "client_sha256": "e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b",
+  "read_only": true,
+  "resource_preparation_claimed": false,
+  "capture_sha256": "5f040281b862d2475646b364cd523efddf1cf2e1ef27581fab21f29a2ee38fe5",
+  "localize_type": 27,
+  "key_offset": 4,
+  "value_offset": 0,
+  "encoding": "GB18030",
+  "maps": [
+    {
+      "map": "mp_nuked",
+      "native_id": 9,
+      "label_key": "MPUI_NUKED",
+      "label": "核弹小镇",
+      "loaded": true
+    },
+    {
+      "map": "mp_rust_long",
+      "native_id": 11,
+      "label_key": "MPUI_RUST",
+      "label": "储油站",
+      "loaded": true
+    },
+    {
+      "map": "mp_shipment_long",
+      "native_id": 12,
+      "label_key": "MPUI_SHIPMENT",
+      "label": "混战码头",
+      "loaded": true
+    },
+    {
+      "map": "mp_ambush_sh",
+      "native_id": 14,
+      "label_key": "MPUI_CONVOY",
+      "label": "废墟",
+      "loaded": true
+    },
+    {
+      "map": "mp_highrise",
+      "native_id": 50,
+      "label_key": "MPUI_HIGHRISE",
+      "label": "高楼",
+      "loaded": true
+    },
+    {
+      "map": "mp_mideast",
+      "native_id": 51,
+      "label_key": "MPUI_MIDEAST",
+      "label": "绿洲",
+      "loaded": true
+    },
+    {
+      "map": "mp_cha_quad",
+      "native_id": 52,
+      "label_key": "MPUI_CHA_QUAD",
+      "label": "修道院",
+      "loaded": true
+    },
+    {
+      "map": "mp_boomtown",
+      "native_id": 54,
+      "label_key": "MPUI_BOOMTOWN",
+      "label": "西部乐园",
+      "loaded": true
+    },
+    {
+      "map": "mp_mountain",
+      "native_id": 71,
+      "label_key": "MPUI_SUMMIT",
+      "label": "雪山之巅",
+      "loaded": true
+    },
+    {
+      "map": "mp_terminal_cls",
+      "native_id": 79,
+      "label_key": "MPUI_TERMINAL",
+      "label": "航站楼",
+      "loaded": true
+    },
+    {
+      "map": "mp_subbase_sh",
+      "native_id": 84,
+      "label_key": "MPUI_SUBBASE",
+      "label": "潜艇基地",
+      "loaded": true
+    }
+  ]
+}

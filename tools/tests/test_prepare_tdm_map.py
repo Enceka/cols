@@ -10,6 +10,24 @@ from prepare_game_state import CLIENT_SHA256
 
 
 class TdmMapPreparation(unittest.TestCase):
+    def test_small_charge_pool_reuses_only_own_points_and_keeps_headings_paired(self):
+        capture=self.capture();record=capture['maps'][0]
+        raw=base64.b64decode(record['entity_string_base64'])
+        for team,x in [('axis',100),('allies',200)]:
+            for y in range(5):
+                raw+=('{"classname" "mp_cha_spawn_%s" "origin" "%d %d 56" "angle" "%d"}'%(team,x,y,y*45)).encode()
+        record.update(byte_count=len(raw),entity_string_base64=base64.b64encode(raw).decode())
+        starts,bases=charge_spawns(capture,'mp_killhouse_sh')
+        self.assertEqual([len(t) for t in starts],[5,5])
+        points=team_spawns(capture,'mp_killhouse_sh',mode='cha')
+        angles=team_spawn_angles(capture,'mp_killhouse_sh',mode='cha')
+        self.assertEqual([len(t) for t in points],[6,6])
+        for team in range(2):
+            self.assertEqual(points[team][5],points[team][0])
+            self.assertEqual(angles[team][5],angles[team][0])
+            self.assertEqual(points[team][:5],[p['origin'] for p in bases[team]])
+        self.assertEqual(angles[0][4],[0,32768,0])
+
     def test_charge_uses_its_own_opening_and_base_groups_and_never_tdm_starts(self):
         capture=self.capture();record=capture['maps'][0]
         raw=base64.b64decode(record['entity_string_base64'])

@@ -10,6 +10,19 @@ import materialize_map_batch as batch
 
 
 class NativeBatchLifecycle(unittest.TestCase):
+    def test_charge_compass_candidates_use_exact_native_materials_and_source_hash(self):
+        import hashlib
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);entities=root/'entities.json';entities.write_text('{}')
+            lab=batch.Lab(root,root/'service','owned',root/'catalog',root/'initial',mode='cha')
+            geometry=dict(north_yaw=0,upper_left=[100,100],lower_right=[-100,-100])
+            with patch('materialize_map_batch.minimap_geometry',return_value=geometry):
+                for name,material in [('mp_ambush_sh','compass_map_mp_convoy'),('mp_boomtown','compass_map_mp_boomtown')]:
+                    candidate=batch.read(lab.compass_candidate(name,entities,123))
+                    self.assertEqual(candidate['minimap']['material'],material)
+                    self.assertEqual(candidate['entities_sha256'],hashlib.sha256(entities.read_bytes()).hexdigest())
+                    self.assertNotIn('material_proof',candidate['minimap'])
+
     def test_charge_metadata_keeps_the_same_map_war_entry_and_native_registry(self):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory);catalog=root/'catalog.json';constants=root/'constants.json'

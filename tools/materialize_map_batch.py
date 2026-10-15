@@ -21,7 +21,7 @@ import time
 
 from clientlib import REPO, matches_client_image
 from prepare_game_state import compute, CLIENT_SHA256
-from prepare_map_hud import minimap, minimap_geometry
+from prepare_map_hud import CAPTURED_ALIASES, minimap, minimap_geometry
 from prepare_map_batch import read, write, prepare as prepare_batch, verify
 from verify_native_maps import Client
 
@@ -200,7 +200,7 @@ class Lab:
         complete=cache/(name+'-resource-paths.json') if cache else None
         if complete and complete.is_file():
             captures=read(complete)
-            if name in ('mp_highrise','mp_subbase_sh','mp_dr_box','mp_dr_cistern','za_coliseum'):
+            if name in ('mp_highrise','mp_subbase_sh','mp_dr_box','mp_dr_cistern','za_coliseum','mp_ambush_sh','mp_boomtown'):
                 try:minimap(read(Path(captures['entities'])),name,read(Path(captures['characters'])))
                 except ValueError:captures=self.probe_compass(name,captures)
             # Preparation revalidates SHA, map, CRC, real textures and all
@@ -237,7 +237,7 @@ class Lab:
             initialized_path=self.initialization_catalog(name,constants,summary)
             write(self.directory/(name+'-raw-paths.json'),paths)
         probe=(self.compass_candidate(name,Path(paths['map-entities']),summary['ncs_crc'])
-               if name in ('mp_highrise','mp_subbase_sh','mp_dr_box','mp_dr_cistern','za_coliseum') else None)
+               if name in ('mp_highrise','mp_subbase_sh','mp_dr_box','mp_dr_cistern','za_coliseum','mp_ambush_sh','mp_boomtown') else None)
         client=self.start(name,initialized_path,'initialized',probe)
         try:
             self.enter(client,name)
@@ -268,7 +268,7 @@ class Lab:
         path=self.directory/(name+'-compass-probe.json')
         write(path,dict(schema_version=1,client_sha256=CLIENT_SHA256,map=name,ncs_crc=crc,
             entities_sha256=hashlib.sha256(entities.read_bytes()).hexdigest(),
-            minimap=dict(material='compass_map_'+name,**minimap_geometry(read(entities),name))))
+            minimap=dict(material=CAPTURED_ALIASES.get(name,'compass_map_'+name),**minimap_geometry(read(entities),name))))
         return path
 
     def probe_compass(self, name, captures):

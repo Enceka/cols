@@ -1,0 +1,327 @@
+{
+  "schema_version": 1,
+  "client_sha256": "e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b",
+  "build_version_column": 2,
+  "native_gameplay_claimed": false,
+  "maps": [
+    {
+      "map": "mp_nuked",
+      "native_id": 9,
+      "native_flags": [
+        1,
+        1,
+        1
+      ],
+      "entity_capture": "research-output/charge-mode-20261015/map-entities/1792020781391993000.json",
+      "entity_sha256": "680d441771f2e540d94cf9e82cde816f546d84c3fe9d232948b81697e6675d65",
+      "spawn_classes": {
+        "mp_cha_spawn_allies_start": 9,
+        "mp_cha_spawn_axis_start": 9,
+        "mp_cha_spawn_axis": 8,
+        "mp_cha_spawn_allies": 9
+      },
+      "opening_counts": [
+        9,
+        9
+      ],
+      "base_counts": [
+        8,
+        9
+      ],
+      "status": "prepared"
+    },
+    {
+      "map": "mp_rust_long",
+      "native_id": 11,
+      "native_flags": [
+        1,
+        1,
+        1
+      ],
+      "entity_capture": "research-output/charge-mode-20261015/map-entities/1792026484691135000.json",
+      "entity_sha256": "b285006a03bae13f5fe76e2bfacdc7962bf1a6e0ae98fd10f3977296e6dd6f6b",
+      "spawn_classes": {
+        "mp_cha_spawn_axis": 12,
+        "mp_cha_spawn_allies_start": 9,
+        "mp_cha_spawn_allies": 10,
+        "mp_cha_spawn_axis_start": 9
+      },
+      "opening_counts": [
+        9,
+        9
+      ],
+      "base_counts": [
+        12,
+        10
+      ],
+      "status": "prepared"
+    },
+    {
+      "map": "mp_shipment_long",
+      "native_id": 12,
+      "native_flags": [
+        1,
+        1,
+        1
+      ],
+      "entity_capture": "research-output/charge-mode-20261015/map-entities/1792048480593795000.json",
+      "entity_sha256": "79c05ee854a9daedcfbe7fb78587ceba51b450d9c2f42034716939d563135e26",
+      "spawn_classes": {
+        "mp_cha_spawn_axis_start": 9,
+        "mp_cha_spawn_allies_start": 9,
+        "mp_cha_spawn_axis": 10,
+        "mp_cha_spawn_allies": 10
+      },
+      "opening_counts": [
+        9,
+        9
+      ],
+      "base_counts": [
+        10,
+        10
+      ],
+      "status": "prepared"
+    },
+    {
+      "map": "mp_ambush_sh",
+      "native_id": 14,
+      "native_flags": [
+        1,
+        1,
+        1
+      ],
+      "entity_capture": "research-output/charge-mode-20261015/map-entities/1792026797111643000.json",
+      "entity_sha256": "8ccfec1b82cfc2601139fe0cf0761d4ad8f88bb3be2605941fc45fd5c275f5d3",
+      "spawn_classes": {
+        "mp_cha_spawn_allies_start": 9,
+        "mp_cha_spawn_allies": 9,
+        "mp_cha_spawn_axis_start": 9,
+        "mp_cha_spawn_axis": 9
+      },
+      "opening_counts": [
+        9,
+        9
+      ],
+      "base_counts": [
+        9,
+        9
+      ],
+      "status": "prepared"
+    },
+    {
+      "map": "mp_highrise",
+      "native_id": 50,
+      "native_flags": [
+        1,
+        1,
+        1
+      ],
+      "entity_capture": "research-output/charge-mode-20261015/map-entities/1792027318778226000.json",
+      "entity_sha256": "480ad348a652b8e391604d3ee28f11b196faa32e0557b950132a998b41792356",
+      "spawn_classes": {
+        "mp_cha_spawn_allies": 9,
+        "mp_cha_spawn_axis": 9
+      },
+      "opening_counts": [
+        9,
+        9
+      ],
+      "base_counts": [
+        9,
+        9
+      ],
+      "status": "prepared"
+    },
+    {
+      "map": "mp_mideast",
+      "native_id": 51,
+      "native_flags": [
+        1,
+        0,
+        1
+      ],
+      "entity_capture": "research-output/charge-mode-20261015/map-entities/1792048772982752000.json",
+      "entity_sha256": "c9d708e3756fabebd8375435181e5833a4d9e331ff9d7924eedb618636ea4795",
+      "spawn_classes": {
+        "mp_cha_spawn_axis_start": 5,
+        "mp_cha_spawn_axis": 5,
+        "mp_cha_spawn_allies_start": 5,
+        "mp_cha_spawn_allies": 5
+      },
+      "opening_counts": [
+        5,
+        5
+      ],
+      "base_counts": [
+        5,
+        5
+      ],
+      "status": "prepared"
+    },
+    {
+      "map": "mp_cha_quad",
+      "native_id": 52,
+      "native_flags": [
+        1,
+        0,
+        1
+      ],
+      "entity_capture": "research-output/charge-mode-20261015/map-entities/1792049484776849000.json",
+      "entity_sha256": "3ca03c74b60e142c873b595f5d67b9d1ba47da489d8156b6f13b100590166b49",
+      "spawn_classes": {
+        "mp_cha_spawn_allies_start": 6,
+        "mp_cha_spawn_axis_start": 6,
+        "mp_cha_spawn_axis": 6,
+        "mp_cha_spawn_allies": 6
+      },
+      "opening_counts": [
+        6,
+        6
+      ],
+      "base_counts": [
+        6,
+        6
+      ],
+      "status": "prepared"
+    },
+    {
+      "map": "mp_boomtown",
+      "native_id": 54,
+      "native_flags": [
+        1,
+        1,
+        1
+      ],
+      "entity_capture": "research-output/charge-mode-20261015/map-entities/1792049816310232000.json",
+      "entity_sha256": "d2bb61a2601e1efb318723221970bfceafaad7ae072d06dfc15065ead9002c14",
+      "spawn_classes": {
+        "mp_cha_spawn_axis_start": 9,
+        "mp_cha_spawn_allies_start": 9,
+        "mp_cha_spawn_allies": 9,
+        "mp_cha_spawn_axis": 9
+      },
+      "opening_counts": [
+        9,
+        9
+      ],
+      "base_counts": [
+        9,
+        9
+      ],
+      "status": "prepared"
+    },
+    {
+      "map": "mp_skybreak",
+      "native_id": 55,
+      "native_flags": [
+        1,
+        0,
+        0
+      ],
+      "status": "excluded_version"
+    },
+    {
+      "map": "mp_utopia",
+      "native_id": 67,
+      "native_flags": [
+        1,
+        0,
+        0
+      ],
+      "status": "excluded_version"
+    },
+    {
+      "map": "mp_roundabout",
+      "native_id": 68,
+      "native_flags": [
+        1,
+        0,
+        0
+      ],
+      "status": "excluded_version"
+    },
+    {
+      "map": "mp_nukearena",
+      "native_id": 69,
+      "native_flags": [
+        1,
+        0,
+        0
+      ],
+      "status": "excluded_version"
+    },
+    {
+      "map": "mp_purgatory",
+      "native_id": 70,
+      "native_flags": [
+        1,
+        0,
+        0
+      ],
+      "status": "excluded_version"
+    },
+    {
+      "map": "mp_mountain",
+      "native_id": 71,
+      "native_flags": [
+        1,
+        1,
+        1
+      ],
+      "entity_capture": "research-output/charge-mode-20261015/map-entities/1792026955334066000.json",
+      "entity_sha256": "8d2770515353a65a0e61aa8d565f5c1fa1aea1d1a49d5727edce66510d1a928d",
+      "spawn_classes": {
+        "mp_cha_spawn_allies_start": 9,
+        "mp_cha_spawn_allies": 9,
+        "mp_cha_spawn_axis_start": 9,
+        "mp_cha_spawn_axis": 9
+      },
+      "opening_counts": [
+        9,
+        9
+      ],
+      "base_counts": [
+        9,
+        9
+      ],
+      "status": "prepared"
+    },
+    {
+      "map": "mp_terminal_cls",
+      "native_id": 79,
+      "native_flags": [
+        1,
+        1,
+        1
+      ],
+      "entity_capture": "research-output/charge-mode-20261015/map-entities/1792027580601242000.json",
+      "entity_sha256": "3ba844699ef842821b843353730090fbb0340c0ba087963ca0db113fd46e2ae5",
+      "spawn_classes": {},
+      "status": "excluded_no_native_pools"
+    },
+    {
+      "map": "mp_pzp_prototype",
+      "native_id": 82,
+      "native_flags": [
+        1,
+        0,
+        0
+      ],
+      "status": "excluded_version"
+    },
+    {
+      "map": "mp_subbase_sh",
+      "native_id": 84,
+      "native_flags": [
+        1,
+        1,
+        1
+      ],
+      "entity_capture": "research-output/charge-mode-20261015/map-entities/1792027755687463000.json",
+      "entity_sha256": "b29f7e902331b9b4d2d33090fa6cb61904c4a4a8197de337adbb9bc551772e5a",
+      "spawn_classes": {},
+      "status": "excluded_no_native_pools"
+    }
+  ],
+  "complete": true
+}

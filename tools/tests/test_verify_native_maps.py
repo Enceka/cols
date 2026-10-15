@@ -76,6 +76,7 @@ class NativeMapIsolation(unittest.TestCase):
             state.write_text(json.dumps(dict(map='mp_bog_sh', mode='war',
                 arsenal_file='resources/arsenal.json', collision_file='resources/collision.json',
                 appearance_file='resources/appearance.json', voice_file='resources/voice.json',
+                nuke_file='resources/nuke.json', radar_file='resources/radar.json', props_file='resources/props.json',
                 match_config=dict(score_limit=7500, time_limit_msec=600000))))
             catalog = root / 'normal-catalog.json'
             catalog.write_text(json.dumps(dict(schema_version=1,
@@ -84,7 +85,7 @@ class NativeMapIsolation(unittest.TestCase):
             prepared = prepare(catalog, root / 'diagnostic')
             diagnostic = json.loads((prepared.parent / 'mp_bog_sh.json').read_text())
             self.assertEqual(diagnostic['match_config'], dict(score_limit=1000, time_limit_msec=60000))
-            for key in ('arsenal_file', 'collision_file', 'appearance_file', 'voice_file'):
+            for key in ('arsenal_file', 'collision_file', 'appearance_file', 'voice_file', 'nuke_file', 'radar_file', 'props_file'):
                 self.assertEqual(Path(diagnostic[key]).parent, (root / 'resources').resolve())
             self.assertEqual([path.read_bytes() for path in (state, catalog)], original)
             with self.assertRaises(FileExistsError):

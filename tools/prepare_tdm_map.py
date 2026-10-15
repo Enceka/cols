@@ -20,7 +20,7 @@ from prepare_map_hud import map_entities, minimap
 
 def team_spawns(capture, map_name, minimum=6, mode='war'):
     if mode=='cha':
-        starts,_=charge_spawns(capture,map_name,minimum)
+        starts=charge_formation(capture,map_name,minimum)
         return [[p['origin'] for p in t] for t in starts]
     teams = [[], []]
     classes = [b"mp_tdm_spawn_axis_start", b"mp_tdm_spawn_allies_start"]
@@ -38,7 +38,7 @@ def team_spawns(capture, map_name, minimum=6, mode='war'):
 
 def team_spawn_angles(capture, map_name, minimum=6, mode='war'):
     if mode=='cha':
-        starts,_=charge_spawns(capture,map_name,minimum)
+        starts=charge_formation(capture,map_name,minimum)
         return [[p['angles'] for p in t] for t in starts]
     teams = [[], []]
     classes = [b"mp_tdm_spawn_axis_start", b"mp_tdm_spawn_allies_start"]
@@ -63,7 +63,16 @@ def native_maps(mode='war'):
     return [m['name'] for m in registry['maps']]
 
 
-def charge_spawns(capture,map_name,minimum=6):
+def charge_formation(capture,map_name,minimum=6):
+    if not 1<=minimum<=128:
+        raise ValueError('invalid charge formation size')
+    starts,_=charge_spawns(capture,map_name)
+    # These are per-player opening assignments. A small native pool can serve
+    # more players by reusing its own points, with their paired headings.
+    return [[team[i%len(team)] for i in range(max(minimum,len(team)))] for team in starts]
+
+
+def charge_spawns(capture,map_name,minimum=1):
     entities=map_entities(capture,map_name)
     def points(classname):
         result=[]
@@ -145,7 +154,7 @@ def prepare(template, map_name, constants, entities, collision, arsenal, charact
     state["minimap"] = minimap(entities, map_name, characters, material_capture_sha256)
     state["match_config"].update(spawns=teams, spawn_angles=team_spawn_angles(entities, map_name, player_count // 2,mode),
         respawn_points=respawn_points(entities, map_name) if mode=='war' else [],
-        base_respawns=charge_spawns(entities,map_name,player_count//2)[1] if mode=='cha' else None,
+        base_respawns=charge_spawns(entities,map_name)[1] if mode=='cha' else None,
         preparation_msec=5000,
         grace_period_msec=15000,
         preparation_text=preparation_text(constants),

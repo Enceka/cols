@@ -779,7 +779,7 @@ partial class ClientAssets {
             "connection_state",loadedState,"ncs_initialized",r.Word(0x02df9934),"map",r.Name(r.Word(0x02dfb000)),"ncs_crc",r.Word(0x02df7d90),"registered_count",count,
             "marketplace",marketplace,"weapons",weapons)));
     }
-    bool NativeTdmMapPath(string path) {
+    bool NativeTeamMapPath(string path) {
         var table=(Dictionary<string,object>)Table("mp/coMapList.csv");
         if(!table.ContainsKey("found")||(bool)table["found"]!=true||(int)table["columns"]!=37)
             throw new Exception("native map table unavailable or wrong layout");
@@ -789,7 +789,8 @@ partial class ClientAssets {
             string name=Encoding.ASCII.GetString(Convert.FromBase64String(cells[row+4]));
             string category=Encoding.ASCII.GetString(Convert.FromBase64String(cells[row+8]));
             string modes=Encoding.ASCII.GetString(Convert.FromBase64String(cells[row+9]));
-            if(category=="pvp"&&Array.IndexOf(modes.Split(';'),"war")>=0&&path=="maps/mp/"+name+".d3dbsp")return true;
+            string[] tokens=modes.Split(';');
+            if(category=="pvp"&&(Array.IndexOf(tokens,"war")>=0||Array.IndexOf(tokens,"cha")>=0)&&path=="maps/mp/"+name+".d3dbsp")return true;
         }
         return false;
     }
@@ -847,7 +848,7 @@ partial class ClientAssets {
         var r=new ClientAssets(process);
         uint state=r.Word(0x01a2e7ec);if(state<6||state>10)throw new Exception("load the map before collision capture");
         uint cm=0x02dfb000;byte[] header=r.Read(cm,256);string map=r.Name(U(header,0));
-        if(!r.NativeTdmMapPath(map))throw new Exception("collision map has no captured native TDM identity: "+map);
+        if(!r.NativeTeamMapPath(map))throw new Exception("collision map has no captured native team-mode identity: "+map);
         uint crc=r.Word(0x02df7d90);
         var brushes=new List<object>();int count=Count(BitConverter.ToUInt16(header,0x38),65535);
         WorldCollisionIds world=r.WorldCollisionReferences(header,count);
@@ -912,7 +913,7 @@ partial class ClientAssets {
     public static void ExportGlass(IntPtr process) {
         var r=new ClientAssets(process);
         uint state=r.Word(0x01a2e7ec);if(state<6||state>10)throw new Exception("load the map before glass capture");
-        string map=r.Name(r.Word(0x02dfb000));if(!r.NativeTdmMapPath(map))throw new Exception("glass map identity invalid");
+        string map=r.Name(r.Word(0x02dfb000));if(!r.NativeTeamMapPath(map))throw new Exception("glass map identity invalid");
         uint crc=r.Word(0x02df7d90);byte[] system=r.Read(0x0297200c,100);
         int count=Count(U(system,0x14),1024);uint initial=U(system,0x5c);
         if(count>0&&initial<0x10000)throw new Exception("glass initial pieces unavailable");

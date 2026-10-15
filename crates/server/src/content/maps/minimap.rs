@@ -140,6 +140,7 @@ impl CompassProbe {
                         | "mp_dr_cistern"
                         | "za_coliseum"
                         | "mp_ambush_sh"
+                        | "mp_boomtown"
                 )
                 && probe.entities_sha256.len() == 64
                 && probe.entities_sha256.bytes().all(|b| b.is_ascii_hexdigit())
@@ -188,6 +189,21 @@ mod tests {
         value["minimap"]["material"] = "compass_map_mp_ambush_sh".into();
         std::fs::write(file.path(), serde_json::to_vec(&value).unwrap()).unwrap();
         assert!(CompassProbe::load(file.path(), "mp_ambush_sh").is_err());
+    }
+
+    #[test]
+    fn boomtown_compass_request_still_needs_actual_material_capture() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let mut value = serde_json::json!({"schema_version":1,"client_sha256":codol_protocol::CLIENT_SHA256,
+            "map":"mp_boomtown","ncs_crc":123,"entities_sha256":"a".repeat(64),
+            "minimap":{"material":"compass_map_mp_boomtown","north_yaw":0,"upper_left":[100,100],"lower_right":[-100,-100]}});
+        std::fs::write(file.path(), serde_json::to_vec(&value).unwrap()).unwrap();
+        let probe = CompassProbe::load(file.path(), "mp_boomtown").unwrap();
+        assert!(probe.minimap.validate("mp_boomtown", 123).is_err());
+        assert!(CompassProbe::load(file.path(), "mp_highrise").is_err());
+        value["minimap"]["material"] = "compass_map_mp_nuked".into();
+        std::fs::write(file.path(), serde_json::to_vec(&value).unwrap()).unwrap();
+        assert!(CompassProbe::load(file.path(), "mp_boomtown").is_err());
     }
 
     #[test]

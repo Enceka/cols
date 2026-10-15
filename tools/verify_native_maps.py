@@ -334,7 +334,7 @@ def prepare(catalog_path, output):
         state = json.loads(source.read_text())
         if state['map'] != entry['map'] or state['mode'] != entry['mode']:
             raise ValueError('catalog map identity mismatch')
-        for key in ('arsenal_file','collision_file','appearance_file','voice_file'):
+        for key in ('arsenal_file','collision_file','appearance_file','voice_file','nuke_file','radar_file','props_file'):
             if state.get(key):
                 state[key] = str((source.parent/state[key]).resolve())
         state['match_config'].update(score_limit=1000, time_limit_msec=60000)
