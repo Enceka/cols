@@ -134,11 +134,21 @@ impl CompassProbe {
                 && probe.map == map
                 && matches!(
                     map,
-                    "mp_highrise" | "mp_subbase_sh" | "mp_dr_box" | "mp_dr_cistern" | "za_coliseum"
+                    "mp_highrise"
+                        | "mp_subbase_sh"
+                        | "mp_dr_box"
+                        | "mp_dr_cistern"
+                        | "za_coliseum"
+                        | "mp_ambush_sh"
                 )
                 && probe.entities_sha256.len() == 64
                 && probe.entities_sha256.bytes().all(|b| b.is_ascii_hexdigit())
-                && probe.minimap.material == format!("compass_map_{map}")
+                && probe.minimap.material
+                    == if map == "mp_ambush_sh" {
+                        "compass_map_mp_convoy".to_owned()
+                    } else {
+                        format!("compass_map_{map}")
+                    }
                 && probe.minimap.material_proof.is_none(),
             "compass probe requires this map's captured identity and native candidate name"
         );
@@ -164,6 +174,20 @@ mod tests {
         value["minimap"]["material"] = "compass_map_mp_afghan".into();
         std::fs::write(file.path(), serde_json::to_vec(&value).unwrap()).unwrap();
         assert!(CompassProbe::load(file.path(), "mp_highrise").is_err());
+    }
+
+    #[test]
+    fn ambush_compass_request_uses_its_native_convoy_alias_without_granting_proof() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let mut value = serde_json::json!({"schema_version":1,"client_sha256":codol_protocol::CLIENT_SHA256,
+            "map":"mp_ambush_sh","ncs_crc":123,"entities_sha256":"a".repeat(64),
+            "minimap":{"material":"compass_map_mp_convoy","north_yaw":0,"upper_left":[100,100],"lower_right":[-100,-100]}});
+        std::fs::write(file.path(), serde_json::to_vec(&value).unwrap()).unwrap();
+        let probe = CompassProbe::load(file.path(), "mp_ambush_sh").unwrap();
+        assert!(probe.minimap.validate("mp_ambush_sh", 123).is_err());
+        value["minimap"]["material"] = "compass_map_mp_ambush_sh".into();
+        std::fs::write(file.path(), serde_json::to_vec(&value).unwrap()).unwrap();
+        assert!(CompassProbe::load(file.path(), "mp_ambush_sh").is_err());
     }
 
     #[test]

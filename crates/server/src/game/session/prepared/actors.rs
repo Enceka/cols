@@ -1,6 +1,40 @@
 use super::*;
 
 impl PreparedGameState {
+    pub(super) fn prepared_navigation(
+        &self,
+    ) -> Result<Arc<crate::game::ai::navigation::Navigation>> {
+        let config = self
+            .match_config
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("TDM navigation needs a match configuration"))?;
+        let collision = self
+            .collision
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("TDM navigation needs captured collision"))?;
+        Ok(self
+            .navigation
+            .get_or_init(|| {
+                Arc::new(crate::game::ai::navigation::Navigation::build(
+                    config
+                        .spawns
+                        .iter()
+                        .flatten()
+                        .copied()
+                        .chain(config.respawn_points.iter().map(|p| p.origin))
+                        .chain(
+                            config
+                                .base_respawns
+                                .iter()
+                                .flatten()
+                                .flatten()
+                                .map(|p| p.origin),
+                        ),
+                    collision,
+                ))
+            })
+            .clone())
+    }
     pub(crate) fn enemy_snapshot(
         &self,
         alive: bool,
@@ -324,10 +358,7 @@ impl PreparedGameState {
             template,
             self.training_enemy.as_ref().unwrap().move_speed,
             self.collision.as_ref().unwrap(),
-            self.navigation
-                .as_ref()
-                .ok_or_else(|| anyhow::anyhow!("TDM navigation not prepared"))?
-                .clone(),
+            self.prepared_navigation()?,
         )?;
         tdm.configure_roster(self.roster_weapons.iter().map(Self::make_player).collect())?;
         if let Some(resources) = &self.props_resources {

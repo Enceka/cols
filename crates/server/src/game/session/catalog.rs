@@ -69,7 +69,7 @@ impl GameMapCatalog {
                 !states.contains_key(&key),
                 "duplicate game map/mode preparation"
             );
-            let state = PreparedGameState::load(&directory.join(&entry.file))
+            let state = PreparedGameState::load_catalog_entry(&directory.join(&entry.file))
                 .with_context(|| format!("load prepared map {} / {}", entry.map, entry.mode))?;
             ensure!(
                 state.map() == entry.map && state.mode() == entry.mode,

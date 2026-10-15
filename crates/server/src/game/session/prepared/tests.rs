@@ -70,6 +70,45 @@ fn compass_candidate_remains_metadata_only_and_checks_the_initialized_crc() {
 }
 use super::*;
 #[test]
+fn catalog_navigation_is_cached_across_profile_clones_and_room_team_changes() {
+    let mut state = synthetic();
+    let file = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(
+        file.path(),
+        serde_json::to_vec(&serde_json::json!({
+            "schema_version":1,"read_only":true,"client_sha256":codol_protocol::CLIENT_SHA256,
+            "map":format!("maps/mp/{}.d3dbsp",state.map),"ncs_crc":state.ncs_crc,
+            "brushes":[{"center":[0,0,-10],"half":[4000,4000,10],"contents":1,"planes":[]}],
+            "triangles":[]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    state.collision = Some(Arc::new(
+        crate::game::world::collision::Collision::load(file.path()).unwrap(),
+    ));
+    state.match_config = Some(
+        serde_json::from_value(serde_json::json!({
+            "spawns":[(0..6).map(|i| [300,i*100,0]).collect::<Vec<_>>(),
+                      (0..6).map(|i| [-300,i*100,0]).collect::<Vec<_>>()],
+            "respawn_points":[{"origin":[1200,0,0],"angles":[0,1234,0]}],
+            "score_limit":7500,"time_limit_msec":600000
+        }))
+        .unwrap(),
+    );
+    let other = state
+        .clone()
+        .with_room_teams([1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2])
+        .unwrap();
+    assert!(state.navigation.get().is_none());
+    let graph = state.prepared_navigation().unwrap();
+    let reused = other.prepared_navigation().unwrap();
+    assert!(Arc::ptr_eq(&graph, &reused));
+    assert!(Arc::ptr_eq(&state.navigation, &other.navigation));
+    assert_eq!(other.match_config.unwrap().teams[0], 1);
+}
+
+#[test]
 fn identical_guns_do_not_hide_changed_passive_or_offhand_spawn_equipment() {
     let current = synthetic();
     let mut selected = current.clone();

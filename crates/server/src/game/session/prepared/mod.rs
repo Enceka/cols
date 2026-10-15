@@ -188,7 +188,7 @@ pub struct PreparedGameState {
     #[serde(skip)]
     roster_weapons: Vec<BootstrapWeapon>,
     #[serde(skip)]
-    navigation: Option<Arc<crate::game::ai::navigation::Navigation>>,
+    navigation: Arc<std::sync::OnceLock<Arc<crate::game::ai::navigation::Navigation>>>,
     #[serde(default)]
     arsenal_file: Option<std::path::PathBuf>,
     #[serde(default)]
@@ -547,7 +547,7 @@ pub(crate) fn synthetic() -> PreparedGameState {
         match_config: None,
         match_weapon: None,
         roster_weapons: Vec::new(),
-        navigation: None,
+        navigation: Default::default(),
         arsenal_file: None,
         collision_file: None,
         appearance_file: None,

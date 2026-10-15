@@ -2,6 +2,12 @@ use super::*;
 
 impl PreparedGameState {
     pub fn load(path: &Path) -> Result<Self> {
+        Self::load_navigation(path, true)
+    }
+    pub(crate) fn load_catalog_entry(path: &Path) -> Result<Self> {
+        Self::load_navigation(path, false)
+    }
+    fn load_navigation(path: &Path, eager_navigation: bool) -> Result<Self> {
         ensure!(
             std::fs::metadata(path)?.len() <= 256 * 1024,
             "prepared game state size"
@@ -80,24 +86,8 @@ impl PreparedGameState {
         }
         state.validate()?;
         state.ground_first_spawn()?;
-        if let Some(config) = &state.match_config {
-            state.navigation = Some(Arc::new(crate::game::ai::navigation::Navigation::build(
-                config
-                    .spawns
-                    .iter()
-                    .flatten()
-                    .copied()
-                    .chain(config.respawn_points.iter().map(|p| p.origin))
-                    .chain(
-                        config
-                            .base_respawns
-                            .iter()
-                            .flatten()
-                            .flatten()
-                            .map(|p| p.origin),
-                    ),
-                state.collision.as_ref().unwrap(),
-            )));
+        if eager_navigation && state.match_config.is_some() {
+            state.prepared_navigation()?;
         }
         Ok(state)
     }
