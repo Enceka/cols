@@ -1110,15 +1110,56 @@ pub fn player_frame_with_world(
         };
         crate::game::snapshot::held_weapon::write(&mut out, &current, &baseline, tag)?;
     }
-    if world.delta_distance == 0 {
-        crate::game::snapshot::impact::write_impacts(&mut out, world.impacts, establish_baseline)?;
-    } else {
-        crate::game::snapshot::impact::write_impacts_with_baselines(
-            &mut out,
-            world.impacts,
-            world.impact_baselines,
-            establish_baseline,
-        )?;
+    // The native entity parser merges against an ordered baseline. Ground
+    // weapons lie between the two impact allocation ranges, before sounds,
+    // missiles and scavenger bags.
+    for list in [world.impacts, world.impact_baselines] {
+        if list
+            .windows(2)
+            .any(|w| w[0].entity_number >= w[1].entity_number)
+        {
+            return Err(LobbyError("impact entities must be sorted and unique"));
+        }
+    }
+    let impact_split = world
+        .impacts
+        .partition_point(|i| i.entity_number < weapon_drops::FIRST_ENTITY);
+    let base_split = world
+        .impact_baselines
+        .partition_point(|i| i.entity_number < weapon_drops::FIRST_ENTITY);
+    for (after_weapons, impacts, bases) in [
+        (
+            false,
+            &world.impacts[..impact_split],
+            &world.impact_baselines[..base_split],
+        ),
+        (
+            true,
+            &world.impacts[impact_split..],
+            &world.impact_baselines[base_split..],
+        ),
+    ] {
+        if after_weapons {
+            weapon_drops::write(
+                &mut out,
+                world.weapon_drops,
+                if establish_baseline {
+                    &[]
+                } else {
+                    world.weapon_drop_baselines
+                },
+            )?;
+        }
+        if world.delta_distance == 0 {
+            crate::game::snapshot::impact::write_impacts(&mut out, impacts, establish_baseline)?;
+        } else {
+            crate::game::snapshot::impact::write_impacts_with_baselines(
+                &mut out,
+                impacts,
+                bases,
+                establish_baseline,
+            )?;
+        }
     }
     crate::game::snapshot::sound::write_sounds(
         &mut out,
@@ -1151,15 +1192,6 @@ pub fn player_frame_with_world(
             &[]
         } else {
             world.bag_baselines
-        },
-    )?;
-    weapon_drops::write(
-        &mut out,
-        world.weapon_drops,
-        if establish_baseline {
-            &[]
-        } else {
-            world.weapon_drop_baselines
         },
     )?;
     if world.delta_distance == 0 {
@@ -2076,6 +2108,78 @@ mod tests {
         assert_eq!(fields.get(&110).copied().unwrap_or(0), 0);
         assert_eq!(fields[&53], 236);
     }
+    #[test]
+    fn ground_weapon_deletions_merge_before_higher_entities_in_acknowledged_frames() {
+        use impact::{ImpactEvent, ImpactSnapshot};
+        let impact = ImpactSnapshot {
+            event: ImpactEvent::GrenadeExplosion,
+            entity_number: 54,
+            origin: [0.0; 3],
+            normal_byte: 0,
+            surface: 0,
+            weapon: 95,
+        };
+        let impacts = [
+            impact,
+            ImpactSnapshot {
+                entity_number: 1088,
+                ..impact
+            },
+        ];
+        let drop = weapon_drops::WeaponDropSnapshot {
+            entity_number: 1024,
+            weapon: 355,
+            origin: [0.0; 3],
+            angles: [0; 3],
+            owner: 1,
+            generation: 1,
+        };
+        let bag = scavenger::BagSnapshot {
+            entity_number: 1740,
+            origin: [0.0; 3],
+            weapon: 229,
+            generation: 1,
+        };
+        let body = player_frame_with_world(
+            62000,
+            61900,
+            None,
+            false,
+            None,
+            [0; 3],
+            WorldSnapshot {
+                delta_distance: 1,
+                impact_baselines: &impacts,
+                weapon_drop_baselines: &[drop],
+                bag_baselines: &[bag],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let mut r = Reader::new(&body);
+        assert_eq!(r.u8().unwrap(), 0);
+        r.u32().unwrap();
+        assert_eq!(r.u8().unwrap(), 1);
+        r.u8().unwrap();
+        assert_eq!(r.bits(2).unwrap(), 2);
+        read_fields(&mut r);
+        assert_eq!(r.bits(1).unwrap(), 1);
+        assert_eq!(r.bits(4).unwrap(), 1);
+        r.u16().unwrap();
+        assert_eq!(r.bits(15).unwrap(), 0);
+        // Once the client inherits a lower ID, a later removal cannot erase it.
+        for id in [54, 1024, 1088, 1740] {
+            assert_eq!(r.bits(2).unwrap(), 2);
+            assert_eq!(r.bits(11).unwrap(), id);
+            assert_eq!(r.bits(1).unwrap(), 1);
+        }
+        assert_eq!(r.bits(2).unwrap(), 2);
+        assert_eq!(r.bits(11).unwrap(), 2047);
+        assert_eq!(r.bits(2).unwrap(), 0);
+        assert_eq!(r.u8().unwrap(), SERVER_EOF);
+        r.finish().unwrap();
+    }
+
     #[test]
     fn smoke_removal_precedes_new_obituary_for_pinned_and_acknowledged_frames() {
         let old = crate::game::snapshot::smoke::SmokeSnapshot {

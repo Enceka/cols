@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "client_sha256": "e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b",
-  "evidence_kind": "fixed-client static consumers and local AlphaBuild source review",
-  "native_gameplay_acceptance": false,
+  "evidence_kind": "fixed-client static consumers, AlphaBuild source review and native Afghan gameplay",
+  "native_gameplay_acceptance": true,
   "native_item": {
     "entity_type": 3,
     "field_table_va": "0xc543b8",
@@ -15,7 +15,25 @@
     "owner_offset": "0x80",
     "owner_field": 30,
     "owner_bits": 11,
-    "full_field_layout_reference": "scavenger-3.3.3.3.json"
+    "full_field_layout_reference": "scavenger-3.3.3.3.json",
+    "angles": {
+      "field_indices": [
+        16,
+        17,
+        18
+      ],
+      "offsets": [
+        "0x48",
+        "0x4c",
+        "0x50"
+      ],
+      "codec": -78,
+      "payload": "absolute little-endian float32 degrees",
+      "bit_gates": 0,
+      "baseline_xor": false,
+      "decoder_va": "0x5a313d"
+    },
+    "snapshot_merge_order": "after lower impact IDs, before higher impacts, sounds, missiles, smoke, scavenger bags and obituaries"
   },
   "native_cursor_hint": {
     "field_table_va": "0xc55f70",
@@ -214,5 +232,23 @@
     "full two-hand and alternate-mode ammo transfer",
     "drop physics, moving-ground behavior and lifecycle parity",
     "special deaths, shield, launcher, GPS and special weapon behavior"
-  ]
+  ],
+  "native_runtime_validation": {
+    "map": "mp_afghan",
+    "scope": [
+      "native death weapon model and composed parts",
+      "native pickup hint",
+      "F swap and return",
+      "partial magazine and reserve preservation"
+    ],
+    "original_weapon": 352,
+    "picked_weapon": 358,
+    "original_clip": 19,
+    "returned_clip": 19,
+    "original_reserve": 90,
+    "returned_reserve": 90,
+    "sound_listening_acceptance": false,
+    "evidence_reference": "research-output/weapon-drops-native-20261015/native-proof.json",
+    "post_exchange_item_validity_probe_used_for_acceptance": false
+  }
 }

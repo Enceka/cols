@@ -82,9 +82,9 @@ pub(crate) fn write(
                 }
                 9 => scalar(out, 1, u32::from(base.is_some()), 8), // INTERPOLATE
                 16..=18 => {
-                    out.bits(0, 2);
-                    out.bytes
-                        .extend_from_slice(&s.angles[(index - 16) as usize].to_le_bytes());
+                    // ITEM's -78 codec reads an absolute raw float at 0x5a313d.
+                    let degrees = f32::from(s.angles[(index - 16) as usize]) * (360.0 / 65536.0);
+                    out.bytes.extend_from_slice(&degrees.to_le_bytes());
                 }
                 19 => scalar(
                     out,
@@ -163,9 +163,9 @@ mod tests {
                 0x20,
                 (s.origin[2].round_ties_even() as i16 as f32).to_bits(),
             ),
-            (0x48, u32::from(s.angles[0])),
-            (0x4c, u32::from(s.angles[1])),
-            (0x50, u32::from(s.angles[2])),
+            (0x48, (f32::from(s.angles[0]) * (360.0 / 65536.0)).to_bits()),
+            (0x4c, (f32::from(s.angles[1]) * (360.0 / 65536.0)).to_bits()),
+            (0x50, (f32::from(s.angles[2]) * (360.0 / 65536.0)).to_bits()),
             (0x98, u32::from(s.weapon)),
             (0x54, 1f32.to_bits()),
             (0x80, u32::from(s.owner)),
@@ -229,8 +229,9 @@ mod tests {
                         (r.bits(16).unwrap() as u16 as i16 as f32).to_bits()
                     }
                     -78 => {
-                        assert_eq!(r.bits(2).unwrap(), 0);
-                        u32::from(r.u16().unwrap())
+                        // Native 0x5a27f0 dispatches -78 directly to ReadLong;
+                        // no bit gates or baseline XOR precede the float.
+                        r.u32().unwrap()
                     }
                     0 => {
                         assert_eq!(r.bits(2).unwrap(), 3);
@@ -280,6 +281,7 @@ mod tests {
         let exchanged = WeaponDropSnapshot {
             weapon: 354,
             origin: [21.0, -5.0, 1.0],
+            angles: [1024, 16384, 65535],
             owner: 0,
             generation: 2,
             ..first
