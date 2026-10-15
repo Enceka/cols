@@ -17,9 +17,12 @@
     "bits": 32
   },
   "complete_goal": {
-    "opcode": 1,
-    "reader_va": 5914137,
-    "flags_bits": 2
+    "opcode": 2,
+    "reader_va": 5914044,
+    "flags_bits": 2,
+    "dispatch_va": 5273299,
+    "setter_va": 6604688,
+    "parent_weights_va": 6602448
   },
   "end": {
     "opcode": 5,
@@ -41,5 +44,12 @@
     "rate_reader_va": 5913168,
     "default_rate": 1.0
   },
-  "native_acceptance": "pending"
+  "native_acceptance": "pending",
+  "leaf_goal": {
+    "opcode": 1,
+    "reader_va": 5914137,
+    "dispatch_va": 5273164,
+    "setter_va": 6606784,
+    "raises_parent_weights": false
+  }
 }
