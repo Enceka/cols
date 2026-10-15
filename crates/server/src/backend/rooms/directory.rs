@@ -57,9 +57,11 @@ impl Channel {
             })
     }
     pub(super) fn population(&self) -> u32 {
-        self.humans.len() as u32 + if self.bots_announced { 11 } else { 0 }
+        self.humans.len() as u32
+            + self.fill_bots.len() as u32
+            + if self.bots_announced { 11 } else { 0 }
     }
-    fn info(&self, id: u64) -> Vec<u8> {
+    pub(super) fn info(&self, id: u64) -> Vec<u8> {
         let mut w = Writer::default();
         w.u64(id);
         w.u32(self.population());
@@ -70,7 +72,7 @@ impl Channel {
         w.u32(0);
         w.0
     }
-    fn membership_event(&self, id: u64, member: &Human, joined: bool) -> Vec<u8> {
+    pub(super) fn membership_event(&self, id: u64, member: &Human, joined: bool) -> Vec<u8> {
         let mut w = Writer::default();
         w.u32(if joined { 9 } else { 10 });
         w.u64(member.identity.user);
@@ -225,9 +227,9 @@ impl Rooms {
         now: u32,
     ) -> Result<TaskResult> {
         let query = Search::parse(request)?;
-        // This is the native default MP query. Other opaque criteria need their
-        // own recovered matching rules instead of being silently ignored.
-        if query.criteria[1] != 0 || query.criteria[2] != 2 || query.criteria[3] != 0 {
+        // Native creation publishes the same compatibility value in tail[0].
+        // Its policy meaning is opaque; match it exactly rather than ignoring it.
+        if query.criteria[1] != 0 || query.criteria[3] != 0 {
             return Ok(TaskResult::failure(
                 "unsupported_browser_criteria",
                 task::TASK_FAILED,
@@ -252,7 +254,8 @@ impl Rooms {
                     let game = c.game.as_ref()?;
                     (c.title_id == session.title_id
                         && c.expires_at > now
-                        && game.description.build == query.criteria[0])
+                        && game.description.build == query.criteria[0]
+                        && game.description.compatibility == query.criteria[2])
                         .then_some((*id, game.id))
                 })
                 .collect();
@@ -298,8 +301,18 @@ impl Rooms {
                 && game.id == *id
                 && channel.expires_at > now
                 && game.description.build == query.criteria[0]
+                && game.description.compatibility == query.criteria[2]
             {
-                records.push(game.description.listing_record(id, channel.population())?);
+                let listed = if self
+                    .game_endpoint
+                    .as_ref()
+                    .is_some_and(|e| e.human_fill.is_some())
+                {
+                    channel.humans.len() as u32
+                } else {
+                    channel.population()
+                };
+                records.push(game.description.listing_record(id, listed)?);
                 if records.len() == query.maximum as usize {
                     break;
                 }
@@ -340,6 +353,14 @@ impl Rooms {
         {
             return Ok(TaskResult::failure("already_in_room", task::TASK_FAILED));
         }
+        if self.game_endpoint.as_ref().is_some_and(|e| {
+            e.room_started(channel.title_id, channel.owner, channel.session_seed, now)
+        }) {
+            return Ok(TaskResult::failure(
+                "room_match_already_started",
+                task::TASK_FAILED,
+            ));
+        }
         if channel.population()
             >= channel
                 .game
@@ -347,6 +368,7 @@ impl Rooms {
                 .expect("registered room")
                 .description
                 .maximum
+            && channel.fill_bots.is_empty()
         {
             return Ok(TaskResult::failure(
                 "room_capacity_reached",
@@ -358,9 +380,23 @@ impl Rooms {
             .get_mut(&join.channel_id)
             .expect("known channel");
         let mut member = Human::owner(session);
+        if let Some(name) = self.names.get(&Identity::from(session)) {
+            member.name = name.clone();
+        }
         member.pending_until = Some(now.saturating_add(30));
         let mut result = TaskResult::success("public_room_channel_joined", vec![]);
         let actor = Identity::from(session);
+        if let Some(client) = channel.fill_bots.iter().next_back().copied() {
+            crate::backend::rooms::fill::remove_bot(
+                channel,
+                join.channel_id,
+                client,
+                actor,
+                &mut result,
+            );
+        }
+        channel.fill_sent.clear();
+        channel.roster_requested = false;
         // The joiner's metadata follows its ACK; peers receive event9 before any
         // authenticated JoinRequest can be forwarded from this new member.
         channel.humans.insert(session.user_id, member);
@@ -446,6 +482,16 @@ impl Rooms {
                 records.push(w.0);
             }
         }
+        for client in &channel.fill_bots {
+            if records.len() >= maximum as usize {
+                break;
+            }
+            let mut w = Writer::default();
+            w.u64(codol_protocol::room::messages::bot_id(*client));
+            w.string(&STANDARD.encode(codol_protocol::room::messages::bot_name(*client)));
+            w.u32(0);
+            records.push(w.0);
+        }
         Ok(TaskResult::success("local_room_members", records))
     }
     pub(super) fn peer_send(
@@ -477,7 +523,11 @@ impl Rooms {
         };
         if let Some(recipient) = recipient {
             ensure!(
-                channel.humans.contains_key(&recipient),
+                channel.humans.contains_key(&recipient)
+                    || channel
+                        .fill_bots
+                        .iter()
+                        .any(|c| codol_protocol::room::messages::bot_id(*c) == recipient),
                 "recipient is not a channel member"
             );
         }
@@ -498,13 +548,25 @@ impl Rooms {
         for payload in payloads {
             let body = message(session.user_id, name, id, &payload, delivery)?;
             if let Some(recipient) = recipient {
-                result.push_to(actor, channel.humans[&recipient].identity, body);
+                if let Some(human) = channel.humans.get(&recipient) {
+                    result.push_to(actor, human.identity, body);
+                }
             } else {
                 channel.targets(actor, &body, &mut result);
             }
         }
         if owner {
-            let recipients: Vec<_> = channel.humans.keys().copied().collect();
+            let recipients: Vec<_> = channel
+                .humans
+                .keys()
+                .copied()
+                .chain(
+                    channel
+                        .fill_bots
+                        .iter()
+                        .map(|c| codol_protocol::room::messages::bot_id(*c)),
+                )
+                .collect();
             let updates = codol_protocol::room::messages::channel_updates(batch, &recipients)?;
             channel.update_members(&updates)?;
             for member in &updates.members {
@@ -520,7 +582,12 @@ impl Rooms {
                 channel.owner_ready = ready;
             }
             let destinations: Vec<_> = match recipient {
-                Some(recipient) => vec![recipient],
+                Some(recipient) => channel
+                    .humans
+                    .contains_key(&recipient)
+                    .then_some(recipient)
+                    .into_iter()
+                    .collect(),
                 None => channel
                     .humans
                     .keys()
@@ -549,6 +616,14 @@ impl Rooms {
                     }
                 }
             }
+        }
+        if let Some(fill) = self
+            .game_endpoint
+            .as_ref()
+            .filter(|e| !e.room_started(channel.title_id, channel.owner, channel.session_seed, now))
+            .and_then(|e| e.human_fill.as_ref())
+        {
+            crate::backend::rooms::fill::sync(channel, id, fill, actor, &mut result)?;
         }
         Ok(result)
     }

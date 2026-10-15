@@ -12,6 +12,8 @@ pub struct Description {
     pub channel_id: u64,
     pub maximum: u32,
     pub build: i32,
+    /// Native creation tail[0], also supplied as browser criterion[2].
+    pub compatibility: i32,
     map_crc: u32,
     mode_crc: u32,
     playlist: i32,
@@ -71,6 +73,7 @@ impl Description {
             channel_id,
             maximum,
             build,
+            compatibility: attributes[0],
             map_crc: attributes[4] as u32,
             mode_crc: attributes[10] as u32,
             playlist: attributes[5],

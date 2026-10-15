@@ -20,6 +20,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 use tokio::net::UdpSocket;
+mod humans;
 
 pub struct GameServer {
     capture_every: u32,
@@ -74,6 +75,12 @@ struct BoundPeer {
     transport: Peer,
     template: Option<Arc<crate::game::session::prepared::PreparedGameState>>,
     start_command: String,
+    last_seen: std::time::Instant,
+}
+impl Drop for BoundPeer {
+    fn drop(&mut self) {
+        self.transport.connection.detach_shared();
+    }
 }
 type RegistryKey = (u32, u64, u32, String, String);
 fn registry_key(
@@ -215,6 +222,19 @@ impl GameServer {
             version,
             maps,
             loadouts,
+        });
+        Ok(self)
+    }
+    pub fn with_human_bot_fill(mut self, target: u8, version: u32) -> Result<Self> {
+        ensure!(
+            (4..=12).contains(&target),
+            "room Bot fill target must be 4..12"
+        );
+        self = self.with_native_bot_rooms(version)?;
+        let admissions = Arc::get_mut(&mut self.admissions).expect("unshared admissions");
+        admissions.human_fill = Some(crate::backend::rooms::bots::FillPolicy {
+            target,
+            policy: admissions.bot_rooms.take().expect("validated policy"),
         });
         Ok(self)
     }
@@ -438,6 +458,8 @@ impl GameServer {
         let mut count = 0u32;
         let mut total = 0usize;
         let mut peers = HashMap::<SocketAddrV4, BoundPeer>::new();
+        let mut shared_matches =
+            HashMap::<[u8; 8], Arc<Mutex<crate::game::session::shared::SharedMatch>>>::new();
         let mut weapon_registries = HashMap::<
             RegistryKey,
             Arc<Mutex<crate::game::session::weapon_registry::WeaponRegistry>>,
@@ -481,7 +503,8 @@ impl GameServer {
                         }
                     }
                 }
-                peers.retain(|_,p|p.admitted(self.admissions.get(&p.transport.id,now).as_ref()));
+                peers.retain(|_,p|p.last_seen.elapsed()<std::time::Duration::from_secs(30) && p.admitted(self.admissions.get(&p.transport.id,now).as_ref()));
+                shared_matches.retain(|id,_|self.admissions.get(id,now).is_some());
                 if profile_check.elapsed()>=std::time::Duration::from_millis(500) {
                     profile_check=std::time::Instant::now();
                     for bound in peers.values_mut() {
@@ -494,6 +517,7 @@ impl GameServer {
                         for bound in peers.values_mut() {
                             let Some(template)=bound.template.as_ref().filter(|s|s.dynamic_loadout()) else {continue};
                             let p=&mut bound.transport;
+                            if p.connection.shared_user().is_some() {continue;}
                             if let Some(admission)=self.admissions.get(&p.id,now) {
                                 match services.game_profile(admission.title,admission.owner).await {
                                     Ok(profile)=>if let Err(error)=p.connection.refresh_profile(template,&profile.public,&profile.owned,profile.rank){tracing::warn!(%error,"player backpack update rejected");},
@@ -502,6 +526,9 @@ impl GameServer {
                             }
                         }
                     }
+                }
+                for world in shared_matches.values() {
+                    world.lock().map_err(|_|anyhow::anyhow!("shared match poisoned"))?.advance(std::time::Instant::now())?;
                 }
                 for (address,bound) in &mut peers {
                     let p=&mut bound.transport;
@@ -538,6 +565,9 @@ impl GameServer {
             count = count.saturating_add(1);
             total = total.saturating_add(n);
             let wire = &buffer[..n];
+            if let Some(bound) = peers.get_mut(&peer) {
+                bound.last_seen = std::time::Instant::now();
+            }
             let sampled = count.is_multiple_of(self.capture_every) || wire.first() != Some(&6);
             let now = (unix_time_ms() / 1000) as u32;
             let live = self.admissions.has_live_entries(now)?;
@@ -568,7 +598,10 @@ impl GameServer {
                         );
                         let template = self.template_for(&admission)?;
                         let mut connection = Peer::init(wire, peer)?;
-                        if let Some(state) = &template {
+                        if !admission.participants.is_empty() {
+                            let state=template.as_ref().ok_or_else(||anyhow::anyhow!("human match requires prepared map"))?;
+                            if let std::collections::hash_map::Entry::Vacant(e) = shared_matches.entry(id) {e.insert(self.human_world(&admission,state).await?);}
+                        } else if let Some(state) = &template {
                             let mut weapon_registry = None;
                             let state = if state.uses_player_loadout() {
                                 let services = self.services.as_ref().ok_or_else(|| {
@@ -660,6 +693,7 @@ impl GameServer {
                             peer,
                             BoundPeer {
                                 account: crate::contracts::account::AccountId{title_id:admission.title,user_id:admission.owner},
+                                last_seen: std::time::Instant::now(),
                                 transport: connection,
                                 template,
                                 start_command: admission
@@ -710,9 +744,16 @@ impl GameServer {
                         inner_dropped = previous_sequence
                             .map(|previous| header.sequence.saturating_sub(previous + 1));
                     }
+                    if !admission.participants.is_empty() && p.connection.shared_user().is_none() {
+                        let user=humans::challenge_user(&payload)?;
+                        ensure!(admission.participants.iter().any(|m|m.user_id==user && m.bot.is_none()),"human challenge is outside frozen room membership");
+                        let world=shared_matches.get(&p.id).ok_or_else(||anyhow::anyhow!("shared world missing"))?.clone();
+                        p.connection=crate::transport::game::connection::Connection::with_shared(world,user)?;
+                    }
+                    let user=p.connection.shared_user().unwrap_or(admission.owner);
                     if let Some(reply) =
                         p.connection
-                            .handle(&payload, admission.owner, admission.build)?
+                            .handle(&payload, user, admission.build)?
                     {
                         return Ok(Some(records.seal(&reply, p.remote_tag)?));
                     }
@@ -845,6 +886,7 @@ mod tests {
             playlist_version: None,
             room_teams: None,
             story_channel: None,
+            participants: Vec::new(),
             start_command: Some(
                 "mmstart sv_resetServer; map mp_killhouse_sh; g_gametype war".into(),
             ),
@@ -858,6 +900,7 @@ mod tests {
                 title_id: admission.title,
                 user_id: admission.owner,
             },
+            last_seen: std::time::Instant::now(),
             transport: Peer::init(&wire, "127.0.0.1:39001".parse().unwrap()).unwrap(),
             template: Some(selected.clone()),
             start_command: admission.start_command.clone().unwrap(),
@@ -941,6 +984,7 @@ mod tests {
             playlist_version: None,
             room_teams: None,
             story_channel: None,
+            participants: Vec::new(),
             start_command: Some("mmstart sv_resetServer; map mp_bog_sh; g_gametype war".into()),
         };
         assert!(server.template_for(&admission).is_err());
@@ -1046,6 +1090,7 @@ mod tests {
             playlist_version: None,
             room_teams: None,
             story_channel: None,
+            participants: Vec::new(),
             start_command: Some(
                 "mmstart sv_resetServer; map mp_killhouse_sh; g_gametype war".into(),
             ),

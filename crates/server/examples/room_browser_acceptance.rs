@@ -116,17 +116,17 @@ async fn main() -> Result<()> {
     }
 
     // Native 3.3.3.3 MP browsing can send criterion 16 with a page size of 30.
-    // Keep its unsupported result visible alongside the synthetic default query.
+    // Verify the captured query alongside the synthetic browser requests.
     let captured_query = bytes(&json!(
         "15030d080400000001011308080000000101010101010101081e000000079b1ff0d607000000000710000000070000000000"
     ))?;
     room_browser::Search::parse(&Request::parse(&captured_query)?)?;
     let actual = observe(&services, &captured_query, &guest).await;
     cases.push(json!({
-        "name": "native_observed_browser_criterion16_is_not_supported",
-        "expected": "unsupported_browser_criteria with TASK_FAILED",
-        "passed": actual["handler"] == "unsupported_browser_criteria"
-            && actual["error_code"] == task::TASK_FAILED,
+        "name": "native_observed_browser_criterion16_finds_registered_room",
+        "expected": "successful native compatibility query containing the room",
+        "passed": actual["handler"] == "public_room_search"
+            && actual["error_code"] == 0 && actual["result_count"] == 1,
         "actual": actual,
     }));
 
@@ -153,9 +153,9 @@ async fn main() -> Result<()> {
     allocation.0.push(0);
     let actual = observe(&services, &allocation.0, &owner).await;
     cases.push(json!({
-        "name": "multiple_humans_cannot_allocate_a_shared_match",
-        "expected": "shared_game_world_not_available with TASK_FAILED",
-        "passed": actual["handler"] == "shared_game_world_not_available"
+        "name": "pending_member_cannot_start_shared_match",
+        "expected": "human_match_membership_not_ready with TASK_FAILED",
+        "passed": actual["handler"] == "human_match_membership_not_ready"
             && actual["error_code"] == task::TASK_FAILED,
         "actual": actual,
     }));
@@ -172,9 +172,9 @@ async fn main() -> Result<()> {
             .err()
             .map(|error| error.to_string());
     cases.push(json!({
-        "name": "participant_loadout_type18_is_not_supported",
-        "expected": "participant cannot produce this room command",
-        "passed": rejected.as_deref() == Some("participant cannot produce this room command"),
+        "name": "participant_loadout_type18_is_supported",
+        "expected": "valid native participant loadout passes validation",
+        "passed": rejected.is_none(),
         "actual": rejected,
     }));
     let passed = cases.iter().all(|case| case["passed"] == true);
@@ -185,7 +185,7 @@ async fn main() -> Result<()> {
         "game_endpoint_enabled": true,
         "synthetic_distinct_identities": true,
         "live_backend_or_account_data_modified": false,
-        "multiplayer_acceptance_passed": false,
+        "native_ui_evaluated": false,
         "passed": passed,
         "cases": cases,
     });

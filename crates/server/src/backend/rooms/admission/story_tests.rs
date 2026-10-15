@@ -28,6 +28,7 @@ fn admissions() -> GameAdmissions {
         address: "127.0.0.1:39004".parse().unwrap(),
         entries: Default::default(),
         bot_rooms: None,
+        human_fill: None,
         story_capture_map: Some(codol_protocol::room::story::FIRST_MAP.into()),
     }
 }

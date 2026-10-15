@@ -35,12 +35,18 @@ async fn new_players_are_isolated_with_selected_level_and_ownership_and_no_inher
         .await
         .unwrap();
         let root = directory.join("server-data");
+        let id = directory.file_name().unwrap().to_str().unwrap();
+        let login_name = format!("c{}", &id[..14]);
+        let user_id = codol_protocol::auth::local_identity::user_id(&login_name).unwrap();
         let store = crate::infra::storage::accounts::AccountStore::open(root.clone())
             .await
             .unwrap();
-        let account = store.profile_directory(1002, 42).await.unwrap();
+        let account = store.profile_directory(1002, user_id).await.unwrap();
         let private = std::fs::read(account.join("private.bin")).unwrap();
-        assert_eq!(profile::player_rank(&private, 42).unwrap(), (level - 1, 0));
+        assert_eq!(
+            profile::player_rank(&private, user_id).unwrap(),
+            (level - 1, 0)
+        );
         assert_eq!(std::fs::read(account.join("public.bin")).unwrap(), public);
         let inventory: serde_json::Value =
             serde_json::from_slice(&std::fs::read(account.join("inventory.json")).unwrap())
@@ -50,7 +56,7 @@ async fn new_players_are_isolated_with_selected_level_and_ownership_and_no_inher
             if unlock_all { 3 } else { 1 }
         );
         assert_eq!(
-            nickname(&root, 1002, 42).await.unwrap().as_deref(),
+            nickname(&root, 1002, user_id).await.unwrap().as_deref(),
             Some("同名玩家")
         );
         assert!(nickname(&root, 1002, 43).await.unwrap().is_none());

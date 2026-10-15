@@ -67,6 +67,11 @@ impl LocalServices {
         }
     }
     pub async fn handle(&self, body: &[u8], session: &Session, now: u32) -> Result<TaskResult> {
+        if body.starts_with(&[11, 3, 11])
+            && let Some(name) = self.player_nickname(AccountId::from(session)).await?
+        {
+            self.rooms.lock().await.set_name(session, name);
+        }
         self.router().handle(body, session, now).await
     }
     pub async fn publisher_playlist_version(&self) -> Result<u32> {
@@ -146,8 +151,16 @@ impl LocalServices {
         ensure!(connection.is_current(), "lobby connection was replaced");
         let request = Request::parse(body)?;
         if matches!(request.service, 11 | 21) || (request.service, request.task) == (6, 14) {
+            let nickname = if (request.service, request.task) == (11, 11) {
+                self.player_nickname(AccountId::from(session)).await?
+            } else {
+                None
+            };
             let mut rooms = self.rooms.lock().await;
             ensure!(connection.is_current(), "lobby connection was replaced");
+            if let Some(name) = nickname {
+                rooms.set_name(session, name);
+            }
             return rooms.handle(&request, session, now);
         }
         self.handle(body, session, now).await

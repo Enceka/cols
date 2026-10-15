@@ -192,6 +192,8 @@ pub struct PreparedGameState {
     #[serde(skip)]
     roster_weapons: Vec<BootstrapWeapon>,
     #[serde(skip)]
+    shared_bot_outfit: Option<crate::game::ai::loadout::BotOutfit>,
+    #[serde(skip)]
     navigation: Arc<std::sync::OnceLock<Arc<crate::game::ai::navigation::Navigation>>>,
     #[serde(default)]
     arsenal_file: Option<std::path::PathBuf>,
@@ -551,6 +553,7 @@ pub(crate) fn synthetic() -> PreparedGameState {
         match_config: None,
         match_weapon: None,
         roster_weapons: Vec::new(),
+        shared_bot_outfit: None,
         navigation: Default::default(),
         arsenal_file: None,
         collision_file: None,
@@ -583,3 +586,6 @@ mod profile;
 mod replication;
 
 mod actors;
+mod humans;
+#[cfg(test)]
+pub(crate) use humans::test_state as human_test_state;

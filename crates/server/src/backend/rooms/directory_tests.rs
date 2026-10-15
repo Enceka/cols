@@ -16,7 +16,7 @@ fn call(rooms: &mut Rooms, body: &[u8], actor: &Session, now: u32) -> TaskResult
         .handle(&Request::parse(body).unwrap(), actor, now)
         .unwrap()
 }
-fn room(rooms: &mut Rooms, owner: &Session, capacity: u32) -> (u64, [u8; 8]) {
+pub(super) fn room(rooms: &mut Rooms, owner: &Session, capacity: u32) -> (u64, [u8; 8]) {
     let result = call(rooms, &[11, 3, 13, 0], owner, 1).result.unwrap();
     let id = Reader::new(&result[0]).u64().unwrap();
     let fixture: serde_json::Value = serde_json::from_str(include_str!(concat!(
@@ -62,7 +62,7 @@ fn search(paged: bool, initial: bool, cursor: [u8; 8], maximum: u32) -> Vec<u8> 
         w.u32(0);
     }
     w.u32(maximum);
-    for value in [-688906341, 0, 2, 0] {
+    for value in [-688906341, 0, 16, 0] {
         w.i32(value);
     }
     w.0.push(0);
@@ -232,7 +232,12 @@ fn browse_filters_title_and_build_and_rejects_unknown_matching_rules() {
     );
     let mut unknown = search(false, true, [0; 8], 20);
     unknown[29..33].copy_from_slice(&17i32.to_le_bytes());
-    assert!(call(&mut rooms, &unknown, &guest, 2).result.is_err());
+    assert!(
+        call(&mut rooms, &unknown, &guest, 2)
+            .result
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[test]
@@ -341,4 +346,67 @@ fn owner_broadcast_join_response_also_confirms_a_pending_channel_member() {
     assert!(rooms.channels[&id].humans[&43].pending_until.is_none());
     assert!(rooms.reap(33).is_empty());
     assert_eq!(rooms.channels[&id].population(), 2);
+}
+
+#[test]
+fn configured_bot_fill_uses_replaceable_seats_and_refills_after_a_human_leaves() {
+    let fill = crate::backend::rooms::bots::FillPolicy {
+        target: 4,
+        policy: crate::backend::rooms::bots::Policy {
+            version: 7,
+            maps: std::collections::BTreeSet::from([("mp_afghan".into(), "war".into())]),
+            loadouts: Default::default(),
+        },
+    };
+    let mut admissions =
+        crate::backend::rooms::admission::GameAdmissions::new("127.0.0.1:39004".parse().unwrap());
+    admissions.human_fill = Some(fill.clone());
+    let mut rooms = Rooms::with_game_endpoint(Arc::new(admissions));
+    let owner = actor(42);
+    let guest = actor(43);
+    let (id, _) = room(&mut rooms, &owner, 12);
+    rooms.channels.get_mut(&id).unwrap().room_info =
+        Some(codol_protocol::room::messages::RoomInfo {
+            mode: "war".into(),
+            map: "mp_afghan".into(),
+            playlist: 255,
+            minimum: 4,
+            maximum: 12,
+        });
+    let mut result = TaskResult::success("test", vec![]);
+    super::fill::sync(
+        rooms.channels.get_mut(&id).unwrap(),
+        id,
+        &fill,
+        Identity::from(&owner),
+        &mut result,
+    )
+    .unwrap();
+    assert_eq!(rooms.channels[&id].population(), 4);
+    assert_eq!(rooms.channels[&id].fill_bots.len(), 3);
+    let listing = call(&mut rooms, &search(false, true, [0; 8], 20), &guest, 2)
+        .result
+        .unwrap();
+    assert_eq!(population(&listing[0]), 1); // Only real seats are nonreplaceable.
+    let joined = call(&mut rooms, &join(id), &guest, 2);
+    assert!(joined.result.is_ok());
+    assert_eq!(rooms.channels[&id].population(), 4);
+    assert_eq!(rooms.channels[&id].fill_bots.len(), 2);
+    let events: Vec<_> = joined
+        .deliveries
+        .iter()
+        .map(|p| Reader::new(&p.body).u32().unwrap())
+        .collect();
+    assert_eq!(events, vec![10, 9]); // Vacate the Bot before announcing the human.
+    call(&mut rooms, &leave(id), &guest, 3);
+    super::fill::sync(
+        rooms.channels.get_mut(&id).unwrap(),
+        id,
+        &fill,
+        Identity::from(&owner),
+        &mut result,
+    )
+    .unwrap();
+    assert_eq!(rooms.channels[&id].population(), 4);
+    assert_eq!(rooms.channels[&id].fill_bots.len(), 3);
 }

@@ -1,60 +1,47 @@
 # 双客户端与多人联机验收
 
-2026-10-15，固定 CODOL 3.3.3.3 客户端，EXE SHA-256：
+固定 CODOL 3.3.3.3，EXE SHA-256：
 `e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b`。
 
-本机已实测两个独立游戏窗口并存。完整多人联机验收未通过：同机原生认证身份冲突，实际房间分页查询被拒绝，参与者装配报文未支持，共享对局世界也未接入。没有取得两个原生客户端同房准备、同局互相可见、伤害／计分同步或共同结算的证据。
+本机两个原生客户端已通过不同身份同时在线、创建／浏览／加入房间、真人替换 Bot、准备、共同地图进入和一致结算。真人角色可见、移动同步、普通射击击杀和重生也已在原生客户端验证。上述核心流程通过不代表所有模式与装备均已支持。局域网、公网及 Windows 双端也未验收。
 
-| 验收项目 | 当前结果 | 证据范围 |
-| --- | --- | --- |
-| 独立客户端目录与 Wine prefix 双开 | 通过 | 两个原生进程与窗口，PID 38554／38793，窗口 2830／2839 |
-| 不同认证身份同时在线 | 未通过 | 不同 `-q` 参数仍签发同一 UID；大厅连接被后续登录撤销 |
-| 原生创建房间 | 单端通过 | A 的画面为 1/12；只读探针确认房主、房间成员数与 SDK 频道成员数均为 1 |
-| 原生公共房间列表 | 未通过 | 实际 `21/13 query=4` 请求返回 `unsupported_browser_criteria` |
-| 查询、入房、准备／取消、退房与断线通知 | 自动验证通过 | 两个合成身份的业务与真实 TCP 测试；不代表双原生客户端通过 |
-| 真人参与者角色／武器装配 | 未支持 | 合法 type18 记录被参与者白名单拒绝 |
-| 多真人共享开局与世界同步 | 未支持 | 分配返回 `shared_game_world_not_available`、错误码 4；连接各自持有 `LocalWorld` |
+| 项目 | 已取得的证据 |
+| --- | --- |
+| 独立目录、Wine prefix 和不同登录身份 | MultiplayerA／MultiplayerB 同时在线，库存各 6772；没有重复登录撤销 |
+| 公共房间浏览和加入 | B 使用实际 `21/13 query=4` 找到 A，并经原生 `mmrsv` 预留进入同一频道 |
+| 参与者外观与武器 | 两端房间显示相同真人昵称、角色和配装；支持完整 type18 和自身 type28 元数据 |
+| 自动补位 | A 单人显示 1 真人＋3 Bot；B 加入后两端显示 2 真人＋2 Bot |
+| 准备与共同开局 | 两端进入同一阿富汗地图，连接状态 10，有效原生快照、不同本地出生位置和持枪画面 |
+| Bot 共享战斗 | Bot 1 两次击杀 Bot 2，服务端只记录一份伤害、重生和得分；原生画面显示击杀条目 |
+| 真人可见与移动 | 两端四名角色模型和动画树均已加载；B 普通 D 键移动后，A 的远端 slot3 从 [-520,-672,-142] 移至 [-627,-687,-140]，与 B 本地权威位置误差小于 2 单位 |
+| 真人交火与重生 | A 普通鼠标开火击杀 B；两端均记录 A 1 击杀／100 分、B 1 死亡；B 重生血量 100 |
+| 一致结算与返回 | 双端四行名单按姓名对齐后队伍、分数、击杀、死亡相同；胜方 2，比分 0:200，时长 63 秒；返回房间成功 |
+| 同后端再次开局 | 第二场 601 秒结算逐人一致；不重启服务端，原房间再次准备后两端重新进入状态 10，新快照时钟重新起算 |
+| 一端退出 | 关闭测试 B 后，A 正常显示共同对局结算并返回，未遗留继续运行的幽灵参与者 |
 
-双开使用两套独立可写目录、两套 Wine prefix，并连接同一个隔离 Rust 后端。AUTH、LOBBY 与 IIPS 观察端点为 39202、39201、39203，服务资料为独立副本。启动器的同目录锁保护连接配置、证书和恢复记录，不应解除该锁来双开。当前 `native-launch` 每次管理自己的后端，正式多人启动还需要连接共享服务器的运行方式。双窗口并存尚不能证明两场景同时运行的性能，也不能证明局域网或公网可达。
+## 配置与边界
 
-原生资源加载在 `IIPS/IIPSDownload/ff_init_common_gfx_V43.ifs` 的属性／打开路径阻塞。测试目录使用两份独立可读资源对象后，两个客户端均完成原生初始化与协议 210 认证。该资源长度为 26504032，SHA-256 为
-`a4bac3f12ef090773ee5fc5017e5f88dae600f2d81005e0f67257c02b78ff667`，与已有基线一致。只替换测试目录的资源路径；未改写 EXE／DLL 或原资源对象。APFS／Wine 阻塞的底层成因仍未确定。
+`serve-auth --room-bot-fill 4` 把支持的自定义 TDM 房间补到四人，范围 4～12；省略该项不自动补位。与单真人兼容选项 `--native-bot-rooms` 互斥。Bot 由原生房主接受并分队；服务端请求完整名单后冻结游戏参与者。Bot 没有账号档案或游戏 socket，在共享权威世界中使用同一碰撞、武器、伤害和时钟。真人加入在 SDK 事件中先移除 Bot，再加入真人。房间列表显示不可替换的真人席位，房间内部显示实际总人数。
 
-两端原生认证分别使用 `-q 10001` 与 `-q 10002`。AUTH 记录只有一个不同 UID，大厅日志明确出现 `lobby login was superseded`。A 的画面显示大厅服务中断后重新建立，B 的画面显示 `[100]无法连接大厅服务`。不同 `-q` 参数、昵称或本地玩家存档目录不能在当前验收中充当不同联网身份。原始 UID、认证票据和密钥只保存在忽略目录；公开摘要只比较 UID 的哈希。
+原生身份由末尾的 `+set dw_username ASCII_HANDLE` 选择，不由 `-q` 选择。登录标识限定 1～15 个 ASCII 字母、数字或下划线；UID 是 `Tiger192(lowercase(Base64(handle)))` 前八字节的小端值。启动器的昵称与此标识分开保存。
 
-“玩 → 多人竞技 → 查找房间”实际发送：
+实际分页条件为 `[-688906341,0,16,0]`。第三项与创建描述尾部第一项兼容性字段精确匹配，未忽略查询条件。加入前的 `mmrsv` 交换只允许仍在线的房主／申请者，30 秒过期。
 
-```text
-service=21, task=13, query=4, initial=true, pageSize=30
-criteria=[-688906341, 0, 16, 0]
-```
+共享对局为每个房间持有一份世界；每个真人保留独立加密、可靠命令、输入、ACK 和快照历史。每个接收者的自己为本地 slot0，其余参与者按 UID 稳定置换。初始背包从各自账号资料读取。共享对局中的中途背包切换、个人回放、进度奖励和完整玩法对齐尚未验收，不能沿用单人 Bot 模式的既有验收结论。
 
-格式与 MAC 验证成功。`backend/rooms/directory.rs` 只接受第三项为 2，因此页面空列表不是成功查询。第三项 16 的完整筛选语义仍需恢复；不通过忽略条件或伪造记录将该项标记为通过。
+两套测试客户端共用一个隔离后端，使用独立可写目录和 Wine prefix。同目录锁没有解除；启动器的 `native-launch` 仍各自管理后端，正式共享服务器连接入口尚需单独实现。
 
-`backend/rooms/mod.rs` 在房间真人数不为 1 时拒绝游戏分配；`transport/game/connection/mod.rs` 中每个连接拥有独立世界。多个 UDP peer 或独立 ACK 不能形成共享对局。type18 在 `protocol/room/messages.rs::validate_participant` 中被拒绝，原生 Bot 装配验收不能替代真人装配验证。
+## 验证与证据
 
-自动验证使用独立检出 `46cac01`，并复制当前 `room_browser_acceptance.rs` 到该检出。两项 TCP 房间测试、七项房间目录测试、一项重复登录测试通过；验收例子的七项查询／入房／限制检查通过。JSON 的 `passed=true` 表示复现这些预期行为，包括失败分支；`multiplayer_acceptance_passed=false` 明确表示多人验收未通过。验收例子通过 rustfmt 和独立检出的 Clippy 检查。
+`research-output/multiplayer-fix-20261015/` 保存私有运行证据，不包含于分发产物：
 
-```sh
-sh tools/cargo.sh test --locked -p codol-server room_transport_tests
-sh tools/cargo.sh test --locked -p codol-server backend::rooms::directory_tests
-sh tools/cargo.sh test --locked -p codol-server newer_login_revokes_old_ticket
-sh tools/cargo.sh run --locked -p codol-server --example room_browser_acceptance -- \
-  research-output/multiplayer-boundaries.json
-```
+- `native-1792042455017647000/`：两端 Bot 补位、加入、准备、地图、结算与返回的只读 JSON／截图；`common-summary-proof.json` 按姓名核对双方结算。
+- `native-1792043343879301000/`：诊断出生点下的双端模型、可见性、移动、真人交火和重生；`pvp-proof.json` 核对原生计分和远端位置。出生点使用本图已验证可站立点，Bot 在远端正常运行；只通过普通游戏输入完成交火。
+- `room-boundaries.json`：原生兼容性查询、加入、待接纳成员不能开局、完整真人配装验证；只代表业务分发自动验证。
+- `server-lib-tests.log`：405 项通过、26 项资源依赖测试忽略。
+- `captured-bot-world.log`：真实两份存档与捕获地图组成 2 真人＋2 Bot，四个 gamestate／snapshot 均可编码。
+- `protocol-tests.log`、`launcher-tests.log`、`clippy.log`：协议、启动器和严格静态检查。
 
-原生测试使用冻结的本地 release 二进制，不从二进制推断 Git revision。主工作区整体编译曾因缺少 `PreparationHudSnapshot` 失败，工作区包含其他未完成改动；隔离检查不代表主工作区全量检查通过。
+基于当前已提交主线的独立集成版本通过 451 项服务端测试，28 项资源依赖测试忽略。该版本保留延迟导航缓存、已有模式选择和账号进度接口，不依赖主工作区其它未提交功能。原生实测使用修复分支的冻结 release；后续其它玩法改动仍需各自回归。
 
-本机证据位于 `research-output/multiclient-acceptance-20261015/`：
-
-- `native-identity-proof.json`：两个原生窗口、不同 `-q` 参数、同 UID 与重复登录结果。
-- `native-browser-proof.json`：实际分页条件、页大小及失败 handler。
-- `multiplayer-boundaries.json`：七项隔离检查与多人未通过标志。
-- `resource-recovery.json`：测试资源摘要及隔离范围。
-- `native-1791996058597120000/`：认证／大厅采集、截图、单端开房探针与退出 manifest。
-- `stable-room-transport-tests.log`、`stable-room-directory-tests.log`、`stable-identity-tests.log`：独立检出的验证结果。
-- `acceptance-clippy.log`：验收例子的 Clippy 检查。
-
-测试游戏窗口与自建后端已结束，五项临时连接配置／证书已按 manifest 恢复。未向原有游戏会话发送终止命令。资源准备辅助进程 33518 在文件系统调用中阻塞，发送 SIGTERM／SIGKILL 后仍未被系统回收；保留现场，不重复读取故障对象。
-
-多人功能完成还需要建立两个原生客户端可用的不同联网 UID，实现实际分页筛选条件，接入真人装配、队伍与 Bot 席位策略，再按房间持有一个权威世界与时钟，为每位玩家保留独立输入、加密、ACK 和快照。最终用两个原生客户端验证同房准备、同局移动／伤害／计分、断线、结算返回和再开局。
+原生资源包 `ff_init_common_gfx_V43.ifs` 曾在文件属性／打开调用中阻塞。测试目录重建为可读的独立文件对象，长度 26504032、SHA-256 `a4bac3f12ef090773ee5fc5017e5f88dae600f2d81005e0f67257c02b78ff667` 与既有基线相同。未改写 EXE／DLL 或资源内容。阻塞的底层成因未确定；本地短期证书到期也会导致原生大厅错误100，验收证书已在隔离目录更新。

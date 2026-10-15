@@ -150,6 +150,14 @@ impl PreparedGameState {
         self.body_named(command_sequence, None)
     }
     pub(crate) fn body_named(&self, command_sequence: u32, name: Option<&str>) -> Result<Vec<u8>> {
+        self.body_roster(command_sequence, name, None)
+    }
+    pub(crate) fn body_roster(
+        &self,
+        command_sequence: u32,
+        name: Option<&str>,
+        names: Option<&[String]>,
+    ) -> Result<Vec<u8>> {
         // CS0 keys mapname/g_gametype confirmed at 0x465aa2/0x465abf.
         // 0x46d830 parses CS3 into C2S serverId. CS16 is map-center text.
         let mut values = vec![
@@ -206,6 +214,12 @@ impl PreparedGameState {
                 ));
             }
             values.sort_by_key(|v| v.0);
+        }
+        if let Some(names) = names {
+            values.retain(|(index, _)| !(1975..1987).contains(index));
+            for (index, name) in names.iter().enumerate() {
+                values.push((1975 + index as u16, name.clone()));
+            }
         }
         // Publish names before cgame/model initialization, not after spawning.
         values.extend(self.model_configstrings());

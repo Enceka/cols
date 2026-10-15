@@ -182,6 +182,9 @@ enum Command {
         /// Include the eleven server simulated TDM players in native custom rooms.
         #[arg(long, requires = "game_map_catalog")]
         native_bot_rooms: bool,
+        /// Fill supported custom TDM rooms to this population; humans replace Bots.
+        #[arg(long, requires = "game_map_catalog", conflicts_with_all=["native_bot_rooms", "story_capture_map"], value_parser=clap::value_parser!(u8).range(4..=12))]
+        room_bot_fill: Option<u8>,
         /// Collect one native TDM map's loaded resources without sending a world.
         #[arg(long, requires = "native_bot_rooms")]
         resource_capture_map: Option<String>,
@@ -544,6 +547,7 @@ pub(super) async fn run() -> Result<()> {
             snapshot_probe,
             game_map_catalog,
             native_bot_rooms,
+            room_bot_fill,
             resource_capture_map,
             resource_capture_mode,
             story_capture_map,
@@ -558,7 +562,7 @@ pub(super) async fn run() -> Result<()> {
             let mut ready = serde_json::json!({
                 "kind":"native_services", "lobby_protocol":210, "game_protocol":3,
                 "title_id":local_title_id, "continuous_play":continuous_play,
-                "native_bot_rooms":native_bot_rooms,
+                "native_bot_rooms":native_bot_rooms, "room_bot_fill":room_bot_fill,
                 "game_state_loaded":false, "map_catalog_loaded":false
             });
             let server = AuthServer::bind(AuthOptions {
@@ -633,6 +637,15 @@ pub(super) async fn run() -> Result<()> {
                             .ok_or_else(|| anyhow::anyhow!("bot rooms require local services"))?;
                         game = game
                             .with_native_bot_rooms(services.publisher_playlist_version().await?)?;
+                    }
+                    if let Some(target) = room_bot_fill {
+                        let services = lobby
+                            .services()
+                            .ok_or_else(|| anyhow::anyhow!("Bot fill requires local services"))?;
+                        game = game.with_human_bot_fill(
+                            target,
+                            services.publisher_playlist_version().await?,
+                        )?;
                     }
                     if let Some(map) = resource_capture_map {
                         game = game.with_resource_capture_map(map)?;

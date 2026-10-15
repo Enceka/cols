@@ -154,6 +154,8 @@ impl ImpactEvents {
             codol_protocol::game::snapshot::weapon_drops::END_ENTITY
         } else if (1648..1664).contains(&self.next_entity) {
             1664
+        } else if (1400..1496).contains(&self.next_entity) {
+            1496
         } else {
             self.next_entity
         };

@@ -22,6 +22,7 @@ fn admissions() -> GameAdmissions {
         address: "127.0.0.1:39004".parse().unwrap(),
         entries: Mutex::new(HashMap::new()),
         bot_rooms: None,
+        human_fill: None,
         story_capture_map: None,
     }
 }

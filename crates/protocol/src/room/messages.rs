@@ -188,8 +188,8 @@ pub fn bot_room_updates(batch: &[u8], owner: u64) -> Result<Updates, LobbyError>
 pub fn channel_updates(batch: &[u8], recipients: &[u64]) -> Result<Updates, LobbyError> {
     updates_for(batch, recipients)
 }
-/// Participant commands currently supported by the native room relay: join,
-/// request the roster, and ready/cancel. Authoritative owner records are rejected.
+/// Participants can publish their own join, roster request, ready and loadout.
+/// The authenticated transport sender owns the avatar; authority stays with host.
 pub fn validate_participant(batch: &[u8], owner: u64) -> Result<(), LobbyError> {
     fn message(bytes: &[u8], owner: u64, depth: usize) -> Result<(), LobbyError> {
         if depth > 4 || bytes.is_empty() || bytes.len() > 1024 {
@@ -216,6 +216,56 @@ pub fn validate_participant(batch: &[u8], owner: u64) -> Result<(), LobbyError> 
             6 | 13 => {}
             16 => {
                 r.read(1)?;
+            }
+            28 => {
+                // Native0x6e8f50 case28 updates only the authenticated sender's
+                // eight-byte member metadata (+0xae), never another member.
+                r.read(64)?;
+                if bytes.len() != 10 || r.read(7)? != 0 {
+                    return Err(LobbyError("invalid member metadata length/padding"));
+                }
+            }
+            18 => {
+                if r.read(8)? != 0 {
+                    return Err(LobbyError("invalid room loadout flag"));
+                }
+                if !matches!(r.read(8)?, 1 | 2) {
+                    return Err(LobbyError("invalid room loadout team"));
+                }
+                let mut clothing = [0; 12];
+                for item in &mut clothing {
+                    *item = r.read(16)? as u16;
+                }
+                let mut weapons = [[0; 7]; 2];
+                for item in weapons.iter_mut().flatten() {
+                    *item = r.read(16)? as u16;
+                }
+                let mut equipment = [0; 6];
+                for item in &mut equipment {
+                    *item = r.read(16)? as u16;
+                }
+                let mut perks = [0; 3];
+                for item in &mut perks {
+                    *item = r.read(16)? as u16;
+                }
+                let mut rewards = [0; 3];
+                for item in &mut rewards {
+                    *item = r.read(16)? as u16;
+                }
+                let trailing_item = r.read(16)? as u16;
+                Loadout {
+                    clothing,
+                    weapons,
+                    equipment,
+                    perks,
+                    rewards,
+                    trailing_item,
+                }
+                .validate()?;
+                // A full record is exactly 649 bits, followed by zero padding.
+                if bytes.len() != 82 || r.read(7)? != 0 {
+                    return Err(LobbyError("invalid room loadout padding/length"));
+                }
             }
             _ => return Err(LobbyError("participant cannot produce this room command")),
         }
@@ -391,6 +441,28 @@ pub fn to_member(record: &[u8], _recipient: u64) -> Result<Vec<u8>, LobbyError> 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn participant_loadout_is_validated_without_granting_owner_commands() {
+        let loadout = super::Loadout {
+            clothing: [1; 12],
+            weapons: [[1; 7]; 2],
+            equipment: [0; 6],
+            perks: [0; 3],
+            rewards: [0; 3],
+            trailing_item: 0,
+        };
+        let record = loadout.record(1).unwrap();
+        assert!(super::validate_participant(&record, 42).is_ok());
+        for length in 0..record.len() {
+            assert!(super::validate_participant(&record[..length], 42).is_err());
+        }
+        let mut bad = record.clone();
+        *bad.last_mut().unwrap() |= 0x80;
+        assert!(super::validate_participant(&bad, 42).is_err());
+        assert!(
+            super::validate_participant(&super::Output::default().frame(14).batch(), 42).is_err()
+        );
+    }
     use super::*;
     fn hex_bytes(value: &str) -> Vec<u8> {
         value

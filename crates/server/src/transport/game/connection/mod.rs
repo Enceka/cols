@@ -18,6 +18,7 @@ struct KillCause {
 
 #[derive(Default)]
 pub(crate) struct Connection {
+    shared: Option<shared::Binding>,
     world: crate::game::session::local_world::LocalWorld,
     resource_collection: bool,
     challenge: Option<u32>,
@@ -169,17 +170,32 @@ impl Connection {
             (
                 time,
                 origin,
-                self.world.motion.as_ref().map_or(0, |m| m.command_time),
+                self.motion_progress().map_or(0, |(_, _, time)| time),
             )
         })
     }
     pub fn motion_progress(&self) -> Option<([f32; 3], [f32; 3], u32)> {
+        if let Some(binding) = &self.shared {
+            return binding
+                .world
+                .lock()
+                .ok()?
+                .progress(binding.user)
+                .ok()
+                .map(|(m, _)| (m.origin, m.velocity, m.command_time));
+        }
         self.world
             .motion
             .as_ref()
             .map(|m| (m.origin, m.velocity, m.command_time))
     }
     pub fn view_angles(&self) -> [u16; 3] {
+        if let Some(binding) = &self.shared
+            && let Ok(world) = binding.world.lock()
+            && let Ok((_, angles)) = world.progress(binding.user)
+        {
+            return angles;
+        }
         self.last_input
             .as_ref()
             .map_or(self.view_offset, |c| c.angles)
@@ -303,6 +319,7 @@ mod matchplay;
 
 mod rewards;
 
+mod shared;
 mod world;
 
 mod weapon_drops;

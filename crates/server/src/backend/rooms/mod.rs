@@ -2,6 +2,8 @@
 mod directory;
 #[cfg(test)]
 mod directory_tests;
+mod fill;
+mod reservation;
 use crate::backend::identity::session::Session;
 use crate::contracts::lobby::Identity;
 use crate::contracts::lobby::TaskResult;
@@ -32,6 +34,8 @@ struct Channel {
     member_teams: HashMap<u64, u8>,
     avatar_sent: HashMap<u8, (String, String, u8, codol_protocol::room::messages::Loadout)>,
     humans: HashMap<u64, Human>,
+    fill_bots: std::collections::BTreeSet<u8>,
+    fill_sent: HashMap<u8, (String, u8, bool)>,
 }
 struct GameSession {
     id: [u8; 8],
@@ -78,6 +82,10 @@ impl Channel {
         for member in &updates.members {
             anyhow::ensure!(
                 self.humans.contains_key(&member.id)
+                    || self
+                        .fill_bots
+                        .iter()
+                        .any(|c| codol_protocol::room::messages::bot_id(*c) == member.id)
                     || (self.bots_announced
                         && (1..=11)
                             .any(|c| codol_protocol::room::messages::bot_id(c) == member.id)),
@@ -165,8 +173,18 @@ pub(crate) struct Rooms {
     game_endpoint: Option<Arc<crate::backend::rooms::admission::GameAdmissions>>,
     snapshots: HashMap<Identity, Snapshot>,
     pending_events: Vec<crate::contracts::lobby::DirectedPush>,
+    reservations: HashMap<(u32, u64), (Identity, u64, u32)>,
+    names: HashMap<Identity, String>,
 }
 impl Rooms {
+    pub(crate) fn set_name(&mut self, session: &Session, name: String) {
+        let id = Identity::from(session);
+        self.names
+            .retain(|old, _| old.title != id.title || old.user != id.user || *old == id);
+        if self.names.len() < 128 || self.names.contains_key(&id) {
+            self.names.insert(id, STANDARD.encode(name));
+        }
+    }
     pub(crate) fn renew_session(&mut self, session: &Session, now: u32) -> Result<()> {
         if let Some(endpoint) = &self.game_endpoint {
             endpoint.renew_session(session, now)?;
@@ -198,6 +216,8 @@ impl Rooms {
             game_endpoint: Some(endpoint),
             snapshots: HashMap::new(),
             pending_events: Vec::new(),
+            reservations: HashMap::new(),
+            names: HashMap::new(),
         }
     }
     pub fn handle(
@@ -233,6 +253,12 @@ impl Rooms {
         session: &Session,
         now: u32,
     ) -> Result<TaskResult> {
+        if request.service == 6 && request.task == 14 {
+            let mut r = Reader::new(request.arguments);
+            if r.u64()? != 1_000_001 {
+                return self.reservation(request, session, now);
+            }
+        }
         if request.service == 21
             && (request.task == 13
                 || (request.task == 5 && Reader::new(request.arguments).u32()? == 4))
@@ -251,11 +277,14 @@ impl Rooms {
                         && self.channels.get(&id).is_some_and(|c| {
                             r.u64().ok().is_some_and(|uid| c.humans.contains_key(&uid))
                         });
-                    if self
-                        .channels
-                        .get(&id)
-                        .is_some_and(|c| !c.is_owner(session) || c.humans.len() > 1)
-                        || human_target
+                    if self.channels.get(&id).is_some_and(|c| {
+                        !c.is_owner(session)
+                            || c.humans.len() > 1
+                            || self
+                                .game_endpoint
+                                .as_ref()
+                                .is_some_and(|e| e.human_fill.is_some())
+                    }) || human_target
                     {
                         return self.peer_send(request, session, now);
                     }
@@ -307,9 +336,12 @@ impl Rooms {
                     ));
                 }
                 let endpoint = self.game_endpoint.as_ref().expect("guarded game endpoint");
-                if channel.humans.len() != 1 {
+                if channel.humans.len() != 1
+                    && (channel.bots_announced
+                        || channel.humans.values().any(|h| h.pending_until.is_some()))
+                {
                     return Ok(TaskResult::failure(
-                        "shared_game_world_not_available",
+                        "human_match_membership_not_ready",
                         task::TASK_FAILED,
                     ));
                 }
@@ -344,6 +376,44 @@ impl Rooms {
                     game.description.build,
                     now,
                 )?;
+                if channel.humans.len() > 1 || !channel.fill_bots.is_empty() {
+                    let mut participants = channel
+                        .humans
+                        .values()
+                        .map(|h| {
+                            let room_team = channel
+                                .member_teams
+                                .get(&h.identity.user)
+                                .copied()
+                                .ok_or_else(|| anyhow::anyhow!("human match team missing"))?;
+                            ensure!(
+                                matches!(room_team, 1 | 2),
+                                "spectators are not admitted to human matches"
+                            );
+                            Ok(crate::contracts::match_session::Participant {
+                                user_id: h.identity.user,
+                                seed: h.identity.seed,
+                                team: 3 - room_team,
+                                bot: None,
+                            })
+                        })
+                        .collect::<Result<Vec<_>>>()?;
+                    for client in &channel.fill_bots {
+                        let uid = codol_protocol::room::messages::bot_id(*client);
+                        let team = *channel
+                            .member_teams
+                            .get(&uid)
+                            .ok_or_else(|| anyhow::anyhow!("Bot team not accepted"))?;
+                        ensure!(matches!(team, 1 | 2), "invalid Bot team");
+                        participants.push(crate::contracts::match_session::Participant {
+                            user_id: uid,
+                            seed: 0,
+                            team: 3 - team,
+                            bot: Some(*client),
+                        });
+                    }
+                    endpoint.set_participants(id, participants)?;
+                }
                 let record = game
                     .description
                     .allocation_record(endpoint.address(), &id, &key)?;
@@ -421,6 +491,8 @@ impl Rooms {
                             member_teams: HashMap::new(),
                             avatar_sent: HashMap::new(),
                             humans: HashMap::from([(session.user_id, Human::owner(session))]),
+                            fill_bots: Default::default(),
+                            fill_sent: Default::default(),
                         },
                     );
                     id

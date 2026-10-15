@@ -93,8 +93,19 @@ pub async fn create(
         template.schema_version == 1 && template.client_sha256 == codol_protocol::CLIENT_SHA256,
         "new-player template version mismatch"
     );
-    let user_id = template.native_user_id.parse::<u64>()?;
-    ensure!(user_id != 0, "invalid native user id");
+    ensure!(
+        template.native_user_id.parse::<u64>()? != 0,
+        "invalid template native user id"
+    );
+    let mut random = [0; 16];
+    openssl::rand::rand_bytes(&mut random)?;
+    let player_id = random
+        .iter()
+        .map(|v| format!("{v:02x}"))
+        .collect::<String>();
+    let login_name = format!("c{}", &player_id[..14]);
+    let user_id = codol_protocol::auth::local_identity::user_id(&login_name)
+        .context("invalid generated native identity")?;
     let public = STANDARD.decode(&template.public_base64)?;
     ensure!(
         public.len() <= task::MAX_FILE_BYTES,
@@ -129,12 +140,6 @@ pub async fn create(
         "client_sha256":codol_protocol::CLIENT_SHA256,"title_id":title_id,"user_id":user_id.to_string(),"items":items}))?;
     let wallet = serde_json::to_vec(&serde_json::json!({"schema_version":1,
         "client_sha256":codol_protocol::CLIENT_SHA256,"title_id":title_id,"user_id":user_id.to_string(),"cp":0,"gp":0}))?;
-    let mut random = [0; 16];
-    openssl::rand::rand_bytes(&mut random)?;
-    let player_id = random
-        .iter()
-        .map(|v| format!("{v:02x}"))
-        .collect::<String>();
     create_directory(parent).await?;
     let parent = tokio::fs::canonicalize(parent).await?;
     let staging = parent.join(format!(".{player_id}.pending"));

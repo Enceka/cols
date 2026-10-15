@@ -19,12 +19,14 @@ pub(crate) struct Admission {
     pub(crate) start_command: Option<String>,
     pub(crate) room_teams: Option<[u8; 12]>,
     pub(crate) story_channel: Option<u64>,
+    pub(crate) participants: Vec<crate::contracts::match_session::Participant>,
 }
 
 pub struct GameAdmissions {
     address: SocketAddrV4,
     entries: Mutex<HashMap<[u8; 8], Admission>>,
     pub(crate) bot_rooms: Option<crate::backend::rooms::bots::Policy>,
+    pub(crate) human_fill: Option<crate::backend::rooms::bots::FillPolicy>,
     pub(crate) story_capture_map: Option<String>,
 }
 impl GameAdmissions {
@@ -33,6 +35,7 @@ impl GameAdmissions {
             address,
             entries: Mutex::new(HashMap::new()),
             bot_rooms: None,
+            human_fill: None,
             story_capture_map: None,
         }
     }
@@ -45,6 +48,17 @@ impl GameAdmissions {
             .any(|a| a.expires > now))
     }
 
+    pub(crate) fn room_started(&self, title: u32, owner: u64, seed: u32, now: u32) -> bool {
+        self.entries.lock().is_ok_and(|entries| {
+            entries.values().any(|a| {
+                a.title == title
+                    && a.owner == owner
+                    && a.seed == seed
+                    && a.expires > now
+                    && a.start_command.is_some()
+            })
+        })
+    }
     pub fn address(&self) -> SocketAddrV4 {
         self.address
     }
@@ -67,7 +81,8 @@ impl GameAdmissions {
                     || (a.seed == session.iv_seed
                         && a.key == security_key
                         && a.build == build
-                        && a.story_channel.is_none()))
+                        && a.story_channel.is_none()
+                        && a.start_command.is_none()))
         });
         if let Some((id, a)) = entries.iter().find(|(_, a)| {
             a.title == session.title_id && a.owner == session.user_id && a.seed == session.iv_seed
@@ -97,6 +112,7 @@ impl GameAdmissions {
                 start_command: None,
                 room_teams: None,
                 story_channel: None,
+                participants: Vec::new(),
             },
         );
         Ok((id, key))
@@ -166,6 +182,7 @@ impl GameAdmissions {
                 start_command: None,
                 room_teams: None,
                 story_channel: Some(channel),
+                participants: Vec::new(),
             },
         );
         Ok((id, key))
@@ -189,6 +206,39 @@ impl GameAdmissions {
             })
             .ok_or_else(|| anyhow::anyhow!("room roster requires allocated game"))?;
         entry.room_teams = Some(teams);
+        Ok(())
+    }
+    pub(crate) fn set_participants(
+        &self,
+        id: [u8; 8],
+        participants: Vec<crate::contracts::match_session::Participant>,
+    ) -> Result<()> {
+        ensure!(
+            (2..=12).contains(&participants.len()),
+            "invalid human match size"
+        );
+        ensure!(
+            participants.iter().all(|p| matches!(p.team, 1 | 2))
+                && participants
+                    .iter()
+                    .map(|p| p.user_id)
+                    .collect::<std::collections::HashSet<_>>()
+                    .len()
+                    == participants.len(),
+            "invalid human match membership"
+        );
+        let mut entries = self
+            .entries
+            .lock()
+            .map_err(|_| anyhow::anyhow!("game admissions poisoned"))?;
+        let entry = entries
+            .get_mut(&id)
+            .ok_or_else(|| anyhow::anyhow!("missing room allocation"))?;
+        ensure!(
+            !entry.booked || entry.participants == participants,
+            "match membership already frozen"
+        );
+        entry.participants = participants;
         Ok(())
     }
     pub(crate) fn control(

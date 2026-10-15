@@ -20,6 +20,7 @@ pub(crate) fn write(
     for states in [missiles, baselines] {
         for (i, state) in states.iter().enumerate() {
             if !((1700..1708).contains(&state.entity_number)
+                || (1400..1496).contains(&state.entity_number)
                 || (1648..1664).contains(&state.entity_number))
                 || !(1..900).contains(&state.weapon)
                 || state.owner >= 12

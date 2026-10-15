@@ -122,6 +122,44 @@ pub fn summary_identity_commands(
     Ok(commands)
 }
 
+pub fn summary_human_identity_commands(
+    names: &[String],
+    teams: &[u8],
+) -> Result<Vec<Vec<u8>>, LobbyError> {
+    if !(2..=12).contains(&names.len())
+        || names.len() != teams.len()
+        || names
+            .iter()
+            .any(|n| n.is_empty() || n.len() > 64 || n.chars().any(char::is_control))
+        || teams.iter().any(|t| !matches!(t, 1 | 2))
+    {
+        return Err(LobbyError("invalid human summary roster"));
+    }
+    let mut commands = vec![vec![b'J']];
+    for client in 0..19usize {
+        let name = names.get(client).map_or("", String::as_str);
+        let mut text = vec![0; 65];
+        text[..name.len()].copy_from_slice(name.as_bytes());
+        for (offset, bytes) in [
+            (166 + client as u32 * 198, text),
+            (
+                260 + client as u32 * 198,
+                vec![teams.get(client).copied().unwrap_or(0)],
+            ),
+            (157 + client as u32 * 198, vec![u8::from(client == 0)]),
+        ] {
+            if commands.last().unwrap().len() + 5 + bytes.len() > BINARY_PAYLOAD_LIMIT {
+                commands.push(vec![b'J']);
+            }
+            let command = commands.last_mut().unwrap();
+            command.extend_from_slice(&offset.to_le_bytes());
+            command.push(bytes.len() as u8);
+            command.extend_from_slice(&bytes);
+        }
+    }
+    Ok(commands)
+}
+
 // Order: assists, deaths, downs, gp, headshots, kills, killstreak,
 // netcafe_privileges, objectives, ping, qq_membership, revives, score,
 // skill, status_icon, xp, dw_userID_lo, dw_userID_hi.

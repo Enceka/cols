@@ -7,6 +7,9 @@ impl Connection {
         if let Some(fragment) = self.native_fragments.pop_front() {
             return Ok(Some(fragment));
         }
+        if self.shared.is_some() {
+            return self.poll_shared_snapshot(now);
+        }
         if self.gamestate_update != Some(6)
             || self
                 .match_leave_sequence

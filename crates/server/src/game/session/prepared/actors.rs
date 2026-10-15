@@ -71,6 +71,10 @@ impl PreparedGameState {
                 *slot = index;
             }
         }
+        if let Some(outfit) = self.shared_bot_outfit {
+            player.model = outfit.model;
+            player.attachment_models = outfit.attachment_models;
+        }
         player.origin = self.spawn_origin?;
         player.angles = [0; 3];
         Some(player)

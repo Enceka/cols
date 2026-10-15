@@ -74,6 +74,26 @@ pub struct Motion {
     view_start: f32,
 }
 impl Motion {
+    pub(crate) fn wire_snapshot(&self) -> codol_protocol::game::snapshot::MotionSnapshot {
+        codol_protocol::game::snapshot::MotionSnapshot {
+            pm_time: self.pm_time,
+            sprint: self.sprint,
+            velocity: self.velocity,
+            flags: self.flags,
+            ground_entity: self.ground_entity,
+            view_height: self.view_height,
+            view_height_target: self.view_height_target,
+            speed: self.speed,
+            gravity: self.gravity,
+            bob_cycle: self.bob_cycle,
+            view_height_lerp_time: self.view_height_lerp_time,
+            view_height_lerp_target: self.view_height_lerp_target,
+            view_height_lerp_down: self.view_height_lerp_down,
+            jump_time: self.jump_time,
+            jump_origin_z: self.jump_origin_z,
+            melee_charge: self.melee_charge(),
+        }
+    }
     pub fn new(origin: V3) -> Self {
         Self {
             pm_time: 0,

@@ -181,7 +181,21 @@ impl Connection {
             && header.reliable_ack == 1
             && let Some(state) = &self.world.game_state
         {
-            let body = state.body_named(commands.sequence(), self.display_name.as_deref())?;
+            let names = self
+                .shared
+                .as_ref()
+                .map(|b| {
+                    b.world
+                        .lock()
+                        .map_err(|_| anyhow::anyhow!("shared match poisoned"))?
+                        .names(b.user)
+                })
+                .transpose()?;
+            let body = state.body_roster(
+                commands.sequence(),
+                self.display_name.as_deref(),
+                names.as_deref(),
+            )?;
             let mut packets =
                 game_wire::compact_server_packets(3, client_ack, challenge, client_command, &body)?;
             let reply = packets.remove(0);
@@ -209,9 +223,21 @@ impl Connection {
                 movement.predicted_origin_bits.map(f32::from_bits),
             ));
             for input in movement.commands {
-                self.queue_input(input);
+                if let Some(binding) = &self.shared {
+                    self.input_count = self.input_count.saturating_add(1);
+                    self.last_input = Some(input.clone());
+                    binding
+                        .world
+                        .lock()
+                        .map_err(|_| anyhow::anyhow!("shared match poisoned"))?
+                        .submit(binding.user, input)?;
+                } else {
+                    self.queue_input(input);
+                }
             }
-            self.consume_inputs(self.last_snapshot_time.max(1000));
+            if self.shared.is_none() {
+                self.consume_inputs(self.last_snapshot_time.max(1000));
+            }
         }
         self.gamestate_sent |= sending_gamestate;
         self.gamestate_acknowledged |=

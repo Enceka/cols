@@ -9,6 +9,11 @@ pub(crate) struct Policy {
     /// Map-specific prepared roster; each pair is Axis/Allies, unlike room teams.
     pub loadouts: BTreeMap<(String, String), Vec<[codol_protocol::room::messages::Loadout; 2]>>,
 }
+#[derive(Clone)]
+pub(crate) struct FillPolicy {
+    pub target: u8,
+    pub policy: Policy,
+}
 impl Policy {
     pub fn accepts(&self, info: &codol_protocol::room::messages::RoomInfo) -> bool {
         info.playlist == 255

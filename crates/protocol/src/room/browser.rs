@@ -130,7 +130,7 @@ mod tests {
             let search = Search::parse(&request).unwrap();
             assert_eq!(search.position, position);
             assert_eq!(search.maximum, 20);
-            assert_eq!(search.criteria, [-688906341, 0, 2, 0]);
+            assert_eq!(search.criteria, [-688906341, 0, 16, 0]);
             for end in 3..wire.len() {
                 let truncated = Request::parse(&wire[..end]).unwrap();
                 assert!(Search::parse(&truncated).is_err(), "{name} at {end}");
