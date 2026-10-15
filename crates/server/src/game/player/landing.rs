@@ -13,6 +13,7 @@ pub(crate) struct Landing {
     pub event: Option<Event>,
 }
 
+#[cfg(test)]
 pub(crate) fn calculate(
     time: u32,
     previous_z: f32,
@@ -20,6 +21,26 @@ pub(crate) fn calculate(
     origin_z: f32,
     gravity: u16,
     surface_flags: u32,
+) -> Option<Landing> {
+    calculate_with_dive(
+        time,
+        previous_z,
+        previous_velocity_z,
+        origin_z,
+        gravity,
+        surface_flags,
+        false,
+    )
+}
+
+pub(crate) fn calculate_with_dive(
+    time: u32,
+    previous_z: f32,
+    previous_velocity_z: f32,
+    origin_z: f32,
+    gravity: u16,
+    surface_flags: u32,
+    diving: bool,
 ) -> Option<Landing> {
     if gravity == 0
         || ![previous_z, previous_velocity_z, origin_z]
@@ -41,7 +62,10 @@ pub(crate) fn calculate(
     let impact = (f64::from(interval) * -f64::from(g) + f64::from(previous_velocity_z)) as f32;
     let height = (f64::from(impact).powi(2) / (f64::from(g) * 2.0)) as f32;
     let maximum = if surface_flags & 0x1000 != 0 { 10 } else { 100 };
-    let damage = if height > 128.0 && surface_flags & 1 == 0 {
+    let damage = if diving {
+        //0x417f39 calls0x40dc10 after the ordinary surface damage producer.
+        ((f64::from(height) - 65.0) / 135.0 * 100.0).clamp(0.0, 100.0) as u16
+    } else if height > 128.0 && surface_flags & 1 == 0 {
         if height >= 300.0 {
             maximum
         } else {
@@ -102,6 +126,19 @@ pub(crate) fn calculate(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn dive_landing_uses_its_own_damage_band_and_keeps_surface_event_packing() {
+        let fall =
+            |height, flags| calculate_with_dive(2000, height, 0.0, 0.0, 800, flags, true).unwrap();
+        assert_eq!(fall(65.0, 0).damage, 0);
+        assert_eq!(fall(132.5, 0).damage, 50);
+        assert_eq!(fall(200.0, 0).damage, 100);
+        //The native override runs after ordinary no-damage/soft-ground caps.
+        assert_eq!(fall(200.0, 0x1001).damage, 100);
+        let hit = fall(132.5, 3 << 20);
+        assert_eq!(hit.event.unwrap().parameter, (50 << 5) | 3);
+        hit.event.unwrap().validate().unwrap();
+    }
     fn fall(height: f32, flags: u32) -> Landing {
         calculate(2000, height, 0.0, 0.0, 800, flags | 3 << 20).unwrap()
     }

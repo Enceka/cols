@@ -6,6 +6,8 @@ use crate::game::world::math::*;
 use codol_protocol::game::channel::usercmd::UserCommand;
 pub const SPEED: u16 = 190;
 pub const GRAVITY: u16 = 800;
+pub(crate) mod dive;
+pub(crate) use dive::Rules as DiveRules;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Stance {
@@ -60,6 +62,7 @@ pub struct Motion {
     pub flags: u32,
     pub ground_entity: u16,
     pub jump_time: u32,
+    pub dive_end_time: u32,
     pub jump_origin_z: f32,
     pub view_height: f32,
     pub view_height_target: u8,
@@ -72,6 +75,9 @@ pub struct Motion {
     previous_buttons: u32,
     ground_normal: V3,
     view_start: f32,
+    dive_rules: DiveRules,
+    dive_frames: Vec<dive::Frame>,
+    movement_events: Vec<codol_protocol::game::snapshot::events::Event>,
 }
 impl Motion {
     pub(crate) fn wire_snapshot(&self) -> codol_protocol::game::snapshot::MotionSnapshot {
@@ -90,6 +96,7 @@ impl Motion {
             view_height_lerp_target: self.view_height_lerp_target,
             view_height_lerp_down: self.view_height_lerp_down,
             jump_time: self.jump_time,
+            dive_end_time: self.dive_end_time,
             jump_origin_z: self.jump_origin_z,
             melee_charge: self.melee_charge(),
         }
@@ -109,6 +116,7 @@ impl Motion {
             flags: 0,
             ground_entity: NONE,
             jump_time: 0,
+            dive_end_time: 0,
             jump_origin_z: 0.0,
             view_height: 60.0,
             view_height_target: 60,
@@ -121,6 +129,9 @@ impl Motion {
             previous_buttons: 0,
             ground_normal: [0.0, 0.0, 1.0],
             view_start: 60.0,
+            dive_rules: Default::default(),
+            dive_frames: Vec::new(),
+            movement_events: Vec::new(),
         }
     }
     pub fn grounded(&self) -> bool {
@@ -240,6 +251,8 @@ impl Motion {
             return;
         }
         self.landings.clear();
+        self.dive_frames.clear();
+        self.movement_events.clear();
         if cmd.time - self.command_time > 1000 {
             self.command_time = cmd.time - 1000;
         }
@@ -247,6 +260,12 @@ impl Motion {
             let dt_ms = (cmd.time - self.command_time).min(66);
             self.command_time += dt_ms;
             self.step(cmd, weapon_scale, ads, dt_ms, collision);
+            self.dive_frames.push(dive::Frame {
+                time: self.command_time,
+                active: self.diving(),
+                sliding: self.dive_sliding(),
+                sprinting: self.flags & 0x4000 != 0,
+            });
             self.previous_buttons = cmd.buttons;
         }
     }
@@ -259,7 +278,7 @@ impl Motion {
         let previous_z = self.origin[2];
         let previous_velocity_z = self.velocity[2];
         let dt = dt_ms as f32 * 0.001;
-        let desired = if cmd.buttons & 0x100 != 0 {
+        let desired = if self.diving() || self.dive_locked() || cmd.buttons & 0x100 != 0 {
             Stance::Prone
         } else if cmd.buttons & 0x200 != 0 {
             Stance::Crouch
@@ -289,14 +308,16 @@ impl Motion {
             && self.stance == Stance::Stand
             && cmd.buttons & 0x400 != 0
             && self.previous_buttons & 0x400 == 0
-            && self.command_time.saturating_sub(self.jump_time) >= 500;
+            && !self.diving()
+            && !self.dive_locked()
+            && self.command_time.wrapping_sub(self.jump_time) >= 500;
         if jumping {
             self.velocity[2] = (2.0 * f32::from(self.gravity) * 39.0).sqrt();
             self.jump_time = self.command_time;
             self.jump_origin_z = self.origin[2];
             self.ground_entity = NONE;
         }
-        let locked = cmd.buttons & (0x1000_0000 | 0x0020_0000) != 0;
+        let locked = self.dive_locked() || cmd.buttons & (0x1000_0000 | 0x0020_0000) != 0;
         let f = if locked {
             0.0
         } else if cmd.direction & 1 != 0 {
@@ -315,6 +336,7 @@ impl Motion {
         } else {
             0.0
         };
+        let dive_control = self.diving() || self.dive_locked();
         let sprint = crate::game::player::sprint::update(
             &mut self.sprint,
             self.command_time,
@@ -324,17 +346,25 @@ impl Motion {
             f <= 105.0
                 || ads
                 || self.stance != Stance::Stand
+                || dive_control
                 || self.flags & (0x8000 | 0x20000) != 0,
             self.sprint_rules,
         );
         self.flags = self.stance.flags()
-            | (self.flags & (0x8000 | 0x80))
+            | (self.flags & (0x8000 | 0x80 | dive::FLAG | 0x0200_0000))
             | if sprint { 0x4000 } else { 0 }
-            | if !self.grounded() && self.jump_time != 0 {
+            | if !self.grounded() && self.jump_time != 0 && !self.diving() {
                 0x2000
             } else {
                 0
             };
+        self.finish_slow_dive();
+        if self.grounded() && !jumping {
+            self.check_dive(cmd);
+        }
+        let dive_move = self.diving();
+        let air_move = dive_move || !self.grounded();
+        self.dive_apex();
         if sprint && self.grounded() {
             // 0x4174ed..0x417502, double constant 0xc862d0.
             r = (r * 0.667f32).trunc();
@@ -345,7 +375,9 @@ impl Motion {
             if horizontal < 1.0 {
                 self.velocity = [0.0; 3];
             } else {
-                let scale = ((horizontal - horizontal.max(100.0) * 5.5 * dt).max(0.0)) / horizontal;
+                let friction = self.dive_friction(c);
+                let scale = ((horizontal - horizontal.max(100.0) * friction * 5.5 * dt).max(0.0))
+                    / horizontal;
                 // Target PM_Friction 0x416390 measures horizontal speed on
                 // ground but applies the resulting scale to all three axes.
                 self.velocity = mul(self.velocity, scale);
@@ -361,7 +393,11 @@ impl Motion {
         let biggest = (if f < 0.0 { f * 0.7 } else { f })
             .abs()
             .max((r * 0.8).abs());
-        let speed = if total > 0.0 {
+        let speed = if dive_move && total > 0.0 {
+            // PM_AirMove calls0x416820: no stance, sprint, backwards/strafe
+            // or weapon multiplier. The retained sprint velocity is inertia.
+            f32::from(self.speed) * f.abs().max(r.abs()) / 127.0 * if ads { 0.4 } else { 1.0 }
+        } else if total > 0.0 {
             f32::from(self.speed) * biggest / 127.0
                 * weapon_scale
                 * self.stance.scale()
@@ -376,10 +412,10 @@ impl Motion {
             0.0
         };
         let mut direction = normalized(wish);
-        if self.grounded() {
+        if self.grounded() && !air_move {
             direction = project_ground(direction, self.ground_normal);
         }
-        let acceleration = if !self.grounded() {
+        let acceleration = if air_move {
             1.0
         } else {
             match self.stance {
@@ -392,11 +428,15 @@ impl Motion {
             .max(0.0)
             .min(dt * acceleration * speed.max(100.0));
         self.velocity = add(self.velocity, mul(direction, amount));
-        if self.grounded() {
+        if self.grounded() && !air_move {
             self.velocity = project_ground(self.velocity, self.ground_normal);
+        } else if self.grounded() {
+            // PM_AirMove0x4172b3 clips against the ground plane even while
+            // a dive uses air acceleration and gravity on its landing slide.
+            self.velocity = clip(self.velocity, self.ground_normal);
         }
         let was_grounded = self.grounded();
-        if was_grounded && horizontal > 1.0 {
+        if was_grounded && !air_move && horizontal > 1.0 {
             self.bob_cycle = self
                 .bob_cycle
                 .wrapping_add((horizontal / f32::from(self.speed) * dt_ms as f32 * 0.4) as u8);
@@ -405,18 +445,19 @@ impl Motion {
         // In particular a ground-classification probe must not move an idle
         // player's origin or project its velocity on every input command.
         if !was_grounded || self.velocity[0] != 0.0 || self.velocity[1] != 0.0 {
-            self.step_slide(c, dt, !was_grounded);
+            self.step_slide(c, dt, air_move);
         }
         self.ground(c, 0.25);
         if entered_airborne
             && self.grounded()
-            && let Some(landing) = crate::game::player::landing::calculate(
+            && let Some(landing) = crate::game::player::landing::calculate_with_dive(
                 self.command_time,
                 previous_z,
                 previous_velocity_z,
                 self.origin[2],
                 self.gravity,
                 self.surface_flags,
+                self.diving(),
             )
         {
             self.velocity = mul(self.velocity, landing.velocity_scale);
@@ -425,6 +466,10 @@ impl Motion {
                 self.flags |= 0x80;
             }
             self.landings.push(landing);
+        }
+        if dive_move {
+            // PmoveSingle0x41e63b..0x41e699 snaps all velocity components.
+            self.velocity = self.velocity.map(f32::round_ties_even);
         }
     }
     fn update_view_height(&mut self) {
@@ -479,7 +524,7 @@ impl Motion {
         let blocked = self.slide(c, dt, gravity);
         let down_origin = self.origin;
         let down_velocity = self.velocity;
-        if gravity {
+        if gravity && !on_ground {
             // Slide already swept the complete time interval. Sweeping another
             // velocity*dt here would land on a floor only reached next frame.
             // GroundTrace's 0.25-unit classification includes the sweep skin.
@@ -561,6 +606,9 @@ impl Motion {
         if gravity {
             end_velocity[2] -= f32::from(self.gravity) * dt;
             self.velocity[2] = (self.velocity[2] + end_velocity[2]) * 0.5;
+            if self.grounded() {
+                self.velocity = clip(self.velocity, self.ground_normal);
+            }
         }
         let mut planes = Vec::with_capacity(8);
         if self.grounded() {

@@ -93,7 +93,9 @@ pub struct MotionSnapshot {
     pub view_height_lerp_time: u32,
     pub view_height_lerp_target: u8,
     pub view_height_lerp_down: bool,
+    /// Positive launch time; while diving, negative touchdown time.
     pub jump_time: u32,
+    pub dive_end_time: u32,
     pub jump_origin_z: f32,
 }
 /// Native PS+0x23c..0x24c; the two bools are hint-2 fields.
@@ -488,7 +490,10 @@ pub fn player_frame_with_world(
             || m.jump_origin_z.abs() > 1_000_000.0
             || m.ground_entity > 2047
             || m.view_height_lerp_time > command_time
-            || m.jump_time > command_time
+            || (m.jump_time as i32).unsigned_abs() > command_time
+            || ((m.jump_time as i32) < 0 && m.flags & 0x4000_0000 == 0)
+            || (m.flags & 0x4000_0000 != 0 && m.jump_time == 0)
+            || m.dive_end_time > command_time
             || m.sprint.last_start > command_time
             || m.sprint.last_end > command_time
             || m.pm_time > i16::MAX as u16
@@ -642,6 +647,7 @@ pub fn player_frame_with_world(
                 (63, u32::from(motion.gravity), 16),
                 (81, u32::from(motion.view_height_lerp_target), 8),
                 (92, motion.view_height_lerp_time, 32),
+                (37, motion.dive_end_time, 97),
                 (102, motion.jump_time, 32),
                 (114, motion.jump_origin_z.to_bits(), 100),
                 (217, 1f32.to_bits(), 100),
@@ -1419,7 +1425,7 @@ mod tests {
                         0 => 11,
                         24..=33 | 40 | 41 => 0,
                         34 | 35 => 10,
-                        36 | 37 => 5,
+                        36 | 37 | 150 | 151 => 5,
                         _ => panic!("unexpected event in fixture test"),
                     };
                     let parameter = if width != 0 && r.bits(1).unwrap() != 0 {
@@ -1485,6 +1491,64 @@ mod tests {
             gravity: 800,
             ..Default::default()
         }
+    }
+    #[test]
+    fn dive_signed_touchdown_and_end_time_decode_in_full_delta_and_clear_frames() {
+        for baseline in [false, true] {
+            for (active, jump, end) in [
+                (true, 9000, 7000),
+                (true, (-9200i32) as u32, 7000),
+                (false, 0, 9500),
+            ] {
+                let mut motion = authoritative_motion();
+                motion.flags = if active { 0x4000_0001 } else { 1 };
+                motion.jump_time = jump;
+                motion.dive_end_time = end;
+                let body = player_frame_with_world(
+                    10000,
+                    9950,
+                    Some([0.0; 3]),
+                    baseline,
+                    None,
+                    [0; 3],
+                    WorldSnapshot {
+                        motion: Some(motion),
+                        delta_distance: 1,
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+                let mut r = Reader::new(&body);
+                r.u8().unwrap();
+                r.u32().unwrap();
+                r.u8().unwrap();
+                r.u8().unwrap();
+                r.bits(2).unwrap();
+                let (fields, _) = read_fields(&mut r);
+                assert_eq!(fields[&102], jump);
+                assert_eq!(fields[&37], end);
+                assert_eq!(fields[&20], motion.flags);
+            }
+        }
+        let invalid = MotionSnapshot {
+            jump_time: (-9000i32) as u32,
+            ..authoritative_motion()
+        };
+        assert!(
+            player_frame_with_world(
+                10000,
+                9950,
+                Some([0.0; 3]),
+                true,
+                None,
+                [0; 3],
+                WorldSnapshot {
+                    motion: Some(invalid),
+                    ..Default::default()
+                }
+            )
+            .is_err()
+        );
     }
     #[test]
     fn landing_timer_and_packed_pain_event_survive_full_delta_and_clear() {
@@ -2538,6 +2602,7 @@ mod tests {
                 view_height_lerp_target: 40,
                 view_height_lerp_down: lerp_down,
                 jump_time: 700,
+                dive_end_time: 0,
                 jump_origin_z: -123.75,
             };
             let body = player_frame_with_motion(
@@ -2665,6 +2730,7 @@ mod tests {
                 view_height_lerp_target: 60,
                 view_height_lerp_down: false,
                 jump_time: 0,
+                dive_end_time: 0,
                 jump_origin_z: 0.0,
             };
             let body = player_frame_with_motion(

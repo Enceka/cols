@@ -304,6 +304,9 @@ impl PreparedGameState {
         if let Some(timing) = w.sprint_timing {
             player.set_sprint_timing(timing);
         }
+        if let Some(timing) = w.dive_timing {
+            player.set_dive_timing(timing);
+        }
         if let Some(kind) = w.fire_type {
             player.set_fire_type(kind).expect("validated fire type");
         }

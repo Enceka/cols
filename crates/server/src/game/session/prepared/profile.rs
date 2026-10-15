@@ -438,6 +438,11 @@ impl PreparedGameState {
                 in_msec: time(0x76c)?,
                 out_msec: time(0x774)?,
             }),
+            dive_timing: Some(crate::game::weapons::held::DiveTiming {
+                in_msec: time(0x784)?,
+                out_msec: time(0x78c)?,
+                prone_blocked: w.definition[0xd88] != 0,
+            }),
             fire_type: Some(fire_type),
             alternate_base,
             alternate: None,

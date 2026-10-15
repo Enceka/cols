@@ -1106,7 +1106,7 @@ mod tests {
         assert!(stuck.start_solid && stuck.all_solid);
         let repaired = grounded_spawn(candidate, &world).unwrap();
         assert_eq!(&repaired[..2], &candidate[..2]);
-        assert!((repaired[2] + 75.87254).abs() < 0.001);
+        assert!((repaired[2] + 75.77473).abs() < 0.001);
         let hull = world.trace(repaired, repaired, 70.0);
         assert!(!hull.start_solid && !hull.all_solid);
         let rounded = repaired.map(f32::round_ties_even);
@@ -1130,7 +1130,7 @@ mod tests {
     fn capsule_spawn_accepts_clear_ground_and_rejects_ceilings_walls_and_missing_floor() {
         let world = collision(true);
         let repaired = grounded_spawn([0.0, 0.0, -0.01], &world).unwrap();
-        assert!((repaired[2] - 0.03125).abs() < 1e-5);
+        assert!((repaired[2] - 0.125).abs() < 1e-5);
         assert!(!world.trace(repaired, repaired, 70.0).start_solid);
         assert!(grounded_spawn([200.0, 0.0, 0.0], &world).is_err());
         assert!(grounded_spawn([5000.0, 0.0, 0.0], &world).is_err());

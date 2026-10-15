@@ -189,6 +189,16 @@ impl Connection {
             .as_ref()
             .map(|m| (m.origin, m.velocity, m.command_time))
     }
+    pub fn dive_progress(&self) -> Option<(u32, i32, u32)> {
+        if let Some(binding) = &self.shared {
+            let (m, _) = binding.world.lock().ok()?.progress(binding.user).ok()?;
+            return Some((m.flags, m.jump_time as i32, m.dive_end_time));
+        }
+        self.world
+            .motion
+            .as_ref()
+            .map(|m| (m.flags, m.jump_time as i32, m.dive_end_time))
+    }
     pub fn view_angles(&self) -> [u16; 3] {
         if let Some(binding) = &self.shared
             && let Ok(world) = binding.world.lock()

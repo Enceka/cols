@@ -81,6 +81,7 @@ impl Connection {
                 }
                 if let Some(motion) = &mut self.world.motion {
                     motion.cancel_melee_charge();
+                    motion.cancel_dive();
                     motion.cancel_sprint();
                     motion.velocity = [0.0; 3];
                     motion.command_time = input.time;
@@ -98,6 +99,7 @@ impl Connection {
             {
                 if self.world.tdm.as_ref().is_some_and(|m| m.finished()) {
                     motion.cancel_melee_charge();
+                    motion.cancel_dive();
                     motion.velocity = [0.0; 3];
                     motion.command_time = input.time;
                     self.last_input = Some(input);
@@ -128,6 +130,7 @@ impl Connection {
                 let was_approaching = motion.melee_charge().is_some();
                 if let Some(player) = &self.world.player {
                     motion.set_sprint_rules(player.sprint_rules());
+                    motion.set_dive_rules(player.dive_rules());
                 }
                 motion.apply(&input, scale, ads, collision);
                 if was_approaching {
@@ -135,6 +138,9 @@ impl Connection {
                         active=motion.melee_charge().is_some(),"melee approach motion");
                 }
                 if let Some(player) = &mut self.world.player {
+                    for event in motion.take_movement_events() {
+                        player.movement_event(event.id, event.parameter);
+                    }
                     let surface = (motion.surface_flags >> 20) & 31;
                     if was_ground
                         && motion.ground_entity == 2047
@@ -200,7 +206,12 @@ impl Connection {
                     );
                 }
                 let previous_equipment = player.equipment();
-                player.apply_with_melee_approach(&input, melee_approach);
+                let frames = self
+                    .world
+                    .motion
+                    .as_mut()
+                    .map_or_else(Vec::new, |m| m.take_dive_frames());
+                player.apply_with_dive_frames(&input, melee_approach, &frames);
                 if let Some(motion) = &mut self.world.motion
                     && let Some((approach, duration)) = player.take_melee_approach()
                 {
@@ -539,6 +550,7 @@ impl Connection {
         }
         if let Some(motion) = &mut self.world.motion {
             motion.cancel_melee_charge();
+            motion.cancel_dive();
             motion.cancel_sprint();
             motion.velocity = [0.0; 3];
         }

@@ -57,6 +57,7 @@ class ReadClientState {
     static int Main(string[] args) {
         try {
             bool feedback=args.Length==1 && args[0]=="--feedback";
+            bool dive=args.Length==1 && args[0]=="--dive";
             bool replay=args.Length==1 && args[0]=="--replay";
             bool storyBundle=args.Length==1 && args[0]=="--story-bundle";
             bool storyAssets=args.Length==1 && args[0]=="--story-assets";
@@ -90,7 +91,7 @@ class ReadClientState {
             bool nukeAssets=args.Length==1 && args[0]=="--nuke-assets";
             bool nukeState=args.Length==1 && args[0]=="--nuke-state";
             bool nukeFrame=args.Length==1 && args[0]=="--nuke-frame";
-            if(args.Length!=0 && !storyBundle && !storyAssets && !propsState && !propsFrame && !propsAssets && !rewardAssets && !nukeAssets && !nukeState && !nukeFrame && !voicePlayback && !voiceAssets && !frontendAssets && !glass && !mapCheck && !hudAssets && !tacticalAssets && !appearanceLoad && !outfits && !grounding && !replay && !feedback && !hitRegions && !assets && !profiles && !netConstants && !mapEntities && !bootstrapWeapon && !weaponModels && !arsenal && !collision && !weaponRegistry && !trainingTarget && !bulletImpacts && !characters) throw new Exception("only fixed extraction modes are supported");
+            if(args.Length!=0 && !storyBundle && !storyAssets && !propsState && !propsFrame && !propsAssets && !rewardAssets && !nukeAssets && !nukeState && !nukeFrame && !voicePlayback && !voiceAssets && !frontendAssets && !glass && !mapCheck && !hudAssets && !tacticalAssets && !appearanceLoad && !outfits && !grounding && !dive && !replay && !feedback && !hitRegions && !assets && !profiles && !netConstants && !mapEntities && !bootstrapWeapon && !weaponModels && !arsenal && !collision && !weaponRegistry && !trainingTarget && !bulletImpacts && !characters) throw new Exception("only fixed extraction modes are supported");
             IntPtr snapshot=CreateToolhelp32Snapshot(2,0); uint found=0;
             if(snapshot==new IntPtr(-1)) throw new Exception("process snapshot failed");
             try {
@@ -128,6 +129,7 @@ class ReadClientState {
                 if(storyAssets) { ClientAssets.ExportStoryAssets(process);return 0; }
                 if(assets) { ClientAssets.Export(process);return 0; }
                 if(feedback) { ClientAssets.ExportFeedback(process);return 0; }
+                if(dive) { ClientAssets.ExportDive(process);return 0; }
                 if(replay) { ClientAssets.ExportReplay(process);return 0; }
                 if(profiles) { ClientAssets.ExportProfiles(process);return 0; }
                 if(netConstants) { ClientAssets.ExportNetConstants(process);return 0; }
@@ -250,6 +252,8 @@ class ReadClientState {
                             Field(process,"predicted_death_hud_origin_"+axis+"_bits",checked(cg+0xa78+4+axis*4),4);
                         Field(process,"predicted_pm_flags",checked(cg+0xc),4);
                         Field(process,"predicted_pm_time",checked(cg+8),4);
+                        Field(process,"predicted_jump_time",checked(cg+0xbc),4);
+                        Field(process,"predicted_dive_end_time",checked(cg+0x238),4);
                         Field(process,"predicted_sprint_button_up_required",checked(cg+0x23c),4);
                         Field(process,"predicted_sprint_delay",checked(cg+0x240),4);
                         Field(process,"predicted_sprint_last_start",checked(cg+0x244),4);

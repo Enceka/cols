@@ -7,7 +7,9 @@ use codol_protocol::game::snapshot::Firing;
 use codol_protocol::game::snapshot::events;
 use codol_protocol::game::snapshot::events::EventQueue;
 
+mod dive;
 mod parameters;
+pub(crate) use dive::DiveTiming;
 pub(crate) use dropped::DroppedWeapon;
 #[cfg(test)]
 pub(crate) use dropped::tests::gun as drop_test_gun;
@@ -34,6 +36,7 @@ struct Weapon {
     ads_move_scale: f32,
     sprint_duration_scale: f32,
     sprint_timing: Option<SprintTiming>,
+    dive_timing: Option<DiveTiming>,
     ballistics: Option<crate::game::combat::Ballistics>,
     rechamber: Option<RechamberTiming>,
     rechamber_pending: bool,
@@ -105,6 +108,8 @@ pub(crate) struct HeldWeapons {
     marker_phase: Option<u8>,
     perks: crate::game::status::perks::Perks,
     sprinting: bool,
+    diving: bool,
+    dive_sliding: bool,
     support_arrow: bool,
     current: Weapon,
     secondary: Option<Weapon>,
@@ -173,6 +178,8 @@ impl HeldWeapons {
             marker_phase: None,
             perks: Default::default(),
             sprinting: false,
+            diving: false,
+            dive_sliding: false,
             support_arrow: false,
             current: Weapon {
                 offhand_switch: None,
@@ -190,6 +197,7 @@ impl HeldWeapons {
                 ads_move_scale: 1.0,
                 sprint_duration_scale: 1.0,
                 sprint_timing: None,
+                dive_timing: None,
                 ballistics: None,
                 rechamber: None,
                 rechamber_pending: false,
@@ -474,6 +482,15 @@ impl HeldWeapons {
     /// Frozen controls advance the authority clock without producing weapon
     /// actions or consuming ammunition. Unlock cannot replay the frozen gap.
     pub(crate) fn freeze_at(&mut self, time: u32) {
+        self.set_diving(false, false);
+        if self
+            .current
+            .equipment
+            .firing
+            .is_some_and(|f| (31..=33).contains(&f.state))
+        {
+            self.current.ready();
+        }
         self.last_time = self.last_time.max(time);
         self.attack_held = false;
         self.melee_held = false;

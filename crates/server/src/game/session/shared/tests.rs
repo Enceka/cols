@@ -58,6 +58,63 @@ fn one_clock_waits_for_all_clients_and_is_independent_of_view_polling() {
 }
 
 #[test]
+fn dive_commands_share_the_same_authority_phase_and_clear_on_death() {
+    let mut world = room();
+    let now = Instant::now();
+    for id in [42, 43] {
+        world.attach(id).unwrap();
+        world.ready(id).unwrap();
+    }
+    world.advance(now).unwrap();
+    world.humans[0]
+        .player
+        .set_dive_timing(crate::game::weapons::held::DiveTiming {
+            in_msec: 150,
+            out_msec: 250,
+            prone_blocked: false,
+        });
+    for step in 1..=70u32 {
+        let time = 1000 + step * 20;
+        world
+            .submit(
+                42,
+                UserCommand {
+                    time,
+                    buttons: if step < 40 { 2 } else { 0x800100 },
+                    direction: 1,
+                    weapons: [352, 0, 0],
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        world
+            .advance(now + std::time::Duration::from_millis(u64::from(step * 20)))
+            .unwrap();
+        if step == 40 {
+            let (motion, _) = world.progress(42).unwrap();
+            assert!(motion.diving());
+            assert_eq!(
+                world.view(42).unwrap().local.origin,
+                world.view(43).unwrap().players[0].origin
+            );
+        }
+    }
+    world.damage(
+        Hit {
+            attacker: 1,
+            victim: 0,
+            damage: 100,
+            weapon: 352,
+            headshot: false,
+            melee: false,
+            falling: false,
+        },
+        2400,
+    );
+    assert!(!world.humans[0].motion.diving());
+}
+
+#[test]
 fn actual_weapon_inputs_damage_the_other_authority_once_and_share_scores_and_respawn() {
     let mut world = room();
     let now = Instant::now();

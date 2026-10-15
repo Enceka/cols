@@ -95,6 +95,7 @@ impl HeldWeapons {
         );
     }
     pub fn drop_offhand_on_death(&mut self, time: u32, angles: [u16; 3]) {
+        self.set_diving(false, false);
         self.marker_phase = None;
         if self.selected_offhand.is_some() && self.offhand_pending && self.grenade_time != 0 {
             self.throw_offhand(

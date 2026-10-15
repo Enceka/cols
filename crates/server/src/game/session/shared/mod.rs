@@ -306,6 +306,7 @@ impl SharedMatch {
                 if human.vitals.health == 0 || input.time < human.born || self.ended.is_some() {
                     input.buttons = 0;
                     input.direction = 0;
+                    human.motion.cancel_dive();
                 }
                 let collision = human.state.collision.as_ref().unwrap();
                 let ads = human
@@ -325,9 +326,16 @@ impl SharedMatch {
                         0
                     };
                 human.motion.set_sprint_rules(human.player.sprint_rules());
+                human.motion.set_dive_rules(human.player.dive_rules());
                 human.motion.apply(&input, scale, ads, collision);
                 human.angles = input.angles;
-                human.player.apply_with_melee_approach(&input, None);
+                human.player.spread_environment(&human.motion);
+                human.player.set_sprinting(human.motion.flags & 0x4000 != 0);
+                for event in human.motion.take_movement_events() {
+                    human.player.movement_event(event.id, event.parameter);
+                }
+                let frames = human.motion.take_dive_frames();
+                human.player.apply_with_dive_frames(&input, None, &frames);
                 for landing in human.motion.take_landings() {
                     if let Some(event) = landing.event {
                         human.player.movement_event(event.id, event.parameter);
@@ -464,6 +472,8 @@ impl SharedMatch {
         target.recovery.damaged(now, target.vitals.health);
         let killed = target.vitals.health == 0;
         if killed {
+            target.motion.cancel_dive();
+            target.motion.cancel_sprint();
             target.died = Some(now);
             if let Some(ai) = &mut target.ai {
                 ai.controller.kill(now);

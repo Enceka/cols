@@ -856,7 +856,7 @@ partial class ClientAssets {
         byte[] raw=r.Read(U(header,0x3c),count*36),bounds=r.Read(U(header,0x40),count*24),contents=r.Read(U(header,0x44),count*4);
         for(int b=0;b<count;b++) {
             if(!world.Brushes.Contains(b))continue;
-            uint mask=U(contents,b*4);if((mask&(0x02814011|0x0280e831))==0)continue;
+            uint mask=U(contents,b*4);if((mask&(0x02814011|0x0280e831|0x01000000))==0)continue;
             var planes=new List<object>();var surfaceFlags=new List<uint>();int sides=Count(BitConverter.ToUInt16(raw,b*36),256);
             byte[] side=sides==0?new byte[0]:r.Read(U(raw,b*36+4),sides*8);
             // Current0x589520: side+4 holds the material index; brush+0xc
@@ -892,7 +892,7 @@ partial class ClientAssets {
             if(BitConverter.ToUInt16(trees,a*32+14)!=0)continue;
             uint part=U(trees,a*32+28);if(part>=pc)throw new Exception("collision partition index invalid");
             uint mat=BitConverter.ToUInt16(trees,a*32+12);byte[] material=r.Read(U(header,0x14)+mat*12,12);uint mask=U(material,8);
-            if((mask&(0x02814011|0x0280e831))==0||!done.Add(part))continue;
+            if((mask&(0x02814011|0x0280e831|0x01000000))==0||!done.Add(part))continue;
             uint first=U(parts,(int)part*12+4),block=parts[part*12+2];int n=parts[part*12];
             if(first+n>tc)throw new Exception("collision triangle span invalid");
             for(uint t=first;t<first+n;t++) {
@@ -905,7 +905,7 @@ partial class ClientAssets {
         var serializer=new JavaScriptSerializer();serializer.MaxJsonLength=64*1024*1024;
         Console.WriteLine(serializer.Serialize(Obj("schema_version",1,"read_only",true,
             "client_sha256","e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b",
-            "map",map,"ncs_crc",crc,"captured_contents_mask",0x02814011|0x0280e831,
+            "map",map,"ncs_crc",crc,"captured_contents_mask",0x02814011|0x0280e831|0x01000000,
             "world_membership",Obj("bsp_root",0,"world_leaves",world.Leaves,"leaf_pool_count",U(header,0x5c),
                 "brush_pool_count",count,"world_brush_count",world.Brushes.Count,"world_aabb_count",worldTrees.Count),
             "brushes",brushes,"triangles",triangles)));
@@ -1034,6 +1034,46 @@ partial class ClientAssets {
             return Obj("count",count,"buffer_base64",Convert.ToBase64String(data));
         } catch(Exception error) {return Obj("error",error.Message);}
     }
+    // Bounded movement/weapon sampling avoids the slower presentation scans.
+    public static void ExportDive(IntPtr process) {
+        var r=new ClientAssets(process);var frames=new List<object>();
+        for(int i=0;i<400;i++) {
+            if(r.Word(0x01a2e7ec)!=10)break;
+            uint slot=r.Word(0x07817ba8);if(slot>=256)throw new Exception("invalid cg slot");
+            uint cg=r.Word(0x01a19510+slot*4)^0xfbb2c97a;
+            uint input=r.Word(0x01a2e838)^0x6891d1c7;
+            byte[] ps=r.Read(cg,0xa78),server=r.Read(input+0xc,0xa78);
+            uint command=r.Word(input+0x625c);
+            byte[] cmd=r.Read(input+0x365c+(command&255)*44,44);
+            System.Threading.Thread.Sleep(1);
+            byte[] second=r.Read(cg,0xa78);
+            bool motion=true,weapon=true;
+            foreach(int at in new int[]{0,4,0xc,0x1c,0x20,0x24,0x28,0x2c,0x30,0xbc,0x190,0x19c,0x238})
+                if(U(ps,at)!=U(second,at))motion=false;
+            foreach(int at in new int[]{0,0x270,0x274,0x27c,0x340,0x3e0})
+                if(U(ps,at)!=U(second,at))weapon=false;
+            frames.Add(Obj("command_time",U(ps,0),"input_command_time",U(cmd,0),"buttons",U(cmd,4),
+                "origin",Floats(ps,0x1c,3),"velocity",Floats(ps,0x28,3),"angles",Floats(ps,0x14c,3),
+                "pm_flags",U(ps,0xc),"pm_type",U(ps,4),"client",U(ps,0x144),
+                "health",U(ps,0x190),"spawn_count",U(ps,0x19c),
+                "jump_time",unchecked((int)U(ps,0xbc)),"dive_end_time",U(ps,0x238),
+                "sprint_last_start",U(ps,0x244),"sprint_last_end",U(ps,0x248),
+                "weapon",U(ps,0x340),"weapon_state",U(ps,0x27c),"weapon_time",U(ps,0x270),
+                "weapon_animation",U(ps,0x26c),"clip",U(ps,0x3e0),
+                "event_sequence",U(ps,0xf4),"events_base64",Convert.ToBase64String(ps,0xf8,32),
+                "active",r.Word(cg+0xc6fe8),"server_command_time",U(server,0),
+                "server_origin",Floats(server,0x1c,3),"server_velocity",Floats(server,0x28,3),
+                "server_jump_time",unchecked((int)U(server,0xbc)),"server_dive_end_time",U(server,0x238),
+                "server_pm_flags",U(server,0xc),"server_weapon_state",U(server,0x27c),
+                "server_spawn_count",U(server,0x19c),"stable_command",U(ps,0)==U(second,0),
+                "stable_motion",motion,"stable_weapon",weapon,"stable_server_command",r.Word(input+0xc)==U(server,0)));
+            if(i==0){Console.Error.WriteLine("sample_ready=dive");Console.Error.Flush();}
+            System.Threading.Thread.Sleep(20);
+        }
+        var serializer=new JavaScriptSerializer();serializer.MaxJsonLength=4*1024*1024;
+        Console.WriteLine(serializer.Serialize(Obj("schema_version",1,"read_only",true,
+            "client_sha256","e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b","frames",frames)));
+    }
     public static void ExportReplay(IntPtr process) {
         var r=new ClientAssets(process);var frames=new List<object>();uint previousActive=uint.MaxValue;
         for(int i=0;i<400;i++) {
@@ -1047,6 +1087,9 @@ partial class ClientAssets {
             byte[] secondPs=r.Read(cg,0xa78);bool stableWeapon=true;
             foreach(int at in new int[]{0,0x19c,0x270,0x274,0x27c,0x280,0x284,0x340,0x344,0x3e0})
                 if(U(ps,at)!=U(secondPs,at))stableWeapon=false;
+            bool stableMotion=true;
+            foreach(int at in new int[]{0,4,0xc,0x1c,0x20,0x24,0x28,0x2c,0x30,0xbc,0x190,0x19c,0x238})
+                if(U(ps,at)!=U(secondPs,at))stableMotion=false;
             if(i==0) { Console.Error.WriteLine("sample_ready=replay");Console.Error.Flush(); }
             uint active=r.Word(cg+0xc6fe8);
             if(active!=previousActive) { Console.Error.WriteLine("killcam_state="+active);Console.Error.Flush();previousActive=active; }
@@ -1083,9 +1126,13 @@ partial class ClientAssets {
                 "server_cursor_hint",U(serverPs,0x204),
                 "paired_weapon",U(ps,0x344),"ads_fraction",BitConverter.ToSingle(ps,0x34c),
                 "server_command_time",U(serverPs,0),"server_origin",Floats(serverPs,0x1c,3),
+                "jump_time",unchecked((int)U(ps,0xbc)),"dive_end_time",U(ps,0x238),
+                "server_jump_time",unchecked((int)U(serverPs,0xbc)),"server_dive_end_time",U(serverPs,0x238),
+                "server_pm_flags",U(serverPs,0xc),"server_weapon_state",U(serverPs,0x27c),
+                "sprint_last_start",U(ps,0x244),"sprint_last_end",U(ps,0x248),
                 "server_velocity",Floats(serverPs,0x28,3),"server_spawn_count",U(serverPs,0x19c),
                 "server_weapon",U(serverPs,0x340),"server_clip",U(serverPs,0x3e0),"server_pm_type",U(serverPs,4),
-                "stable_server_command",stableServerCommand,"stable_weapon",stableWeapon,
+                "stable_server_command",stableServerCommand,"stable_weapon",stableWeapon,"stable_motion",stableMotion,
                 "native_fire_type",heldDef>=0x10000?r.Word(heldDef+0x48c):0,
                 "native_ads_move_scale",heldDef>=0x10000?BitConverter.ToSingle(r.Read(heldDef+0x7cc,4),0):0,
                 "inventory_flags_base64",Convert.ToBase64String(ps,0x2e0,75),
@@ -1137,6 +1184,13 @@ partial class ClientAssets {
                 "melee_row",U(ps,0x33c),
                 "health",U(ps,0x190),"spawn_count",U(ps,0x19c),"corpse_slot",U(ps,0xe8),
                 "stable_command",stableCommand));
+            // Prediction replays older commands in place. Validate the copied
+            // motion again after the slower presentation reads, so an interim
+            // command time cannot be mistaken for a completed movement frame.
+            byte[] finalPs=r.Read(cg,0xa78);
+            foreach(int at in new int[]{0,4,0xc,0x1c,0x20,0x24,0x28,0x2c,0x30,0xbc,0x190,0x19c,0x238})
+                if(U(ps,at)!=U(finalPs,at))stableMotion=false;
+            ((Dictionary<string,object>)frames[frames.Count-1])["stable_motion"]=stableMotion;
             System.Threading.Thread.Sleep(25);
         }
         var serializer=new JavaScriptSerializer();serializer.MaxJsonLength=16*1024*1024;

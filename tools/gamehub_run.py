@@ -178,6 +178,7 @@ def main():
     parser.add_argument("--certificate-dir",type=Path,help="local TLS certificate directory containing server.pem and key.pem")
     parser.add_argument("--port-offset",type=int,default=0,help="offset the diagnostic TCP/game endpoints for concurrent local sessions")
     parser.add_argument("--client-number",type=int,default=0,help="native -q instance number for an isolated concurrent client")
+    parser.add_argument("--handle",help="isolated native login handle:1..15 ASCII letters, digits or underscore")
     parser.add_argument("--seconds", type=int, help="diagnostic duration; continuous play defaults to no deadline")
     parser.add_argument("--continuous-play", action="store_true", help="play until exit, with bounded diagnostic capture")
     parser.add_argument("--title-id-hex", "--context-hex", dest="context_hex", help="explicit u32 title_id; valid game deployment value is still unknown")
@@ -187,6 +188,7 @@ def main():
     parser.add_argument("--rust-auth", action="store_true", help="use the in-process Rust AUTH TLS/HTTP endpoint")
     parser.add_argument("--release-server", action="store_true", help="run the optimized Rust server built with cargo build --release")
     parser.add_argument("--server-binary", type=Path, help="explicit pinned Rust server for isolated verification")
+    parser.add_argument("--game-capture-every", type=int, choices=range(1,10001),metavar="1..10000",help="explicit gameplay sampling interval for bounded native acceptance")
     parser.add_argument("--auth-reply-file", type=Path, help="experimental JSON reply for --rust-auth")
     parser.add_argument("--local-auth-tickets", action="store_true", help="ask the Rust endpoint to issue local test-account tickets")
     parser.add_argument("--rust-lobby", action="store_true", help="enable the Rust protocol-210 lobby handshake observer")
@@ -217,6 +219,7 @@ def main():
     except ValueError:parser.error('bind-ip must be an IPv4 loopback address')
     if not 0<=args.port_offset<=20000:parser.error('port-offset must be 0..20000')
     if not 0<=args.client_number<=65535:parser.error('client-number must be 0..65535')
+    if args.handle is not None and not re.fullmatch(r'[A-Za-z0-9_]{1,15}',args.handle):parser.error('invalid native login handle')
     lobby_port,auth_port,resource_port,game_port=[39000+args.port_offset+i for i in (1,2,3,4)]
     available = engines()
     if args.action == "list":
@@ -311,7 +314,7 @@ def main():
         marker.write_text(json.dumps({"engine_id": args.engine_id, "purpose": "CODOL research"}) + "\n")
     lock = (prefix / ".codol-lock").open("w")
     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    work = args.client_dir.resolve() if args.client_dir else lab / "CODOL"
+    work = (args.client_dir or lab / "CODOL").resolve()
     if args.action == "client":
         if not (work / LAB_MARKER).is_file():
             parser.error("create and mark a separate research client copy first; see docs/GAMEHUB_DEBUG.md")
@@ -343,7 +346,7 @@ def main():
         channels="-all,err+all,+timestamp,+pid,+tid"
     if args.file_trace:
         channels += ",+file"
-    env.update(WINEPREFIX=str(prefix), WINEDEBUG=channels, WINEDLLOVERRIDES="winemenubuilder.exe=d")
+    env.update(WINEPREFIX=str(prefix.resolve()), WINEDEBUG=channels, WINEDLLOVERRIDES="winemenubuilder.exe=d")
     wine = str(engine / "bin/wine")
     server = process = cross = tls = None
     ca_backups = {}
@@ -398,9 +401,9 @@ def main():
                         if args.rust_game:
                             tls_argv += ["--game-bind",args.bind_ip+":"+str(game_port)]
                             if args.continuous_play:
-                                tls_argv += ["--continuous-play","--game-capture-every","1000"]
+                                tls_argv += ["--continuous-play","--game-capture-every",str(args.game_capture_every or 1000)]
                             elif args.quiet_network:
-                                tls_argv += ["--game-capture-every", "30"]
+                                tls_argv += ["--game-capture-every",str(args.game_capture_every or 30)]
                         if args.game_state:
                             tls_argv += ["--game-state", str(args.game_state.resolve())]
                             state["game_state_sha256"] = sha256(args.game_state)
@@ -448,6 +451,7 @@ def main():
                     output, server, tls, args.rust_auth, args.rust_game
                 )
                 argv = [wine, str(work / "codoMP_client_shipRetail.exe"), "-q", str(args.client_number), "-src=tgp", "-game_id", "29", "-zone_id", "83886082", "+set", "r_fullscreen", "0"]
+                if args.handle is not None:argv += ['+set','dw_username',args.handle]
                 if args.native_bot_rooms:
                     argv += ["+set", "1011", "1", "+set", "3265", "12", "+set", "dw_autoStartGame", "0"]
                     state["native_bot_rooms"] = True

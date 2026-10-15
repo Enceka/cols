@@ -50,9 +50,16 @@ pub(crate) struct View {
 impl View {
     pub fn rebased(mut self, delay: u32) -> Self {
         self.motion.command_time = self.motion.command_time.wrapping_add(delay);
+        if self.motion.jump_time != 0 {
+            self.motion.jump_time = if self.motion.diving() && (self.motion.jump_time as i32) < 0 {
+                self.motion.jump_time.wrapping_sub(delay)
+            } else {
+                self.motion.jump_time.wrapping_add(delay)
+            };
+        }
         // Shift absolute clocks, never remaining weapon/animation durations.
         for time in [
-            &mut self.motion.jump_time,
+            &mut self.motion.dive_end_time,
             &mut self.motion.view_height_lerp_time,
             &mut self.motion.sprint.last_start,
             &mut self.motion.sprint.last_end,
@@ -294,6 +301,27 @@ impl Replay {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn replay_rebases_both_signed_dive_phases_and_preserves_recovery_duration() {
+        for jump_time in [1500u32, (-1800i32) as u32, 0] {
+            let mut view = frame(2000, 1).views.remove(0);
+            view.motion.flags |= 0x4000_0000;
+            view.motion.jump_time = jump_time;
+            view.motion.dive_end_time = 1200;
+            let shifted = view.clone().rebased(4000);
+            let expected = if (jump_time as i32) < 0 {
+                (-5800i32) as u32
+            } else if jump_time != 0 {
+                5500
+            } else {
+                0
+            };
+            assert_eq!(shifted.motion.jump_time, expected);
+            assert_eq!(shifted.motion.dive_end_time, 5200);
+            assert_eq!(shifted.motion.command_time, 6000);
+            assert_eq!(view.motion.jump_time, jump_time);
+        }
+    }
     #[test]
     fn replay_shifts_sprint_clocks_but_preserves_meter_and_unset_end() {
         let mut view = frame(2000, 1).views.remove(0);

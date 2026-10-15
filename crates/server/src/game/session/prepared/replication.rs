@@ -349,6 +349,7 @@ impl PreparedGameState {
                     view_height_lerp_target: m.view_height_lerp_target,
                     view_height_lerp_down: m.view_height_lerp_down,
                     jump_time: m.jump_time,
+                    dive_end_time: m.dive_end_time,
                     jump_origin_z: m.jump_origin_z,
                     melee_charge: m.melee_charge(),
                 }),

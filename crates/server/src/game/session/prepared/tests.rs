@@ -69,6 +69,46 @@ fn compass_candidate_remains_metadata_only_and_checks_the_initialized_crc() {
     assert!(state.with_resource_compass_probe(&probe).is_err());
 }
 use super::*;
+
+#[test]
+#[ignore = "requires local captured Afghan arsenal"]
+fn captured_dive_weapon_parameters_are_composed_and_consumed_without_fixed_times() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../research-output");
+    let raw: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(root.join("tdm-afghan-hud-state.json")).unwrap())
+            .unwrap();
+    let arsenal = crate::content::weapons::arsenal::Arsenal::load(
+        root.join(raw["arsenal_file"].as_str().unwrap()),
+        raw["ncs_crc"].as_u64().unwrap() as u32,
+    )
+    .unwrap();
+    for (name, enter, exit) in [("m4_mp", 150, 250), ("m9_mp", 79, 360)] {
+        let weapon = PreparedGameState::resolved_weapon(
+            arsenal.bot_weapon(name, 352).unwrap(),
+            &arsenal.source_sha256,
+            Some(54),
+        )
+        .unwrap();
+        let timing = weapon.dive_timing.unwrap();
+        assert_eq!((timing.in_msec, timing.out_msec), (enter, exit));
+        assert!(!timing.prone_blocked);
+        let mut player = PreparedGameState::make_player(&weapon);
+        player.set_diving(true, false);
+        let command = |time| codol_protocol::game::channel::usercmd::UserCommand {
+            time,
+            weapons: [352, 0, 0],
+            ..Default::default()
+        };
+        player.apply(&command(1100));
+        assert_eq!(player.equipment().firing.unwrap().remaining_msec, enter);
+        player.apply(&command(1100 + u32::from(enter)));
+        assert_eq!(player.equipment().firing.unwrap().state, 32);
+        player.set_diving(true, true);
+        player.apply(&command(1200 + u32::from(enter)));
+        assert_eq!(player.equipment().firing.unwrap().remaining_msec, exit);
+        println!("{name} native dive: {enter}/{exit}ms; states31/32/33 consumed");
+    }
+}
 #[test]
 fn catalog_navigation_is_cached_across_profile_clones_and_room_team_changes() {
     let mut state = synthetic();

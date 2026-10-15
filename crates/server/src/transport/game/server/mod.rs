@@ -547,7 +547,7 @@ impl GameServer {
                         write_private(&self.directory.join(format!("snapshot-{snapshots:04}-reply.bin")),&wire).await?;
                         write_private(&self.directory.join(format!("snapshot-{snapshots:04}.json")),&serde_json::to_vec(&serde_json::json!({
                             "peer":address,"native_sequence":u32::from_le_bytes(plain[..4].try_into()?),
-                            "bytes":wire.len(),"unix_time_ms":unix_time_ms(),"mode":if self.continuous_play {"local_play"}else{"bounded_bootstrap_probe"},"motion":p.connection.motion_progress(),"prediction":p.connection.prediction_progress()
+                            "bytes":wire.len(),"unix_time_ms":unix_time_ms(),"mode":if self.continuous_play {"local_play"}else{"bounded_bootstrap_probe"},"motion":p.connection.motion_progress(),"dive":p.connection.dive_progress(),"prediction":p.connection.prediction_progress()
                         }))?).await?;
                         }
                     }

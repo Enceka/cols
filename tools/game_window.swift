@@ -166,11 +166,12 @@ case "look":
 case "hold":
     let keys: [String: CGKeyCode] = ["w":13,"s":1,"a":0,"d":2,"q":12,"e":14,"r":15,"f":3,"g":5,"space":49,"shift":56,"ctrl":59,"c":8,"x":7,"b":11,"v":9,"3":20,"4":21,"5":23,"6":22,"7":26,"8":28,"1":18,"2":19,"escape":53]
     let sprintChord = args.count == 5 && args[3] == "w+shift"
+    let diveChord = args.count == 5 && args[3] == "w+shift+ctrl"
     let adsChord = args.count == 5 && args[3] == "w+ads"
     let fireAdsChord = args.count == 5 && args[3] == "fire+ads"
     guard args.count == 5, let seconds = Double(args[4]), seconds.isFinite,
           (0.03...(sprintChord ? 8.0 : args[3] == "g" ? 6.0 : 3.0)).contains(seconds),
-          sprintChord || adsChord || fireAdsChord || keys[args[3]] != nil || ["fire","ads"].contains(args[3])
+          sprintChord || diveChord || adsChord || fireAdsChord || keys[args[3]] != nil || ["fire","ads"].contains(args[3])
     else { fail("hold requires an allowlisted gameplay key and a bounded duration (sprint chord:8 seconds; grenade:6; others:3)") }
     guard let app = NSRunningApplication(processIdentifier:pid), app.activate(options:[.activateAllWindows]), CGPreflightPostEventAccess()
     else { fail("unable to focus game or post gameplay key") }
@@ -196,6 +197,26 @@ case "hold":
         leftDown.post(tap:.cghidEventTap)
         defer { leftUp.post(tap:.cghidEventTap); rightUp.post(tap:.cghidEventTap) }
         Thread.sleep(forTimeInterval:seconds)
+    } else if diveChord {
+        guard seconds >= 0.7,
+              let forwardDown=CGEvent(keyboardEventSource:nil,virtualKey:13,keyDown:true),
+              let forwardUp=CGEvent(keyboardEventSource:nil,virtualKey:13,keyDown:false),
+              let sprintDown=CGEvent(keyboardEventSource:nil,virtualKey:56,keyDown:true),
+              let sprintUp=CGEvent(keyboardEventSource:nil,virtualKey:56,keyDown:false),
+              let proneDown=CGEvent(keyboardEventSource:nil,virtualKey:59,keyDown:true),
+              let proneUp=CGEvent(keyboardEventSource:nil,virtualKey:59,keyDown:false)
+        else {fail("dive chord requires at least0.7 seconds")}
+        forwardDown.post(tap:.cghidEventTap);sprintDown.post(tap:.cghidEventTap)
+        defer {proneUp.post(tap:.cghidEventTap);sprintUp.post(tap:.cghidEventTap);forwardUp.post(tap:.cghidEventTap)}
+        let start=Date();var requested=false
+        while Date().timeIntervalSince(start)<seconds {
+            if NSWorkspace.shared.frontmostApplication?.processIdentifier != pid {break}
+            if !requested && Date().timeIntervalSince(start)>=0.5 {
+                proneDown.post(tap:.cghidEventTap);requested=true
+            }
+            Thread.sleep(forTimeInterval:0.01)
+        }
+        result["prone_requested"]=requested
     } else if sprintChord || adsChord {
         guard let forwardDown=CGEvent(keyboardEventSource:nil,virtualKey:13,keyDown:true),
               let forwardUp=CGEvent(keyboardEventSource:nil,virtualKey:13,keyDown:false),

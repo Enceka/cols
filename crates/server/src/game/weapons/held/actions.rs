@@ -11,12 +11,14 @@ impl HeldWeapons {
         let switching = firing.is_some_and(|f| (1..=5).contains(&f.state));
         let melee = firing.is_some_and(|f| (13..=15).contains(&f.state));
         let sprint = firing.is_some_and(|f| (23..=25).contains(&f.state));
+        let dive = firing.is_some_and(|f| (31..=33).contains(&f.state));
         aim.button = cmd.buttons & 0x800 != 0
             && self.selected_offhand.is_none()
             && Self::input_allowed(cmd)
             && !switching
             && !melee
             && !sprint
+            && !dive
             && cmd.weapons[0] == self.current.equipment.weapon;
         aim.movement_slow = aim.button && !reloading;
         let reload_blocks = reloading
@@ -137,6 +139,9 @@ impl HeldWeapons {
         elapsed: u32,
         approach: Option<MeleeApproach>,
     ) {
+        if self.apply_dive(cmd, elapsed) {
+            return;
+        }
         if self.apply_offhand(cmd, elapsed) {
             return;
         }

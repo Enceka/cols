@@ -167,6 +167,7 @@ impl PreparedGameState {
             ensure!(
                 weapon.switch.is_none_or(|t| t.valid())
                     && weapon.sprint_timing.is_none_or(|t| t.valid())
+                    && weapon.dive_timing.is_none_or(|t| t.valid())
                     && weapon.spread.is_none_or(|s| s.valid())
                     && weapon
                         .move_scale

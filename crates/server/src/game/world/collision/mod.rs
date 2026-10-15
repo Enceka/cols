@@ -23,12 +23,15 @@ use std::{
 
 use super::math::*;
 pub const PLAYER_MASK: u32 = 0x0281_4011;
+const DIVE_SLIDE_MASK: u32 = 0x0100_0000;
 /// Target 3.3.3.3 bullet trace mask (pushes at 0x55a4a0 / 0x55a4c3).
 /// It includes clipshot geometry and excludes player-only clip volumes.
 pub const SHOT_MASK: u32 = 0x0280_e831;
 pub const WORLD: u16 = 2046;
 pub const NONE: u16 = 2047;
-pub(crate) const SKIN: f32 = 0.03125;
+// Native capsule sweep0x586810 and BSP traversal0x58bb50 consume the
+// eighth-unit margin at0xc855d0. It also controls ground/apex frame ordering.
+pub(crate) const SKIN: f32 = 0.125;
 const CLIENT_SHA: &str = "e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b";
 
 fn valid(a: V3) -> bool {
@@ -371,7 +374,7 @@ impl Collision {
                 n[3] = -bounds.min[i];
                 planes.push(n);
             }
-            if b.contents & (PLAYER_MASK | SHOT_MASK) != 0 {
+            if b.contents & (PLAYER_MASK | SHOT_MASK | DIVE_SLIDE_MASK) != 0 {
                 primitives.push(Primitive {
                     glass_piece: b.glass_piece,
                     bounds,
@@ -393,7 +396,7 @@ impl Collision {
             ];
             let face = normalized(cross(edges[0], edges[1]));
             // Degenerate serialized triangles have no area and cannot collide.
-            if length(face) < 0.5 || t.contents & (PLAYER_MASK | SHOT_MASK) == 0 {
+            if length(face) < 0.5 || t.contents & (PLAYER_MASK | SHOT_MASK | DIVE_SLIDE_MASK) == 0 {
                 continue;
             }
             let bounds = Bounds {
@@ -477,6 +480,10 @@ impl Collision {
     }
     /// Sweep an upright player capsule whose origin is at its feet.
     pub fn trace(&self, start: V3, end: V3, height: f32) -> Trace {
+        self.trace_mask(start, end, height, PLAYER_MASK)
+    }
+    /// Same capsule and collision skin, with a native caller-specific mask.
+    pub(crate) fn trace_mask(&self, start: V3, end: V3, height: f32, mask: u32) -> Trace {
         let capsule = Capsule::new(height);
         let half = [capsule.radius, capsule.radius, height * 0.5];
         let offset = [0.0, 0.0, half[2]];
@@ -485,18 +492,8 @@ impl Collision {
         let expanded = add(half, [SKIN; 3]);
         let bounds = Bounds::center_half(start, expanded).union(Bounds::center_half(end, expanded));
         let mut result = Trace::default();
-        self.trace_node(
-            0,
-            bounds,
-            start,
-            end,
-            Sweep {
-                capsule,
-                mask: PLAYER_MASK,
-            },
-            &mut result,
-        );
-        self.trace_props(start, end, Some(capsule), PLAYER_MASK, None, &mut result);
+        self.trace_node(0, bounds, start, end, Sweep { capsule, mask }, &mut result);
+        self.trace_props(start, end, Some(capsule), mask, None, &mut result);
         result
     }
     /// Cast a zero-width segment through exported world geometry. Unlike the

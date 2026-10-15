@@ -1470,3 +1470,78 @@ fn reload_events_fire_once_and_loadout_replacement_preserves_event_and_command_c
     player.apply(&select(3629, 353, 0));
     assert_eq!(player.equipment().firing.unwrap().state, 0);
 }
+
+#[test]
+fn dive_weapon_phases_use_authored_times_and_block_actions_until_recovery() {
+    let mut p = melee_player();
+    p.set_dive_timing(DiveTiming {
+        in_msec: 150,
+        out_msec: 250,
+        prone_blocked: false,
+    });
+    let cmd = |time, buttons| UserCommand {
+        time,
+        buttons,
+        weapons: [352, 0, 0],
+        ..Default::default()
+    };
+    p.set_diving(true, false);
+    p.apply(&cmd(1100, 0x800));
+    assert_eq!(p.equipment().firing.unwrap().state, 31);
+    assert_eq!(p.equipment().firing.unwrap().animation & 0x3ff, 35);
+    for (time, state) in [(1249, 31), (1250, 32), (1300, 32)] {
+        p.apply(&cmd(time, 1 | 4 | 16 | 0x4000));
+        assert_eq!(p.equipment().firing.unwrap().state, state);
+        assert!(p.take_shots().is_empty());
+        assert!(p.take_melee_strikes().is_empty());
+        assert!(p.take_throws().is_empty());
+    }
+    p.set_diving(true, true);
+    p.apply(&cmd(1320, 0));
+    assert_eq!(p.equipment().firing.unwrap().state, 33);
+    assert_eq!(p.equipment().firing.unwrap().remaining_msec, 250);
+    p.apply(&cmd(1569, 1));
+    assert_eq!(p.equipment().firing.unwrap().state, 33);
+    p.set_diving(false, false);
+    p.apply(&cmd(1570, 1));
+    assert_eq!(p.equipment().firing.unwrap().state, 0);
+    assert!(p.take_shots().is_empty());
+    assert_eq!(p.equipment().ammo.unwrap().clip, 30);
+}
+#[test]
+fn dive_empty_variants_zero_times_and_reload_interruption_keep_ammunition() {
+    let mut p = player();
+    p.set_dive_timing(DiveTiming {
+        in_msec: 0,
+        out_msec: 0,
+        prone_blocked: false,
+    });
+    p.current.equipment.ammo.as_mut().unwrap().clip = 0;
+    let cmd = |time| UserCommand {
+        time,
+        weapons: [352, 0, 0],
+        ..Default::default()
+    };
+    p.set_diving(true, false);
+    p.apply(&cmd(1100));
+    assert_eq!(p.equipment().firing.unwrap().animation & 0x3ff, 38);
+    p.apply(&cmd(1101));
+    assert_eq!(p.equipment().firing.unwrap().animation & 0x3ff, 39);
+    p.set_diving(true, true);
+    p.apply(&cmd(1102));
+    assert_eq!(p.equipment().firing.unwrap().animation & 0x3ff, 40);
+    p.apply(&cmd(1103));
+    assert_eq!(p.equipment().firing.unwrap().state, 0);
+    assert_eq!(p.equipment().ammo.unwrap().clip, 0);
+    p.current.equipment.ammo.as_mut().unwrap().clip = 3;
+    p.current.animate(8, 13, 1000, 500);
+    p.current.reload_transfer_pending = true;
+    p.set_diving(true, false);
+    p.apply(&cmd(1200));
+    assert_eq!(p.equipment().firing.unwrap().state, 31);
+    assert!(!p.current.reload_transfer_pending);
+    assert_eq!(p.equipment().ammo.unwrap().clip, 3);
+    p.freeze_at(1300);
+    assert_eq!(p.equipment().firing.unwrap().state, 0);
+    assert!(!p.diving);
+}

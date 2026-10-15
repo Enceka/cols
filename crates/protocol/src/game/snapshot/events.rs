@@ -37,6 +37,8 @@ pub const FOOTSTEP_PRONE: u8 = 144;
 pub const JUMP: u8 = 145;
 pub const LANDING_HARD: u8 = 146;
 pub const LANDING_PAIN: u8 = 147;
+pub const DTP_LAUNCH: u8 = 150;
+pub const DTP_LAND: u8 = 151;
 
 // Directly extracted from the checked target image, not inferred from C1.
 const PARAMETER_BITS: [u8; 162] = [

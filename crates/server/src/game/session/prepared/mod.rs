@@ -94,6 +94,8 @@ struct BootstrapWeapon {
     #[serde(default)]
     sprint_timing: Option<crate::game::weapons::held::SprintTiming>,
     #[serde(default)]
+    dive_timing: Option<crate::game::weapons::held::DiveTiming>,
+    #[serde(default)]
     fire_type: Option<u32>,
     #[serde(default)]
     alternate_base: Option<u16>,

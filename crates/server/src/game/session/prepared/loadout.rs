@@ -407,6 +407,7 @@ mod tests {
             ads_move_scale: None,
             sprint_duration_scale: None,
             sprint_timing: None,
+            dive_timing: None,
             fire_type: None,
             alternate_base: None,
             alternate: None,

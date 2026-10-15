@@ -337,7 +337,7 @@ fn separation_leaves_a_ledge_without_snapping_to_a_distant_floor() {
     assert!(m.origin[0] > 60.0 && m.origin[2] > -18.0, "{:?}", m.origin);
     tick(&mut m, &c, 0, 0, 100);
     assert!(m.grounded());
-    assert!((m.origin[2] + 100.0).abs() < 0.1);
+    assert!((m.origin[2] + 100.0 - 0.125).abs() < 0.1, "{m:?}");
 }
 #[test]
 fn wall_stops_forward_motion_but_allows_sliding() {
@@ -451,7 +451,8 @@ fn triangle_slope_supports_a_falling_hull() {
     let mut m = Motion::new([0.0, 0.0, 100.0]);
     tick(&mut m, &c, 0, 0, 100);
     assert!(m.grounded(), "{:?}", m);
-    let slope_offset = 15.0 * ((1.0f32 + 0.25 * 0.25).sqrt() - 1.0);
+    let slope_offset =
+        15.0 * ((1.0f32 + 0.25 * 0.25).sqrt() - 1.0) + 0.125 * (1.0f32 + 0.25 * 0.25).sqrt();
     assert!(
         (m.origin[2] - m.origin[0] * 0.25 - slope_offset).abs() < 0.1,
         "{:?}",
@@ -764,4 +765,12 @@ fn brush_material_comes_from_the_actual_entry_face() {
         c.raycast([0.0, 0.0, 80.0], [0.0, 0.0, -80.0]).surface_flags,
         7 << 20
     );
+}
+
+#[test]
+fn native_capsule_contact_retains_the_recorded_eighth_unit_margin() {
+    let c = world(vec![brush([0.0, 0.0, -50.0], [500.0, 500.0, 50.0])], vec![]);
+    let tr = c.trace([0.0, 0.0, 50.0], [0.0, 0.0, -50.0], 70.0);
+    let contact_z = 50.0 - 100.0 * tr.fraction;
+    assert!((contact_z - 0.125).abs() < 0.00001);
 }

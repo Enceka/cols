@@ -132,6 +132,7 @@ impl Connection {
             self.world.emp.clear();
             if let Some(motion) = &mut self.world.motion {
                 motion.cancel_sprint();
+                motion.cancel_dive();
                 motion.flags &= !0x8000;
             }
         }
