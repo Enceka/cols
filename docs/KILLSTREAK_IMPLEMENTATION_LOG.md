@@ -92,6 +92,18 @@ type13实机已确认攻击机146与重型148各自的DObj，并读到cobra_engi
 
 证据均在`research-output/attack-aircraft-20261015`：`heavy-turret-native-preparation.json`保留运行版本与采样器SHA，`launch-heavy-turret*.log`、`launch-heavy-clean.log`及对应enter日志保留失败边界。接续应先恢复自有客户端可见窗口，再验收重型旋翼/双枪及火箭、诱饵、坠毁和鹞式完整流程。
 
+## 2026-10-15：攻击机炮循环声接入与启动文件阻塞定位
+
+参考脚本在攻击机机炮弹链开始时显式playLoopSound("weap_cobra_20mm_fire_npc")、结束时stopLoopSound；当前已采集cobra_20mm_mp的原生开火别名为空，不能假定FIRE_WEAPON事件会自行提供机炮循环声。目标EXE进一步确认实体loopSound消费者0x501a67调用0x444910：动态选择器读取CS3107+slot，常量选择器从512起。本版type13 ES+0x8c为字段18、宽8位，不能直接塞入NCS常量选择器。
+
+新增实际别名采样与资源准备：只在匹配地图/CRC的只读声音记录明确found=true时准备动态槽240；未采到则保持空绑定，不伪造声音资源。初始化游戏状态在CS3347发布别名，已有同槽不同别名会报冲突而不是覆盖。飞机快照按实际开火、弹链间隔和活动状态发送该槽，停火、丢失目标、离场或坠毁时归零。重型335的既有资源采样显示pavelow_mg_loop/pavelow_mg_cooldown是武器别名，仍需独立验证type12消费者与实际听音，不重复冒充脚本循环声已验收。
+
+`aircraft-loop-authority-check.log`飞机组15项通过、1项需真实本图资源而忽略；新增验证实际开火后loopSound出现、丢失目标后停止、再次开火和坠毁清零。`aircraft-loop-protocol-check.log`3项通过，描述表解码覆盖240→0→240的增量清零。`aircraft-loop-preparer-check.log`11项通过，覆盖未采到、found=false和found=true的资源门槛。`aircraft-loop-workspace-check.log`完整串行工作区通过，`aircraft-loop-clippy.log`通过；`aircraft-loop-python-check.log`168项通过。字段与别名依据写入`aircraft-audio-3.3.3.3.json`。
+
+启动故障进一步定位：直接打开自有客户端ff_init_common_gfx_V43.ifs也阻塞，Python进程16812处于macOS不可中断Us状态。只读线程采样`native-gfx-read-stall-sample.txt`确认停在open系统调用，尚未进入读取；尝试从本机sam恢复副本读取的自有进程18608同样保持Us，没有生成新资源缓存，也未替换任何客户端资源。中断后重新核对了实际进程状态，未因观察超时重复启动这些读取任务，未终止其他任务进程。
+
+本轮未取得新的可操作原生窗口、机炮别名采样或听音证据；保留原生验收缺口，7/8/10仍关闭普通规则。保留的隔离运行服务器是上一轮版本，后续原生验收前须重新构建并记录SHA，不能把当前源码回归与旧运行版本混称。
+
 ## 尚待完成
 
 攻击飞行器7/8/10、远控5/12/13/18、军犬20、重装23/24、无人机26；普通空投2及多箱空投9还需完整内容效果池。模式25/27/50与Pro条目需要真实本版绑定，不能借旧版本ID或删除Pro后缀冒充。

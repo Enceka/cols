@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "client_sha256": "e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b",
+  "vehicle_loop_sound": {
+    "entity_type": 13,
+    "descriptor_field": 18,
+    "entity_state_offset": 140,
+    "codec_bits": 8,
+    "consumer_callsite_va": 5249639,
+    "selector_consumer_va": 4475152,
+    "dynamic_configstring_base": 3107,
+    "constant_selector_base": 512,
+    "constant_selector_fits_field": false
+  },
+  "cobra_script_loop": {
+    "alias": "weap_cobra_20mm_fire_npc",
+    "dynamic_slot": 240,
+    "publication_requires_matching_capture_found": true,
+    "native_playback_verified": false
+  },
+  "pavelow_weapon_alias_capture": {
+    "weapon": 335,
+    "firing_aliases": {
+      "0x4cc": "pavelow_mg_loop",
+      "0x4d0": "pavelow_mg_loop",
+      "0x4dc": "pavelow_mg_cooldown",
+      "0x4e0": "pavelow_mg_cooldown"
+    },
+    "native_turret_audio_verified": false
+  }
+}
