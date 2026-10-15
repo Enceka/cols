@@ -316,8 +316,11 @@ impl PreparedGameState {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("TDM bot rifle missing"))?
             .index;
+        let mut config = config.clone();
+        config.mode = crate::content::maps::team_modes::TeamMode::from_native_token(&self.mode)
+            .ok_or_else(|| anyhow::anyhow!("unsupported native team deathmatch mode"))?;
         let mut tdm = crate::game::modes::tdm::TdmMatch::with_navigation(
-            config.clone(),
+            config,
             template,
             self.training_enemy.as_ref().unwrap().move_speed,
             self.collision.as_ref().unwrap(),

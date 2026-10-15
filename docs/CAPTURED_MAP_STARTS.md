@@ -2,6 +2,8 @@
 
 地图准备先保存`<map>-captured-starts.json`中的原始两队出生点，再通过`codol-server prepare-map-starts`使用本图真实碰撞筛选。保留点的坐标及顺序不变；不从其它模式借点、不复制或生成点。玩家与Bot初次出生和重生继续使用同一`grounded_spawn`站立胶囊贴地检查。
 
+战术普通复活还使用本图`mp_tdm_spawn`共享池，与两队开局阵型分别保存；同一工具筛选`respawn_points`并记录原始／保留数量及拒绝原因，保持每个点的坐标和角度成对。5秒准备、15秒开局宽限及宽限后的动态选点见`MATCH_FLOW_AND_SPAWNS.md`。
+
 ```sh
 target/release/codol-server prepare-map-starts \
   --game-state research-output/MAP-captured-starts.json \

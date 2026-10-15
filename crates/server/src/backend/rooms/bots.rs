@@ -5,17 +5,16 @@ use std::collections::{BTreeMap, BTreeSet};
 #[derive(Clone)]
 pub(crate) struct Policy {
     pub version: u32,
-    pub maps: BTreeSet<String>,
+    pub maps: BTreeSet<(String, String)>,
     /// Map-specific prepared roster; each pair is Axis/Allies, unlike room teams.
-    pub loadouts: BTreeMap<String, Vec<[codol_protocol::room::messages::Loadout; 2]>>,
+    pub loadouts: BTreeMap<(String, String), Vec<[codol_protocol::room::messages::Loadout; 2]>>,
 }
 impl Policy {
     pub fn accepts(&self, info: &codol_protocol::room::messages::RoomInfo) -> bool {
         info.playlist == 255
-            && info.mode == "war"
             && info.maximum == 12
             && info.minimum <= 12
-            && self.maps.contains(&info.map)
+            && self.maps.contains(&(info.map.clone(), info.mode.clone()))
     }
 }
 
@@ -29,10 +28,10 @@ impl super::Channel {
         if !self.bots_announced {
             return Ok(Vec::new());
         }
-        let Some(map) = self.bot_map(policy).map(str::to_owned) else {
+        let Some((map, mode)) = self.bot_selection(policy).cloned() else {
             return Ok(Vec::new());
         };
-        let Some(roster) = policy.loadouts.get(&map) else {
+        let Some(roster) = policy.loadouts.get(&(map.clone(), mode.clone())) else {
             return Ok(Vec::new()); // Older preparations have no frontend item IDs.
         };
         ensure!(
@@ -49,7 +48,7 @@ impl super::Channel {
                 continue;
             };
             let loadout = roster[usize::from(client - 1)][usize::from(2 - team)];
-            let identity = (map.clone(), team, loadout);
+            let identity = (map.clone(), mode.clone(), team, loadout);
             if !force && self.avatar_sent.get(&client) == Some(&identity) {
                 continue;
             }
@@ -80,7 +79,10 @@ mod tests {
     fn bots_only_join_supported_custom_tdm_with_the_real_roster_capacity() {
         let policy = Policy {
             version: 7,
-            maps: BTreeSet::from(["mp_afghan".into(), "mp_killhouse_sh".into()]),
+            maps: BTreeSet::from([
+                ("mp_afghan".into(), "war".into()),
+                ("mp_killhouse_sh".into(), "war".into()),
+            ]),
             loadouts: Default::default(),
         };
         let mut info = codol_protocol::room::messages::RoomInfo {
@@ -96,6 +98,11 @@ mod tests {
         info.playlist = 255;
         info.mode = "sd".into();
         assert!(!policy.accepts(&info));
+        info.mode = "cha".into();
+        assert!(!policy.accepts(&info)); // Preparing war on a map cannot admit cha.
+        let mut charge = policy.clone();
+        charge.maps.insert((info.map.clone(), "cha".into()));
+        assert!(charge.accepts(&info));
         info.mode = "war".into();
         info.map = "mp_killhouse".into();
         assert!(!policy.accepts(&info));

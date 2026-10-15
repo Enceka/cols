@@ -4,6 +4,9 @@ use crate::game::world::collision::Collision;
 use crate::game::world::collision::WORLD;
 use std::collections::{BTreeMap, BinaryHeap};
 const CELL: f32 = 48.0;
+// Shared tactical respawns extend the graph beyond opening formations. Keep
+// the budget bounded while covering both ends of the larger captured maps.
+const MAX_NODES: usize = 32768;
 const HEIGHT: f32 = 70.0;
 type V3 = [f32; 3];
 
@@ -140,14 +143,14 @@ impl Navigation {
         let mut positions = Vec::new();
         for x in (min_x / CELL).floor() as i32..=(max_x / CELL).ceil() as i32 {
             for y in (min_y / CELL).floor() as i32..=(max_y / CELL).ceil() as i32 {
-                if positions.len() >= 16384 {
+                if positions.len() >= MAX_NODES {
                     break;
                 }
                 let mut z = high;
                 // A map cell can have a rooftop and a walkable interior.
                 // Keeping only its top floor disconnects enclosed spawns.
                 for _ in 0..128 {
-                    if z <= low || positions.len() >= 16384 {
+                    if z <= low || positions.len() >= MAX_NODES {
                         break;
                     }
                     let start = [x as f32 * CELL, y as f32 * CELL, z];

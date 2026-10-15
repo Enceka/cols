@@ -26,8 +26,11 @@ from prepare_map_batch import read, write, prepare as prepare_batch, verify
 from verify_native_maps import Client
 
 
-def native_map(name):
-    return next(m for m in read(REPO/'fixtures/protocol/map-registry-3.3.3.3.json')['maps'] if m['name']==name)
+def native_map(name, mode='war'):
+    if mode not in ('war', 'cha'):
+        raise ValueError('unsupported native collection mode')
+    registry = 'charge-map-registry-3.3.3.3.json' if mode == 'cha' else 'map-registry-3.3.3.3.json'
+    return next(m for m in read(REPO/'fixtures/protocol'/registry)['maps'] if m['name']==name)
 
 
 def single_capture_playlist(source, name, maximum_players=12):
@@ -51,7 +54,13 @@ def single_capture_playlist(source, name, maximum_players=12):
 
 
 class Lab:
-    def __init__(self, directory, service, prefix, base_catalog, initial_state, native_bot_rooms=True):
+    def __init__(self, directory, service, prefix, base_catalog, initial_state, native_bot_rooms=True, mode='war',client_dir=None,bind_ip='127.0.0.1',certificate_dir=None,port_offset=0,own_stun=True,client_number=0):
+        if mode not in ('war','cha'):raise ValueError('unsupported native collection mode')
+        self.mode=mode
+        self.client_dir=client_dir
+        self.bind_ip,self.certificate_dir=bind_ip,certificate_dir
+        self.port_offset,self.own_stun=port_offset,own_stun
+        self.client_number=client_number
         self.directory,self.service,self.prefix=directory,service,prefix
         self.catalog,self.initial_state=base_catalog,initial_state
         self.native_bot_rooms=native_bot_rooms
@@ -64,8 +73,10 @@ class Lab:
             raise ValueError('compass candidate requests require isolated resource collection')
         if self.process is not None:
             raise RuntimeError('previous owned experiment must stop before startup')
-        if stage not in ('native','restore') and (native_map(name).get('no_custom_room')
-                                                  or native_map(name)['maximum_players']<12):
+        if stage not in ('native','restore') and (native_map(name,self.mode).get('no_custom_room')
+                                                  or native_map(name,self.mode)['maximum_players']<12):
+            if self.mode != 'war':
+                raise ValueError('quick resource capture is only verified for war')
             capture_playlist=0 if capture_playlist is None else capture_playlist
             if capture_playlist!=0 or self.service.resolve()==(REPO/'client-work/server-data').resolve():
                 raise ValueError('quick resource capture requires native playlist0 and isolated service data')
@@ -77,7 +88,9 @@ class Lab:
         if stage=='native':
             entries=read(catalog)['entries']
             target=next((e['map'] for e in entries if name in (e['map'],e['map']+'-retry')),None)
-            if target and (native_map(target).get('no_custom_room') or native_map(target)['maximum_players']<12):
+            if target and (native_map(target,self.mode).get('no_custom_room') or native_map(target,self.mode)['maximum_players']<12):
+                if self.mode != 'war':
+                    raise ValueError('quick native checks are only verified for war')
                 if self.service.resolve()==(REPO/'client-work/server-data').resolve() or len(entries)!=1:
                     raise ValueError('quick native checks require one map and isolated service data')
                 state=read((catalog.parent/entries[0]['file']).resolve())
@@ -100,17 +113,24 @@ class Lab:
                  '--trust-lab-cert','--quiet-network','--service-data-dir',str(self.service),
                  '--game-state',str(initial_state),'--game-map-catalog',str(catalog)]
         if self.native_bot_rooms:command+=['--native-bot-rooms']
+        if self.client_dir:command+=['--client-dir',str(self.client_dir)]
+        command+=['--bind-ip',self.bind_ip]
+        if self.certificate_dir:command+=['--certificate-dir',str(self.certificate_dir)]
+        command+=['--port-offset',str(self.port_offset)]
+        command+=['--client-number',str(self.client_number)]
+        if not self.own_stun:command.remove('--rust-stun')
         marker=REPO/'client-work'/self.prefix/'.codol-prefix.json'
         if marker.is_file():command+=['--engine-id',read(marker)['engine_id']]
         if capture_playlist is not None and stage in ('native','restore'):
             raise ValueError('resource playlist is limited to isolated collection')
         if stage not in ('native','restore'):command+=['--resource-capture-map',name]
+        if stage not in ('native','restore'):command+=['--resource-capture-mode',self.mode]
         if capture_playlist is not None:command+=['--resource-capture-playlist',str(capture_playlist)]
         if compass_probe is not None:
             command+=['--resource-compass-probe',str(compass_probe)]
         self.process=subprocess.Popen(command,stdout=log,stderr=subprocess.STDOUT,start_new_session=True)
         log.close()
-        deadline=time.monotonic()+240
+        deadline=time.monotonic()+300
         while time.monotonic()<deadline:
             for path in (REPO/'research-output/gamehub').glob('client-*/experiment.json'):
                 if path.stat().st_mtime<started:continue
@@ -155,7 +175,7 @@ class Lab:
     def enter(self, client, name):
         client.wait(lambda s:s['connection_state']==0 and s['frontend_state']==5
                     and s['active_inventory_count']>0,100)
-        if native_map(name).get('no_custom_room') or native_map(name)['maximum_players']<12:
+        if native_map(name,self.mode).get('no_custom_room') or native_map(name,self.mode)['maximum_players']<12:
             if read(client.experiment).get('resource_capture_playlist')!=0:
                 raise ValueError('map prohibits native custom rooms; use its explicit quick capture binding')
             client.click(.297,.05);client.click(.14,.125);client.click(.156,.255)
@@ -164,9 +184,7 @@ class Lab:
                 and (s['room_member_count']>0 or s['connection_state']>=6),30)
             if state['connection_state']==0:client.click(.848,.916)
             return
-        client.click(.297,.05);client.click(.14,.125)
-        client.click(.437,.255);client.click(.763,.854)
-        client.wait(lambda s:s['room_member_count']>0 and s['room_is_host']==1,15)
+        client.create_room(self.mode)
         client.select_map(name,'auto')
         client.click(.848,.916)
 
@@ -237,12 +255,12 @@ class Lab:
 
 
     def initialization_catalog(self, name, constants, summary):
-        metadata=dict(schema_version=1,client_sha256=CLIENT_SHA256,map=name,mode='war',zone='mp',playlist=0,
+        metadata=dict(schema_version=1,client_sha256=CLIENT_SHA256,map=name,mode=self.mode,zone='mp',playlist=0,
                       capture_sha256=hashlib.sha256(constants.read_bytes()).hexdigest(),**summary)
         metadata_path=self.directory/(name+'-metadata.json');write(metadata_path,metadata)
         initialized=read(self.catalog)
-        initialized['entries']=[e for e in initialized['entries'] if e['map']!=name]
-        initialized['entries'].append(dict(map=name,mode='war',file=str(metadata_path)))
+        initialized['entries']=[e for e in initialized['entries'] if (e['map'],e['mode'])!=(name,self.mode)]
+        initialized['entries'].append(dict(map=name,mode=self.mode,file=str(metadata_path)))
         path=self.directory/(name+'-initialization-catalog.json');write(path,initialized)
         return path
 
@@ -308,6 +326,7 @@ class Lab:
         preparation=self.directory/(name+'-state.json')
         candidate=self.directory/(name+'-captured-starts.json')
         command=[sys.executable,str(REPO/'tools/prepare_tdm_map.py'),'--template',str(template),'--map',name,
+                 '--mode',self.mode,
                  '--constants',captures['net-constants'],'--entities',captures['entities'],
                  '--collision',captures['collision'],'--arsenal',captures['arsenal'],
                  '--characters',captures['characters'],'--native-characters',captures['outfits'],

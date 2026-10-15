@@ -10,6 +10,19 @@ import materialize_map_batch as batch
 
 
 class NativeBatchLifecycle(unittest.TestCase):
+    def test_charge_metadata_keeps_the_same_map_war_entry_and_native_registry(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);catalog=root/'catalog.json';constants=root/'constants.json'
+            constants.write_text('{}')
+            batch.write(catalog,dict(schema_version=1,entries=[dict(map='mp_nuked',mode='war',file='war.json')]))
+            lab=batch.Lab(root,root/'service','owned',catalog,root/'initial',mode='cha')
+            actual=batch.read(lab.initialization_catalog('mp_nuked',constants,dict(ncs_crc=123)))
+            self.assertEqual([(e['map'],e['mode']) for e in actual['entries']],
+                             [('mp_nuked','war'),('mp_nuked','cha')])
+            self.assertEqual(batch.read(Path(actual['entries'][1]['file']))['mode'],'cha')
+            self.assertEqual(batch.native_map('mp_shipment_long','cha')['native_id'],12)
+            with self.assertRaises(StopIteration):batch.native_map('mp_shipment_long','war')
+
     def test_quick_capture_binds_only_the_first_bot_playlist_without_changing_other_entries(self):
         original=(batch.REPO/'configs/publisher/mp_playlists_shipRetail_release.info').read_bytes()
         bound=batch.single_capture_playlist(original,'mp_dr_box')

@@ -107,10 +107,14 @@ fn bot_avatars_wait_for_members_and_follow_team_map_and_frontend_refresh() {
         .collect::<Vec<_>>();
     let policy = crate::backend::rooms::bots::Policy {
         version: 7,
-        maps: ["mp_afghan".into(), "mp_killhouse_sh".into()].into(),
+        maps: [
+            ("mp_afghan".into(), "war".into()),
+            ("mp_killhouse_sh".into(), "war".into()),
+        ]
+        .into(),
         loadouts: [
-            ("mp_afghan".into(), roster.clone()),
-            ("mp_killhouse_sh".into(), roster.clone()),
+            (("mp_afghan".into(), "war".into()), roster.clone()),
+            (("mp_killhouse_sh".into(), "war".into()), roster.clone()),
         ]
         .into(),
     };
@@ -195,7 +199,7 @@ fn bot_avatars_wait_for_members_and_follow_team_map_and_frontend_refresh() {
         channel.sync_bot_loadouts(&policy, id, false).unwrap().len(),
         1
     );
-    assert_eq!(channel.avatar_sent[&1].2.clothing[0], 501);
+    assert_eq!(channel.avatar_sent[&1].3.clothing[0], 501);
     assert_eq!(
         channel.sync_bot_loadouts(&policy, id, true).unwrap().len(),
         11
@@ -242,8 +246,8 @@ async fn native_cancel_and_avatar_republish_resend_loadouts_after_the_owner_echo
     drop(server);
     Arc::get_mut(&mut endpoint).unwrap().bot_rooms = Some(crate::backend::rooms::bots::Policy {
         version: 7,
-        maps: ["mp_afghan".into()].into(),
-        loadouts: [("mp_afghan".into(), vec![[loadout; 2]; 11])].into(),
+        maps: [("mp_afghan".into(), "war".into())].into(),
+        loadouts: [(("mp_afghan".into(), "war".into()), vec![[loadout; 2]; 11])].into(),
     });
     let mut rooms = Rooms::with_game_endpoint(endpoint);
     let owner = session(0x8000000000000001);
@@ -333,7 +337,7 @@ async fn supported_creation_joins_bots_after_receiver_ready_without_a_map_change
     drop(server);
     Arc::get_mut(&mut endpoint).unwrap().bot_rooms = Some(crate::backend::rooms::bots::Policy {
         version: 7,
-        maps: ["mp_killhouse_sh".into()].into(),
+        maps: [("mp_killhouse_sh".into(), "war".into())].into(),
         loadouts: Default::default(),
     });
     for (map, mode, playlist, capacity, explicit_unsupported, expected_joins) in [

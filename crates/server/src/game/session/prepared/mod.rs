@@ -17,6 +17,8 @@ pub(crate) struct SnapshotWorld<'a> {
     pub radar_flags: Option<u8>,
     pub reward_inventory: [Option<codol_protocol::game::snapshot::EquippedWeapon>; 4],
     pub nuke_hud: Option<codol_protocol::game::snapshot::hit_feedback::NukeHudSnapshot>,
+    pub preparation_hud:
+        Option<codol_protocol::game::snapshot::hit_feedback::PreparationHudSnapshot>,
     pub perk_display: bool,
     pub bags: &'a [codol_protocol::game::snapshot::scavenger::BagSnapshot],
     pub bag_baselines: &'a [codol_protocol::game::snapshot::scavenger::BagSnapshot],

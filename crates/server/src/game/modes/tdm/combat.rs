@@ -10,7 +10,7 @@ impl TdmMatch {
         headshot: bool,
         melee: bool,
     ) {
-        if self.rules.finished {
+        if !self.live_at(now) {
             return;
         }
         if victim.client_index != 0 {
@@ -72,7 +72,7 @@ impl TdmMatch {
         self.credit(now, victim, hit.attacker, hit.weapon, hit.headshot, false);
     }
     pub fn actor_fell(&mut self, now: u32, victim: EnemySnapshot) {
-        if self.rules.finished {
+        if !self.live_at(now) {
             return;
         }
         // A world fall has no attacker. Reference handleWorldDeath does not
@@ -108,7 +108,7 @@ impl TdmMatch {
         local: EnemySnapshot,
         collision: &Collision,
     ) -> usize {
-        if self.rules.finished {
+        if !self.live_at(now) {
             return 0;
         }
         let Some(kind) = explosion.definition.tactical else {
@@ -148,7 +148,7 @@ impl TdmMatch {
         Option<codol_protocol::game::snapshot::hit_feedback::HitKind>,
         u16,
     ) {
-        if self.rules.finished {
+        if !self.live_at(now) {
             return (None, 0);
         }
         self.props.radial(
@@ -225,7 +225,7 @@ impl TdmMatch {
         local: EnemySnapshot,
         collision: &Collision,
     ) -> usize {
-        if self.rules.finished {
+        if !self.live_at(now) {
             return 0;
         }
         let mut affected = 0;
@@ -261,7 +261,7 @@ impl TdmMatch {
         Option<codol_protocol::game::snapshot::hit_feedback::HitKind>,
         Option<PlayerHit>,
     ) {
-        if self.rules.finished {
+        if !self.live_at(now) {
             return (None, None);
         }
         let team = self.config.teams[usize::from(blast.owner)];
@@ -362,7 +362,7 @@ impl TdmMatch {
         collision: &Collision,
         regions: Option<&crate::game::combat::hit_location::HitRegions>,
     ) -> ActorShot {
-        if self.rules.finished {
+        if !self.live_at(shot.time) {
             return ActorShot::default();
         }
         let mut outcome = game_combat::fire_at_actors(
@@ -391,7 +391,7 @@ impl TdmMatch {
         local: EnemySnapshot,
         collision: &Collision,
     ) -> ActorShot {
-        if self.rules.finished || !local.alive {
+        if !self.live_at(strike.time) || !local.alive {
             return ActorShot::default();
         }
         let mut outcome = game_combat::melee_at_actors(
@@ -419,7 +419,7 @@ impl TdmMatch {
         local: EnemySnapshot,
         collision: &Collision,
     ) -> Option<crate::game::weapons::held::MeleeApproach> {
-        if self.rules.finished
+        if !self.live_at(cmd.time)
             || !local.alive
             || cmd.melee_distance == 0
             || cmd.buttons & 4 == 0

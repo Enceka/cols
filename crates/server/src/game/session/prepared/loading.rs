@@ -3,7 +3,7 @@ use super::*;
 impl PreparedGameState {
     pub fn load(path: &Path) -> Result<Self> {
         ensure!(
-            std::fs::metadata(path)?.len() <= 65536,
+            std::fs::metadata(path)?.len() <= 256 * 1024,
             "prepared game state size"
         );
         let mut state: Self = serde_json::from_slice(&std::fs::read(path)?)?;
@@ -82,7 +82,20 @@ impl PreparedGameState {
         state.ground_first_spawn()?;
         if let Some(config) = &state.match_config {
             state.navigation = Some(Arc::new(crate::game::ai::navigation::Navigation::build(
-                config.spawns.iter().flatten().copied(),
+                config
+                    .spawns
+                    .iter()
+                    .flatten()
+                    .copied()
+                    .chain(config.respawn_points.iter().map(|p| p.origin))
+                    .chain(
+                        config
+                            .base_respawns
+                            .iter()
+                            .flatten()
+                            .flatten()
+                            .map(|p| p.origin),
+                    ),
                 state.collision.as_ref().unwrap(),
             )));
         }
@@ -283,11 +296,10 @@ impl PreparedGameState {
                 && state.map == codol_protocol::room::story::FIRST_MAP
                 && state.mode == "coop"
                 && state.clone().resource_initialization().is_ok())
-                || (crate::content::maps::registry::native_id(&state.map).is_some()
-                    && state.mode == "war"
+                || (crate::content::maps::registry::supports_mode(&state.map, &state.mode)
                     && state.zone == "mp"
                     && state.playlist == 0),
-            "prepared map requires a captured native TDM identity"
+            "prepared map requires a captured native team mode/map identity"
         );
         ensure!(
             (1..=512).contains(&state.asset_count) && (1..=65536).contains(&state.constant_count),

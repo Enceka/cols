@@ -1,4 +1,5 @@
-//! Local 6v6 TDM authority. Native room teams are frozen for each match.
+//! Local team deathmatch authority. Native war/tdm identifies tactical play;
+//! its shared respawns must not be confused with fixed-base assault play.
 use crate::game::ai::controller::BotController;
 use crate::game::ai::controller::BotTarget;
 use crate::game::ai::controller::BotWeapon;
@@ -12,9 +13,10 @@ use codol_protocol::game::snapshot::events::EventQueue;
 use codol_protocol::game::snapshot::scoreboard::ScoreboardRow;
 use codol_protocol::game::snapshot::scoreboard::ScoreboardSnapshot;
 mod config;
-pub(crate) use config::MatchConfig;
+mod spawns;
 #[cfg(test)]
 use config::default_teams;
+pub(crate) use config::{MatchConfig, SpawnPoint};
 
 struct Bot {
     view_motion: crate::game::player::movement::Motion,
@@ -95,10 +97,54 @@ pub(crate) struct TdmMatch {
     next_diagnostics: u32,
     acceptance_support_index: usize,
     next_route_client: usize,
+    spawns: spawns::Spawns,
 }
 impl TdmMatch {
     pub(crate) fn finished(&self) -> bool {
         self.rules.finished
+    }
+    pub(crate) fn preparing(&self) -> bool {
+        !self.rules.finished && self.rules.start.is_none()
+    }
+    pub(crate) fn live_at(&self, time: u32) -> bool {
+        !self.rules.finished && self.rules.start.is_some_and(|start| time >= start)
+    }
+    pub(crate) fn in_grace_period(&self, time: u32) -> bool {
+        !self.rules.finished
+            && self
+                .rules
+                .start
+                .is_none_or(|start| time.saturating_sub(start) < self.config.grace_period_msec)
+    }
+    pub(crate) fn mark_combat(&mut self, client: u8) {
+        if let Some(combat) = self.rules.combat.get_mut(usize::from(client)) {
+            *combat = true;
+        }
+    }
+    pub(crate) fn spawn_client(&mut self, client: u8) {
+        self.rules.combat[usize::from(client)] = false;
+        self.streaks.spawn(client);
+    }
+    pub(crate) fn can_change_loadout(&self, time: u32) -> bool {
+        (self.preparing() || self.in_grace_period(time)) && !self.rules.combat[0]
+    }
+    pub(crate) fn preparation_hud(
+        &self,
+        now: u32,
+    ) -> Option<codol_protocol::game::snapshot::hit_feedback::PreparationHudSnapshot> {
+        self.preparing()
+            .then(|| {
+                self.rules.preparation_start.map(|start| {
+                    codol_protocol::game::snapshot::hit_feedback::PreparationHudSnapshot {
+                        remaining_seconds: (start + self.config.preparation_msec)
+                            .saturating_sub(now)
+                            .div_ceil(1000)
+                            .clamp(1, 30) as u8,
+                        text: self.config.preparation_text,
+                    }
+                })
+            })
+            .flatten()
     }
     pub(crate) fn result(&self) -> &'static str {
         self.rules.result()
@@ -108,6 +154,9 @@ impl TdmMatch {
     }
     pub(crate) fn duration_seconds(&self) -> u32 {
         self.rules.duration_seconds()
+    }
+    pub(crate) fn native_mode_number(&self) -> u32 {
+        self.config.mode.native_number()
     }
 
     pub(crate) fn set_validation_seed(&mut self, seed: u64) {
@@ -125,7 +174,20 @@ impl TdmMatch {
         collision: &Collision,
     ) -> Result<Self> {
         let navigation = std::sync::Arc::new(crate::game::ai::navigation::Navigation::build(
-            config.spawns.iter().flatten().copied(),
+            config
+                .spawns
+                .iter()
+                .flatten()
+                .copied()
+                .chain(config.respawn_points.iter().map(|p| p.origin))
+                .chain(
+                    config
+                        .base_respawns
+                        .iter()
+                        .flatten()
+                        .flatten()
+                        .map(|p| p.origin),
+                ),
             collision,
         ));
         Self::with_navigation(config, template, speed, collision, navigation)
@@ -138,6 +200,16 @@ impl TdmMatch {
         navigation: std::sync::Arc<crate::game::ai::navigation::Navigation>,
     ) -> Result<Self> {
         config.validate(collision)?;
+        let spawns = spawns::Spawns::new(&config, collision)?;
+        let rules = if config.preparation_msec == 0 {
+            rules::Rules {
+                start: Some(1000),
+                preparation_start: Some(1000),
+                ..Default::default()
+            }
+        } else {
+            rules::Rules::default()
+        };
         let mut bots = Vec::new();
         let mut ordinals = [0usize; 2];
         ordinals[usize::from(config.teams[0] - 1)] = 1;
@@ -208,7 +280,7 @@ impl TdmMatch {
             ..Default::default()
         });
         Ok(Self {
-            rules: Default::default(),
+            rules,
             config,
             bots,
             baselines,
@@ -227,6 +299,7 @@ impl TdmMatch {
             next_diagnostics: 0,
             acceptance_support_index: 0,
             next_route_client: 0,
+            spawns,
         })
     }
     pub fn configure_roster(
@@ -326,6 +399,22 @@ impl TdmMatch {
         if self.rules.finished {
             return;
         }
+        let preparation = *self.rules.preparation_start.get_or_insert(now);
+        if self.rules.start.is_none() {
+            let start = preparation + self.config.preparation_msec;
+            if now < start {
+                return;
+            }
+            self.rules.start = Some(start);
+            for bot in &mut self.bots {
+                bot.progress_time = start;
+                bot.snapshot_time = start;
+                if let Some(weapon) = &mut bot.weapon {
+                    weapon.freeze_at(start);
+                }
+            }
+            tracing::info!(start, "team deathmatch preparation complete");
+        }
         if self
             .rules
             .time_expired(now, self.config.time_limit_msec, self.streaks.incoming())
@@ -346,18 +435,18 @@ impl TdmMatch {
             tracing::info!(now, winner=self.winning_team(), scores=?self.rules.scores, "TDM match finished");
         }
     }
+    #[cfg(test)]
     pub fn player_spawn(&self, collision: &Collision) -> Result<[f32; 3]> {
         let starts = &self.config.spawns[usize::from(self.config.teams[0] - 1)];
-        let index = self.rows[0].deaths as usize % starts.len();
-        crate::game::ai::controller::grounded_spawn(starts[index], collision)
+        crate::game::ai::controller::grounded_spawn(starts[0], collision)
     }
+    #[cfg(test)]
     pub fn player_spawn_angles(&self) -> [u16; 3] {
         let team = usize::from(self.config.teams[0] - 1);
-        let index = self.rows[0].deaths as usize % self.config.spawns[team].len();
         self.config
             .spawn_angles
             .as_ref()
-            .map_or([0; 3], |angles| angles[team][index])
+            .map_or([0; 3], |angles| angles[team][0])
     }
     fn actors(&self, local: EnemySnapshot, local_height: f32) -> Vec<Actor> {
         std::iter::once(local)
@@ -437,7 +526,7 @@ impl TdmMatch {
         use codol_protocol::game::snapshot::hit_feedback::HitKind;
         let mut feedback = None;
         for &(client, damage, headshot) in hits.iter().filter(|h| h.0 != 0) {
-            if self.rules.finished {
+            if !self.live_at(now) {
                 break;
             }
             let bot = &mut self.bots[usize::from(client - 1)];

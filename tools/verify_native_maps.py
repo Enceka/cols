@@ -78,6 +78,18 @@ class Client:
                 time.sleep(1)
         raise RuntimeError('native '+mode+' capture failed: '+result.stderr[-600:])
 
+    def create_room(self, mode='war'):
+        if mode not in ('war', 'cha'):
+            raise ValueError('unsupported native team room mode')
+        self.click(.297,.05);self.click(.14,.125)
+        self.click(.437,.255)
+        if mode == 'cha':
+            self.action('scroll',.25,.70,-7)
+            self.click(.22,.66)
+        self.click(.763,.854)
+        return self.wait(lambda s:s['room_member_count']>0 and s['room_is_host']==1
+                         and s['room_native_mode']==mode,15)
+
     def return_to_room(self):
         # Connection state0 arrives before the after-action button accepts input.
         # AAR also retains the host controller and its twelve members. Confirm
@@ -97,10 +109,7 @@ class Client:
             current=self.state()
             if lobby(current):
                 selected=current['room_native_map']
-                self.click(.297,.05);self.click(.14,.125)
-                self.click(.437,.255);self.click(.763,.854)
-                self.wait(lambda s:s['connection_state']==0 and s['frontend_state']==5
-                          and s['room_is_host']==1 and s['room_member_count']>0,15)
+                self.create_room(current.get('room_native_mode','war'))
                 self.select_map(selected,'auto')
                 self.return_recreated_room=True
             else:
@@ -318,7 +327,7 @@ def prepare(catalog_path, output):
             if state.get(key):
                 state[key] = str((source.parent/state[key]).resolve())
         state['match_config'].update(score_limit=1000, time_limit_msec=60000)
-        name = entry['map']+'.json'
+        name = entry['map']+('-cha' if entry['mode']=='cha' else '')+'.json'
         (output/name).write_text(json.dumps(state,indent=2)+'\n')
         entry['file'] = name
     path = output/'catalog.json'
@@ -326,14 +335,14 @@ def prepare(catalog_path, output):
     return path
 
 
-def run(catalog_path, experiment, output, map_names=None, map_direction='right', quick_playlist=None):
+def run(catalog_path, experiment, output, map_names=None, map_direction='right', quick_playlist=None, native_mode=None):
     info = json.loads(experiment.read_text())
     argv = info['tls_argv']
     used = Path(argv[argv.index('--game-map-catalog')+1]).resolve()
     service = Path(argv[argv.index('--service-data-dir')+1]).resolve()
-    if used != catalog_path.resolve() or service == (REPO/'client-work/server-data').resolve():
+    if used != catalog_path.resolve() or service.is_relative_to((REPO/'client-work/server-data').resolve()):
         raise ValueError('native batch requires this catalog and isolated service data')
-    if not service.is_relative_to((REPO/'client-work').resolve()) or info.get('finished_unix'):
+    if not any(service.is_relative_to((REPO/root).resolve()) for root in ('client-work','research-output')) or info.get('finished_unix'):
         raise ValueError('native batch requires a running project-owned diagnostic experiment')
     if info.get('resource_capture_map'):
         raise ValueError('resource collection cannot substitute for native gameplay')
@@ -342,11 +351,19 @@ def run(catalog_path, experiment, output, map_names=None, map_direction='right',
     catalog = json.loads(catalog_path.read_text())
     if catalog.get('schema_version')!=1 or not catalog.get('entries'):
         raise ValueError('unsupported or empty diagnostic catalog')
+    if native_mode is not None:
+        if native_mode not in ('war','cha'):
+            raise ValueError('unsupported native team mode')
+        catalog['entries']=[e for e in catalog['entries'] if e['mode']==native_mode]
+        if not catalog['entries']:
+            raise ValueError('requested mode is absent from the diagnostic catalog')
     if map_names:
         known={e['map'] for e in catalog['entries']}
         if not set(map_names)<=known:raise ValueError('requested map is absent from the diagnostic catalog')
-        entries={e['map']:e for e in catalog['entries']}
-        catalog['entries']=[entries[name] for name in dict.fromkeys(map_names)]
+        entries=catalog['entries']
+        catalog['entries']=[e for name in dict.fromkeys(map_names) for e in entries if e['map']==name]
+    if len({e['mode'] for e in catalog['entries']})!=1:
+        raise ValueError('native room check requires one mode; select --mode war or cha')
     for entry in catalog['entries']:
         source=json.loads((catalog_path.parent/entry['file']).read_text())
         if source['map']!=entry['map'] or source['mode']!=entry['mode']:
@@ -364,7 +381,7 @@ def run(catalog_path, experiment, output, map_names=None, map_direction='right',
     started=time.monotonic()
     for entry in catalog['entries']:
         map_started=time.monotonic()
-        row=dict(map=entry['map'],passed=False,errors=[])
+        row=dict(map=entry['map'],mode=entry['mode'],passed=False,errors=[])
         print('native map',entry['map'],flush=True)
         try:
             source=json.loads((catalog_path.parent/entry['file']).read_text())
@@ -382,9 +399,9 @@ def run(catalog_path, experiment, output, map_names=None, map_direction='right',
                     and (s['room_member_count']>0 or s['connection_state']>=6),30)
                 row['room_kind']='native_quick_playlist'
             elif state['room_member_count']==0:
-                client.click(.297,.05);client.click(.14,.125)
-                client.click(.437,.255);client.click(.763,.854)
-                state=client.wait(lambda s:s['room_member_count']>0,15)
+                state=client.create_room(entry['mode'])
+            if quick_playlist is None and state['room_native_mode'] != entry['mode']:
+                raise RuntimeError('native room mode differs from preparation')
             print('room',state['room_native_map'],state['room_member_count'],flush=True)
             if quick_playlist is None:
                 state=client.select_map(entry['map'],map_direction)
@@ -394,6 +411,8 @@ def run(catalog_path, experiment, output, map_names=None, map_direction='right',
                 raise RuntimeError('native map CRC differs from preparation')
             row['ncs_crc']=live['net_constants_crc']
             row['initial_state']={k:live[k] for k in ('predicted_health','predicted_weapon','room_member_count')}
+            if source['match_config'].get('preparation_msec',0):
+                client.wait(lambda s:s['connection_state']==10 and not s['predicted_pm_flags'] & 0x800,15)
             if player_count==4:
                 distance,attempts=client.sampled_movement()
             else:
@@ -443,10 +462,13 @@ def run(catalog_path, experiment, output, map_names=None, map_direction='right',
             row['aar']={k:finished[k] for k in ('aar_map_id','aar_mode_id','aar_duration',
                         'aar_winning_team','aar_team_score_1','aar_team_score_2','aar_rows')}
             rows=[r for r in finished['aar_rows'] if r['name']]
-            registry=json.loads((REPO/'fixtures/protocol/map-registry-3.3.3.3.json').read_text())
+            registry_name='charge-map-registry-3.3.3.3.json' if entry['mode']=='cha' else 'map-registry-3.3.3.3.json'
+            registry=json.loads((REPO/'fixtures/protocol'/registry_name).read_text())
             native_ids={r['native_id']:r['name'] for r in registry['maps']}
             if native_ids.get(finished['aar_map_id'])!=entry['map']:
                 raise RuntimeError('native after-action map ID mismatch')
+            if finished['aar_mode_id'] != {'war':1,'cha':15}[entry['mode']]:
+                raise RuntimeError('native after-action mode ID mismatch')
             if row['scoreboard_rows']!=player_count or len(rows)!=player_count or sum(r['is_local'] for r in rows)!=1:
                 raise RuntimeError('native after-action roster is incomplete or repeats the local player')
             if sum(r['kills'] for r in rows)==0:
@@ -483,6 +505,7 @@ def main():
     parser.add_argument('--experiment',type=Path,help='running owned client with the diagnostic catalog')
     parser.add_argument('--output',type=Path,help='new result JSON path')
     parser.add_argument('--maps',nargs='+',help='native room maps to run; other catalog maps stay unchecked')
+    parser.add_argument('--mode',choices=('war','cha'),help='select one native team mode from a mixed catalog')
     parser.add_argument('--direction',choices=('right','left','auto'),default='auto',
                         help='native arrow direction for the selected map sequence')
     args=parser.parse_args()
@@ -492,7 +515,8 @@ def main():
     else:
         if not args.experiment or not args.output or args.output.exists():
             parser.error('native run needs experiment and a new result path')
-        result=run(args.catalog.resolve(),args.experiment.resolve(),args.output.resolve(),args.maps,args.direction)
+        result=run(args.catalog.resolve(),args.experiment.resolve(),args.output.resolve(),args.maps,args.direction,
+                   native_mode=args.mode)
         print(json.dumps({'maps':len(result['maps']),'passed':result['passed'],
                           'seconds':result['elapsed_seconds']}))
 

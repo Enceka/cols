@@ -1,0 +1,440 @@
+{
+  "schema_version": 1,
+  "client_sha256": "e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b",
+  "table": "mp/coMapList.csv",
+  "table_cells_sha256": "985066aab06581d388a4252eff8790b90bbea3b4713bf6d7326b824536477e0f",
+  "resource_preparation_claimed": false,
+  "maps": [
+    {
+      "name": "mp_nuked",
+      "native_id": 9,
+      "native_flags": [
+        1,
+        1,
+        1
+      ],
+      "label_key": "MPUI_NUKED",
+      "modes": [
+        "ctf",
+        "dd",
+        "dm",
+        "dom",
+        "sab",
+        "sd",
+        "sr",
+        "war",
+        "asym",
+        "cha",
+        "mugger",
+        "gun",
+        "tjugg",
+        "sas",
+        "conf",
+        "collect",
+        "clash",
+        "borg",
+        "tag"
+      ],
+      "character_rules": "allieschar:socom_141_desert;axischar:opforce_composite;environment:urban",
+      "minimum_players": 4,
+      "maximum_players": 18,
+      "no_custom_room": false
+    },
+    {
+      "name": "mp_rust_long",
+      "native_id": 11,
+      "native_flags": [
+        1,
+        1,
+        1
+      ],
+      "label_key": "MPUI_RUST",
+      "modes": [
+        "ctf",
+        "dd",
+        "dm",
+        "dom",
+        "sab",
+        "sd",
+        "sr",
+        "war",
+        "cha",
+        "mugger",
+        "gun",
+        "tjugg",
+        "sas",
+        "conf",
+        "collect",
+        "des",
+        "clash",
+        "infect",
+        "tag"
+      ],
+      "character_rules": "allieschar:socom_141_desert;axischar:opforce_composite;environment:desert",
+      "minimum_players": 4,
+      "maximum_players": 18,
+      "no_custom_room": false
+    },
+    {
+      "name": "mp_shipment_long",
+      "native_id": 12,
+      "native_flags": [
+        1,
+        1,
+        1
+      ],
+      "label_key": "MPUI_SHIPMENT",
+      "modes": [
+        "dm",
+        "cha",
+        "mugger",
+        "gun",
+        "tjugg",
+        "sas",
+        "conf",
+        "collect",
+        "clash",
+        "tag"
+      ],
+      "character_rules": "allieschar:socom_141_desert;axischar:opforce_composite;environment:urban",
+      "minimum_players": 4,
+      "maximum_players": 18,
+      "no_custom_room": false
+    },
+    {
+      "name": "mp_ambush_sh",
+      "native_id": 14,
+      "native_flags": [
+        1,
+        1,
+        1
+      ],
+      "label_key": "MPUI_CONVOY",
+      "modes": [
+        "ctf",
+        "dd",
+        "dm",
+        "dom",
+        "sab",
+        "sd",
+        "sr",
+        "war",
+        "cha",
+        "borg",
+        "gun",
+        "conf",
+        "collect",
+        "tjugg",
+        "koth",
+        "ph",
+        "tag"
+      ],
+      "character_rules": "allieschar:us_army;axischar:opforce_composite;environment:urban",
+      "minimum_players": 4,
+      "maximum_players": 18,
+      "no_custom_room": false
+    },
+    {
+      "name": "mp_highrise",
+      "native_id": 50,
+      "native_flags": [
+        1,
+        1,
+        1
+      ],
+      "label_key": "MPUI_HIGHRISE",
+      "modes": [
+        "ctf",
+        "dd",
+        "dm",
+        "dom",
+        "sab",
+        "sd",
+        "sr",
+        "war",
+        "gun",
+        "conf",
+        "cha",
+        "tjugg",
+        "tag",
+        "ph"
+      ],
+      "character_rules": "allieschar:socom_141_desert;axischar:opforce_airborne;environment:urban",
+      "minimum_players": 4,
+      "maximum_players": 18,
+      "no_custom_room": false
+    },
+    {
+      "name": "mp_mideast",
+      "native_id": 51,
+      "native_flags": [
+        1,
+        0,
+        1
+      ],
+      "label_key": "MPUI_MIDEAST",
+      "modes": [
+        "dm",
+        "cha",
+        "mugger",
+        "gun",
+        "tjugg",
+        "collect",
+        "sas",
+        "conf",
+        "tag"
+      ],
+      "character_rules": "allieschar:socom_141_desert;axischar:opforce_composite;environment:desert",
+      "minimum_players": 4,
+      "maximum_players": 18,
+      "no_custom_room": false
+    },
+    {
+      "name": "mp_cha_quad",
+      "native_id": 52,
+      "native_flags": [
+        1,
+        0,
+        1
+      ],
+      "label_key": "MPUI_CHA_QUAD",
+      "modes": [
+        "cha",
+        "gun",
+        "conf",
+        "tag"
+      ],
+      "character_rules": "allieschar:socom_141_desert;axischar:opforce_composite;environment:forest",
+      "minimum_players": 4,
+      "maximum_players": 18,
+      "no_custom_room": false
+    },
+    {
+      "name": "mp_boomtown",
+      "native_id": 54,
+      "native_flags": [
+        1,
+        1,
+        1
+      ],
+      "label_key": "MPUI_BOOMTOWN",
+      "modes": [
+        "dm",
+        "cha",
+        "gun",
+        "sas",
+        "tjugg",
+        "conf",
+        "tag"
+      ],
+      "character_rules": "",
+      "minimum_players": 4,
+      "maximum_players": 18,
+      "no_custom_room": false
+    },
+    {
+      "name": "mp_skybreak",
+      "native_id": 55,
+      "native_flags": [
+        1,
+        0,
+        0
+      ],
+      "label_key": "MPUI_SKYBREAK",
+      "modes": [
+        "cha",
+        "gun"
+      ],
+      "character_rules": "",
+      "minimum_players": 4,
+      "maximum_players": 12,
+      "no_custom_room": false
+    },
+    {
+      "name": "mp_utopia",
+      "native_id": 67,
+      "native_flags": [
+        1,
+        0,
+        0
+      ],
+      "label_key": "MPUI_UTOPIA",
+      "modes": [
+        "cha",
+        "ctf",
+        "dm",
+        "sd",
+        "sr",
+        "war"
+      ],
+      "character_rules": "allieschar:us_army;axischar:opforce_composite;environment:urban",
+      "minimum_players": 4,
+      "maximum_players": 18,
+      "no_custom_room": false
+    },
+    {
+      "name": "mp_roundabout",
+      "native_id": 68,
+      "native_flags": [
+        1,
+        0,
+        0
+      ],
+      "label_key": "MPUI_ROUNDABOUT",
+      "modes": [
+        "cha",
+        "ctf",
+        "dm",
+        "war"
+      ],
+      "character_rules": "allieschar:us_army;axischar:opforce_composite;environment:urban",
+      "minimum_players": 4,
+      "maximum_players": 18,
+      "no_custom_room": false
+    },
+    {
+      "name": "mp_nukearena",
+      "native_id": 69,
+      "native_flags": [
+        1,
+        0,
+        0
+      ],
+      "label_key": "MPUI_NUKEARENA",
+      "modes": [
+        "cha",
+        "nftbl",
+        "infect"
+      ],
+      "character_rules": "allieschar:us_army;axischar:opforce_composite;environment:urban",
+      "minimum_players": 4,
+      "maximum_players": 12,
+      "no_custom_room": false
+    },
+    {
+      "name": "mp_purgatory",
+      "native_id": 70,
+      "native_flags": [
+        1,
+        0,
+        0
+      ],
+      "label_key": "MPUI_PURGATORY",
+      "modes": [
+        "cha"
+      ],
+      "character_rules": "allieschar:us_army;axischar:opforce_composite;environment:urban",
+      "minimum_players": 4,
+      "maximum_players": 12,
+      "no_custom_room": false
+    },
+    {
+      "name": "mp_mountain",
+      "native_id": 71,
+      "native_flags": [
+        1,
+        1,
+        1
+      ],
+      "label_key": "MPUI_SUMMIT",
+      "modes": [
+        "ctf",
+        "dm",
+        "dom",
+        "sab",
+        "sd",
+        "sr",
+        "war",
+        "gun",
+        "conf",
+        "cha",
+        "tjugg",
+        "tag",
+        "dd",
+        "ph"
+      ],
+      "character_rules": "allieschar:socom_141_desert;axischar:opforce_airborne;environment:arctic",
+      "minimum_players": 4,
+      "maximum_players": 18,
+      "no_custom_room": false
+    },
+    {
+      "name": "mp_terminal_cls",
+      "native_id": 79,
+      "native_flags": [
+        1,
+        1,
+        1
+      ],
+      "label_key": "MPUI_TERMINAL",
+      "modes": [
+        "ctf",
+        "dd",
+        "dm",
+        "dom",
+        "sab",
+        "sd",
+        "sr",
+        "war",
+        "gun",
+        "conf",
+        "cha",
+        "tjugg",
+        "tag",
+        "ph"
+      ],
+      "character_rules": "allieschar:socom_141_desert;axischar:opforce_airborne;environment:arctic",
+      "minimum_players": 4,
+      "maximum_players": 18,
+      "no_custom_room": false
+    },
+    {
+      "name": "mp_pzp_prototype",
+      "native_id": 82,
+      "native_flags": [
+        1,
+        0,
+        0
+      ],
+      "label_key": "MPUI_TERMINAL",
+      "modes": [
+        "cha"
+      ],
+      "character_rules": "allieschar:socom_141_desert;axischar:opforce_airborne;environment:urban",
+      "minimum_players": 4,
+      "maximum_players": 8,
+      "no_custom_room": false
+    },
+    {
+      "name": "mp_subbase_sh",
+      "native_id": 84,
+      "native_flags": [
+        1,
+        1,
+        1
+      ],
+      "label_key": "MPUI_SUBBASE",
+      "modes": [
+        "ctf",
+        "dm",
+        "dom",
+        "sab",
+        "sd",
+        "sr",
+        "war",
+        "gun",
+        "conf",
+        "cha",
+        "tjugg",
+        "tag",
+        "dd",
+        "ph"
+      ],
+      "character_rules": "allieschar:socom_141_desert;axischar:opforce_airborne;environment:urban",
+      "minimum_players": 4,
+      "maximum_players": 18,
+      "no_custom_room": false
+    }
+  ],
+  "capture_sha256": "40f103ca41687f9bb192f0f6ed4b5e45d0414b336212cf4c95058bfdfc41b700"
+}

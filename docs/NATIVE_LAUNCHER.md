@@ -4,6 +4,8 @@
 
 ## 启动与就绪契约
 
+地图目录按 `(map, mode)` 绑定原生房间。默认目录包含战术 `war` 和核弹镇冲锋 `cha`；冲锋由原生创建房间列表进入，再用地图箭头选核弹镇。资源、固定基地复活及模式15结算证据见[冲锋团队竞技](CHARGE_MODE.md)。
+
 启动器启动两个自有进程：
 
 - `serve-auth`：使用 `--local-title-id`、`--service-data-dir`、`--lobby-bind`、`--stun-bind`、`--stun-alt`、`--game-bind`、`--game-state`、`--game-map-catalog`、`--native-bot-rooms`、`--continuous-play`。

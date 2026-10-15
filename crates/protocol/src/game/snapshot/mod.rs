@@ -249,6 +249,7 @@ pub fn player_frame_with_motion(
             radar_flags: None,
             reward_inventory: [None; 4],
             nuke_hud: None,
+            preparation_hud: None,
             perk_display: false,
             local_abilities: None,
             destroyed_glass: &[],
@@ -300,6 +301,7 @@ pub struct WorldSnapshot<'a> {
     pub radar_flags: Option<u8>,
     pub reward_inventory: [Option<EquippedWeapon>; 4],
     pub nuke_hud: Option<crate::game::snapshot::hit_feedback::NukeHudSnapshot>,
+    pub preparation_hud: Option<crate::game::snapshot::hit_feedback::PreparationHudSnapshot>,
     pub destroyed_glass: &'a [u16],
     /// Native perk_sidebar_hud operator239 reads PS+0x4bc (hint2 field122).
     pub perk_display: bool,
@@ -891,6 +893,7 @@ pub fn player_frame_with_world(
         || world.death_waypoints.is_some()
         || world.replay.is_some()
         || world.nuke_hud.is_some()
+        || world.preparation_hud.is_some()
     {
         let replay_hud =
             world
@@ -899,13 +902,14 @@ pub fn player_frame_with_world(
                     end_time: r.end_time,
                     skip_text: r.skip_text,
                 });
-        if world.nuke_hud.is_some() {
-            crate::game::snapshot::hit_feedback::write_hud_with_nuke(
+        if world.nuke_hud.is_some() || world.preparation_hud.is_some() {
+            crate::game::snapshot::hit_feedback::write_hud_with_preparation(
                 &mut out,
                 world.hit_feedback,
                 world.death_waypoints.unwrap_or(&[]),
                 replay_hud,
                 world.nuke_hud,
+                world.preparation_hud,
             )?;
         } else {
             crate::game::snapshot::hit_feedback::write_hud(

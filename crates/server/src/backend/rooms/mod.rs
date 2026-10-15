@@ -30,7 +30,7 @@ struct Channel {
     owner_ready: bool,
     roster_requested: bool,
     member_teams: HashMap<u64, u8>,
-    avatar_sent: HashMap<u8, (String, u8, codol_protocol::room::messages::Loadout)>,
+    avatar_sent: HashMap<u8, (String, String, u8, codol_protocol::room::messages::Loadout)>,
     humans: HashMap<u64, Human>,
 }
 struct GameSession {
@@ -48,21 +48,26 @@ fn bot_message(client: u8, channel_id: u64, owner: u64, record: &[u8]) -> Result
     Ok(push.0)
 }
 impl Channel {
-    fn bot_map<'a>(&'a self, policy: &'a crate::backend::rooms::bots::Policy) -> Option<&'a str> {
+    fn bot_selection<'a>(
+        &'a self,
+        policy: &'a crate::backend::rooms::bots::Policy,
+    ) -> Option<&'a (String, String)> {
         let description = &self.game.as_ref()?.description;
         if description.build != -688906341 || description.maximum != 12 {
             return None;
         }
         if let Some(info) = &self.room_info {
-            return policy.accepts(info).then_some(info.map.as_str());
+            return policy
+                .accepts(info)
+                .then(|| policy.maps.get(&(info.map.clone(), info.mode.clone())))
+                .flatten();
         }
         // Creation need not broadcast kind15. The authenticated descriptor
         // already identifies the custom map/mode through their native CRCs.
         policy
             .maps
             .iter()
-            .find(|map| description.matches_custom_map(map, "war"))
-            .map(String::as_str)
+            .find(|(map, mode)| description.matches_custom_map(map, mode))
     }
     fn update_members(&mut self, updates: &codol_protocol::room::messages::Updates) -> Result<()> {
         let mut candidate = if updates.full_roster {
@@ -713,18 +718,13 @@ impl Rooms {
                         .game_endpoint
                         .as_ref()
                         .and_then(|e| e.bot_rooms.as_ref())
-                    && let Some(map) = channel.bot_map(policy).map(str::to_owned)
+                    && let Some((map, mode)) = channel.bot_selection(policy).cloned()
                 {
                     result
                         .pushes
                         .extend(bot_pushes(policy, id, session, channel.owner_ready)?);
                     channel.bots_announced = true;
-                    tracing::info!(
-                        map,
-                        mode = "war",
-                        bots = 11,
-                        "native room bot participation queued"
-                    );
+                    tracing::info!(map, mode, bots = 11, "native room bot participation queued");
                 }
                 if let Some(policy) = self
                     .game_endpoint

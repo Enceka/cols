@@ -139,7 +139,9 @@ pub(crate) fn from_mmstart(command: &str) -> Result<Option<MapSelection>> {
             }
             "g_gametype" => {
                 ensure!(
-                    identifier(value) && value == "war",
+                    identifier(value)
+                        && crate::content::maps::team_modes::TeamMode::from_native_token(value)
+                            .is_some(),
                     "unsupported map game mode"
                 );
                 mode = Some(value.to_owned());
@@ -208,6 +210,24 @@ fn opaque(value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn charge_uses_the_native_cha_token_without_accepting_unsupported_modes_or_aliases() {
+        let selected = super::from_mmstart("mmstart sv_resetServer;map mp_nuked;g_gametype cha")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (selected.map.as_str(), selected.mode.as_str()),
+            ("mp_nuked", "cha")
+        );
+        for mode in ["tdm", "clash", "sd", "CHA"] {
+            assert!(
+                super::from_mmstart(&format!(
+                    "mmstart sv_resetServer;map mp_nuked;g_gametype {mode}"
+                ))
+                .is_err()
+            );
+        }
+    }
     use super::*;
 
     const TRAINING: &str =

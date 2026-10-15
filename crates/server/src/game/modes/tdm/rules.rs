@@ -6,6 +6,8 @@ pub(super) struct Rules {
     pub(super) finished: bool,
     pub(super) finished_at: Option<u32>,
     pub(super) start: Option<u32>,
+    pub(super) preparation_start: Option<u32>,
+    pub(super) combat: [bool; 12],
 }
 impl Rules {
     pub fn result(&self) -> &'static str {
@@ -38,8 +40,8 @@ impl Rules {
         if self.finished {
             return false;
         }
-        let start = *self.start.get_or_insert(now);
-        !incoming_reward && now.saturating_sub(start) >= limit
+        self.start
+            .is_some_and(|start| !incoming_reward && now.saturating_sub(start) >= limit)
     }
     pub(super) fn score_reached(&self, team: usize, limit: u32, incoming_reward: bool) -> bool {
         !incoming_reward && self.scores[team] >= limit as i32

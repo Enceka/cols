@@ -158,6 +158,12 @@ fn template() -> EnemySnapshot {
 }
 fn config() -> MatchConfig {
     MatchConfig {
+        mode: crate::content::maps::team_modes::TeamMode::Tactical,
+        preparation_msec: 0,
+        preparation_text: None,
+        grace_period_msec: 0,
+        base_respawns: None,
+        respawn_points: Vec::new(),
         spawn_angles: None,
         player_count: 12,
         spawns: [
@@ -169,6 +175,196 @@ fn config() -> MatchConfig {
         teams: default_teams(),
         roster: Vec::new(),
         models: Vec::new(),
+    }
+}
+#[test]
+fn preparation_freezes_bots_damage_and_match_time_until_the_ready_countdown_ends() {
+    let collision = world();
+    let mut config = config();
+    config.preparation_msec = 5000;
+    config.preparation_text = Some(42);
+    config.time_limit_msec = 60_000;
+    let mut game = TdmMatch::new(config, template(), 190.0, &collision).unwrap();
+    let starts = game.snapshots();
+    assert!(game.preparing());
+    assert!(game.preparation_hud(20_000).is_none());
+    game.advance_clock(20_000); // Connection readiness, not map loading time.
+    assert_eq!(game.preparation_hud(20_000).unwrap().remaining_seconds, 5);
+    assert_eq!(game.preparation_hud(24_999).unwrap().remaining_seconds, 1);
+    assert!(
+        game.damage_bots(24_999, 0, 352, &[(6, 100, false)], false)
+            .is_none()
+    );
+    let weapon = crate::game::ai::controller::BotWeapon {
+        weapon: 352,
+        ballistics: crate::game::combat::Ballistics {
+            damage: 30,
+            range: 2000.0,
+            near_range: 2000.0,
+            location_multipliers: None,
+            falloff: None,
+            pellets: 0,
+            spread_degrees: 0.0,
+        },
+        fire_interval_msec: 100,
+    };
+    let tick = game
+        .step(
+            24_999,
+            (template(), 70.0, 100),
+            weapon,
+            &collision,
+            |s, _, _, _| s,
+        )
+        .unwrap();
+    assert!(tick.hits.is_empty());
+    assert_eq!(game.snapshots(), starts);
+    assert_eq!(game.scoreboard(1).team_scores, [0; 4]);
+    game.advance_clock(25_000);
+    assert!(!game.preparing());
+    assert!(!game.live_at(24_999));
+    assert!(game.live_at(25_000));
+    assert!(game.preparation_hud(25_000).is_none());
+    game.advance_clock(84_999);
+    assert!(!game.finished());
+    game.advance_clock(85_000);
+    assert!(game.finished());
+    assert_eq!(game.duration_seconds(), 60);
+}
+
+#[test]
+fn grace_uses_team_starts_with_live_controls_then_expires_into_shared_respawns() {
+    let collision = world();
+    let mut config = config();
+    config.preparation_msec = 5000;
+    config.grace_period_msec = 15000;
+    config.respawn_points = vec![SpawnPoint {
+        origin: [1200.0, 0.0, 0.0],
+        angles: [0, 4321, 0],
+    }];
+    let starts = config.spawns[1].clone();
+    let mut game = TdmMatch::new(config, template(), 190.0, &collision).unwrap();
+    game.advance_clock(20_000);
+    game.advance_clock(25_000);
+    assert!(game.live_at(25_000));
+    assert!(game.can_change_loadout(39_999));
+    game.mark_combat(0);
+    assert!(!game.can_change_loadout(25_001));
+    game.spawn_client(0);
+    assert!(game.can_change_loadout(39_999));
+    let opening = game.respawn_point(39_999, 0, None, &collision).unwrap();
+    assert!(
+        starts
+            .iter()
+            .any(|p| p[0] == opening.origin[0] && p[1] == opening.origin[1])
+    );
+    assert!(!game.can_change_loadout(40_000));
+    let normal = game.respawn_point(40_000, 0, None, &collision).unwrap();
+    assert_eq!((normal.origin[0], normal.angles[1]), (1200.0, 4321));
+}
+#[test]
+fn charge_ordinary_respawns_use_the_captured_base_pool_instead_of_the_opening_formation() {
+    let collision = world();
+    let mut config = config();
+    config.mode = crate::content::maps::team_modes::TeamMode::Assault;
+    config.base_respawns = Some([
+        vec![SpawnPoint {
+            origin: [1500., 0., 0.],
+            angles: [0, 1111, 0],
+        }],
+        vec![SpawnPoint {
+            origin: [-1500., 0., 0.],
+            angles: [0, 2222, 0],
+        }],
+    ]);
+    let mut game = TdmMatch::new(config, template(), 190., &collision).unwrap();
+    let allied = game.respawn_point(30_000, 0, None, &collision).unwrap();
+    let axis = game.respawn_point(30_000, 6, None, &collision).unwrap();
+    assert_eq!((allied.origin[0], allied.angles[1]), (-1500., 2222));
+    assert_eq!((axis.origin[0], axis.angles[1]), (1500., 1111));
+}
+#[test]
+fn assault_respawns_stay_in_the_own_base_after_grace_even_when_enemies_push_it() {
+    let collision = world();
+    let mut config = config();
+    config.mode = crate::content::maps::team_modes::TeamMode::Assault;
+    config.respawn_points = vec![SpawnPoint {
+        origin: [1200.0, 0.0, 0.0],
+        angles: [0, 4321, 0],
+    }];
+    let mut game = TdmMatch::new(config, template(), 190.0, &collision).unwrap();
+    assert_eq!(game.native_mode_number(), 15);
+    for bot in &mut game.bots {
+        bot.snapshot.alive = false;
+    }
+    game.bots[5].snapshot.alive = true;
+    game.bots[5].snapshot.origin = [-300.0, 0.0, 0.0];
+    for client in [0, 1, 6] {
+        let point = game
+            .respawn_point(30_000, client, None, &collision)
+            .unwrap();
+        assert_eq!(
+            point.origin[0],
+            if game.teams()[usize::from(client)] == 2 {
+                -300.0
+            } else {
+                300.0
+            }
+        );
+    }
+}
+#[test]
+fn tactical_enemy_push_switches_the_shared_spawn_for_either_team_and_keeps_its_heading() {
+    let collision = world();
+    for team in [1, 2] {
+        let mut config = config();
+        config.teams[0] = team;
+        config.teams[6] = 3 - team;
+        if team == 1 {
+            config.teams = default_teams().map(|t| 3 - t);
+        }
+        config.respawn_points = vec![
+            SpawnPoint {
+                origin: [-1200.0, 0.0, 0.0],
+                angles: [0, 1234, 0],
+            },
+            SpawnPoint {
+                origin: [1200.0, 0.0, 0.0],
+                angles: [0, 4321, 0],
+            },
+        ];
+        let mut game = TdmMatch::new(config, template(), 190.0, &collision).unwrap();
+        for bot in &mut game.bots {
+            bot.snapshot.alive = false;
+        }
+        game.bots[0].snapshot.alive = true;
+        game.bots[0].snapshot.origin = [-600.0, 0.0, 0.0];
+        game.bots[5].snapshot.alive = true;
+        game.bots[5].snapshot.origin = [1000.0, 0.0, 0.0];
+        let initial = game.respawn_point(30000, 0, None, &collision).unwrap();
+        assert_eq!((initial.origin[0], initial.angles[1]), (-1200.0, 1234));
+        game.bots[5].snapshot.origin = [-1000.0, 0.0, 0.0];
+        let switched = game.respawn_point(30000, 0, None, &collision).unwrap();
+        assert_eq!((switched.origin[0], switched.angles[1]), (1200.0, 4321));
+        // A corpse cannot continue to push the spawn away from the team.
+        game.bots[5].snapshot.alive = false;
+        assert_eq!(
+            game.respawn_point(30000, 0, None, &collision)
+                .unwrap()
+                .origin[0],
+            -1200.0
+        );
+        let mut local = template();
+        local.team = team;
+        local.origin = [-600.0, 0.0, 0.0];
+        game.bots[5].snapshot.alive = true;
+        // Bot1 excludes its old body and sees the living human in the same pool.
+        assert_eq!(
+            game.respawn_point(30000, 1, Some(local), &collision)
+                .unwrap()
+                .origin[0],
+            1200.0
+        );
     }
 }
 #[test]
@@ -259,7 +455,7 @@ fn sentry_consumes_only_successful_placement_and_retains_owner_credit_after_deat
     assert_eq!(game.world_models()[0].entity_number, 384);
 }
 #[test]
-fn map_headings_follow_team_and_death_selected_spawn_for_players_and_bots() {
+fn opening_headings_follow_room_teams_and_respawn_headings_follow_the_selected_point() {
     let c = world();
     let mut config = config();
     let angles: [Vec<_>; 2] = std::array::from_fn(|team| {
@@ -271,7 +467,19 @@ fn map_headings_follow_team_and_death_selected_spawn_for_players_and_bots() {
     let mut game = TdmMatch::new(config.clone(), template(), 190.0, &c).unwrap();
     assert_eq!(game.player_spawn_angles(), angles[1][0]);
     game.rows[0].deaths = 2;
-    assert_eq!(game.player_spawn_angles(), angles[1][2]);
+    let point = game.respawn_point(30000, 0, None, &c).unwrap();
+    let (team, index) = config
+        .spawns
+        .iter()
+        .enumerate()
+        .find_map(|(team, points)| {
+            points
+                .iter()
+                .position(|p| p[0] == point.origin[0] && p[1] == point.origin[1])
+                .map(|index| (team, index))
+        })
+        .unwrap();
+    assert_eq!(point.angles, angles[team][index]);
     let mut ordinal = [0, 1];
     for bot in &game.bots {
         let team = usize::from(bot.snapshot.team - 1);

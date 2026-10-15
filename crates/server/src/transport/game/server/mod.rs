@@ -31,6 +31,7 @@ pub struct GameServer {
     story_resources: Option<Arc<crate::game::session::prepared::PreparedGameState>>,
     game_map_catalog: Option<crate::game::session::catalog::GameMapCatalog>,
     resource_capture_map: Option<String>,
+    resource_capture_mode: String,
     resource_capture_playlist: Option<(u32, u8)>,
     resource_compass_probe: Option<crate::content::maps::minimap::CompassProbe>,
     hit_regions: HitRegionSource,
@@ -115,6 +116,7 @@ impl GameServer {
             story_resources: None,
             game_map_catalog: None,
             resource_capture_map: None,
+            resource_capture_mode: "war".into(),
             resource_capture_playlist: None,
             resource_compass_probe: None,
             hit_regions: HitRegionSource::default(),
@@ -227,8 +229,37 @@ impl GameServer {
             .bot_rooms
             .as_mut()
             .ok_or_else(|| anyhow::anyhow!("resource capture requires native bot rooms"))?;
-        policy.maps.insert(map.clone());
+        policy
+            .maps
+            .insert((map.clone(), self.resource_capture_mode.clone()));
         self.resource_capture_map = Some(map);
+        Ok(self)
+    }
+    pub fn with_resource_capture_mode(mut self, mode: String) -> Result<Self> {
+        let map = self
+            .resource_capture_map
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("capture mode requires a capture map"))?;
+        ensure!(
+            crate::content::maps::registry::supports_mode(map, &mode),
+            "capture map does not support the native mode"
+        );
+        let policy = Arc::get_mut(&mut self.admissions)
+            .ok_or_else(|| anyhow::anyhow!("capture mode must precede admission sharing"))?
+            .bot_rooms
+            .as_mut()
+            .unwrap();
+        if self
+            .game_map_catalog
+            .as_ref()
+            .is_none_or(|c| c.select(map, &self.resource_capture_mode).is_err())
+        {
+            policy
+                .maps
+                .remove(&(map.clone(), self.resource_capture_mode.clone()));
+        }
+        policy.maps.insert((map.clone(), mode.clone()));
+        self.resource_capture_mode = mode;
         Ok(self)
     }
     pub fn with_resource_compass_probe(mut self, path: &std::path::Path) -> Result<Self> {
@@ -264,7 +295,7 @@ impl GameServer {
     ) -> Result<Option<Arc<crate::game::session::prepared::PreparedGameState>>> {
         self.game_map_catalog
             .as_ref()
-            .and_then(|catalog| catalog.select(map, "war").ok())
+            .and_then(|catalog| catalog.select(map, &self.resource_capture_mode).ok())
             .map(|state| {
                 let initialized = (*state).clone().resource_initialization()?;
                 let initialized = if let Some(probe) = &self.resource_compass_probe {
@@ -331,11 +362,9 @@ impl GameServer {
         );
         match parsed? {
             Some(selection) => {
-                if self.resource_capture_map.as_deref() == Some(&selection.map) {
-                    ensure!(
-                        selection.mode == "war",
-                        "resource capture is limited to native TDM"
-                    );
+                if self.resource_capture_map.as_deref() == Some(&selection.map)
+                    && selection.mode == self.resource_capture_mode
+                {
                     return self.resource_template(&selection.map);
                 }
                 let catalog = self.game_map_catalog.as_ref().ok_or_else(|| {
@@ -388,11 +417,11 @@ impl GameServer {
             let initializes = self
                 .game_map_catalog
                 .as_ref()
-                .is_some_and(|catalog| catalog.select(map, "war").is_ok());
+                .is_some_and(|catalog| catalog.select(map, &self.resource_capture_mode).is_ok());
             write_private(
                 &self.directory.join("resource-capture.json"),
                 &serde_json::to_vec(
-                    &serde_json::json!({"map":map,"mode":"war", "world_simulation":false,
+                    &serde_json::json!({"map":map,"mode":self.resource_capture_mode, "world_simulation":false,
                     "resource_gamestate_available":initializes,"gameplay_snapshots":false,
                     "compass_candidate_requested":self.resource_compass_probe.is_some(),
                     "client_sha256":codol_protocol::CLIENT_SHA256}),
@@ -575,6 +604,7 @@ impl GameServer {
                             };
                             let resource_collection = self.resource_capture_map.as_deref()
                                 == Some(state.map())
+                                && self.resource_capture_mode==state.mode()
                                 || admission.story_channel.is_some();
                             ensure!(
                                 !state.has_nuke_diagnostics()
@@ -885,7 +915,7 @@ mod tests {
         Arc::get_mut(&mut server.admissions).unwrap().bot_rooms =
             Some(crate::backend::rooms::bots::Policy {
                 version: 7,
-                maps: ["mp_afghan".into()].into(),
+                maps: [("mp_afghan".into(), "war".into())].into(),
                 loadouts: Default::default(),
             });
         let server = server
@@ -899,7 +929,7 @@ mod tests {
                 .as_ref()
                 .unwrap()
                 .maps
-                .contains("mp_bog_sh")
+                .contains(&("mp_bog_sh".into(), "war".into()))
         );
         for start in [
             "mmstart sv_resetServer; map mp_nuked; g_gametype war",

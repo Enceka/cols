@@ -103,13 +103,23 @@ pub fn prepare(source: &Path, output: &Path, report: &Path) -> Result<()> {
     ensure!(
         json["schema_version"] == 1
             && json["client_sha256"] == codol_protocol::CLIENT_SHA256
-            && json["mode"] == "war"
+            && json["mode"]
+                .as_str()
+                .is_some_and(|mode| crate::content::maps::registry::supports_mode(&map, mode))
             && json["observed_crc_verified"] == true
             && crate::content::maps::registry::native_id(&map).is_some(),
         "spawn selection requires an initialized native TDM preparation"
     );
     let parent = source.parent().unwrap_or(Path::new("."));
-    for field in ["collision_file", "arsenal_file", "appearance_file"] {
+    for field in [
+        "collision_file",
+        "arsenal_file",
+        "appearance_file",
+        "voice_file",
+        "nuke_file",
+        "radar_file",
+        "props_file",
+    ] {
         if let Some(file) = json[field].as_str() {
             json[field] = serde_json::Value::String(
                 parent.join(file).canonicalize()?.to_string_lossy().into(),
@@ -132,9 +142,57 @@ pub fn prepare(source: &Path, output: &Path, report: &Path) -> Result<()> {
         "captured spawn count exceeds limit"
     );
     let selection = select(starts, &collision);
+    let points: Vec<crate::game::modes::tdm::SpawnPoint> = json["match_config"]
+        .get("respawn_points")
+        .map(|p| serde_json::from_value(p.clone()))
+        .transpose()?
+        .unwrap_or_default();
+    ensure!(points.len() <= 1024, "shared respawn count exceeds limit");
+    let mut retained = Vec::new();
+    let mut rejected = Vec::new();
+    for (index, point) in points.iter().enumerate() {
+        match crate::game::ai::controller::grounded_spawn(point.origin, &collision) {
+            Ok(_) => {
+                retained.push(serde_json::json!({"origin":point.origin,"angles":point.angles}))
+            }
+            Err(error) => rejected.push(
+                serde_json::json!({"index":index,"origin":point.origin,"error":error.to_string()}),
+            ),
+        }
+    }
+    json["match_config"]["respawn_points"] = serde_json::json!(retained);
     let mut evidence = serde_json::json!({"schema_version":1,"native_client_used":false,"map":map,
         "ncs_crc":crc,"source_sha256":format!("{:x}",Sha256::digest(&bytes)),
         "selection":selection,"prepared":false});
+    evidence["respawn_selection"] = serde_json::json!({"original_count":points.len(),"retained_count":retained.len(),"rejected":rejected});
+    if !points.is_empty() && retained.is_empty() {
+        write_new(report, &evidence)?;
+        anyhow::bail!(
+            "no clear captured shared respawn point; see {}",
+            report.display()
+        );
+    }
+    if !json["match_config"]["base_respawns"].is_null() {
+        let bases: [Vec<crate::game::modes::tdm::SpawnPoint>; 2] =
+            serde_json::from_value(json["match_config"]["base_respawns"].clone())?;
+        let mut selected = [Vec::new(), Vec::new()];
+        let mut refused = Vec::new();
+        for (team, base) in bases.iter().enumerate() {
+            ensure!(base.len() <= 128, "fixed respawn pool too large");
+            for (index, point) in base.iter().enumerate() {
+                match crate::game::ai::controller::grounded_spawn(point.origin,&collision) {
+                    Ok(_) => selected[team].push(serde_json::json!({"origin":point.origin,"angles":point.angles})),
+                    Err(error)=>refused.push(serde_json::json!({"team":team+1,"index":index,"origin":point.origin,"error":error.to_string()}))
+                }
+            }
+        }
+        evidence["base_respawn_selection"] = serde_json::json!({"original_counts":bases.each_ref().map(Vec::len),"retained_counts":selected.each_ref().map(Vec::len),"rejected":refused});
+        if selected.iter().any(Vec::is_empty) {
+            write_new(report, &evidence)?;
+            anyhow::bail!("no clear fixed-base respawn; see {}", report.display());
+        }
+        json["match_config"]["base_respawns"] = serde_json::json!(selected);
+    }
     let players = json["match_config"]["player_count"].as_u64().unwrap_or(12);
     ensure!(matches!(players, 4 | 12), "invalid prepared match size");
     if !selection.enough(players as usize / 2) {

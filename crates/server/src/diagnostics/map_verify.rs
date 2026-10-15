@@ -19,6 +19,7 @@ pub struct Report {
 #[derive(Serialize)]
 pub struct MapReport {
     pub map: String,
+    pub mode: String,
     pub ncs_crc: u32,
     pub validation_seed: u64,
     pub passed: bool,
@@ -42,6 +43,7 @@ pub fn verify(catalog: &GameMapCatalog, simulation_msec: u32) -> Result<Report> 
         let started = std::time::Instant::now();
         let mut row = MapReport {
             map: state.map().into(),
+            mode: state.mode().into(),
             ncs_crc: state.ncs_crc(),
             validation_seed: 0x1234_5678 ^ u64::from(state.ncs_crc()),
             passed: false,

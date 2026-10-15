@@ -74,7 +74,7 @@ def wait_backend_ready(output, server, tls, rust_auth=False, rust_game=False):
     prepared maps have loaded; use that event without opening probe sockets.
     """
     started = time.monotonic()
-    deadline = started + (180 if rust_game else 5)
+    deadline = started + (240 if rust_game else 5)
     while True:
         if server.poll() is not None:
             raise RuntimeError("observer exited; see observer.log")
@@ -173,6 +173,11 @@ def main():
     parser.add_argument("action", choices=["list", "prepare", "init", "probe", "client"])
     parser.add_argument("--engine-id", default="10000033")
     parser.add_argument("--prefix-name", help="named project-owned prefix for isolated diagnostics; never resets an existing prefix")
+    parser.add_argument("--client-dir",type=Path,help="existing marked research copy to launch; never creates or merges game resources")
+    parser.add_argument("--bind-ip",default="127.0.0.1",help="IPv4 loopback address for an isolated local client/service session")
+    parser.add_argument("--certificate-dir",type=Path,help="local TLS certificate directory containing server.pem and key.pem")
+    parser.add_argument("--port-offset",type=int,default=0,help="offset the diagnostic TCP/game endpoints for concurrent local sessions")
+    parser.add_argument("--client-number",type=int,default=0,help="native -q instance number for an isolated concurrent client")
     parser.add_argument("--seconds", type=int, help="diagnostic duration; continuous play defaults to no deadline")
     parser.add_argument("--continuous-play", action="store_true", help="play until exit, with bounded diagnostic capture")
     parser.add_argument("--title-id-hex", "--context-hex", dest="context_hex", help="explicit u32 title_id; valid game deployment value is still unknown")
@@ -191,6 +196,7 @@ def main():
     parser.add_argument("--game-map-catalog", type=Path, help="captured preparations for native room map selection")
     parser.add_argument("--native-bot-rooms", action="store_true", help="native custom rooms with one human and eleven server bots on prepared TDM maps")
     parser.add_argument("--resource-capture-map", help="collect one native TDM map without a gamestate or world; requires native-bot-rooms")
+    parser.add_argument("--resource-capture-mode", choices=('war','cha'),default='war', help="native mode of the explicit resource collection")
     parser.add_argument("--story-capture-map", choices=("coop_training_mp_cargoship",),
                         help="isolated first-story allocation/handshake capture without a gameplay world")
     parser.add_argument("--story-resource-state",type=Path,
@@ -204,6 +210,14 @@ def main():
     parser.add_argument("--quiet-network", action="store_true", help="omit verbose Wine winsock tracing during longer UI tests; Rust captures remain enabled")
     parser.add_argument("--trust-lab-cert", action="store_true", help="temporarily add the lab certificate to ONLY the research copy's cacert.pem")
     args = parser.parse_args()
+    import ipaddress
+    try:
+        selected_ip=ipaddress.ip_address(args.bind_ip)
+        if selected_ip.version!=4 or not selected_ip.is_loopback:raise ValueError('not IPv4 loopback')
+    except ValueError:parser.error('bind-ip must be an IPv4 loopback address')
+    if not 0<=args.port_offset<=20000:parser.error('port-offset must be 0..20000')
+    if not 0<=args.client_number<=65535:parser.error('client-number must be 0..65535')
+    lobby_port,auth_port,resource_port,game_port=[39000+args.port_offset+i for i in (1,2,3,4)]
     available = engines()
     if args.action == "list":
         print(json.dumps([{k: info[k] for k in ["id", "name", "version", "install_path", "install_status"]}
@@ -257,7 +271,7 @@ def main():
     if args.resource_capture_map:
         if not args.native_bot_rooms:
             parser.error("resource-capture-map requires native-bot-rooms")
-        registry=json.loads((REPO / 'fixtures/protocol/map-registry-3.3.3.3.json').read_text())
+        registry=json.loads((REPO / ('fixtures/protocol/charge-map-registry-3.3.3.3.json' if args.resource_capture_mode=='cha' else 'fixtures/protocol/map-registry-3.3.3.3.json')).read_text())
         if args.resource_capture_map not in {m['name'] for m in registry['maps']}:
             parser.error("resource-capture-map requires a captured native TDM identity")
     if args.resource_compass_probe and (not args.resource_capture_map or not args.resource_compass_probe.is_file()):
@@ -297,7 +311,7 @@ def main():
         marker.write_text(json.dumps({"engine_id": args.engine_id, "purpose": "CODOL research"}) + "\n")
     lock = (prefix / ".codol-lock").open("w")
     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    work = lab / "CODOL"
+    work = args.client_dir.resolve() if args.client_dir else lab / "CODOL"
     if args.action == "client":
         if not (work / LAB_MARKER).is_file():
             parser.error("create and mark a separate research client copy first; see docs/GAMEHUB_DEBUG.md")
@@ -344,14 +358,15 @@ def main():
                 raise KeyboardInterrupt("signal " + str(signum))
             signal.signal(signal.SIGTERM, interrupted)
             if args.action == "client":
-                bootstrap = "127.0.0.1 39001\n127.0.0.1 39002\n0x%08X\n" % context
+                bootstrap = "%s %d\n%s %d\n0x%08X\n" % (args.bind_ip,lobby_port,args.bind_ip,auth_port,context)
                 (work / "dwauth.ini").write_text(bootstrap, encoding="ascii")
-                (work / "stun.ini").write_text("127.0.0.1\n", encoding="ascii")
-                (work / "iips.ini").write_text('enable_iips=1\niips_url="http://127.0.0.1:39003/"\n', encoding="ascii")
+                (work / "stun.ini").write_text(args.bind_ip+"\n", encoding="ascii")
+                (work / "iips.ini").write_text('enable_iips=1\niips_url="http://'+args.bind_ip+':'+str(resource_port)+'/"\n', encoding="ascii")
                 state["client_sha256"] = expected["sha256"]
                 state["crossproxy_enabled"] = args.crossproxy
                 state["generated_configs"] = {name: (work / name).read_text() for name in ["dwauth.ini", "stun.ini", "iips.ini"]}
-                cfg = (REPO / "configs/local.toml").read_text().replace("../captures", str(output / "captures"))
+                cfg = (REPO / "configs/local.toml").read_text().replace("../captures", str(output / "captures")).replace('127.0.0.1',args.bind_ip)
+                cfg=cfg.replace(':39001',':'+str(lobby_port)).replace(':39002',':'+str(auth_port))
                 if args.rust_lobby:
                     parts=cfg.split("\n[[listeners]]\n")
                     cfg=parts[0]+"".join("\n[[listeners]]\n"+part for part in parts[1:] if 'name = "endpoint_a"' not in part)
@@ -361,27 +376,27 @@ def main():
                 if args.tls_probe or args.rust_auth:
                     parts = cfg.split("\n[[listeners]]\n")
                     cfg = parts[0] + "".join("\n[[listeners]]\n" + part for part in parts[1:] if 'name = "endpoint_b"' not in part)
-                    certificate = REPO / ".tools/tls-lab/server.pem"
-                    key = REPO / ".tools/tls-lab/key.pem"
+                    certificate = (args.certificate_dir or REPO / ".tools/tls-lab") / "server.pem"
+                    key = (args.certificate_dir or REPO / ".tools/tls-lab") / "key.pem"
                     if not certificate.is_file() or not key.is_file():
                         raise RuntimeError("create the local TLS lab certificate first; see GAMEHUB_DEBUG.md")
                     if args.rust_auth:
                         executable = args.server_binary.resolve() if args.server_binary else REPO / "target" / ("release" if args.release_server else "debug") / "codol-server"
                         state["server_binary_sha256"] = sha256(executable)
-                        tls_argv = [str(executable), "serve-auth", "--cert", str(certificate), "--key", str(key), "--capture-dir", str(output / "auth-captures")]
+                        tls_argv = [str(executable), "serve-auth", "--bind",args.bind_ip+":"+str(auth_port),"--cert", str(certificate), "--key", str(key), "--capture-dir", str(output / "auth-captures")]
                         if args.auth_reply_file:
                             tls_argv += ["--reply-file", str(args.auth_reply_file.resolve())]
                             state["auth_reply_sha256"] = sha256(args.auth_reply_file)
                         if args.local_auth_tickets:
                             tls_argv += ["--local-title-id", str(context)]
                         if args.rust_lobby:
-                            tls_argv += ["--lobby-bind", "127.0.0.1:39001"]
+                            tls_argv += ["--lobby-bind", args.bind_ip+":"+str(lobby_port)]
                         if args.local_services:
                             tls_argv += ["--service-data-dir", str(args.service_data_dir.resolve() if args.service_data_dir else lab / "server-data")]
                         if args.rust_stun:
-                            tls_argv += ["--stun-bind", "127.0.0.1:3074", "--stun-alt", "127.0.0.1:3078"]
+                            tls_argv += ["--stun-bind",args.bind_ip+":3074","--stun-alt",args.bind_ip+":3078"]
                         if args.rust_game:
-                            tls_argv += ["--game-bind", "127.0.0.1:39004"]
+                            tls_argv += ["--game-bind",args.bind_ip+":"+str(game_port)]
                             if args.continuous_play:
                                 tls_argv += ["--continuous-play","--game-capture-every","1000"]
                             elif args.quiet_network:
@@ -395,7 +410,9 @@ def main():
                             tls_argv += ["--native-bot-rooms"]
                         if args.resource_capture_map:
                             tls_argv += ["--resource-capture-map", args.resource_capture_map]
+                            tls_argv += ["--resource-capture-mode",args.resource_capture_mode]
                             state["resource_capture_map"] = args.resource_capture_map
+                            state["resource_capture_mode"] = args.resource_capture_mode
                         if args.story_capture_map:
                             tls_argv += ["--story-capture-map", args.story_capture_map]
                             state["story_capture_map"] = args.story_capture_map
@@ -416,21 +433,21 @@ def main():
                         openssl = "/opt/homebrew/bin/openssl" if Path("/opt/homebrew/bin/openssl").exists() else shutil.which("openssl")
                         if openssl is None:
                             raise RuntimeError("OpenSSL is required for tls-probe")
-                        tls_argv = [openssl, "s_server", "-accept", "127.0.0.1:39002", "-cert", str(certificate), "-key", str(key), "-tls1", "-cipher", "AES128-SHA:@SECLEVEL=0", "-quiet", "-ign_eof", "-state"]
+                        tls_argv = [openssl, "s_server", "-accept", args.bind_ip+":"+str(auth_port), "-cert", str(certificate), "-key", str(key), "-tls1", "-cipher", "AES128-SHA:@SECLEVEL=0", "-quiet", "-ign_eof", "-state"]
                     state["tls_argv"] = tls_argv
                     tls = subprocess.Popen(tls_argv, stdin=subprocess.PIPE, stdout=tls_plaintext, stderr=tls_status)
                     if args.trust_lab_cert:
                         state["cacert_before_sha256"] = sha256(work / "cacert.pem")
                         trust_lab_certificate(work, certificate, output, ca_backups)
                         state["temporary_ca_paths"] = [str(path.relative_to(work)) for path in ca_backups]
-                cfg += '\n[[listeners]]\nname = "resources"\nbind = "127.0.0.1:39003"\n'
+                cfg += '\n[[listeners]]\nname = "resources"\nbind = "'+args.bind_ip+':'+str(resource_port)+'"\n'
                 (output / "observe.toml").write_text(cfg)
                 observer_executable=args.server_binary.resolve() if args.server_binary else REPO/"target"/("release" if args.release_server else "debug")/"codol-server"
                 server = subprocess.Popen([str(observer_executable), "observe", "--config", str(output / "observe.toml")], stdout=server_log, stderr=subprocess.STDOUT)
                 state["backend_ready_wait_seconds"] = wait_backend_ready(
                     output, server, tls, args.rust_auth, args.rust_game
                 )
-                argv = [wine, str(work / "codoMP_client_shipRetail.exe"), "-q", "0", "-src=tgp", "-game_id", "29", "-zone_id", "83886082", "+set", "r_fullscreen", "0"]
+                argv = [wine, str(work / "codoMP_client_shipRetail.exe"), "-q", str(args.client_number), "-src=tgp", "-game_id", "29", "-zone_id", "83886082", "+set", "r_fullscreen", "0"]
                 if args.native_bot_rooms:
                     argv += ["+set", "1011", "1", "+set", "3265", "12", "+set", "dw_autoStartGame", "0"]
                     state["native_bot_rooms"] = True

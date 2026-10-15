@@ -184,6 +184,9 @@ impl Connection {
         {
             return Ok(());
         }
+        if !self.world.tdm.as_ref().unwrap().live_at(now) {
+            return Ok(());
+        }
         if self
             .world
             .player_death
@@ -192,18 +195,26 @@ impl Connection {
             && !self.replay.pending()
         {
             self.equip_spawn_loadout();
-            let angles = self.world.tdm.as_ref().unwrap().player_spawn_angles();
-            self.reset_spawn_view(angles);
-            let state = self.world.game_state.as_ref().unwrap();
-            let origin = self
+            let collision = self
                 .world
-                .tdm
+                .game_state
                 .as_ref()
                 .unwrap()
-                .player_spawn(state.collision.as_ref().unwrap())?;
+                .collision
+                .as_ref()
+                .unwrap()
+                .clone();
+            let spawn = self
+                .world
+                .tdm
+                .as_mut()
+                .unwrap()
+                .respawn_point(now, 0, None, &collision)?;
+            self.reset_spawn_view(spawn.angles);
+            let state = self.world.game_state.as_ref().unwrap();
             self.world.motion = state.motion();
             if let Some(motion) = &mut self.world.motion {
-                motion.origin = origin;
+                motion.origin = spawn.origin;
                 motion.command_time = now;
             }
             self.world.vitals = codol_protocol::game::snapshot::PlayerVitals {

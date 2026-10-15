@@ -70,6 +70,189 @@ fn respawn_waits_for_new_life_ack_then_anchors_once_and_preserves_mouse_turns() 
     assert_eq!(c.view_angles(), [50, 33268, 0]);
 }
 use super::*;
+fn prepared_player_for_flow(weapon: u16) -> Arc<crate::game::session::prepared::PreparedGameState> {
+    Arc::new(serde_json::from_value(serde_json::json!({
+        "schema_version":1,"client_sha256":codol_protocol::CLIENT_SHA256,"capture_sha256":"0".repeat(64),
+        "map":"mp_afghan","mode":"war","zone":"mp","playlist":0,"ncs_crc":0x12345678u32,
+        "common_crc":1,"constant_count":2,"asset_count":1,"observed_crc_verified":false,
+        "spawn_origin":[-300,0,0],"bootstrap_weapon":{"name":"m4_mp","index":weapon,
+            "ammo":{"clip_key":weapon,"reserve_key":163,"clip":30,"reserve":90,
+                "source_sha256":"0".repeat(64),"fire_interval_msec":79}}
+    })).unwrap())
+}
+
+fn preparing_connection() -> Connection {
+    let export = serde_json::json!({"schema_version":1,"read_only":true,"client_sha256":codol_protocol::CLIENT_SHA256,
+        "map":"maps/mp/mp_afghan.d3dbsp","ncs_crc":0x12345678u32,
+        "brushes":[{"center":[0,0,-10],"half":[4000,4000,10],"contents":1,"planes":[]}],"triangles":[]});
+    let file = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(file.path(), serde_json::to_vec(&export).unwrap()).unwrap();
+    let collision = Arc::new(crate::game::world::collision::Collision::load(file.path()).unwrap());
+    let config = serde_json::from_value(serde_json::json!({
+        "spawns":[(0..6).map(|i| [300,i*100,0]).collect::<Vec<_>>(),(0..6).map(|i| [-300,i*100,0]).collect::<Vec<_>>()],
+        "score_limit":7500,"time_limit_msec":600000
+    })).unwrap();
+    let template = codol_protocol::game::snapshot::enemy::EnemySnapshot {
+        entity_number: 0,
+        client_index: 0,
+        team: 2,
+        model: 4,
+        attachment_models: [0; 10],
+        attachment_tags: [0; 10],
+        origin: [-300.0, 0.0, 0.0],
+        angles: [0; 3],
+        legs_animation: 395,
+        torso_animation: 395,
+        weapon: 352,
+        events: Default::default(),
+        alive: true,
+    };
+    let mut connection = Connection::with_game_state(prepared_player_for_flow(352));
+    Arc::make_mut(connection.world.game_state.as_mut().unwrap()).collision =
+        Some(collision.clone());
+    connection.world.tdm =
+        Some(crate::game::modes::tdm::TdmMatch::new(config, template, 190.0, &collision).unwrap());
+    connection.world.motion = connection.world.game_state.as_ref().unwrap().motion();
+    connection
+}
+
+#[test]
+fn frozen_input_advances_ack_without_motion_ammo_actions_or_weapon_selection_and_unlocks_once() {
+    let mut c = preparing_connection();
+    let origin = c.world.motion.as_ref().unwrap().origin;
+    let ammo = c.world.player.as_ref().unwrap().equipment().ammo.unwrap();
+    let events = c.world.player.as_ref().unwrap().equipment().events.unwrap();
+    c.world.tdm.as_mut().unwrap().advance_clock(1000);
+    for time in [1100, 2000, 5999] {
+        c.pending_inputs.insert(
+            time,
+            codol_protocol::game::channel::usercmd::UserCommand {
+                time,
+                direction: 1,
+                buttons: 1 | 4 | 0x400 | 0x14000 | 0x800,
+                angles: [1000, 2000, 0],
+                weapons: [353, 0, 0],
+                ..Default::default()
+            },
+        );
+        c.consume_inputs(time);
+    }
+    assert_eq!(c.input_count, 3);
+    assert_eq!(c.world.motion.as_ref().unwrap().command_time, 5999);
+    assert_eq!(c.world.motion.as_ref().unwrap().origin, origin);
+    assert_eq!(c.view_angles(), [0; 3]);
+    let held = c.world.player.as_mut().unwrap();
+    assert_eq!(held.equipment().weapon, 352);
+    assert_eq!(held.equipment().ammo.unwrap().clip, ammo.clip);
+    assert_eq!(held.equipment().ammo.unwrap().reserve, ammo.reserve);
+    assert_eq!(held.equipment().events.unwrap(), events);
+    assert!(
+        held.take_shots().is_empty()
+            && held.take_throws().is_empty()
+            && held.take_melee_strikes().is_empty()
+    );
+    assert_ne!(c.snapshot_motion().unwrap().flags & 0x800, 0);
+    c.world.tdm.as_mut().unwrap().advance_clock(6000);
+    assert_eq!(c.snapshot_motion().unwrap().flags & 0x800, 0);
+    c.pending_inputs.insert(
+        6050,
+        codol_protocol::game::channel::usercmd::UserCommand {
+            time: 6050,
+            direction: 1,
+            weapons: [352, 0, 0],
+            ..Default::default()
+        },
+    );
+    c.consume_inputs(6050);
+    assert!(c.world.motion.as_ref().unwrap().origin[0] > origin[0]);
+}
+
+#[test]
+fn preparation_backpack_equips_after_resource_ack_without_respawning_and_live_changes_wait() {
+    let mut c = preparing_connection();
+    let origin = c.world.motion.as_ref().unwrap().origin;
+    let life = c.world.vitals.spawn_count;
+    let sequence = c.server_commands.push(b"d 5796 selected_mp").unwrap();
+    c.pending_loadout = Some((sequence, prepared_player_for_flow(353)));
+    c.apply_acknowledged_loadout();
+    assert_eq!(c.world.player.as_ref().unwrap().equipment().weapon, 352);
+    assert!(c.pending_loadout.is_some());
+    c.server_commands.mark_sent(sequence).unwrap();
+    c.server_commands.acknowledge(sequence).unwrap();
+    c.apply_acknowledged_loadout();
+    assert_eq!(c.world.player.as_ref().unwrap().equipment().weapon, 353);
+    assert!(c.next_spawn_loadout.is_none());
+    assert_eq!(c.world.motion.as_ref().unwrap().origin, origin);
+    assert_eq!(c.world.vitals.spawn_count, life);
+    assert_ne!(c.snapshot_motion().unwrap().flags & 0x800, 0);
+    c.world.tdm.as_mut().unwrap().advance_clock(1000);
+    c.world.tdm.as_mut().unwrap().advance_clock(6000);
+    c.last_snapshot_time = 6000;
+    c.world.tdm.as_mut().unwrap().mark_combat(0);
+    c.pending_loadout = Some((sequence, prepared_player_for_flow(354)));
+    c.apply_acknowledged_loadout();
+    assert_eq!(c.world.player.as_ref().unwrap().equipment().weapon, 353);
+    assert!(c.next_spawn_loadout.is_some());
+}
+#[test]
+fn unused_grace_life_can_change_backpack_until_its_deadline_but_damage_closes_the_window() {
+    for damaged in [false, true] {
+        let mut c = preparing_connection();
+        c.world.tdm.as_mut().unwrap().advance_clock(1000);
+        c.world.tdm.as_mut().unwrap().advance_clock(6000);
+        c.last_snapshot_time = 20_999;
+        if damaged {
+            c.world.vitals.damage_event = 1;
+        }
+        c.pending_loadout = Some((0, prepared_player_for_flow(353)));
+        c.apply_acknowledged_loadout();
+        assert_eq!(
+            c.world.player.as_ref().unwrap().equipment().weapon,
+            if damaged { 352 } else { 353 }
+        );
+        assert_eq!(c.next_spawn_loadout.is_some(), damaged);
+    }
+    let mut c = preparing_connection();
+    c.world.tdm.as_mut().unwrap().advance_clock(1000);
+    c.world.tdm.as_mut().unwrap().advance_clock(21_000);
+    c.last_snapshot_time = 21_000;
+    c.pending_loadout = Some((0, prepared_player_for_flow(353)));
+    c.apply_acknowledged_loadout();
+    assert_eq!(c.world.player.as_ref().unwrap().equipment().weapon, 352);
+    assert!(c.next_spawn_loadout.is_some());
+}
+#[test]
+fn firing_during_grace_closes_backpack_replenishment_even_without_a_damage_definition() {
+    let mut c = preparing_connection();
+    c.world.tdm.as_mut().unwrap().advance_clock(1000);
+    c.world.tdm.as_mut().unwrap().advance_clock(6000);
+    c.last_snapshot_time = 6500;
+    c.pending_inputs.insert(
+        6500,
+        codol_protocol::game::channel::usercmd::UserCommand {
+            time: 6500,
+            buttons: 1,
+            weapons: [352, 0, 0],
+            ..Default::default()
+        },
+    );
+    c.consume_inputs(6500);
+    assert_eq!(
+        c.world
+            .player
+            .as_ref()
+            .unwrap()
+            .equipment()
+            .ammo
+            .unwrap()
+            .clip,
+        29
+    );
+    c.pending_loadout = Some((0, prepared_player_for_flow(353)));
+    c.apply_acknowledged_loadout();
+    assert_eq!(c.world.player.as_ref().unwrap().equipment().weapon, 352);
+    assert!(c.next_spawn_loadout.is_some());
+}
 #[test]
 fn glass_authority_survives_backpack_respawn_and_is_isolated_from_new_connections() {
     let export = serde_json::json!({

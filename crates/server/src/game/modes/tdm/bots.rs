@@ -184,7 +184,7 @@ impl TdmMatch {
         let (local, local_height, local_health) = player;
         let mut tick = Tick::default();
         self.advance_clock(now);
-        if self.rules.finished {
+        if !self.live_at(now) {
             return Ok(tick);
         }
         for i in 0..self.bots.len() {
@@ -192,23 +192,21 @@ impl TdmMatch {
                 .death
                 .is_some_and(|death| now.wrapping_sub(death) >= 3000)
             {
-                let team = usize::from(self.bots[i].snapshot.team - 1);
-                let starts = &self.config.spawns[team];
-                let index = (i + self.rows[i + 1].deaths as usize) % starts.len();
-                let origin = if self.acceptance_stationary {
-                    self.baselines[i].origin
+                let point = if self.acceptance_stationary {
+                    SpawnPoint {
+                        origin: self.baselines[i].origin,
+                        angles: self.baselines[i].angles,
+                    }
                 } else {
-                    crate::game::ai::controller::grounded_spawn(starts[index], collision)?
+                    self.respawn_point(
+                        now,
+                        self.bots[i].snapshot.client_index,
+                        Some(local),
+                        collision,
+                    )?
                 };
                 let bot = &mut self.bots[i];
-                let angles = if self.acceptance_stationary {
-                    self.baselines[i].angles
-                } else {
-                    self.config
-                        .spawn_angles
-                        .as_ref()
-                        .map_or(bot.snapshot.angles, |angles| angles[team][index])
-                };
+                let SpawnPoint { origin, angles } = point;
                 bot.controller.respawn(now, origin, angles)?;
                 bot.snapshot.angles = angles;
                 bot.snapshot.origin = origin;
@@ -216,6 +214,7 @@ impl TdmMatch {
                 bot.snapshot.events = EventQueue::default();
                 bot.health = 100;
                 self.streaks.spawn(bot.snapshot.client_index);
+                self.rules.combat[usize::from(bot.snapshot.client_index)] = false;
                 bot.damage_event = 0;
                 bot.damage_count = 0;
                 bot.feedback = None;

@@ -51,7 +51,7 @@ impl GameMapCatalog {
         );
         let manifest: Manifest = serde_json::from_slice(&std::fs::read(path)?)?;
         ensure!(
-            manifest.schema_version == 1 && (1..=32).contains(&manifest.entries.len()),
+            manifest.schema_version == 1 && (1..=64).contains(&manifest.entries.len()),
             "unsupported or empty game map catalog"
         );
         let directory = path.parent().unwrap_or(Path::new("."));
@@ -134,26 +134,31 @@ impl GameMapCatalog {
     pub(crate) fn has_rotations(&self) -> bool {
         !self.rotations.is_empty()
     }
-    pub(crate) fn bot_room_maps(&self) -> std::collections::BTreeSet<String> {
+    pub(crate) fn bot_room_maps(&self) -> std::collections::BTreeSet<(String, String)> {
         self.states
             .iter()
-            .filter(|((_, mode), state)| mode == "war" && state.has_tdm())
-            .map(|((map, _), _)| map.clone())
+            .filter(|((_, mode), state)| {
+                crate::content::maps::team_modes::TeamMode::from_native_token(mode).is_some()
+                    && state.has_tdm()
+            })
+            .map(|(key, _)| key.clone())
             .collect()
     }
     pub(crate) fn bot_room_loadouts(
         &self,
-    ) -> BTreeMap<String, Vec<[codol_protocol::room::messages::Loadout; 2]>> {
+    ) -> BTreeMap<(String, String), Vec<[codol_protocol::room::messages::Loadout; 2]>> {
         self.states
             .iter()
-            .filter(|((_, mode), _)| mode == "war")
-            .filter_map(|((map, _), state)| {
+            .filter(|((_, mode), _)| {
+                crate::content::maps::team_modes::TeamMode::from_native_token(mode).is_some()
+            })
+            .filter_map(|(key, state)| {
                 state
                     .room_bot_loadouts()
                     .filter(|roster| {
                         roster.len() == usize::from(codol_protocol::room::messages::BOT_CLIENTS)
                     })
-                    .map(|roster| (map.clone(), roster))
+                    .map(|roster| (key.clone(), roster))
             })
             .collect()
     }
@@ -191,6 +196,37 @@ pub(crate) fn write_synthetic(path: &Path, map: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn native_modes_on_the_same_map_bind_distinct_preparations_and_unsupported_pairs_fail() {
+        let temp = tempfile::tempdir().unwrap();
+        let war = temp.path().join("war.json");
+        write_synthetic(&war, "mp_nuked");
+        let mut cha: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&war).unwrap()).unwrap();
+        cha["mode"] = "cha".into();
+        cha["ncs_crc"] = 0x23456789u32.into();
+        std::fs::write(
+            temp.path().join("cha.json"),
+            serde_json::to_vec(&cha).unwrap(),
+        )
+        .unwrap();
+        let path = temp.path().join("catalog.json");
+        catalog(
+            &path,
+            serde_json::json!([{"map":"mp_nuked","mode":"war","file":"war.json"},{"map":"mp_nuked","mode":"cha","file":"cha.json"}]),
+        );
+        let loaded = GameMapCatalog::load(&path).unwrap();
+        assert_eq!(
+            loaded.select("mp_nuked", "war").unwrap().ncs_crc(),
+            0x12345678
+        );
+        assert_eq!(
+            loaded.select("mp_nuked", "cha").unwrap().ncs_crc(),
+            0x23456789
+        );
+        assert!(loaded.select("mp_afghan", "cha").is_err());
+        assert!(loaded.select("mp_nuked", "tdm").is_err());
+    }
     fn catalog(path: &Path, entries: serde_json::Value) {
         std::fs::write(
             path,

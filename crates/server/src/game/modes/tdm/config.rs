@@ -5,6 +5,21 @@ use serde::Deserialize;
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct MatchConfig {
+    /// Bound from the prepared state's native gametype, never a JSON override.
+    #[serde(skip)]
+    pub mode: crate::content::maps::team_modes::TeamMode,
+    #[serde(default = "default_preparation")]
+    pub preparation_msec: u32,
+    #[serde(default)]
+    pub preparation_text: Option<u16>,
+    #[serde(default = "default_grace_period")]
+    pub grace_period_msec: u32,
+    /// Shared mp_tdm_spawn pool, distinct from the two opening formations.
+    #[serde(default)]
+    pub respawn_points: Vec<SpawnPoint>,
+    /// mp_cha_spawn_axis/allies, distinct from optional opening _start groups.
+    #[serde(default)]
+    pub base_respawns: Option<[Vec<SpawnPoint>; 2]>,
     #[serde(default = "default_player_count")]
     pub player_count: u8,
     /// Axis and allies starts from this map's captured entity string.
@@ -20,6 +35,19 @@ pub(crate) struct MatchConfig {
     #[serde(default)]
     pub models: Vec<(u16, String)>,
 }
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SpawnPoint {
+    pub origin: [f32; 3],
+    #[serde(default)]
+    pub angles: [u16; 3],
+}
+fn default_preparation() -> u32 {
+    5000
+}
+fn default_grace_period() -> u32 {
+    15000
+}
 fn default_player_count() -> u8 {
     12
 }
@@ -29,6 +57,51 @@ pub(crate) fn default_teams() -> [u8; 12] {
 
 impl MatchConfig {
     pub fn validate(&self, collision: &Collision) -> Result<()> {
+        ensure!(
+            self.preparation_msec <= 30_000,
+            "invalid match preparation duration"
+        );
+        ensure!(
+            self.grace_period_msec <= 60_000,
+            "invalid match grace duration"
+        );
+        ensure!(
+            self.preparation_text.is_none_or(|t| (1..1023).contains(&t)),
+            "invalid preparation text slot"
+        );
+        ensure!(
+            self.respawn_points.len() <= 1024,
+            "too many shared respawn points"
+        );
+        for point in &self.respawn_points {
+            ensure!(
+                point
+                    .origin
+                    .iter()
+                    .all(|v| v.is_finite() && (-32768.0..=32767.0).contains(v)),
+                "shared respawn position outside native coordinate bounds"
+            );
+            crate::game::ai::controller::grounded_spawn(point.origin, collision)
+                .with_context(|| format!("invalid shared respawn point {:?}", point.origin))?;
+        }
+        if let Some(bases) = &self.base_respawns {
+            for base in bases {
+                ensure!(
+                    (1..=128).contains(&base.len()),
+                    "invalid fixed-base respawn pool"
+                );
+                for point in base {
+                    ensure!(
+                        point
+                            .origin
+                            .iter()
+                            .all(|v| v.is_finite() && (-32768.0..=32767.0).contains(v)),
+                        "fixed-base spawn outside native coordinates"
+                    );
+                    crate::game::ai::controller::grounded_spawn(point.origin, collision)?;
+                }
+            }
+        }
         ensure!(
             self.spawn_angles.as_ref().is_none_or(|angles| angles
                 .iter()

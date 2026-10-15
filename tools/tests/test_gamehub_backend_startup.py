@@ -43,7 +43,7 @@ class BackendStartupTests(unittest.TestCase):
             failed = SimpleNamespace(poll=lambda: 1)
             with self.assertRaisesRegex(RuntimeError, 'AUTH backend exited'):
                 gamehub_run.wait_backend_ready(directory, process, failed, True, True)
-            with patch.object(gamehub_run.time, 'monotonic', side_effect=[0, 181]), \
+            with patch.object(gamehub_run.time, 'monotonic', side_effect=[0, 241]), \
                     self.assertRaisesRegex(TimeoutError, 'backend startup'):
                 gamehub_run.wait_backend_ready(directory, process, process, True, True)
 

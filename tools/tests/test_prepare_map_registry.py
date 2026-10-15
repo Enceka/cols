@@ -10,6 +10,13 @@ from prepare_map_registry import prepare
 
 
 class NativeMapRegistry(unittest.TestCase):
+    def test_charge_only_maps_are_separate_from_war_and_require_the_native_mode(self):
+        capture=self.capture();cells=capture['tables']['mp/coMapList.csv']['cells_base64']
+        cells[4]=base64.b64encode(b'mp_shipment_long').decode()
+        cells[9]=base64.b64encode(b'cha;dm').decode()
+        self.assertEqual([m['name'] for m in prepare(capture)['maps']],['za_coliseum'])
+        self.assertEqual([m['name'] for m in prepare(capture,'cha')['maps']],['mp_shipment_long'])
+        with self.assertRaises(ValueError):prepare(capture,'tdm')
     def capture(self):
         rows = []
         for name, native_id in [('mp_afghan', 1), ('za_coliseum', 83)]:

@@ -53,7 +53,7 @@ impl Connection {
                 .snapshot_first_sequence
                 .is_some_and(|first| self.native_ack >= first);
         let gameplay =
-            !self.replay.pending() && !self.world.tdm.as_ref().is_some_and(|m| m.finished());
+            !self.replay.pending() && self.world.tdm.as_ref().is_none_or(|m| m.live_at(now));
         // Bind committed kills to the cached prior life before observing
         // respawns in this frame; delayed speech must not switch owners.
         for &(time, victim, attacker) in &self.voice_deaths {

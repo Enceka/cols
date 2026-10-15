@@ -27,3 +27,8 @@
 `voice-3.3.3.3.json`记录本版声音选择器、播放／停止、角色前缀消费者及阿富汗CRC核对的资源例子。完整声音目录由`tools/prepare_voice.py`按各图采集生成，不能把例子编号或参考脚本时机当作已通过实机听感验收。
 
 `killstreaks-3.3.3.3.json`由`tools/prepare_killstreaks.py`核对本版原程序、只读资源表／schema及原生HUD采集生成，仅含必要奖励身份、成本和资源标识、60项背包四槽偏移、PS字段／消费者摘要及来源哈希。完整29×33资源表与HUD表达式保留在忽略目录；44个商城条目中23项精确匹配，21项Pro未匹配，没有升级版别名映射。`evidence_only=true`／`gameplay_verified=false`明确不代表发奖、调用或效果验收；接入方案见`docs/KILLSTREAK_PREPARATION.md`。
+# 团队模式
+
+`team-modes-3.3.3.3.json` 为本版模式表及中文资源的只读摘录：`war`／别名`tdm`是战术，`cha`是冲锋。NUMBER／token／alias／name列为3／4／5／6，中文原字节及GB18030解码、资源loaded标志分别保留；缓存名称不代表该模式已进入或资源已准备。
+
+`charge-map-registry-3.3.3.3.json` 保存本版 `coMapList.csv` 的17条冲锋地图身份、原生ID、人数与开启标志，`resource_preparation_claimed=false`。实际开放准备和原生证据见 `docs/CHARGE_MODE.md`，不以表中身份或战术捕获替代冲锋资源验收。

@@ -61,6 +61,34 @@ impl Connection {
             } else {
                 std::array::from_fn(|i| input.angles[i].wrapping_add(self.view_offset[i]))
             };
+            if self
+                .world
+                .tdm
+                .as_ref()
+                .is_some_and(|m| !m.live_at(input.time))
+            {
+                // ACK the executing command while preserving the frozen body,
+                // view and weapon state. Backpack menu requests are reliable
+                // commands and remain available through the separate parser.
+                input.buttons = 0;
+                input.direction = 0;
+                input.angles = self.view_angles();
+                if let Some(player) = &self.world.player {
+                    input.weapons = player.equipment().input_weapons();
+                }
+                if let Some(player) = &mut self.world.player {
+                    player.freeze_at(input.time);
+                }
+                if let Some(motion) = &mut self.world.motion {
+                    motion.cancel_melee_charge();
+                    motion.cancel_sprint();
+                    motion.velocity = [0.0; 3];
+                    motion.command_time = input.time;
+                }
+                self.input_count += 1;
+                self.last_input = Some(input);
+                continue;
+            }
             if let Some(motion) = &mut self.world.motion
                 && let Some(collision) = self
                     .world
@@ -171,6 +199,7 @@ impl Connection {
                         "unowned weapon switch requested"
                     );
                 }
+                let previous_equipment = player.equipment();
                 player.apply_with_melee_approach(&input, melee_approach);
                 if let Some(motion) = &mut self.world.motion
                     && let Some((approach, duration)) = player.take_melee_approach()
@@ -182,6 +211,16 @@ impl Connection {
                 let shots = player.take_shots();
                 let melee_strikes = player.take_melee_strikes();
                 let throws = player.take_throws();
+                let fired = player.equipment().weapon == previous_equipment.weapon
+                    && previous_equipment
+                        .ammo
+                        .zip(player.equipment().ammo)
+                        .is_some_and(|(old, new)| new.clip < old.clip);
+                if (fired || !shots.is_empty() || !melee_strikes.is_empty() || !throws.is_empty())
+                    && let Some(tdm) = &mut self.world.tdm
+                {
+                    tdm.mark_combat(0);
+                }
                 if let (Some(motion), Some(collision)) = (
                     &self.world.motion,
                     self.world

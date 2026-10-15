@@ -466,6 +466,14 @@ impl HeldWeapons {
     pub fn apply(&mut self, cmd: &UserCommand) {
         self.apply_with_melee_approach(cmd, None);
     }
+    /// Frozen controls advance the authority clock without producing weapon
+    /// actions or consuming ammunition. Unlock cannot replay the frozen gap.
+    pub(crate) fn freeze_at(&mut self, time: u32) {
+        self.last_time = self.last_time.max(time);
+        self.attack_held = false;
+        self.melee_held = false;
+        self.offhand_held = 0;
+    }
     pub fn apply_with_melee_approach(
         &mut self,
         cmd: &UserCommand,

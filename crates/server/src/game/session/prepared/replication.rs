@@ -262,6 +262,7 @@ impl PreparedGameState {
                 radar_flags: world.radar_flags,
                 reward_inventory: world.reward_inventory,
                 nuke_hud: world.nuke_hud,
+                preparation_hud: world.preparation_hud,
                 destroyed_glass: &destroyed_glass,
                 perk_display: world.perk_display,
                 bags: world.bags,

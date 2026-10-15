@@ -23,6 +23,7 @@ pub(crate) struct Resources {
     variant: u8,
     hear_self_chatter: bool,
     mode_intro_gap_msec: u16,
+    mode_intro: &'static str,
 }
 #[derive(Deserialize)]
 struct Catalog {
@@ -116,6 +117,11 @@ impl Resources {
             variant: raw.voice_variant,
             hear_self_chatter: raw.hear_self_chatter,
             mode_intro_gap_msec: raw.mode_intro_gap_msec,
+            mode_intro: match raw.mode.as_str() {
+                "war" => "tm_deathmatch",
+                "cha" => "charge",
+                _ => anyhow::bail!("unsupported voice mode identity"),
+            },
         })
     }
     fn sound(&self, alias: &str) -> Option<SoundSelector> {
@@ -262,11 +268,11 @@ impl Speech {
                 commands.push(prefix.command().as_bytes())?;
                 self.prefix_sent = Some(prefix);
             }
-            if gameplay && local.alive && !self.started && !self.ended {
+            if local.alive && !self.started && !self.ended {
                 if let Some(sound) = resources.music(local.team, "spawn") {
                     commands.push(sound.play_command().as_bytes())?;
                 }
-                if let Some(mode) = resources.announcer(local.team, "tm_deathmatch") {
+                if let Some(mode) = resources.announcer(local.team, resources.mode_intro) {
                     let mode_sequence = commands.push(mode.play_command().as_bytes())?;
                     self.opening =
                         resources
@@ -283,14 +289,13 @@ impl Speech {
             }
         }
         if ready
-            && gameplay
             && !self.ended
             && local.is_some_and(|a| a.alive)
             && let Some(opening) = &mut self.opening
             && commands.acknowledged() >= opening.mode_sequence
         {
             let begin = *opening.acknowledged_at.get_or_insert(now);
-            if now.wrapping_sub(begin) >= u32::from(resources.mode_intro_gap_msec) {
+            if gameplay && now.wrapping_sub(begin) >= u32::from(resources.mode_intro_gap_msec) {
                 commands.push(opening.boost.play_command().as_bytes())?;
                 self.opening = None;
             }
@@ -536,6 +541,7 @@ mod tests {
             "uk_m1_inform_attack_grenade",
         ];
         Resources {
+            mode_intro: "tm_deathmatch",
             variant: 1,
             hear_self_chatter: false,
             mode_intro_gap_msec: 3000,
@@ -567,6 +573,49 @@ mod tests {
             ),
             events: Default::default(),
         }
+    }
+    #[test]
+    fn mode_intro_can_play_during_preparation_but_boost_waits_for_live_controls() {
+        let resources = resources();
+        let mut speech = Speech::default();
+        let mut commands = ReliableCommands::default();
+        let local = actor(0, 2);
+        speech
+            .advance(1000, &resources, &[local], true, false, &mut commands)
+            .unwrap();
+        let sequence = commands.sequence();
+        assert_eq!(
+            commands.command_for(sequence).unwrap(),
+            resources
+                .announcer(2, "tm_deathmatch")
+                .unwrap()
+                .play_command()
+                .as_bytes()
+        );
+        commands.mark_sent(sequence).unwrap();
+        commands.acknowledge(sequence).unwrap();
+        speech
+            .advance(1050, &resources, &[local], true, false, &mut commands)
+            .unwrap();
+        speech
+            .advance(5999, &resources, &[local], true, false, &mut commands)
+            .unwrap();
+        assert_eq!(commands.sequence(), sequence);
+        speech
+            .advance(6000, &resources, &[local], true, true, &mut commands)
+            .unwrap();
+        assert_eq!(
+            commands.command_for(sequence + 1).unwrap(),
+            resources
+                .announcer(2, "boost")
+                .unwrap()
+                .play_command()
+                .as_bytes()
+        );
+        speech
+            .advance(6050, &resources, &[local], true, true, &mut commands)
+            .unwrap();
+        assert_eq!(commands.sequence(), sequence + 1);
     }
     #[test]
     fn announcers_wait_for_readiness_and_start_and_result_are_one_shot() {

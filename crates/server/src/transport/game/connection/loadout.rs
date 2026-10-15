@@ -58,11 +58,13 @@ impl Connection {
             Arc::make_mut(self.world.game_state.as_mut().unwrap()).update_profile_selection(&state);
             self.pending_loadout = None;
             if !unchanged {
-                // Same guns need no new resource registration, but passive
-                // skills and offhands still belong to the next life.
                 self.next_spawn_loadout = Some(Arc::new(state));
-                self.feedback
-                    .push_back("Backpack will change on next spawn".into());
+                if self.loadout_change_allowed() {
+                    self.equip_immediate_loadout();
+                } else {
+                    self.feedback
+                        .push_back("Backpack will change on next spawn".into());
+                }
             } else if self.next_spawn_loadout.take().is_some() {
                 self.feedback
                     .push_back("Current backpack kept for next spawn".into());
@@ -112,8 +114,8 @@ impl Connection {
         tracing::info!("queued saved backpack update for client resource acknowledgement");
         Ok(())
     }
-    /// Client resources for a backpack are acknowledged; equip it now, or at
-    /// the next training spawn while the current life is still in progress.
+    /// Acknowledged equipment applies during preparation or an unused grace
+    /// life; choices made during combat are equipped at the next spawn.
     pub(super) fn apply_acknowledged_loadout(&mut self) {
         if self
             .pending_loadout
@@ -126,9 +128,13 @@ impl Connection {
         if (self.world.bot.is_some() || self.world.tdm.is_some()) && self.world.player.is_some() {
             // A training life keeps its weapons; respawn equips the choice.
             self.next_spawn_loadout = Some(state);
-            self.feedback
-                .push_back("Backpack will change on next spawn".into());
-            tracing::info!("deferred acknowledged player backpack update to respawn");
+            if self.loadout_change_allowed() {
+                self.equip_immediate_loadout();
+            } else {
+                self.feedback
+                    .push_back("Backpack will change on next spawn".into());
+                tracing::info!("deferred acknowledged player backpack update to respawn");
+            }
         } else {
             if let Some(primary) = state.primary_player() {
                 if let Some(player) = &mut self.world.player {
@@ -140,6 +146,25 @@ impl Connection {
             self.replace_game_state(state);
             tracing::info!("applied acknowledged player backpack update");
         }
+    }
+    fn equip_immediate_loadout(&mut self) {
+        self.equip_spawn_loadout();
+        if let (Some(state), Some(player)) = (&self.world.game_state, &mut self.world.player)
+            && let Some(primary) = state.primary_player()
+        {
+            player.replace_loadout(primary, state.secondary_player());
+        }
+        self.feedback.push_back("Backpack equipped".into());
+        tracing::info!("applied backpack during match preparation or unused grace life");
+    }
+    fn loadout_change_allowed(&self) -> bool {
+        self.world.vitals.health > 0
+            && self.world.vitals.damage_event == 0
+            && self
+                .world
+                .tdm
+                .as_ref()
+                .is_some_and(|m| m.can_change_loadout(self.last_snapshot_time))
     }
     pub(super) fn replace_game_state(
         &mut self,
@@ -154,11 +179,11 @@ impl Connection {
     }
     pub(super) fn equip_spawn_loadout(&mut self) {
         if let Some(tdm) = &mut self.world.tdm {
-            tdm.streaks.spawn(0);
+            tdm.spawn_client(0);
         }
         if let Some(next) = self.next_spawn_loadout.take() {
             self.replace_game_state(next);
-            tracing::info!("applied deferred player backpack at respawn");
+            tracing::info!("applied selected player backpack");
         }
         if let (Some(tdm), Some(state)) = (&mut self.world.tdm, &self.world.game_state)
             && state.radar_resources().is_some()

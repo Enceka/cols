@@ -19,6 +19,7 @@ CONSTANT_OFFSET = 512
 MAX_SELECTOR = 16000
 ANNOUNCER = {
     "mode_tdm": "tm_deathmatch",
+    "mode_charge": "charge",
     "match_start": "boost",
     "victory": "mission_success",
     "defeat": "mission_fail",

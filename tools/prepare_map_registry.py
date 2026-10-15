@@ -10,7 +10,9 @@ import re
 from clientlib import manifest
 
 
-def prepare(capture):
+def prepare(capture, mode='war'):
+    if mode not in ('war', 'cha'):
+        raise ValueError('unsupported native team mode')
     expected = next(f['sha256'] for f in manifest()['files']
                     if f['path'] == 'CODOL/codoMP_client_shipRetail.exe')
     if capture.get('schema_version') != 1 or capture.get('read_only') is not True or capture.get('client_sha256') != expected:
@@ -24,7 +26,7 @@ def prepare(capture):
     ids, names = set(), set()
     for i in range(0, len(cells), 37):
         row = cells[i:i + 37]
-        if row[8] != 'pvp' or 'war' not in row[9].split(';'):
+        if row[8] != 'pvp' or mode not in row[9].split(';'):
             continue
         name, native_id = row[4], int(row[3])
         minimum, maximum = int(row[10]), int(row[11])
@@ -49,9 +51,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--assets', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--mode', choices=('war','cha'), default='war')
     args = parser.parse_args()
     raw = args.assets.read_bytes()
-    result = prepare(json.loads(raw))
+    result = prepare(json.loads(raw), args.mode)
     result['capture_sha256'] = hashlib.sha256(raw).hexdigest()
     with args.output.open('x') as output:
         json.dump(result, output, indent=2, allow_nan=False)

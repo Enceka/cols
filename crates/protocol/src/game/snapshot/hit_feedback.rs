@@ -58,6 +58,11 @@ pub struct NukeHudSnapshot {
     pub end_time: Option<u32>,
     pub text: Option<u16>,
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PreparationHudSnapshot {
+    pub remaining_seconds: u8,
+    pub text: Option<u16>,
+}
 impl DeathWaypointSnapshot {
     pub fn valid(self) -> bool {
         (1..1024).contains(&self.material)
@@ -87,6 +92,16 @@ pub(crate) fn write_hud_with_nuke(
     replay: Option<ReplayHudSnapshot>,
     nuke: Option<NukeHudSnapshot>,
 ) -> Result<(), LobbyError> {
+    write_hud_with_preparation(out, feedback, deaths, replay, nuke, None)
+}
+pub(crate) fn write_hud_with_preparation(
+    out: &mut Writer,
+    feedback: Option<HitFeedbackSnapshot>,
+    deaths: &[DeathWaypointSnapshot],
+    replay: Option<ReplayHudSnapshot>,
+    nuke: Option<NukeHudSnapshot>,
+    preparation: Option<PreparationHudSnapshot>,
+) -> Result<(), LobbyError> {
     let feedback = feedback.unwrap_or_default();
     if feedback.visible && !(1..1024).contains(&feedback.material) {
         return Err(LobbyError("invalid hit feedback material"));
@@ -97,6 +112,11 @@ pub(crate) fn write_hud_with_nuke(
     let skip_text = replay.and_then(|r| r.skip_text);
     if skip_text.is_some_and(|slot| !(1..1023).contains(&slot)) {
         return Err(LobbyError("invalid replay skip text slot"));
+    }
+    if preparation.is_some_and(|p| {
+        !(1..=30).contains(&p.remaining_seconds) || p.text.is_some_and(|t| !(1..1023).contains(&t))
+    }) {
+        return Err(LobbyError("invalid preparation HUD"));
     }
     out.bits(1, 1); // HUD extension is present.
     // Wire order is archival then current; memory order is the reverse.
@@ -110,7 +130,9 @@ pub(crate) fn write_hud_with_nuke(
             + u32::from(replay.is_some())
             + u32::from(skip_text.is_some())
             + u32::from(nuke.is_some_and(|h| h.end_time.is_some()))
-            + u32::from(nuke.is_some_and(|h| h.text.is_some())),
+            + u32::from(nuke.is_some_and(|h| h.text.is_some()))
+            + u32::from(preparation.is_some())
+            + u32::from(preparation.is_some_and(|p| p.text.is_some())),
         5,
     );
     for death in deaths {
@@ -135,7 +157,61 @@ pub(crate) fn write_hud_with_nuke(
             write_replay_skip(out, text);
         }
     }
+    if let Some(preparation) = preparation {
+        write_preparation_element(out, preparation.remaining_seconds, None);
+        if let Some(text) = preparation.text {
+            write_preparation_element(out, preparation.remaining_seconds, Some(text));
+        }
+    }
     Ok(())
+}
+
+fn write_preparation_element(out: &mut Writer, seconds: u8, text: Option<u16>) {
+    // Native0x514b70 type2 formats the float at HUD+0x80 with "%g", matching
+    // _gamelogic's setValue countdown. Field9 is that float in table0xc56ac0.
+    // Text type1
+    // resolves the captured localised slot through CS952+slot at0x514230.
+    let indices: &[u32] = if text.is_some() {
+        &[0, 1, 3, 7, 11, 14, 15, 16, 20, 22]
+    } else {
+        &[0, 3, 7, 9, 11, 14, 15, 16, 20]
+    };
+    out.bits(indices.last().copied().unwrap() + 1, 6);
+    let mut previous = None;
+    for &index in indices {
+        field_gap(out, previous.map_or(index + 1, |p| index - p));
+        previous = Some(index);
+        match index {
+            0 => color(
+                out,
+                if text.is_some() {
+                    [255; 3]
+                } else {
+                    [255, 255, 0]
+                },
+                31,
+            ),
+            1 => {
+                out.bits(0, 1);
+                out.bits(24, 7);
+            } // y=-40
+            3 => unsigned(out, if text.is_some() { 1 } else { 2 }, 4),
+            7 => unsigned(out, 2047, 11),
+            9 => {
+                out.bits(1, 1); // Nonzero float.
+                out.bits(1, 1); // Complete IEEE754 value against the zero base.
+                out.bytes
+                    .extend_from_slice(&f32::from(seconds).to_bits().to_le_bytes());
+            }
+            11 => unsigned(out, 0x22, 8), // Screen centre/middle.
+            14 => unsigned(out, 5, 18),
+            15 => unsigned(out, 5, 4),
+            16 => out.bits(if text.is_some() { 15 } else { 20 }, 6),
+            20 => unsigned(out, 8, 4),
+            22 => unsigned(out, u32::from(text.unwrap()), 10),
+            _ => unreachable!(),
+        }
+    }
 }
 
 fn write_replay_skip(out: &mut Writer, text: u16) {
@@ -368,6 +444,11 @@ mod tests {
                 let offset = row[0].as_u64().unwrap() as u32;
                 let codec = row[1].as_i64().unwrap();
                 let value = match codec {
+                    0 => {
+                        assert_eq!(r.bits(1).unwrap(), 1);
+                        assert_eq!(r.bits(1).unwrap(), 1);
+                        r.u32().unwrap()
+                    }
                     -85 => {
                         assert_eq!(r.bits(1).unwrap(), 0); // No alpha toggle.
                         assert_eq!(r.bits(1).unwrap(), 0); // Read RGB.
@@ -413,6 +494,39 @@ mod tests {
             elements.push(fields);
         }
         elements
+    }
+    #[test]
+    fn preparation_clock_text_and_clear_use_the_captured_native_hud_layout() {
+        let mut out = Writer::default();
+        write_hud_with_preparation(
+            &mut out,
+            None,
+            &[],
+            None,
+            None,
+            Some(PreparationHudSnapshot {
+                remaining_seconds: 5,
+                text: Some(42),
+            }),
+        )
+        .unwrap();
+        let mut reader = Reader::new(&out.bytes);
+        assert_eq!(reader.bits(1).unwrap(), 1);
+        assert!(read_array(&mut reader).is_empty());
+        let current = read_array(&mut reader);
+        assert_eq!(current.len(), 2);
+        assert_eq!(current[0][&0], 2);
+        assert_eq!(f32::from_bits(current[0][&128]), 5.0);
+        assert_eq!(current[0][&48], 0xff00ffff);
+        assert_eq!(current[1][&0], 1);
+        assert_eq!(current[1][&132], 42);
+        assert_eq!(f32::from_bits(current[1][&8]), -40.0);
+        let mut clear = Writer::default();
+        write_hud_with_preparation(&mut clear, None, &[], None, None, None).unwrap();
+        let mut reader = Reader::new(&clear.bytes);
+        assert_eq!(reader.bits(1).unwrap(), 1);
+        assert!(read_array(&mut reader).is_empty());
+        assert!(read_array(&mut reader).is_empty());
     }
     #[test]
     fn nuclear_clock_and_localized_banner_decode_with_the_native_hud_layout() {

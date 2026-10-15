@@ -5,11 +5,50 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from prepare_tdm_map import team_spawns, team_spawn_angles
+from prepare_tdm_map import team_spawns, team_spawn_angles, respawn_points, preparation_text, charge_spawns
 from prepare_game_state import CLIENT_SHA256
 
 
 class TdmMapPreparation(unittest.TestCase):
+    def test_charge_uses_its_own_opening_and_base_groups_and_never_tdm_starts(self):
+        capture=self.capture();record=capture['maps'][0]
+        raw=base64.b64decode(record['entity_string_base64'])
+        for team,x in [('axis',100),('allies',200)]:
+            for y in range(6):
+                raw+=('{"classname" "mp_cha_spawn_%s" "origin" "%d %d 56" "angle" "180"}'%(team,x,y)).encode()
+                raw+=('{"classname" "mp_cha_spawn_%s_start" "origin" "%d %d 56"}'%(team,x+10,y)).encode()
+        record.update(byte_count=len(raw),entity_string_base64=base64.b64encode(raw).decode())
+        starts,bases=charge_spawns(capture,'mp_killhouse_sh')
+        self.assertEqual([p[0]['origin'][0] for p in starts],[110,210])
+        self.assertEqual([p[0]['origin'][0] for p in bases],[100,200])
+        self.assertEqual(bases[0][0]['angles'],[0,32768,0])
+        raw=raw.replace(b'mp_cha_spawn_axis_start',b'irrelevant').replace(b'mp_cha_spawn_allies_start',b'irrelevant')
+        record.update(byte_count=len(raw),entity_string_base64=base64.b64encode(raw).decode())
+        starts,bases=charge_spawns(capture,'mp_killhouse_sh');self.assertEqual(starts,bases)
+        with self.assertRaises(ValueError):charge_spawns(self.capture(),'mp_killhouse_sh')
+    def test_shared_respawns_are_distinct_from_opening_starts_and_keep_map_variant_and_heading(self):
+        capture = self.capture()
+        record = capture['maps'][0]
+        raw = base64.b64decode(record['entity_string_base64'])
+        raw += b'\n{"classname" "mp_tdm_spawn" "origin" "1 2 56" "angle" "180"}'
+        raw += b'\n{"classname" "mp_tdm_spawn" "origin" "9 9 56" "script_specialopsname" "other_map"}'
+        record.update(byte_count=len(raw), entity_string_base64=base64.b64encode(raw).decode())
+        self.assertEqual(respawn_points(capture, 'mp_killhouse_sh'), [dict(origin=[1,2,56], angles=[0,32768,0])])
+        bad = copy.deepcopy(capture)
+        raw = raw.replace(b'1 2 56', b'NaN 2 56')
+        bad['maps'][0].update(byte_count=len(raw), entity_string_base64=base64.b64encode(raw).decode())
+        with self.assertRaises(ValueError): respawn_points(bad, 'mp_killhouse_sh')
+
+    def test_preparation_text_requires_the_initialized_map_local_bank_and_rejects_ambiguous_slots(self):
+        encode = lambda names: [base64.b64encode(name).decode() for name in names]
+        capture = dict(initialized=1, linked=[dict(category=4, strings_base64=encode([b'OTHER', b'MP_MATCH_STARTING_IN']))])
+        self.assertEqual(preparation_text(capture), 2)
+        capture['initialized'] = 0
+        with self.assertRaises(ValueError): preparation_text(capture)
+        capture['initialized'] = 1
+        capture['linked'][0]['strings_base64'] = encode([b'MP_MATCH_STARTING_IN']*2)
+        with self.assertRaises(ValueError): preparation_text(capture)
+
     def capture(self):
         text = b"\n".join(
             ('{"classname" "mp_tdm_spawn_%s_start" "origin" "%s %s 56"}' % (team, x, y)).encode()

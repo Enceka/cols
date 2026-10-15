@@ -26,7 +26,6 @@ impl Connection {
         {
             return Ok(None);
         }
-        self.apply_acknowledged_loadout();
         // Wall-clock time must keep advancing even if capture I/O misses a
         // tick. Counting frames made the server clock fall behind the client.
         let epoch = *self.snapshot_epoch.get_or_insert(now);
@@ -45,6 +44,7 @@ impl Connection {
         {
             tdm.advance_clock(server_time);
         }
+        self.apply_acknowledged_loadout();
         self.consume_inputs(server_time);
         self.advance_radios(server_time)?;
         self.advance_nuke(server_time)?;
@@ -166,7 +166,7 @@ impl Connection {
                         tdm.winning_team(),
                         tdm.duration_seconds(),
                         self.world.game_state.as_ref().unwrap().summary_map_id()?,
-                        1,
+                        tdm.native_mode_number(),
                     )?,
                 )?;
                 self.match_summary_sequence = Some(self.server_commands.sequence());
@@ -618,6 +618,11 @@ impl Connection {
                         },
                     )
                 }),
+                preparation_hud: self
+                    .world
+                    .tdm
+                    .as_ref()
+                    .and_then(|m| m.preparation_hud(server_time)),
                 perk_display: perk_display && replay_wire.is_none() && !top_players_scene,
                 bags: &bags,
                 bag_baselines: previous.as_ref().map_or(&[], |h| h.bags.as_slice()),
@@ -813,6 +818,13 @@ impl Connection {
                 camera.view_height_lerp_target = 0;
                 camera.view_height_lerp_time = 0;
                 camera.view_height_lerp_down = false;
+            }
+            // Target 3.3.3.3 PmoveSingle0x41dba0 tests PS.pm_flags0x800
+            // at0x41dbe3 and clears movement/buttons at0x41dcdd. Input is gated
+            // separately, including before the first world ACK.
+            if self.world.tdm.as_ref().is_some_and(|m| m.preparing()) {
+                camera.flags |= 0x800;
+                camera.velocity = [0.0; 3];
             }
             camera
         })

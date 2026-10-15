@@ -178,6 +178,9 @@ enum Command {
         /// Collect one native TDM map's loaded resources without sending a world.
         #[arg(long, requires = "native_bot_rooms")]
         resource_capture_map: Option<String>,
+        /// Native mode of the explicit resource capture (war or cha).
+        #[arg(long, requires="resource_capture_map",value_parser=["war","cha"])]
+        resource_capture_mode: Option<String>,
         /// First story map's isolated allocation/handshake capture; no gameplay world.
         #[arg(long, requires = "game_bind", conflicts_with_all=["game_state","game_map_catalog","native_bot_rooms","resource_capture_map","continuous_play"])]
         story_capture_map: Option<String>,
@@ -526,6 +529,7 @@ pub(super) async fn run() -> Result<()> {
             game_map_catalog,
             native_bot_rooms,
             resource_capture_map,
+            resource_capture_mode,
             story_capture_map,
             story_resource_state,
             resource_capture_playlist,
@@ -616,6 +620,9 @@ pub(super) async fn run() -> Result<()> {
                     }
                     if let Some(map) = resource_capture_map {
                         game = game.with_resource_capture_map(map)?;
+                    }
+                    if let Some(mode) = resource_capture_mode {
+                        game = game.with_resource_capture_mode(mode)?;
                     }
                     if let Some(playlist) = resource_capture_playlist {
                         game = game.with_resource_capture_playlist(playlist)?;

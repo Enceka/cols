@@ -12,6 +12,23 @@ from verify_native_maps import Client, prepare, run, movement_frames
 
 
 class NativeMapIsolation(unittest.TestCase):
+    def test_same_map_in_both_modes_keeps_distinct_diagnostic_preparations(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            entries=[]
+            for mode in ('war','cha'):
+                source=root/(mode+'.json')
+                source.write_text(json.dumps(dict(map='mp_nuked',mode=mode,
+                    match_config=dict(score_limit=7500,time_limit_msec=600000))))
+                entries.append(dict(map='mp_nuked',mode=mode,file=source.name))
+            catalog=root/'catalog.json'
+            catalog.write_text(json.dumps(dict(schema_version=1,entries=entries)))
+            prepared=prepare(catalog,root/'diagnostic')
+            actual=json.loads(prepared.read_text())['entries']
+            self.assertNotEqual(actual[0]['file'],actual[1]['file'])
+            for entry in actual:
+                self.assertEqual(json.loads((prepared.parent/entry['file']).read_text())['mode'],entry['mode'])
+
     def test_sampled_movement_never_posts_input_before_native_readiness(self):
         class SamplingClient(Client):
             def capture(self,mode,ready=None):
@@ -200,6 +217,7 @@ class NativeMapIsolation(unittest.TestCase):
                 created=len(self.clicks)>=4
                 return dict(connection_state=0,frontend_state=5,room_is_host=int(created),
                     room_member_count=12 if created else 0,room_native_map=self.current,
+                    room_native_mode='war',
                     room_channel_pointer=123 if created else 0,
                     room_join_request_handler=456 if created else 0,active_inventory_count=100)
         client=LobbyClient()
