@@ -264,5 +264,5 @@
       }
     }
   },
-  "native_acceptance": "Attack8 type13 model, origin delta, turret axes, engine audio and rotor playback verified. Explicit parent10 then leaf11 goals: 55 stable skeleton samples, main177.307deg/tail177.276deg relative motion. Heavy rotor and dual gun entities remain pending."
+  "native_acceptance": "Attack8 type13 model, origin delta, turret axes, engine audio and rotor playback verified. Explicit parent10 then leaf11 goals: 55 stable skeleton samples, main177.307deg/tail177.276deg relative motion. Heavy dual type12 gun entities and independent targeting are implemented but native heavy rotor, gun models/FX/audio/aim remain unverified: fresh runs did not reach a visible client window."
 }
