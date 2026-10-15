@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "client_sha256": "e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b",
+  "native_gameplay_acceptance": false,
+  "player_state_descriptor_sha256": "56b46d3430513982131602b42ce6a8f9c376320b2de8e383627676c88d9c2495",
+  "fields": [
+    {
+      "name": "pm_flags",
+      "offset": 12,
+      "index": 20,
+      "codec_bits": 32
+    },
+    {
+      "name": "link_flags_candidate",
+      "offset": 16,
+      "index": 54,
+      "codec_bits": 28
+    },
+    {
+      "name": "camera_entity_candidate",
+      "offset": 84,
+      "index": 168,
+      "codec_bits": 11
+    },
+    {
+      "name": "camera_tag_candidate",
+      "offset": 88,
+      "index": 169,
+      "codec_bits": 6
+    },
+    {
+      "name": "controls_entity_candidate",
+      "offset": 92,
+      "index": 170,
+      "codec_bits": 11
+    },
+    {
+      "name": "camera_reference_distinct",
+      "offset": 512,
+      "index": 227,
+      "codec_bits": 11
+    }
+  ],
+  "verified_consumer": {
+    "address": 4308220,
+    "operation": "test dword ptr [esi+0xc],0x80000; jne0x41bdf9",
+    "meaning": "bypasses ordinary view-angle update path including call0x41af10"
+  },
+  "alpha_reference": {
+    "camera_flag": 2,
+    "camera_tag_flag": 128,
+    "controls_flag": 524288,
+    "unlink_controls_entity": 2047,
+    "warning": "Reference C1 script offsets are candidate semantics only; target descriptor widths differ (PS+0xc32, PS+0x1028), so do not copy whole flags or infer camera acceptance."
+  },
+  "sampling": {
+    "read_only": true,
+    "predicted_and_snapshot": true,
+    "raw_field_names": true
+  },
+  "remaining": [
+    "Prove target camera link flag and entity/tag consumers",
+    "Prove target controls entity consumer and input encoding",
+    "Implement body/weapon lifetime transaction and routed authority",
+    "Verify native enter exit death disconnect EMP and payload gameplay"
+  ]
+}
