@@ -70,6 +70,9 @@ impl Connection {
         {
             world.ready(binding.user)?;
         }
+        if let Some(ping) = self.latency.publish(wall) {
+            world.set_ping(binding.user, ping)?;
+        }
         let view = world.view(binding.user)?;
         let names = world.names(binding.user)?;
         let previous = binding
@@ -188,6 +191,7 @@ impl Connection {
         let packet = packets.remove(0);
         self.native_fragments.extend(packets);
         self.native_sent += 1;
+        self.latency.sent(self.native_sent, wall);
         self.server_commands.mark_sent(sent)?;
         if !included {
             self.snapshot_next = Some(wall + Duration::from_millis(50));

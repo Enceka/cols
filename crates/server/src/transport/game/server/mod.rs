@@ -527,8 +527,10 @@ impl GameServer {
                         }
                     }
                 }
-                for world in shared_matches.values() {
-                    world.lock().map_err(|_|anyhow::anyhow!("shared match poisoned"))?.advance(std::time::Instant::now())?;
+                for (id,world) in &shared_matches {
+                    let mut world=world.lock().map_err(|_|anyhow::anyhow!("shared match poisoned"))?;
+                    world.advance(std::time::Instant::now())?;
+                    if world.ended.is_some() {self.admissions.finish(*id)?;}
                 }
                 for (address,bound) in &mut peers {
                     let p=&mut bound.transport;
@@ -883,6 +885,7 @@ mod tests {
             expires: 100,
             key: [7; 16],
             booked: true,
+            finished: false,
             playlist_version: None,
             room_teams: None,
             story_channel: None,
@@ -981,6 +984,7 @@ mod tests {
             expires: 100,
             key: [7; 16],
             booked: true,
+            finished: false,
             playlist_version: None,
             room_teams: None,
             story_channel: None,
@@ -1087,6 +1091,7 @@ mod tests {
             expires: 100,
             key: [7; 16],
             booked: true,
+            finished: false,
             playlist_version: None,
             room_teams: None,
             story_channel: None,

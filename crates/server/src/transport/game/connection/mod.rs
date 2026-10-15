@@ -40,6 +40,7 @@ pub(crate) struct Connection {
     native_sent: u32,
     native_received: u32,
     native_ack: u32,
+    latency: latency::Latency,
     server_commands: ReliableCommands,
     view_offset: [u16; 3],
     native_fragments: VecDeque<Vec<u8>>,
@@ -329,6 +330,7 @@ mod matchplay;
 
 mod rewards;
 
+mod latency;
 mod shared;
 mod world;
 

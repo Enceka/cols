@@ -31,6 +31,9 @@ impl Connection {
         }
         // Wall-clock time must keep advancing even if capture I/O misses a
         // tick. Counting frames made the server clock fall behind the client.
+        if self.latency.publish(now).is_some() {
+            self.scoreboard_sent = false;
+        }
         let epoch = *self.snapshot_epoch.get_or_insert(now);
         let server_time = 1000
             + now
@@ -164,6 +167,7 @@ impl Connection {
             let rows = vec![
                 codol_protocol::game::snapshot::scoreboard::ScoreboardRow {
                     client_number: 0,
+                    ping: self.latency.ping(),
                     user_id: self.owner_id,
                     kills: self.death_sequence[1],
                     deaths: self.death_sequence[0],
@@ -697,6 +701,7 @@ impl Connection {
             );
         }
         self.native_sent += 1;
+        self.latency.sent(self.native_sent, now);
         self.server_commands.mark_sent(sent)?;
         if !snapshot_included {
             self.snapshot_next = Some(now + Duration::from_millis(50));

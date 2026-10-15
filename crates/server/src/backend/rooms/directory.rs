@@ -569,6 +569,26 @@ impl Rooms {
                 .collect();
             let updates = codol_protocol::room::messages::channel_updates(batch, &recipients)?;
             channel.update_members(&updates)?;
+            if updates.full_roster
+                && !self.game_endpoint.as_ref().is_some_and(|e| {
+                    e.room_started(channel.title_id, channel.owner, channel.session_seed, now)
+                })
+            {
+                let removed: Vec<_> = channel
+                    .fill_bots
+                    .iter()
+                    .copied()
+                    .filter(|c| {
+                        !channel
+                            .member_teams
+                            .contains_key(&codol_protocol::room::messages::bot_id(*c))
+                    })
+                    .collect();
+                for client in removed {
+                    super::fill::remove_bot(channel, id, client, actor, &mut result);
+                    channel.roster_requested = false;
+                }
+            }
             for member in &updates.members {
                 if let Some(human) = channel.humans.get_mut(&member.id) {
                     human.pending_until = None;

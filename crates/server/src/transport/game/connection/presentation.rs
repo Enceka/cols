@@ -9,9 +9,12 @@ impl Connection {
         if !tdm.dirty && self.scoreboard_sent && !final_summary {
             return Ok(());
         }
-        let mut payloads = codol_protocol::game::snapshot::scoreboard::binary_commands(
-            &tdm.scoreboard(self.owner_id),
-        )?;
+        let mut scoreboard = tdm.scoreboard(self.owner_id);
+        if let Some(local) = scoreboard.rows.iter_mut().find(|r| r.client_number == 0) {
+            local.ping = self.latency.ping();
+        }
+        let mut payloads =
+            codol_protocol::game::snapshot::scoreboard::binary_commands(&scoreboard)?;
         if final_summary {
             payloads.extend(
                 codol_protocol::game::snapshot::scoreboard::summary_identity_commands(

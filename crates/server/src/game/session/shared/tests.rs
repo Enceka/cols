@@ -188,3 +188,17 @@ fn a_filled_bot_is_ready_without_a_socket_and_fires_in_the_shared_world() {
     assert_eq!(a.scoreboard.team_scores, b.scoreboard.team_scores);
     assert_eq!(a.players[0].origin, b.local.origin);
 }
+
+#[test]
+fn ping_is_bound_to_authenticated_identity_in_each_recipients_slot_order() {
+    let mut world = room();
+    world.set_ping(42, 36).unwrap();
+    world.set_ping(43, 85).unwrap();
+    let a = world.view(42).unwrap();
+    let b = world.view(43).unwrap();
+    assert_eq!(a.scoreboard.rows[0].ping, 36);
+    assert_eq!(a.scoreboard.rows[1].ping, 85);
+    assert_eq!(b.scoreboard.rows[0].ping, 85);
+    assert_eq!(b.scoreboard.rows[1].ping, 36);
+    assert!(world.set_ping(999, 100).is_err());
+}

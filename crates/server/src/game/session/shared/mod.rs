@@ -133,6 +133,7 @@ impl SharedMatch {
                 ai,
                 row: ScoreboardRow {
                     user_id: member.user_id,
+                    ping: if member.bot.is_some() { 0 } else { -1 },
                     ..Default::default()
                 },
                 member,
@@ -179,6 +180,17 @@ impl SharedMatch {
             .iter()
             .position(|h| h.member.user_id == user)
             .ok_or_else(|| anyhow::anyhow!("player is not admitted to this match"))
+    }
+    pub(crate) fn set_ping(&mut self, user: u64, ping: i32) -> Result<()> {
+        let index = self.index(user)?;
+        if self.ended.is_none()
+            && self.humans[index].member.bot.is_none()
+            && self.humans[index].row.ping != ping
+        {
+            self.humans[index].row.ping = ping;
+            self.revision += 1;
+        }
+        Ok(())
     }
     pub(crate) fn progress(&self, user: u64) -> Result<(Motion, [u16; 3])> {
         let human = &self.humans[self.index(user)?];

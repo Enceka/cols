@@ -123,6 +123,7 @@ mod tests {
             expires: u32::MAX,
             key: [0; 16],
             booked: true,
+            finished: false,
             playlist_version: None,
             start_command: None,
             room_teams: None,

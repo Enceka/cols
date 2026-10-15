@@ -112,3 +112,25 @@ fn live_game_lease_crosses_original_deadline_without_reviving_stale_sessions() {
     assert!(a.entries.lock().unwrap().is_empty());
     assert!(a.renew_session(&s, 10_000).is_err());
 }
+
+#[test]
+fn finished_world_releases_lobby_lock_but_keeps_summary_transport_until_new_allocation() {
+    let a = admissions();
+    let s = session();
+    let (old, _) = a.allocate(&s, [7; 16], -688906341, 1).unwrap();
+    a.control(
+        &command(&format!("mmbook 7 {} 0", STANDARD.encode(old))),
+        &s,
+        2,
+    )
+    .unwrap();
+    a.control(&command("mmstart sv_resetServer; playlist 0"), &s, 2)
+        .unwrap();
+    assert!(a.room_started(s.title_id, s.user_id, s.iv_seed, 2));
+    a.finish(old).unwrap();
+    assert!(!a.room_started(s.title_id, s.user_id, s.iv_seed, 2));
+    assert!(a.get(&old, 2).is_some());
+    let (new, _) = a.allocate(&s, [7; 16], -688906341, 3).unwrap();
+    assert_ne!(old, new);
+    assert!(a.get(&old, 3).is_none());
+}

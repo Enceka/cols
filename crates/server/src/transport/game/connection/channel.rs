@@ -101,6 +101,7 @@ impl Connection {
                         .expect("decoded slot"),
                 )
             });
+        self.latency.acknowledge(header.message_ack, Instant::now());
         let base = if key.is_some() && !self.resource_collection {
             self.input_base_for(header.message_ack)?
         } else {

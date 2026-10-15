@@ -15,6 +15,7 @@ pub(crate) struct Admission {
     pub(crate) expires: u32,
     pub(crate) key: [u8; 16],
     pub(crate) booked: bool,
+    pub(crate) finished: bool,
     pub(crate) playlist_version: Option<u32>,
     pub(crate) start_command: Option<String>,
     pub(crate) room_teams: Option<[u8; 12]>,
@@ -56,8 +57,20 @@ impl GameAdmissions {
                     && a.seed == seed
                     && a.expires > now
                     && a.start_command.is_some()
+                    && !a.finished
             })
         })
+    }
+    pub(crate) fn finish(&self, id: [u8; 8]) -> Result<()> {
+        if let Some(entry) = self
+            .entries
+            .lock()
+            .map_err(|_| anyhow::anyhow!("game admissions poisoned"))?
+            .get_mut(&id)
+        {
+            entry.finished = true;
+        }
+        Ok(())
     }
     pub fn address(&self) -> SocketAddrV4 {
         self.address
@@ -108,6 +121,7 @@ impl GameAdmissions {
                 expires: session.expires_at.min(now.saturating_add(930)),
                 key,
                 booked: false,
+                finished: false,
                 playlist_version: None,
                 start_command: None,
                 room_teams: None,
@@ -178,6 +192,7 @@ impl GameAdmissions {
                 expires: session.expires_at.min(now.saturating_add(930)),
                 key,
                 booked: false,
+                finished: false,
                 playlist_version: None,
                 start_command: None,
                 room_teams: None,
