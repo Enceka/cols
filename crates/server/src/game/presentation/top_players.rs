@@ -192,16 +192,23 @@ impl Presentation {
         match self.phase {
             Phase::Waiting => {
                 let clients = leaders(rows)?;
+                // The hide flag, three cards and menu-open command form one
+                // presentation. Leave them pending until the ring has room.
+                if commands.available() < 5 {
+                    return Ok(false);
+                }
+                let mut queued = commands.clone();
                 // Following a fixed camera also enables the ordinary spectator
                 // card. Hide that widget while the separate top-three menu runs.
-                commands.push(b"s ui_hide_playercards \"1\"")?;
+                queued.push(b"s ui_hide_playercards \"1\"")?;
                 // 0x6b0130 GetTop3Players reads card slots1..3, populated by
                 // L <client> <slot>. q/u consume category8 menu indices,
                 // base4291 (0x57ae70/0x57afb0), rather than literal names.
                 for (rank, client) in clients.into_iter().enumerate() {
-                    commands.push(format!("L {client} {}", rank + 1).as_bytes())?;
+                    queued.push(format!("L {client} {}", rank + 1).as_bytes())?;
                 }
-                let sequence = commands.push(format!("q {}", menu.menu_index).as_bytes())?;
+                let sequence = queued.push(format!("q {}", menu.menu_index).as_bytes())?;
+                *commands = queued;
                 self.phase = Phase::Opening(sequence);
                 tracing::info!(?clients, sequence, "native top players queued");
             }
@@ -210,6 +217,9 @@ impl Presentation {
                 tracing::info!("native top players acknowledged");
             }
             Phase::Showing(start) if now.wrapping_sub(start) >= 6000 => {
+                if commands.available() == 0 {
+                    return Ok(false);
+                }
                 let sequence = commands.push(format!("u {}", menu.menu_index).as_bytes())?;
                 self.phase = Phase::Closing(sequence);
             }
@@ -312,7 +322,7 @@ mod tests {
         assert!(leaders(&[]).is_err());
     }
     #[test]
-    fn result_waits_for_open_duration_and_close_ack_without_duplicate_commands() {
+    fn result_waits_for_window_space_open_duration_and_close_ack_without_duplicate_commands() {
         let menu = Resources {
             ncs_crc: 123,
             menu_index: 16,
@@ -329,6 +339,14 @@ mod tests {
         );
         let mut p = Presentation::default();
         let mut commands = ReliableCommands::default();
+        for _ in 0..251 {
+            commands.push(b"pending").unwrap();
+        }
+        let before = commands.encode_frames().unwrap();
+        assert!(!p.advance(50, &menu, &rows(), &mut commands).unwrap());
+        assert_eq!(commands.encode_frames().unwrap(), before);
+        commands.mark_sent(251).unwrap();
+        commands.acknowledge(251).unwrap();
         assert!(!p.advance(100, &menu, &rows(), &mut commands).unwrap());
         let opened = commands.sequence();
         assert_eq!(
@@ -346,7 +364,15 @@ mod tests {
         assert!(!p.advance(9000, &menu, &rows(), &mut commands).unwrap());
         assert!(!p.advance(14999, &menu, &rows(), &mut commands).unwrap());
         assert_eq!(commands.sequence(), opened);
+        for _ in 0..255 {
+            commands.push(b"pending").unwrap();
+        }
+        let full = commands.sequence();
         assert!(!p.advance(15000, &menu, &rows(), &mut commands).unwrap());
+        assert_eq!(commands.sequence(), full);
+        commands.mark_sent(full).unwrap();
+        commands.acknowledge(full).unwrap();
+        assert!(!p.advance(15001, &menu, &rows(), &mut commands).unwrap());
         let closed = commands.sequence();
         assert_eq!(commands.command_for(closed).unwrap(), b"u 16");
         assert!(!p.advance(20000, &menu, &rows(), &mut commands).unwrap());

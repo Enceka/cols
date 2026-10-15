@@ -87,9 +87,9 @@ pub(crate) async fn handle(
                 } else {
                     "local_player_inventory"
                 },
-                vec![task::player_data_with_balances(
+                vec![task::player_data_with_inventory(
                     session.user_id,
-                    &items,
+                    &inventory.with_progress(session, &items).await?,
                     &balances,
                 )?],
             ))
@@ -157,7 +157,10 @@ pub(crate) async fn handle(
                     }
                 }
             }
-            let mut records = task::inventory_records(session.user_id, &items)?;
+            let mut records = task::inventory_records_with_progress(
+                session.user_id,
+                &inventory.with_progress(session, &items).await?,
+            )?;
             records.truncate(usize::from(maximum));
             Ok(TaskResult::success("local_inventory_refresh", records))
         }

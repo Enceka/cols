@@ -475,9 +475,6 @@ impl Speech {
         if self.ended {
             return Ok(());
         }
-        self.pending.clear();
-        self.opening = None;
-        self.active.clear();
         let (music, dialog) = if winner == 0 {
             (None, "draw")
         } else if winner == team {
@@ -485,12 +482,21 @@ impl Speech {
         } else {
             (Some("defeat"), "mission_fail")
         };
-        if let Some(sound) = music.and_then(|cue| resources.music(team, cue)) {
-            commands.push(sound.play_command().as_bytes())?;
+        let sounds = [
+            music.and_then(|cue| resources.music(team, cue)),
+            resources.announcer(team, dialog),
+        ];
+        if sounds.iter().flatten().count() > commands.available() as usize {
+            return Ok(());
         }
-        if let Some(sound) = resources.announcer(team, dialog) {
-            commands.push(sound.play_command().as_bytes())?;
+        let mut queued = commands.clone();
+        for sound in sounds.into_iter().flatten() {
+            queued.push(sound.play_command().as_bytes())?;
         }
+        *commands = queued;
+        self.pending.clear();
+        self.opening = None;
+        self.active.clear();
         self.ended = true;
         Ok(())
     }
@@ -573,6 +579,26 @@ mod tests {
             ),
             events: Default::default(),
         }
+    }
+    #[test]
+    fn result_audio_retries_the_complete_pair_when_the_reliable_window_is_full() {
+        let resources = resources();
+        let mut state = Speech::default();
+        let mut commands = ReliableCommands::default();
+        for _ in 0..254 {
+            commands.push(b"pending").unwrap();
+        }
+        let before = commands.encode_frames().unwrap();
+        state.finish(&resources, 2, 2, &mut commands).unwrap();
+        assert_eq!(commands.encode_frames().unwrap(), before);
+        assert!(!state.ended);
+        commands.mark_sent(254).unwrap();
+        commands.acknowledge(254).unwrap();
+        state.finish(&resources, 2, 2, &mut commands).unwrap();
+        assert_eq!(commands.sequence(), 256);
+        assert!(state.ended);
+        state.finish(&resources, 2, 2, &mut commands).unwrap();
+        assert_eq!(commands.sequence(), 256);
     }
     #[test]
     fn mode_intro_can_play_during_preparation_but_boost_waits_for_live_controls() {

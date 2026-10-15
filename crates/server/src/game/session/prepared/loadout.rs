@@ -271,6 +271,7 @@ impl Loadout {
                 )
             })?;
         let mut weapon = state.bootstrap_weapon.clone().unwrap();
+        weapon.marketplace_item_id = Some(self.weapon_item_id);
         weapon.composed_name = Some(codol_protocol::game::gamestate::composed_weapon(
             weapon.base_index.unwrap(),
             0,
@@ -389,6 +390,7 @@ mod tests {
             }),
         };
         state.bootstrap_weapon = Some(BootstrapWeapon {
+            marketplace_item_id: Some(10001),
             fast_reload: true,
             offhand_switch: None,
             name: "m4_mp".into(),

@@ -20,6 +20,13 @@ impl ProfileService {
         private: bool,
     ) -> Result<Option<Vec<u8>>> {
         let session = session.into();
+        if private
+            && let Some(committed) =
+                crate::backend::progression::service::committed_private(&self.store, session)
+                    .await?
+        {
+            return Ok(Some(committed));
+        }
         let path = self.store.profile_path(session, private).await?;
         read_bounded(&path, task::MAX_FILE_BYTES).await
     }

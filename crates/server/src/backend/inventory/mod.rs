@@ -28,6 +28,14 @@ impl InventoryService {
     pub(crate) fn new(store: Arc<AccountStore>) -> Self {
         Self { store }
     }
+    pub(crate) async fn with_progress(
+        &self,
+        account: impl Into<AccountId>,
+        owned: &[u32],
+    ) -> Result<Vec<task::InventoryItem>> {
+        crate::backend::progression::service::inventory_progress(&self.store, account.into(), owned)
+            .await
+    }
     pub(crate) async fn items(&self, session: impl Into<AccountId>) -> Result<Vec<u32>> {
         let session = session.into();
         let path = self

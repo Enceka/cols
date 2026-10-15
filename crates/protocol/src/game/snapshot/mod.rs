@@ -2923,6 +2923,7 @@ pub mod killstreaks;
 pub mod missile;
 pub mod obituary;
 pub mod player_card;
+pub mod progression;
 pub mod props;
 pub mod scavenger;
 pub mod scoreboard;

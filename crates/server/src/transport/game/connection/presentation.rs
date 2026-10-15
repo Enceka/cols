@@ -1,6 +1,55 @@
 use super::*;
 
 impl Connection {
+    pub(super) fn publish_match_scoreboard(&mut self) -> Result<()> {
+        let Some(tdm) = &self.world.tdm else {
+            return Ok(());
+        };
+        let final_summary = tdm.finished() && !tdm.result_sent && self.progression_resolved();
+        if !tdm.dirty && self.scoreboard_sent && !final_summary {
+            return Ok(());
+        }
+        let mut payloads = codol_protocol::game::snapshot::scoreboard::binary_commands(
+            &tdm.scoreboard(self.owner_id),
+        )?;
+        if final_summary {
+            payloads.extend(
+                codol_protocol::game::snapshot::scoreboard::summary_identity_commands(
+                    self.display_name.as_deref().unwrap_or("Player"),
+                    tdm.teams(),
+                )?,
+            );
+            payloads.push(codol_protocol::game::snapshot::scoreboard::summary_command(
+                tdm.winning_team(),
+                tdm.duration_seconds(),
+                self.world
+                    .game_state
+                    .as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("match summary has no prepared state"))?
+                    .summary_map_id()?,
+                tdm.native_mode_number(),
+            )?);
+        }
+        // Leave the current queue available for transmission and ACKs. A full
+        // window must defer this batch, not abort polling or publish half an AAR.
+        if payloads.len() > self.server_commands.available() as usize {
+            return Ok(());
+        }
+        let mut commands = self.server_commands.clone();
+        for payload in payloads {
+            commands.push_binary(&payload)?;
+        }
+        let tdm = self.world.tdm.as_mut().unwrap();
+        if final_summary {
+            self.match_summary_sequence = Some(commands.sequence());
+            tdm.result_sent = true;
+        }
+        self.server_commands = commands;
+        tdm.dirty = false;
+        self.scoreboard_sent = true;
+        Ok(())
+    }
+
     pub(super) fn advance_voices(&mut self, now: u32) -> Result<()> {
         let Some(state) = self.world.game_state.clone() else {
             return Ok(());
@@ -168,6 +217,19 @@ impl Connection {
     pub(super) fn drain_match_kills(&mut self, now: u32) {
         let kills = self.world.tdm.as_mut().unwrap().take_kills();
         for kill in kills {
+            if let Some(progress) = &mut self.match_progress {
+                let state = self.world.game_state.as_ref().unwrap();
+                progress.credit(
+                    kill,
+                    self.world.tdm.as_ref().unwrap().teams(),
+                    state.progression_item(kill.weapon),
+                );
+                self.world
+                    .tdm
+                    .as_mut()
+                    .unwrap()
+                    .set_progression_xp(progress.earned_player_xp());
+            }
             let nuclear = self
                 .world
                 .game_state
@@ -327,6 +389,7 @@ impl Connection {
         }
         if self.match_ui_sequence.is_none()
             && self.server_commands.acknowledged() >= self.match_summary_sequence.unwrap()
+            && self.server_commands.available() > 0
         {
             self.server_commands
                 .push(b"s scr_gameended \"1\" ui_match_complete \"1\" ui_eog_show \"1\"")?;
@@ -348,6 +411,7 @@ impl Connection {
             .match_summary_opened
             .is_some_and(|start| now.saturating_sub(start) >= 12_000)
             && self.match_leave_sequence.is_none()
+            && self.server_commands.available() > 0
         {
             self.match_leave_sequence = Some(self.server_commands.push(b"t EXE_MATCHENDED")?);
             tracing::info!("returning finished match to lobby");

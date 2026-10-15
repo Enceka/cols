@@ -112,6 +112,13 @@ enum Command {
         #[arg(long, default_value_t = 1_000_000)]
         gp: u32,
     },
+    /// Offline only: commit a synthetic match award in a marked isolated account.
+    CommitTestProgression {
+        #[arg(long)]
+        service_data_dir: PathBuf,
+        #[arg(long)]
+        input: PathBuf,
+    },
     /// Create a local private profile from a CRC-valid client default; no overwrite.
     PreparePrivateProfile {
         #[arg(long)]
@@ -358,6 +365,15 @@ pub(super) async fn run() -> Result<()> {
             println!(
                 "{}",
                 serde_json::json!({"backup":backup,"level":70,"rank_version":4,"experience_within_rank":0,"cp":cp,"gp":gp,"scope":"local_test_account"})
+            );
+        }
+        Command::CommitTestProgression {
+            service_data_dir,
+            input,
+        } => {
+            println!(
+                "{}",
+                crate::diagnostics::progression::commit(&service_data_dir, &input).await?
             );
         }
         Command::CreateLocalPlayer {

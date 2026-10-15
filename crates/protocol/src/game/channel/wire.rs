@@ -37,6 +37,10 @@ impl ReliableCommands {
     pub fn acknowledged(&self) -> u32 {
         self.acknowledged
     }
+    /// Unacknowledged commands must leave one native ring slot unused.
+    pub fn available(&self) -> u32 {
+        RELIABLE_WINDOW - 1 - (self.sequence - self.acknowledged)
+    }
     pub fn push(&mut self, command: &[u8]) -> Result<u32, LobbyError> {
         if command.len() >= RELIABLE_COMMAND_BYTES || command.contains(&0) {
             return Err(LobbyError("invalid reliable command size/NUL"));
@@ -59,7 +63,7 @@ impl ReliableCommands {
         self.push_entry(ReliableCommand { ring, binary: true })
     }
     fn push_entry(&mut self, entry: ReliableCommand) -> Result<u32, LobbyError> {
-        if self.sequence - self.acknowledged >= RELIABLE_WINDOW - 1 {
+        if self.available() == 0 {
             return Err(LobbyError("reliable command window full"));
         }
         let next = self

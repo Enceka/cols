@@ -58,6 +58,8 @@ pub(crate) struct SnapshotWorld<'a> {
 #[serde(deny_unknown_fields)]
 struct BootstrapWeapon {
     #[serde(default)]
+    marketplace_item_id: Option<u32>,
+    #[serde(default)]
     offhand_switch: Option<crate::game::weapons::held::AlternateTiming>,
     #[serde(default)]
     fast_reload: bool,

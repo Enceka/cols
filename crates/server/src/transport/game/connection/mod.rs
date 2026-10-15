@@ -28,6 +28,10 @@ pub(crate) struct Connection {
     hud_rules_sent: bool,
     hud_rules_sequence: u32,
     profile_ready_sent: bool,
+    match_progress: Option<crate::game::progression::MatchProgress>,
+    progression_committed: bool,
+    progression_retry_at: Option<Instant>,
+    progression_ack: Option<(u32, String, u64)>,
     model_rules_sent: bool,
     model_rules_sequence: u32,
     connected: bool,
@@ -292,6 +296,7 @@ mod input;
 mod channel;
 
 mod presentation;
+mod progression;
 
 mod matchplay;
 

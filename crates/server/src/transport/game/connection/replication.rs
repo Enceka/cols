@@ -142,40 +142,11 @@ impl Connection {
                 );
             }
         }
-        if let Some(tdm) = &mut self.world.tdm
-            && (tdm.dirty || !self.scoreboard_sent)
-        {
-            for payload in codol_protocol::game::snapshot::scoreboard::binary_commands(
-                &tdm.scoreboard(self.owner_id),
-            )? {
-                self.server_commands.push_binary(&payload)?;
-            }
-            tdm.dirty = false;
-            self.scoreboard_sent = true;
-            if tdm.finished() && !tdm.result_sent {
-                for payload in
-                    codol_protocol::game::snapshot::scoreboard::summary_identity_commands(
-                        self.display_name.as_deref().unwrap_or("Player"),
-                        tdm.teams(),
-                    )?
-                {
-                    self.server_commands.push_binary(&payload)?;
-                }
-                self.server_commands.push_binary(
-                    &codol_protocol::game::snapshot::scoreboard::summary_command(
-                        tdm.winning_team(),
-                        tdm.duration_seconds(),
-                        self.world.game_state.as_ref().unwrap().summary_map_id()?,
-                        tdm.native_mode_number(),
-                    )?,
-                )?;
-                self.match_summary_sequence = Some(self.server_commands.sequence());
-                tdm.result_sent = true;
-            }
-        }
+        self.publish_match_scoreboard()?;
         self.advance_match_summary(server_time)?;
         self.advance_voices(server_time)?;
-        if !self.scoreboard_sent
+        if self.world.tdm.is_none()
+            && !self.scoreboard_sent
             && self
                 .world
                 .game_state

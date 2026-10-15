@@ -3,6 +3,7 @@ pub mod combat;
 pub mod modes;
 pub mod player;
 pub mod presentation;
+pub(crate) mod progression;
 pub mod rewards;
 pub mod session;
 pub mod status;

@@ -125,7 +125,7 @@ crates/server/src/
 
 存储和账号业务使用 `contracts::account::AccountId`，不依赖网络会话结构，也不为读取档案构造虚假的登录凭据。认证层将已验证会话转换成账号身份；`contracts` 不反向依赖业务实现。
 
-等级业务通过 `contracts::progression::MatchAward`接收可信对局结果，事务和回执位于`backend/progression`，由`app/services`组合。档案和库存服务读取同一已提交投影；玩法不能直接修改账号文件，传输层不生成经验奖励策略。当前普通对局尚未调用发奖接口，具体状态见[等级接入进展](PROGRESSION_PREPARATION.md)。
+等级业务通过 `contracts::progression::MatchAward`接收可信对局结果，事务和回执位于`backend/progression`，由`app/services`组合。`game/progression`收集已确认的击杀及生效武器物品ID，接入边界提交完成对局并投递K／库存XP／提示命令，可靠ACK确认原回执。策略由显式本地配置提供，传输层不推导经验倍率，玩法不直接修改账号文件。具体启用范围和验证见[等级接入进展](PROGRESSION_PREPARATION.md)。
 
 已准备地图目录会加载并组合运行时准备状态，因此位于 `game/session/catalog`；出生准备工具会执行碰撞与模式校验，因此位于 `diagnostics/map_starts`。`content` 只承载资源定义和静态选择解析，不反向构造运行时世界。
 

@@ -30,6 +30,7 @@ pub struct LocalServices {
     commerce: CommerceService,
     files: FileService,
     publisher: PublisherService,
+    progression: crate::backend::progression::service::ProgressionService,
     rooms: Arc<Mutex<Rooms>>,
     delivery: Arc<DeliveryHub>,
 }
@@ -47,6 +48,9 @@ impl LocalServices {
             commerce: CommerceService::new(accounts.clone()),
             files: FileService::new(accounts.clone()),
             publisher: PublisherService::new(accounts.clone()),
+            progression: crate::backend::progression::service::ProgressionService::new(
+                accounts.clone(),
+            ),
             accounts,
             rooms: Arc::new(Mutex::new(Rooms::default())),
             delivery: Arc::new(DeliveryHub::default()),
@@ -68,8 +72,48 @@ impl LocalServices {
     pub async fn publisher_playlist_version(&self) -> Result<u32> {
         self.publisher.playlist_version().await
     }
+    pub(crate) async fn progression_policy(
+        &self,
+    ) -> Result<Option<crate::contracts::progression::Policy>> {
+        self.progression.policy().await
+    }
+    pub(crate) async fn private_game_profile(&self, account: AccountId) -> Result<Option<Vec<u8>>> {
+        self.profiles.read(account, true).await
+    }
+    pub(crate) async fn validate_game_progression(&self, account: AccountId) -> Result<()> {
+        let private = self
+            .private_game_profile(account)
+            .await?
+            .context("progression needs initialized private profile")?;
+        crate::backend::progression::Tables::native()?
+            .player_total(profile::player_progress(&private, account.user_id)?)?;
+        Ok(())
+    }
     pub(crate) async fn player_nickname(&self, account: AccountId) -> Result<Option<String>> {
         crate::backend::players::nickname(&self.accounts.root, account.title_id, account.user_id)
+            .await
+    }
+    pub async fn commit_match_progression(
+        &self,
+        account: AccountId,
+        award: crate::backend::progression::MatchAward,
+    ) -> Result<crate::backend::progression::Commit> {
+        self.progression.commit(account, award).await
+    }
+    pub async fn pending_progression(
+        &self,
+        account: AccountId,
+    ) -> Result<Vec<crate::backend::progression::Receipt>> {
+        self.progression.pending(account).await
+    }
+    pub async fn acknowledge_progression(
+        &self,
+        account: AccountId,
+        match_id: &str,
+        revision: u64,
+    ) -> Result<()> {
+        self.progression
+            .acknowledge(account, match_id, revision)
             .await
     }
     pub(crate) async fn subscribe_lobby(&self, session: &Session) -> Subscription {
@@ -129,12 +173,7 @@ impl LocalServices {
             .await?
             .context("saved player loadout is missing")?;
         profile::validate_public(&public)?;
-        let rank = match read_bounded(
-            &self.accounts.profile_path(account, true).await?,
-            task::MAX_FILE_BYTES,
-        )
-        .await?
-        {
+        let rank = match self.profiles.read(account, true).await? {
             Some(private) => profile::player_rank(&private, user_id)?,
             None => (0, 0),
         };

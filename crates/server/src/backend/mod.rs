@@ -1,6 +1,7 @@
 pub mod commerce;
 pub mod identity;
 pub mod players;
+pub mod progression;
 pub mod rooms;
 
 pub(crate) mod files;

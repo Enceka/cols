@@ -100,6 +100,10 @@ pub(crate) struct TdmMatch {
     spawns: spawns::Spawns,
 }
 impl TdmMatch {
+    pub(crate) fn set_progression_xp(&mut self, xp: u32) {
+        self.rows[0].xp = xp;
+        self.dirty = true;
+    }
     pub(crate) fn finished(&self) -> bool {
         self.rules.finished
     }

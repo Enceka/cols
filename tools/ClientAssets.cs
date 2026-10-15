@@ -116,7 +116,7 @@ partial class ClientAssets {
         // CODOL StringTable cells contain a string pointer and hash (8 bytes).
         byte[] values=Read(U(t,12),checked(cols*rows*8));var cells=new List<string>();
         for(int i=0;i<cols*rows;i++)cells.Add(Convert.ToBase64String(StringBytes(U(values,i*8))));
-        return Obj("found",true,"entry",entry,"address",at,"name",Name(U(t,0)),"columns",cols,"rows",rows,"cells_base64",cells);
+        return Obj("found",true,"entry",entry,"address",at,"name",Name(U(t,0)),"loaded",(Read(entry+17,1)[0]&5)!=0,"columns",cols,"rows",rows,"cells_base64",cells);
     }
     object AnimationRules(string name) {
         return RawFile(name,2*1024*1024);
@@ -154,6 +154,43 @@ partial class ClientAssets {
         uint entry;uint at=Find(45,"mp/coMarketplaceItems.csv",out entry);
         if(at==0)return Obj("found",false);
         return Obj("found",true,"entry",entry,"address",at,"header_base64",Convert.ToBase64String(Read(at,128)));
+    }
+    object ProgressionItems() {
+        // Item lookup0x5845b0 and display metadata getter0x7067f0. Only static
+        // resource records are read; no inventory or account state.
+        var table=(Dictionary<string,object>)Table("mp/coMarketplaceItems.csv");
+        if(!(bool)table["found"])throw new Exception("marketplace table missing");
+        int columns=(int)table["columns"],count=(int)table["rows"];
+        var cells=(List<string>)table["cells_base64"];var items=new List<object>();
+        for(int i=0;i<count;i++) {
+            string category=Encoding.ASCII.GetString(Convert.FromBase64String(cells[i*columns+2]));
+            if(category!="wea"&&category!="wat")continue;
+            ushort id=UInt16.Parse(Encoding.ASCII.GetString(Convert.FromBase64String(cells[i*columns])));
+            uint at=ItemRecord(id);if(at==0)throw new Exception("native item record missing");
+            byte[] record=Read(at,0x28);
+            string name=Name(U(record,12));
+            if(name!=Encoding.ASCII.GetString(Convert.FromBase64String(cells[i*columns+1])))
+                throw new Exception("native item identity differs from table: "+id+" "+name);
+            var labels=new List<string>();
+            foreach(int offset in new int[]{0x10,0x14,0x18})
+                labels.Add(Convert.ToBase64String(StringBytes(U(record,offset))));
+            int productCount=Count(BitConverter.ToUInt16(record,0x22),128);
+            byte[] productIds=productCount==0?new byte[0]:Read(U(record,0x24),productCount*2);
+            var products=new List<int>();for(int j=0;j<productCount;j++)products.Add(BitConverter.ToUInt16(productIds,j*2));
+            var compatible=new List<int>();
+            if(category=="wea") {
+                uint detailIndex=BitConverter.ToUInt16(record,2),detailCount=BitConverter.ToUInt16(Read(0x02dbba30,2),0);
+                if(detailIndex==0||detailIndex>=detailCount)throw new Exception("weapon progression detail index invalid");
+                byte[] detail=Read(Word(0x02dbba2c)+detailIndex*0x4c,0x4c);
+                int countParts=Count(BitConverter.ToUInt16(detail,0x44),1000);
+                byte[] parts=countParts==0?new byte[0]:Read(U(detail,0x48),countParts*12);
+                for(int j=0;j<countParts;j++)compatible.Add(BitConverter.ToUInt16(parts,j*12));
+            }
+            items.Add(Obj("item_id",id,"name",name,"kind",record[5],"weapon_class",record[6],
+                "display_metadata_base64",labels,"flags",record[0x20],"product_ids",products,
+                "compatible_items",compatible));
+        }
+        return Obj("found",true,"items",items);
     }
     object RuntimeSkus() {
         // Fixed, read-only runtime tables from 0x5840a0/0x7072f0/0x4a6550.
@@ -195,13 +232,14 @@ partial class ClientAssets {
         foreach(string name in new string[]{"mp/coGameTypesTable.csv","mp/coMapList.csv","mp/coMarketplaceItems.csv","mp/coCharacterDefTable.csv","mp/cogroupdefs.csv","mp/coWeapSlotDefs.csv","mp/coCharItemStatsTable.csv","mp/coCharItems/cha.csv","mp/coKnifeStatsTable.csv","mp/uiNotifications.csv","mp/functionalUnlockTable.csv","mp/unlockFlags.csv","mp/rankTable.csv",
             "mp/coPerkStatsTable.csv","mp/coAbilityModifiersTable.csv","mp/coKillstreakStatsTable.csv",
             "mp/coWeapItems/ast.csv","mp/coWeapItems/pst.csv","mp/coWeapItems/cam.csv","mp/coWeapItems/oth.csv","mp/coWeapItems/ret.csv","mp/coItemDependency.csv",
-            "mp/coWeaponPrimaryRankTable.csv","mp/coWeaponSecondaryRankTable.csv",
+            "mp/coWeaponPrimaryRankTable.csv","mp/coWeaponSecondaryRankTable.csv","mp/rankIconTable.csv","mp/splashTable.csv",
             "mp/callsignTitle.csv","mp/callsignIcon.csv","mp/callsignBackground.csv","mp/callsignNameplate.csv"}) {
-            try{tables[name]=reader.Table(name);}catch(Exception e){tables[name]=Obj("error",e.Message);}
+            try{tables[name]=reader.Table(name,name!="mp/rankIconTable.csv"&&name!="mp/splashTable.csv");}catch(Exception e){tables[name]=Obj("error",e.Message);}
         }
         object market;try{market=reader.MarketplaceHeader();}catch(Exception e){market=Obj("error",e.Message);}
         object runtime;try{runtime=reader.RuntimeSkus();}catch(Exception e){runtime=Obj("error",e.Message);}
-        var output=Obj("schema_version",1,"read_only",true,"client_sha256","e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b","schemas",schemas,"tables",tables,"marketplace",market,"runtime_marketplace",runtime);
+        object progression;try{progression=reader.ProgressionItems();}catch(Exception e){progression=Obj("error",e.Message);}
+        var output=Obj("schema_version",1,"read_only",true,"client_sha256","e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b","schemas",schemas,"tables",tables,"marketplace",market,"runtime_marketplace",runtime,"progression_items",progression);
         var serializer=new JavaScriptSerializer();serializer.MaxJsonLength=32*1024*1024;
         Console.WriteLine(serializer.Serialize(output));
     }
@@ -291,8 +329,60 @@ partial class ClientAssets {
             "client_sha256","e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b",
             "user_id",BitConverter.ToUInt64(r.Read(0x0c95bd80,8),0).ToString(),
             "public_snapshot",Convert.ToBase64String(r.Read(0x0c95be0c,32768)),
-            "private_snapshot",Convert.ToBase64String(r.Read(0x0c964f34,32768)));
+            "private_snapshot",Convert.ToBase64String(r.Read(0x0c964f34,32768)),
+            "initial_progression_weapons",r.ProgressionInitialWeapons(),
+            "progression_weapons",r.ProgressionOwnedWeapons(),
+            "progression_lookup_status",r.ProgressionLookupStatus());
+        if(r.Word(0x01a2e7ec)==10)output.Add("progression_splashes",r.ProgressionSplashes());
         Console.WriteLine(new JavaScriptSerializer().Serialize(output));
+    }
+
+    object ProgressionOwnedWeapons() {
+        // 0x4a7a50 bucket/hash walk and 0x695a80 record+0x18 XP, VM_READ only.
+        // Fixed M4/M9 allowlist; no account keys or arbitrary memory exported.
+        var result=new List<object>();uint table=Word(0x0783f860);
+        if(table==0||Word(table)==0)return result;
+        uint count=Word(table+4),buckets=Word(table+16);
+        if(count==0||count>65536||(count&(count-1))!=0)throw new Exception("owned item bucket count invalid");
+        foreach(uint id in new uint[]{10001,10049}) {
+            uint encoded=((id<<24)|(id>>8))^Word(0x00cdc27c);
+            byte[] key=BitConverter.GetBytes(encoded);uint hash=key[0];
+            for(int i=1;i<4;i++)hash=unchecked(hash*0x1000193^key[i]);
+            uint node=Word(buckets+((count-1)&hash)*4);int steps=0;
+            while(node!=0) {
+                if(++steps>30000)throw new Exception("owned item hash chain exceeds budget");
+                if(Word(node+0x20)==encoded) {result.Add(Obj("item_id",id,"xp",Word(node+0x18)));break;}
+                node=Word(node+0x24);
+            }
+        }
+        return result;
+    }
+    object ProgressionInitialWeapons() {
+        // 0x5e2a50 consumes the existing 0xa8-byte owned-item array. Item ID
+        // +0x30 and XP+0x38 supply the deferred match lookup map. Only M4/M9
+        // summaries are exported, never the full owned record or mask values.
+        int count=Count(Word(0x07817ddc),20000);var result=new List<object>();
+        byte[] records=Read(0x07bec448,count*0xa8);
+        for(int i=0;i<count;i++) {
+            uint id=U(records,i*0xa8+0x30);
+            if(id==10001||id==10049)result.Add(Obj("item_id",id,"xp",U(records,i*0xa8+0x38)));
+        }
+        return result;
+    }
+    object ProgressionLookupStatus() {
+        uint table=Word(0x0783f860);
+        return Obj("map_present",table!=0,"map_size",table==0?0:Word(table),
+            "forced_zero_item_count",Word(0x0c8031d8));
+    }
+    object ProgressionSplashes() {
+        // Current0x57c860: five20-byte splash slots and their dynamic argument.
+        uint bank=Word(0x07817ba8);if(bank>=256)throw new Exception("invalid progression HUD bank");
+        uint cg=Word(0x01a19510+bank*4)^0xfbb2c97a;var slots=new List<object>();
+        for(uint i=0;i<5;i++) {
+            uint at=cg+0x16b80c+i*20;
+            slots.Add(Obj("slot",i,"row",Word(at),"started_at",Word(at+8),"argument",Word(at+12),"alternate_argument",Word(at+16)));
+        }
+        return Obj("time",Word(cg+0xae4c8),"slots",slots);
     }
 
     object NetConstant(uint at) {

@@ -1,6 +1,21 @@
 use super::*;
 
 impl PreparedGameState {
+    pub(crate) fn progression_item(&self, index: u16) -> Option<u32> {
+        self.bootstrap_weapon
+            .iter()
+            .chain(&self.secondary_weapon)
+            .find_map(|w| {
+                if w.index == index {
+                    w.marketplace_item_id
+                } else {
+                    w.alternate
+                        .as_ref()
+                        .filter(|a| a.index == index)
+                        .and_then(|a| a.marketplace_item_id)
+                }
+            })
+    }
     pub(crate) fn for_profile(&self, public: &[u8], owned: &[u32]) -> Result<Self> {
         let mut state = self.for_profile_at(
             public,
@@ -121,6 +136,12 @@ impl PreparedGameState {
                 arsenal.resolve(selections[0].0, &selections[0].1, owned, next_index)?,
                 hands,
             )?);
+            if let Some(weapon) = &mut state.bootstrap_weapon {
+                weapon.marketplace_item_id = Some(selections[0].0);
+                if let Some(alternate) = &mut weapon.alternate {
+                    alternate.marketplace_item_id = weapon.marketplace_item_id;
+                }
+            }
             state.secondary_weapon = if selections[1].0 == 0 {
                 None
             } else {
@@ -130,6 +151,12 @@ impl PreparedGameState {
                     hands,
                 )?)
             };
+            if let Some(weapon) = &mut state.secondary_weapon {
+                weapon.marketplace_item_id = Some(selections[1].0);
+                if let Some(alternate) = &mut weapon.alternate {
+                    alternate.marketplace_item_id = weapon.marketplace_item_id;
+                }
+            }
             tracing::info!(primary=?state.bootstrap_weapon.as_ref().and_then(|w|w.composed_name.as_deref()),secondary=?state.secondary_weapon.as_ref().and_then(|w|w.composed_name.as_deref()),"composed current player backpack from resource attributes");
             if let Some(config) = &self.match_config {
                 state.match_weapon = Some(Self::resolved_weapon(
@@ -384,6 +411,7 @@ impl PreparedGameState {
             fire_msec = word(0xd10), rechamber_msec = rechamber.map_or(0, |t| t.duration_msec),
             hip_min = ?spread.minimum, hip_max = ?spread.maximum, "resolved weapon gameplay attributes");
         Ok(BootstrapWeapon {
+            marketplace_item_id: None,
             offhand_switch: Some(crate::game::weapons::held::AlternateTiming {
                 drop_msec: time(0x758)?,
                 raise_msec: time(0x75c)?,

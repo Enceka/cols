@@ -2,6 +2,8 @@
 
 `room-loadout-synthetic.json` 按本版 `0x6df130/0x6df360` 的649位 type18 格式构造角色、武器及装备物品向量，使用独立字节移位编码；不包含玩家身份或账号数据。消费链与原生验证见 [房间 Bot 角色展示](../../docs/ROOM_BOT_AVATARS.md)。
 
+`progression-3.3.3.3.json` 是只读本版资源表提取的三套数字经验门槛，人物／主武器／副武器各70／31／20行，rank表版本4。来源指纹、提取命令及等级提示待验收项见 [等级接入准备](../../docs/PROGRESSION_PREPARATION.md)。没有真实玩家进度；不使用Alpha旧曲线。
+
 `clienthello-3.3.3.3.bin` 是真实客户端连接研究端点 B 时发出的 70 字节 TLS ClientHello。仅包含公开握手信息，不含认证请求、账号或会话票据；来源及哈希见同名 JSON。
 
 `auth-task10-sanitized.json` 根据真实 TLS 明文请求的结构制作：保留字段名、字符串类型、双层 JSON 表达、已观测的 title_id=1002，以及在主程序 VA 0x00c07e5c 中确认的固定 identity。iv_seed 与 user_id 分别替换为合成值 1 和 2。这不是逐字节原始抓包；原始请求只保存在被忽略的 research-output 目录。

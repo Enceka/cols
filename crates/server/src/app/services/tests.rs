@@ -7,6 +7,128 @@ use codol_protocol::lobby::{
     task::{self, Writer},
 };
 #[tokio::test]
+async fn committed_progression_projects_to_profile_rpc_both_inventory_rpcs_and_game_admission() {
+    use crate::contracts::progression::{MatchAward, WeaponXp};
+    let temp = tempfile::tempdir().unwrap();
+    let server = LocalServices::open(temp.path().join("data")).await.unwrap();
+    let session = session(42);
+    let account: AccountId = (&session).into();
+    let directory = server
+        .accounts
+        .profile_directory(account.title_id, account.user_id)
+        .await
+        .unwrap();
+    let mut blank = vec![0; profile::SNAPSHOT_BYTES];
+    let crc = crc32fast::hash(&blank[4..]);
+    blank[..4].copy_from_slice(&crc.to_le_bytes());
+    let private = profile::prepare_private(&blank, account.user_id, true).unwrap();
+    atomic_private_write(&directory.join("private.bin"), &private)
+        .await
+        .unwrap();
+    server.validate_game_progression(account).await.unwrap();
+    let crossing = profile::with_player_progress(&private, account.user_id, 1, 2000).unwrap();
+    atomic_private_write(&directory.join("private.bin"), &crossing)
+        .await
+        .unwrap();
+    assert!(server.validate_game_progression(account).await.is_err());
+    atomic_private_write(&directory.join("private.bin"), &private)
+        .await
+        .unwrap();
+    let public = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../fixtures/protocol/public-profile-synthetic.bin"
+    ));
+    atomic_private_write(&directory.join("public.bin"), public)
+        .await
+        .unwrap();
+    let inventory = serde_json::json!({"schema_version":1,"client_sha256":codol_protocol::CLIENT_SHA256,
+        "title_id":account.title_id,"user_id":account.user_id.to_string(),"items":[10001,10049]});
+    atomic_private_write(
+        &directory.join("inventory.json"),
+        &serde_json::to_vec(&inventory).unwrap(),
+    )
+    .await
+    .unwrap();
+    let rules = serde_json::json!({"schema_version":1,"client_sha256":codol_protocol::CLIENT_SHA256,
+        "source_sha256":"a".repeat(64),"weapons":[{"item_id":10001,"is_primary":true,"attachments":[]}]});
+    atomic_private_write(
+        &server.accounts.root.join("progression-rules.json"),
+        &serde_json::to_vec(&rules).unwrap(),
+    )
+    .await
+    .unwrap();
+    server
+        .commit_match_progression(
+            account,
+            MatchAward {
+                match_id: "1".repeat(32),
+                player_xp: 2001,
+                weapons: vec![WeaponXp {
+                    item_id: 10001,
+                    xp: 500,
+                }],
+            },
+        )
+        .await
+        .unwrap();
+    let profile_reply = server
+        .handle(&[8, 3, 2, 0], &session, 1)
+        .await
+        .unwrap()
+        .result
+        .unwrap();
+    let mut data = profile_reply[0][9..].to_vec();
+    data.push(0);
+    assert_eq!(
+        profile::player_rank(&data, account.user_id).unwrap(),
+        (1, 0)
+    );
+    assert_eq!(
+        profile::player_progress(&data, account.user_id)
+            .unwrap()
+            .experience,
+        1
+    );
+    let items = [
+        task::InventoryItem { id: 10001, xp: 500 },
+        task::InventoryItem { id: 10049, xp: 0 },
+    ];
+    let mut initial = Writer(vec![80, 3, 230]);
+    initial.string("");
+    initial.0.push(0);
+    let initial_reply = server
+        .handle(&initial.0, &session, 1)
+        .await
+        .unwrap()
+        .result
+        .unwrap();
+    assert_eq!(
+        initial_reply,
+        [task::player_data_with_inventory(account.user_id, &items, &[]).unwrap()]
+    );
+    let mut refresh = Writer(vec![80, 3, 203]);
+    refresh.string("");
+    refresh.u16(20000);
+    refresh.0.push(0);
+    let refresh_reply = server
+        .handle(&refresh.0, &session, 1)
+        .await
+        .unwrap()
+        .result
+        .unwrap();
+    assert_eq!(
+        refresh_reply,
+        task::inventory_records_with_progress(account.user_id, &items).unwrap()
+    );
+    let game = server
+        .game_profile(account.title_id, account.user_id)
+        .await
+        .unwrap();
+    assert_eq!(game.rank, (1, 0));
+    assert_eq!(game.public, public);
+    assert_eq!(game.owned, [10001, 10049]);
+}
+#[tokio::test]
 async fn game_profile_reads_latest_save_and_combines_starter_and_purchase_ownership() {
     let temp = tempfile::tempdir().unwrap();
     let services = LocalServices::open(temp.path().join("data")).await.unwrap();

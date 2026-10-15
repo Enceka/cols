@@ -70,6 +70,7 @@ impl HitRegionSource {
     }
 }
 struct BoundPeer {
+    account: crate::contracts::account::AccountId,
     transport: Peer,
     template: Option<Arc<crate::game::session::prepared::PreparedGameState>>,
     start_command: String,
@@ -461,6 +462,25 @@ impl GameServer {
             let (n, peer) = tokio::select! {result=&mut shutdown=>{result?;return Ok(())},
             _=tick.tick()=>{
                 let now=(unix_time_ms()/1000) as u32;
+                if let Some(services)=&self.services {
+                    for bound in peers.values_mut() {
+                        let account=bound.account;
+                        if let Some(award)=bound.transport.connection.pending_match_award() {
+                            let committed=async {
+                                let commit=services.commit_match_progression(account,award).await?;
+                                let private=services.private_game_profile(account).await?.ok_or_else(||anyhow::anyhow!("committed private profile disappeared"))?;
+                                bound.transport.connection.progression_committed(&commit.receipt,&private)
+                            }.await;
+                            if let Err(error)=committed {bound.transport.connection.progression_commit_failed();tracing::warn!(%error,"finished match progression commit delayed");}
+                        }
+                        if let Some((id,revision))=bound.transport.connection.progression_delivery_ack() {
+                            match services.acknowledge_progression(account,&id,revision).await {
+                                Ok(())=>bound.transport.connection.progression_delivery_confirmed(),
+                                Err(error)=>tracing::warn!(%error,"progression delivery acknowledgement delayed"),
+                            }
+                        }
+                    }
+                }
                 peers.retain(|_,p|p.admitted(self.admissions.get(&p.transport.id,now).as_ref()));
                 if profile_check.elapsed()>=std::time::Duration::from_millis(500) {
                     profile_check=std::time::Instant::now();
@@ -624,6 +644,13 @@ impl GameServer {
                                 connection.connection =
                                     connection.connection.with_resource_collection();
                             }
+                            if !resource_collection && connection.connection.has_tdm_world()
+                                && let Some(services)=&self.services
+                                && let Some(policy)=services.progression_policy().await? {
+                                let profile=services.game_profile(admission.title,admission.owner).await?;
+                                services.validate_game_progression(crate::contracts::account::AccountId{title_id:admission.title,user_id:admission.owner}).await?;
+                                connection.connection=connection.connection.with_progression(policy,&profile.owned)?;
+                            }
                             if let Some(registry) = weapon_registry {
                                 connection.connection =
                                     connection.connection.with_weapon_registry(registry);
@@ -632,6 +659,7 @@ impl GameServer {
                         peers.insert(
                             peer,
                             BoundPeer {
+                                account: crate::contracts::account::AccountId{title_id:admission.title,user_id:admission.owner},
                                 transport: connection,
                                 template,
                                 start_command: admission
@@ -826,6 +854,10 @@ mod tests {
         let mut wire = vec![1, 2, 0, 0, 0, 0, 42, 0];
         wire.extend_from_slice(&[3; 8]);
         let bound = BoundPeer {
+            account: crate::contracts::account::AccountId {
+                title_id: admission.title,
+                user_id: admission.owner,
+            },
             transport: Peer::init(&wire, "127.0.0.1:39001".parse().unwrap()).unwrap(),
             template: Some(selected.clone()),
             start_command: admission.start_command.clone().unwrap(),

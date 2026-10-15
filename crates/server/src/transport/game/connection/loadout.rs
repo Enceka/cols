@@ -8,6 +8,9 @@ impl Connection {
         owned: &[u32],
         rank: (u8, u8),
     ) -> Result<()> {
+        if let Some(progress) = &mut self.match_progress {
+            progress.update_ownership(owned);
+        }
         if !template.dynamic_loadout()
             || !self.gamestate_acknowledged
             || self.pending_loadout.is_some()

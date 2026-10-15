@@ -3,7 +3,7 @@ use crate::backend::commerce::marketplace::LocalWallet;
 use crate::infra::storage::accounts::AccountStore;
 use crate::infra::storage::atomic_private_write;
 use crate::infra::storage::read_bounded;
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, ensure};
 use codol_protocol::lobby::{profile, task};
 use std::path::PathBuf;
 pub(crate) async fn boost_test_account(
@@ -15,6 +15,12 @@ pub(crate) async fn boost_test_account(
 ) -> Result<PathBuf> {
     let _lock = accounts.writes.lock().await;
     let directory = accounts.profile_directory(title_id, user_id).await?;
+    ensure!(
+        read_bounded(&directory.join("progression.json"), 4 * 1024 * 1024)
+            .await?
+            .is_none(),
+        "progressed account maintenance requires an explicit ledger migration"
+    );
     let private_path = directory.join("private.bin");
     let old_private = read_bounded(&private_path, task::MAX_FILE_BYTES)
         .await?

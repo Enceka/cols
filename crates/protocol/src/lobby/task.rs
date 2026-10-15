@@ -293,6 +293,29 @@ pub fn player_data_with_balances(
     items: &[u32],
     balances: &[(u8, u32)],
 ) -> Result<Vec<u8>, LobbyError> {
+    let inventory: Vec<_> = items
+        .iter()
+        .map(|&id| InventoryItem { id, xp: 0 })
+        .collect();
+    player_data_with_inventory(user_id, &inventory, balances)
+}
+
+/// Permanent owned item. XP is cumulative weapon XP, consumed through
+/// 0x695bc0 -> 0x695a80 (owned record +0x18) -> 0x46eb20.
+/// Item IDs are marketplace IDs, not registered weapon indices.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct InventoryItem {
+    pub id: u32,
+    pub xp: u32,
+}
+
+/// Prepare the same player-data response with explicit per-item XP.
+/// This serializer neither grants items nor decides which XP is authoritative.
+pub fn player_data_with_inventory(
+    user_id: u64,
+    items: &[InventoryItem],
+    balances: &[(u8, u32)],
+) -> Result<Vec<u8>, LobbyError> {
     let mut currencies = std::collections::HashSet::new();
     if balances.len() > 10
         || balances
@@ -301,7 +324,7 @@ pub fn player_data_with_balances(
     {
         return Err(LobbyError("invalid local currency entries"));
     }
-    validate_inventory(items)?;
+    validate_inventory_progress(items)?;
     let mut out = Writer::default();
     out.u64(user_id);
     out.string("");
@@ -315,12 +338,12 @@ pub fn player_data_with_balances(
         out.u32(*amount);
     }
     out.u32(items.len() as u32);
-    for id in items {
+    for item in items {
         if user_id == u64::MAX {
             out.u64(user_id);
             out.string("");
         }
-        inventory_fields(&mut out, *id)?;
+        inventory_fields(&mut out, *item)?;
     }
     if user_id == u64::MAX {
         // bdUserAccountID(-1, "") means no inherited identity to the nested reader.
@@ -341,10 +364,17 @@ fn validate_inventory(items: &[u32]) -> Result<(), LobbyError> {
     }
     Ok(())
 }
-fn inventory_fields(out: &mut Writer, id: u32) -> Result<(), LobbyError> {
-    out.u32(id);
+fn validate_inventory_progress(items: &[InventoryItem]) -> Result<(), LobbyError> {
+    validate_inventory(&items.iter().map(|item| item.id).collect::<Vec<_>>())?;
+    if items.iter().any(|item| item.xp > i32::MAX as u32) {
+        return Err(LobbyError("weapon XP exceeds native signed lookup range"));
+    }
+    Ok(())
+}
+fn inventory_fields(out: &mut Writer, item: InventoryItem) -> Result<(), LobbyError> {
+    out.u32(item.id);
     out.u32(1);
-    out.u32(0);
+    out.u32(item.xp);
     out.blob(&[])?;
     out.u32(u32::MAX);
     out.i64(i64::MAX);
@@ -357,14 +387,26 @@ fn inventory_fields(out: &mut Writer, id: u32) -> Result<(), LobbyError> {
 /// 80/203 binds standalone inventory entries (VA 0xa468c0/0x4a6a9f).
 /// The default account passed by 0xa4b790 requires an explicit owner per entry.
 pub fn inventory_records(user_id: u64, items: &[u32]) -> Result<Vec<Vec<u8>>, LobbyError> {
-    validate_inventory(items)?;
+    let inventory: Vec<_> = items
+        .iter()
+        .map(|&id| InventoryItem { id, xp: 0 })
+        .collect();
+    inventory_records_with_progress(user_id, &inventory)
+}
+
+/// 80/203 refresh must carry the same XP as the initial player-data response.
+pub fn inventory_records_with_progress(
+    user_id: u64,
+    items: &[InventoryItem],
+) -> Result<Vec<Vec<u8>>, LobbyError> {
+    validate_inventory_progress(items)?;
     items
         .iter()
-        .map(|id| {
+        .map(|item| {
             let mut out = Writer::default();
             out.u64(user_id);
             out.string("");
-            inventory_fields(&mut out, *id)?;
+            inventory_fields(&mut out, *item)?;
             Ok(out.0)
         })
         .collect()
@@ -373,6 +415,77 @@ pub fn inventory_records(user_id: u64, items: &[u32]) -> Result<Vec<Vec<u8>>, Lo
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn inventory_xp_reaches_both_response_forms_and_preserves_legacy_zero_bytes() {
+        let items = [
+            InventoryItem {
+                id: 10001,
+                xp: 121_230,
+            },
+            InventoryItem { id: 10049, xp: 500 },
+        ];
+        for user in [123, u64::MAX] {
+            let wire = player_data_with_inventory(user, &items, &[]).unwrap();
+            let mut reader = Reader::new(&wire);
+            assert_eq!(reader.u64().unwrap(), user);
+            assert_eq!(reader.string(16).unwrap(), "");
+            assert_eq!(reader.u32().unwrap(), 0);
+            assert_eq!(reader.u32().unwrap(), 2);
+            for item in items {
+                if user == u64::MAX {
+                    assert_eq!(reader.u64().unwrap(), user);
+                    assert_eq!(reader.string(16).unwrap(), "");
+                }
+                assert_eq!(reader.u32().unwrap(), item.id);
+                assert_eq!(reader.u32().unwrap(), 1);
+                assert_eq!(reader.u32().unwrap(), item.xp);
+                assert!(reader.blob().unwrap().is_empty());
+                assert_eq!(reader.u32().unwrap(), u32::MAX);
+                assert_eq!(
+                    reader.take(9).unwrap(),
+                    &[9, 255, 255, 255, 255, 255, 255, 255, 127]
+                );
+                assert_eq!(reader.u16().unwrap(), 0);
+                assert_eq!(reader.u32().unwrap(), u32::MAX);
+                assert_eq!(reader.u8().unwrap(), 0);
+            }
+            if user == u64::MAX {
+                assert_eq!(reader.u64().unwrap(), user);
+                assert_eq!(reader.string(16).unwrap(), "");
+            }
+            assert_eq!(reader.u32().unwrap(), 0);
+            assert!(reader.remaining().is_empty());
+            let records = inventory_records_with_progress(user, &items).unwrap();
+            for (record, item) in records.iter().zip(items) {
+                let mut reader = Reader::new(record);
+                assert_eq!(reader.u64().unwrap(), user);
+                assert_eq!(reader.string(16).unwrap(), "");
+                assert_eq!(reader.u32().unwrap(), item.id);
+                assert_eq!(reader.u32().unwrap(), 1);
+                assert_eq!(reader.u32().unwrap(), item.xp);
+            }
+            let zero = items.map(|item| InventoryItem { xp: 0, ..item });
+            assert_eq!(
+                player_data_with_inventory(user, &zero, &[(1, 12)]).unwrap(),
+                player_data_with_balances(user, &[10001, 10049], &[(1, 12)]).unwrap()
+            );
+            assert_eq!(
+                inventory_records_with_progress(user, &zero).unwrap(),
+                inventory_records(user, &[10001, 10049]).unwrap()
+            );
+        }
+        for invalid in [
+            vec![InventoryItem { id: 0, xp: 1 }],
+            vec![items[0]; 2],
+            vec![InventoryItem {
+                id: 10001,
+                xp: u32::MAX,
+            }],
+        ] {
+            assert!(player_data_with_inventory(123, &invalid, &[]).is_err());
+            assert!(inventory_records_with_progress(123, &invalid).is_err());
+        }
+    }
     #[test]
     fn currency_records_match_target_tags_and_inherit_owner() {
         let wire = player_data_with_balances(1, &[], &[(1, 100_000), (2, 1_000_000)]).unwrap();

@@ -158,6 +158,61 @@ pub fn player_rank(arguments: &[u8], user_id: u64) -> Result<(u8, u8), LobbyErro
     Ok(((rank - 1) as u8, prestige as u8))
 }
 
+/// Stored rank is one-based; experience is XP within that rank.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PlayerProgress {
+    pub rank: u8,
+    pub experience: u32,
+    pub rank_version: u32,
+}
+
+pub fn player_progress(arguments: &[u8], user_id: u64) -> Result<PlayerProgress, LobbyError> {
+    let (rank, _) = player_rank(arguments, user_id)?;
+    let (plain, _) = snapshot_and_tail(arguments)?;
+    let experience = i32::from_le_bytes(plain[4844..4848].try_into().unwrap());
+    let rank_version = u32::from_le_bytes(plain[4891..4895].try_into().unwrap());
+    if experience < 0 {
+        return Err(LobbyError("negative private profile experience"));
+    }
+    Ok(PlayerProgress {
+        rank: rank + 1,
+        experience: experience as u32,
+        rank_version,
+    })
+}
+
+pub fn player_rank_unlock(arguments: &[u8], user_id: u64) -> Result<i16, LobbyError> {
+    player_rank(arguments, user_id)?;
+    let (plain, _) = snapshot_and_tail(arguments)?;
+    Ok(i16::from_le_bytes(plain[8297..8299].try_into().unwrap()))
+}
+
+/// Prepare an owner-checked v4 level update in memory. The caller must derive
+/// rank/within-rank XP from the verified curve and persist it authoritatively.
+/// Prestige and unrelated progress survive; CRC and all projections are rebuilt.
+pub fn with_player_progress(
+    arguments: &[u8],
+    user_id: u64,
+    rank: u8,
+    experience: u32,
+) -> Result<Vec<u8>, LobbyError> {
+    let old = player_progress(arguments, user_id)?;
+    if old.rank_version != 4 && !(old.rank_version == 0 && old.rank == 1 && old.experience == 0) {
+        return Err(LobbyError("unsupported private profile rank-table version"));
+    }
+    if !(1..=70).contains(&rank) || experience > i32::MAX as u32 {
+        return Err(LobbyError("private profile progression out of range"));
+    }
+    let (mut plain, _) = snapshot_and_tail(arguments)?;
+    plain[4844..4848].copy_from_slice(&experience.to_le_bytes());
+    plain[4887..4891].copy_from_slice(&u32::from(rank).to_le_bytes());
+    plain[4891..4895].copy_from_slice(&4u32.to_le_bytes());
+    let unlocked =
+        i16::from_le_bytes(plain[8297..8299].try_into().unwrap()).max(i16::from(rank - 1));
+    plain[8297..8299].copy_from_slice(&unlocked.to_le_bytes());
+    encode_private(plain)
+}
+
 /// Create a clean local private profile at the selected displayed level.
 pub fn new_private(user_id: u64, rank: u8) -> Result<Vec<u8>, LobbyError> {
     if !(1..=70).contains(&rank) {
@@ -290,6 +345,47 @@ mod tests {
             "/../../fixtures/protocol/public-profile-synthetic.bin"
         ))
         .to_vec()
+    }
+    #[test]
+    fn progression_update_preserves_prestige_and_every_unrelated_byte() {
+        let mut blank = vec![0; SNAPSHOT_BYTES];
+        blank[..4].copy_from_slice(&crc32fast::hash(&vec![0; SNAPSHOT_BYTES - 4]).to_le_bytes());
+        let seed = prepare_private(&blank, 123, true).unwrap();
+        let (mut before, _) = snapshot_and_tail(&seed).unwrap();
+        before[4883..4887].copy_from_slice(&2u32.to_le_bytes());
+        before[8297..8299].copy_from_slice(&200i16.to_le_bytes());
+        before[12000] = 42;
+        let old = encode_private(before.clone()).unwrap();
+        let updated = with_player_progress(&old, 123, 3, 1).unwrap();
+        assert_eq!(player_rank(&updated, 123).unwrap(), (2, 2));
+        assert_eq!(
+            player_progress(&updated, 123).unwrap(),
+            PlayerProgress {
+                rank: 3,
+                experience: 1,
+                rank_version: 4,
+            }
+        );
+        let (mut after, _) = snapshot_and_tail(&updated).unwrap();
+        assert_eq!(&after[8297..8299], &200i16.to_le_bytes());
+        for range in [0..4, 4844..4848, 4887..4895] {
+            after[range.clone()].copy_from_slice(&before[range]);
+        }
+        assert_eq!(after, before);
+        assert_eq!(with_player_progress(&updated, 123, 3, 1).unwrap(), updated);
+        assert!(with_player_progress(&old, 124, 3, 1).is_err());
+        for (rank, xp) in [(0, 0), (71, 0), (1, u32::MAX)] {
+            assert!(with_player_progress(&old, 123, rank, xp).is_err());
+        }
+        before[4891..4895].copy_from_slice(&2u32.to_le_bytes());
+        assert!(with_player_progress(&encode_private(before.clone()).unwrap(), 123, 3, 1).is_err());
+        before[4844..4848].copy_from_slice(&(-1i32).to_le_bytes());
+        assert!(player_progress(&encode_private(before).unwrap(), 123).is_err());
+        let ordinary = with_player_progress(&seed, 123, 2, 1).unwrap();
+        assert_eq!(
+            &snapshot_and_tail(&ordinary).unwrap().0[8297..8299],
+            &1i16.to_le_bytes()
+        );
     }
     #[test]
     fn test_rank_preserves_every_unrelated_byte_and_checks_owner() {

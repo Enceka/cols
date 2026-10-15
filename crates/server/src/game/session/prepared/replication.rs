@@ -117,6 +117,22 @@ impl PreparedGameState {
                 .map(|g| g.as_ref().map(|g| (g.definition.index, g.count)))
         };
         self.selected_weapon_names() == selected.selected_weapon_names()
+            && self
+                .bootstrap_weapon
+                .as_ref()
+                .and_then(|w| w.marketplace_item_id)
+                == selected
+                    .bootstrap_weapon
+                    .as_ref()
+                    .and_then(|w| w.marketplace_item_id)
+            && self
+                .secondary_weapon
+                .as_ref()
+                .and_then(|w| w.marketplace_item_id)
+                == selected
+                    .secondary_weapon
+                    .as_ref()
+                    .and_then(|w| w.marketplace_item_id)
             && self.player_perks.slots == selected.player_perks.slots
             && self.player_streak_previews == selected.player_streak_previews
             && offhands(self) == offhands(selected)
