@@ -16,14 +16,6 @@
     "absolute_tag": 1,
     "bits": 32
   },
-  "complete_goal": {
-    "opcode": 2,
-    "reader_va": 5914044,
-    "flags_bits": 2,
-    "dispatch_va": 5273299,
-    "setter_va": 6604688,
-    "parent_weights_va": 6602448
-  },
   "end": {
     "opcode": 5,
     "reader_va": 5914566
@@ -51,5 +43,15 @@
     "dispatch_va": 5273164,
     "setter_va": 6606784,
     "raises_parent_weights": false
-  }
+  },
+  "goal_with_sibling_blend": {
+    "opcode": 2,
+    "reader_va": 5914044,
+    "flags_bits": 2,
+    "dispatch_va": 5273299,
+    "setter_va": 6604688,
+    "sibling_blend_va": 6602448,
+    "activates_parent": false
+  },
+  "explicit_parent_required": true
 }
