@@ -143,6 +143,9 @@ class Client:
                   'mp_cross_fire','mp_estate_tropical','mp_fav_tropical','mp_nuked','mp_killhouse_sh',
                   'mp_overgrown','mp_rust_long','mp_highrise','mp_storm_spring','mp_mountain',
                   'mp_terminal_cls','mp_abandon_sh_mk','mp_seatown','mp_ambush_sh','mp_afghan']
+        observed_charge=['mp_highrise','mp_mountain','mp_terminal_cls','mp_ambush_sh',
+                         'mp_subbase_sh','mp_boomtown','mp_nuked','mp_rust_long',
+                         'mp_shipment_long','mp_cha_quad','mp_mideast']
         seen=set()
         member_count=None
         selected=direction
@@ -212,9 +215,10 @@ class Client:
             # Choose one direction for this cycle. Recomputing it from an
             # incomplete order can bounce between adjacent maps forever.
             if selected=='auto':
-                if current in observed and target in observed:
-                    a,b=observed.index(current),observed.index(target)
-                    selected='right' if (b-a)%len(observed)<=(a-b)%len(observed) else 'left'
+                order=observed_charge if state.get('room_native_mode')=='cha' else observed
+                if current in order and target in order:
+                    a,b=order.index(current),order.index(target)
+                    selected='right' if (b-a)%len(order)<=(a-b)%len(order) else 'left'
                 else:selected='right'
             # A same-map result can be a pending UI transition, not a full cycle.
             for attempt in range(3):
@@ -315,6 +319,13 @@ def movement_frames(frames):
     return None
 
 
+def require_completed_gameplay(row):
+    if row['live_frames']==0:
+        raise RuntimeError('no ordinary gameplay frames sampled')
+    if row['intermission_frames']==0:
+        raise RuntimeError('no completed-match frames sampled; retained after-action data may be stale')
+
+
 def prepare(catalog_path, output):
     catalog = json.loads(catalog_path.read_text())
     output.mkdir(parents=True, exist_ok=False)
@@ -388,25 +399,29 @@ def run(catalog_path, experiment, output, map_names=None, map_direction='right',
             player_count=source['match_config'].get('player_count',12)
             if source['match_config']['time_limit_msec']>60000:
                 raise ValueError('native batch requires short diagnostic limits')
-            state=client.wait(lambda s:s['connection_state']==0 and s['frontend_state']==5
-                and s['active_inventory_count']>0,100)
-            if quick_playlist is not None:
-                if state['room_member_count']:
-                    raise ValueError('single-entry quick check requires a fresh owned client')
-                client.click(.297,.05);client.click(.14,.125);client.click(.156,.255)
-                client.click(.215,.328);client.click(.763,.854)
-                state=client.wait(lambda s:s['room_native_map']==entry['map'] and s['room_native_playlist']==0
-                    and (s['room_member_count']>0 or s['connection_state']>=6),30)
-                row['room_kind']='native_quick_playlist'
-            elif state['room_member_count']==0:
-                state=client.create_room(entry['mode'])
-            if quick_playlist is None and state['room_native_mode'] != entry['mode']:
-                raise RuntimeError('native room mode differs from preparation')
-            print('room',state['room_native_map'],state['room_member_count'],flush=True)
-            if quick_playlist is None:
-                state=client.select_map(entry['map'],map_direction)
-            if state['connection_state']==0:client.click(.848,.916)
-            live=client.wait(lambda s:s['connection_state']==10 and s['current_snapshot_valid']==1,60)
+            state=client.wait(lambda s:(s['connection_state']==0 and s['frontend_state']==5
+                and s['active_inventory_count']>0) or (s['connection_state']>=3
+                and s['room_native_map']==entry['map'] and s['room_native_mode']==entry['mode']),100)
+            if state['connection_state']>=3:
+                row['resumed_native_loading']=True
+            else:
+                if quick_playlist is not None:
+                    if state['room_member_count']:
+                        raise ValueError('single-entry quick check requires a fresh owned client')
+                    client.click(.297,.05);client.click(.14,.125);client.click(.156,.255)
+                    client.click(.215,.328);client.click(.763,.854)
+                    state=client.wait(lambda s:s['room_native_map']==entry['map'] and s['room_native_playlist']==0
+                        and (s['room_member_count']>0 or s['connection_state']>=6),30)
+                    row['room_kind']='native_quick_playlist'
+                elif state['room_member_count']==0:
+                    state=client.create_room(entry['mode'])
+                if quick_playlist is None and state['room_native_mode'] != entry['mode']:
+                    raise RuntimeError('native room mode differs from preparation')
+                print('room',state['room_native_map'],state['room_member_count'],flush=True)
+                if quick_playlist is None:
+                    state=client.select_map(entry['map'],map_direction)
+                if state['connection_state']==0:client.click(.848,.916)
+            live=client.wait(lambda s:s['connection_state']==10 and s['current_snapshot_valid']==1,300)
             if live['net_constants_crc']!=source['ncs_crc']:
                 raise RuntimeError('native map CRC differs from preparation')
             row['ncs_crc']=live['net_constants_crc']
@@ -455,8 +470,7 @@ def run(catalog_path, experiment, output, map_names=None, map_direction='right',
                 row['live_frames']+=sum(f['pm_type']==0 and not f['active'] for f in frames['frames'])
                 row['replay_frames']+=sum(bool(f['active']) for f in frames['frames'])
                 row['intermission_frames']+=sum(f['pm_type']==6 and not f['active'] for f in frames['frames'])
-            if row['live_frames']==0:
-                raise RuntimeError('no ordinary gameplay frames sampled')
+            require_completed_gameplay(row)
             finished=client.wait(lambda s:s['connection_state']==0 and s['frontend_state']==5,10)
             row['scoreboard_rows']=finished['ui_scoreboard_row_count']
             row['aar']={k:finished[k] for k in ('aar_map_id','aar_mode_id','aar_duration',

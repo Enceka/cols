@@ -8,10 +8,27 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from clientlib import REPO
-from verify_native_maps import Client, prepare, run, movement_frames
+from verify_native_maps import Client, prepare, run, movement_frames, require_completed_gameplay
 
 
 class NativeMapIsolation(unittest.TestCase):
+    def test_retained_results_cannot_replace_current_match_end_frames(self):
+        for live,ending,message in [(0,30,'ordinary gameplay'),(30,0,'after-action data may be stale')]:
+            with self.assertRaisesRegex(RuntimeError,message):
+                require_completed_gameplay(dict(live_frames=live,intermission_frames=ending))
+        require_completed_gameplay(dict(live_frames=30,intermission_frames=10))
+
+    def test_charge_room_uses_its_observed_route_without_the_tactical_order(self):
+        class ChargeRoom(Client):
+            def __init__(self):self.clicked=[]
+            def state(self):
+                return dict(room_native_mode='cha',room_native_map='mp_highrise' if self.clicked else 'mp_mountain',
+                            room_member_count=12,connection_state=0)
+            def click(self,x,y):self.clicked.append(x)
+        client=ChargeRoom()
+        self.assertEqual(client.select_map('mp_highrise','auto')['room_native_map'],'mp_highrise')
+        self.assertEqual(client.clicked,[.707])
+
     def test_same_map_in_both_modes_keeps_distinct_diagnostic_preparations(self):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory)

@@ -4,7 +4,7 @@
 
 高楼和潜艇基地的原始初始化采集仅看到4×4默认小地图材质，资源列表却有本图贴图路径。`--resource-compass-probe`让客户端通过正常gamestate的CS2037／2038请求本图候选材质，随后只读采集真实材质及贴图；不调用客户端函数、不改内存、不生成或替换客户端资源。
 
-该选项必须与`--resource-capture-map`使用。当前接受`mp_highrise`、`mp_subbase_sh`、`mp_dr_box`、`mp_dr_cistern`和`za_coliseum`；候选JSON核对固定客户端SHA、地图、CRC、实体捕获SHA格式、本图`compass_map_<map>`名称和有效投影角点。角点由本图捕获实体的`northyaw`及两个`minimap_corner`计算。服务器还核对初始化元数据的地图／CRC，并拒绝带出生位置、武器、碰撞、Bot或其它玩法世界的准备文件。该路径无玩法快照，`resource-capture.json`明确记录`compass_candidate_requested`；候选不包含材质证明，不能作为正式游戏准备。
+该选项必须与`--resource-capture-map`使用。当前接受`mp_highrise`、`mp_subbase_sh`、`mp_dr_box`、`mp_dr_cistern`、`za_coliseum`和`mp_ambush_sh`。候选JSON核对固定客户端SHA、地图、CRC、实体捕获SHA格式、受限材质名称和有效投影角点；伏击使用本版`compass_map_mp_convoy`别名，其余使用`compass_map_<map>`。角点由本图捕获实体的`northyaw`及两个`minimap_corner`计算。服务器还核对初始化元数据的地图／CRC，并拒绝带出生位置、武器、碰撞、Bot或其它玩法世界的准备文件。该路径无玩法快照，`resource-capture.json`明确记录`compass_candidate_requested`；候选不包含材质证明，不能作为正式游戏准备。
 
 `materialize_map_batch.py`对上述五图的新初始化自动请求候选；完整旧缓存缺少真实材质时，仅启动一次资源初始化补采`characters`，保留实体、武器、角色服饰及碰撞。捕获最多重试三次，每次仍使用正式`minimap()`的本图SHA／CRC和非默认真实尺寸检查。旧碰撞缺少BSP世界证明时随后独立补采碰撞；全部准备仍按本图胶囊筛选出生点、后台检查及原生短局验收。
 
