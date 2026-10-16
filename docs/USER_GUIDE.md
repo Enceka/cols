@@ -19,7 +19,7 @@
 | 本地证书 | `server/.tools/tls-lab/server.pem` 和 `key.pem`，须有效且互相匹配 |
 | 新玩家模板 | 新建玩家时需要 `server/client-work/server-data/new-player-template.json` |
 
-本机配置生成器会查找已有环境，不下载客户端、不安装 Wine，也不生成缺失的地图资源。换电脑时，需根据[地图资源准备](MAP_RESOURCE_PREPARATION.md)、[新玩家模板](LOCAL_PLAYER.md)和[运行手册](FOUNDATION.md)重新准备并校验资料。
+本机配置生成器会查找已有环境，不下载客户端、不安装 Wine，也不生成缺失的地图资源。面板提供[一键资源准备入口](RESOURCE_PREPARATION_GUIDE.md)，支持本地目录导入及采集转换；客户端采集的运行要求与验收边界见教程。换电脑时，需根据[地图资源准备](MAP_RESOURCE_PREPARATION.md)、[新玩家模板](LOCAL_PLAYER.md)和[运行手册](FOUNDATION.md)重新准备并校验资料。
 
 从源码构建时需要 Rust 1.96.0。以下命令从工作区根目录开始执行：
 

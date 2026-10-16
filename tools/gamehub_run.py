@@ -12,7 +12,9 @@ import re
 import signal
 import shutil
 import subprocess
+import sys
 import time
+import threading
 from pathlib import Path
 
 from clientlib import DEFAULT_WORKSPACE, REPO, checked_sample, manifest, sha256, matches_client_image
@@ -173,6 +175,9 @@ def main():
     parser.add_argument("action", choices=["list", "prepare", "init", "probe", "client"])
     parser.add_argument("--engine-id", default="10000033")
     parser.add_argument("--prefix-name", help="named project-owned prefix for isolated diagnostics; never resets an existing prefix")
+    parser.add_argument("--managed-stdin",action="store_true",help="stop and restore the owned session when its parent closes stdin")
+    parser.add_argument("--output-root",type=Path,help="private experiment output directory; default stays under research-output/gamehub")
+    parser.add_argument("--resource-capture-only",action="store_true",help="explicit metadata-only collection without an existing playable catalog")
     parser.add_argument("--client-dir",type=Path,help="existing marked research copy to launch; never creates or merges game resources")
     parser.add_argument("--bind-ip",default="127.0.0.1",help="IPv4 loopback address for an isolated local client/service session")
     parser.add_argument("--certificate-dir",type=Path,help="local TLS certificate directory containing server.pem and key.pem")
@@ -230,7 +235,7 @@ def main():
         args.seconds=0 if args.continuous_play else 90
     if not 0 <= args.seconds <= 3600 or (args.seconds==0 and not args.continuous_play):
         parser.error("seconds must be 1..3600, or 0 with continuous-play")
-    if args.continuous_play and (args.action!="client" or not args.rust_game or not args.game_state or args.snapshot_probe is not None):
+    if args.continuous_play and (args.action!="client" or not args.rust_game or (not args.game_state and not args.resource_capture_only) or args.snapshot_probe is not None):
         parser.error("continuous-play requires client, rust-game and game-state without snapshot-probe")
     if args.prefix_name and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", args.prefix_name):
         parser.error("prefix-name must be a simple directory name, at most 64 characters")
@@ -272,11 +277,13 @@ def main():
     if args.native_bot_rooms and not args.game_map_catalog:
         parser.error("native-bot-rooms requires game-map-catalog")
     if args.resource_capture_map:
-        if not args.native_bot_rooms:
-            parser.error("resource-capture-map requires native-bot-rooms")
+        if not args.native_bot_rooms and not args.resource_capture_only:
+            parser.error("resource-capture-map requires native-bot-rooms or explicit resource-capture-only")
         registry=json.loads((REPO / ('fixtures/protocol/charge-map-registry-3.3.3.3.json' if args.resource_capture_mode=='cha' else 'fixtures/protocol/map-registry-3.3.3.3.json')).read_text())
         if args.resource_capture_map not in {m['name'] for m in registry['maps']}:
             parser.error("resource-capture-map requires a captured native TDM identity")
+    if args.resource_capture_only and (not args.resource_capture_map or args.native_bot_rooms or args.game_map_catalog):
+        parser.error("resource-capture-only needs one capture map and no playable catalog/Bot-room option")
     if args.resource_compass_probe and (not args.resource_capture_map or not args.resource_compass_probe.is_file()):
         parser.error("resource-compass-probe requires resource-capture-map and an existing candidate file")
     if args.release_server and not args.rust_auth:
@@ -336,7 +343,9 @@ def main():
         except (OSError, RuntimeError, subprocess.SubprocessError) as error:
             lock.close()
             parser.error(str(error))
-    output = REPO / "research-output/gamehub" / (args.action + "-" + str(int(time.time() * 1000)))
+    output_root = args.output_root.resolve() if args.output_root else REPO / "research-output/gamehub"
+    output_root.mkdir(parents=True,exist_ok=True)
+    output = output_root / (args.action + "-" + str(int(time.time() * 1000)))
     output.mkdir(parents=True)
     env = os.environ.copy()
     channels = "-all,err+all,+timestamp,+pid,+tid,+seh,+loaddll,+winsock,+debugstr"
@@ -360,6 +369,11 @@ def main():
             def interrupted(signum, _frame):
                 raise KeyboardInterrupt("signal " + str(signum))
             signal.signal(signal.SIGTERM, interrupted)
+            if args.managed_stdin:
+                def parent_closed():
+                    while os.read(0,1):pass
+                    os.kill(os.getpid(), signal.SIGTERM)
+                threading.Thread(target=parent_closed, daemon=True).start()
             if args.action == "client":
                 bootstrap = "%s %d\n%s %d\n0x%08X\n" % (args.bind_ip,lobby_port,args.bind_ip,auth_port,context)
                 (work / "dwauth.ini").write_text(bootstrap, encoding="ascii")
@@ -411,6 +425,8 @@ def main():
                             tls_argv += ["--game-map-catalog", str(args.game_map_catalog.resolve())]
                         if args.native_bot_rooms:
                             tls_argv += ["--native-bot-rooms"]
+                        if args.resource_capture_only:
+                            tls_argv += ["--resource-capture-only"]
                         if args.resource_capture_map:
                             tls_argv += ["--resource-capture-map", args.resource_capture_map]
                             tls_argv += ["--resource-capture-mode",args.resource_capture_mode]

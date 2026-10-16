@@ -2002,3 +2002,11 @@ dialog>p {
 .hosting-form .editor-state { white-space:nowrap; flex-shrink:0; align-self:flex-start; }
 
 .toast { overflow-wrap:anywhere; max-width:calc(100vw - 32px); }
+
+.resource-note { margin: 16px 0 0; color: var(--muted); line-height: 1.7; font-size: 13px; }
+.resource-progress { display: flex; gap: 16px; align-items: center; padding: 0 24px 20px; font-size: 13px; }
+.resource-progress progress { width: 160px; flex-shrink: 0; accent-color: var(--accent); }
+@media (max-width: 640px) { .resource-progress { flex-direction: column; align-items: flex-start; } }
+
+.hosting-form .resource-share { display: flex; flex-direction: row; align-items: flex-start; gap: 8px; margin-top: 16px; line-height: 1.6; }
+.hosting-form .resource-share input { width: 16px; height: 16px; flex-shrink: 0; margin: 0; }

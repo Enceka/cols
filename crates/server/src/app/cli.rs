@@ -28,6 +28,19 @@ struct Cli {
 // CLI arguments are parsed once at startup, outside gameplay frame processing.
 #[allow(clippy::large_enum_variant)]
 enum Command {
+    /// Prepare a private, self-contained directory from locally supplied map resources.
+    PrepareResources {
+        #[arg(long)]
+        source: PathBuf,
+        #[arg(long)]
+        output: PathBuf,
+        #[arg(long)]
+        report: Option<PathBuf>,
+        #[arg(long)]
+        progress_file: Option<PathBuf>,
+        #[arg(long)]
+        managed_stdin: bool,
+    },
     /// Create an independent local player from an externally prepared starter template.
     CreateLocalPlayer {
         #[arg(long)]
@@ -189,8 +202,15 @@ enum Command {
         #[arg(long, requires = "game_map_catalog", conflicts_with_all=["native_bot_rooms", "story_capture_map"], value_parser=clap::value_parser!(u8).range(4..=12))]
         room_bot_fill: Option<u8>,
         /// Collect one native TDM map's loaded resources without sending a world.
-        #[arg(long, requires = "native_bot_rooms")]
+        #[arg(long, requires = "game_bind")]
         resource_capture_map: Option<String>,
+        /// Initialize only the explicit capture map without a pre-existing playable catalog.
+        #[arg(
+            long,
+            requires = "resource_capture_map",
+            conflicts_with_all = ["native_bot_rooms", "game_map_catalog", "room_bot_fill", "snapshot_probe", "story_capture_map"]
+        )]
+        resource_capture_only: bool,
         /// Native mode of the explicit resource capture (war or cha).
         #[arg(long, requires="resource_capture_map",value_parser=["war","cha"])]
         resource_capture_mode: Option<String>,
@@ -207,7 +227,7 @@ enum Command {
         #[arg(long, requires = "resource_capture_map")]
         resource_compass_probe: Option<PathBuf>,
         /// Keep the authenticated local play session running until shutdown.
-        #[arg(long, requires_all=["game_state","service_data_dir"], conflicts_with="snapshot_probe")]
+        #[arg(long, requires = "service_data_dir", conflicts_with = "snapshot_probe")]
         continuous_play: bool,
         /// Sample ordinary gameplay captures; errors and handshake stay captured.
         #[arg(long,default_value_t=1,value_parser=clap::value_parser!(u32).range(1..=1000))]
@@ -275,6 +295,50 @@ pub(super) async fn run() -> Result<()> {
         .with_writer(std::io::stderr)
         .init();
     match Cli::parse().command {
+        Command::PrepareResources {
+            source,
+            output,
+            report,
+            progress_file,
+            managed_stdin,
+        } => {
+            for path in report.iter().chain(progress_file.iter()) {
+                ensure!(!path.exists(), "preparation report must be a new file");
+            }
+            let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let flag = cancelled.clone();
+            let mut worker = tokio::task::spawn_blocking(move || {
+                crate::app::resources::prepare(
+                    &source,
+                    &output,
+                    |progress| {
+                        eprintln!(
+                            "资源准备 · {} / {} · {}",
+                            progress.completed, progress.total, progress.message
+                        );
+                        if let Some(path) = &progress_file {
+                            crate::app::resources::publish_progress(path, &progress)?;
+                        }
+                        Ok(())
+                    },
+                    || flag.load(std::sync::atomic::Ordering::Relaxed),
+                )
+            });
+            let result = tokio::select! {
+                result = &mut worker => result??,
+                signal = shutdown_signal(managed_stdin) => {
+                    signal?;
+                    cancelled.store(true, std::sync::atomic::Ordering::Relaxed);
+                    let _ = worker.await;
+                    bail!("resource preparation cancelled");
+                }
+            };
+            if let Some(path) = report {
+                crate::infra::storage::write_private(&path, &serde_json::to_vec_pretty(&result)?)
+                    .await?;
+            }
+            println!("{}", serde_json::to_string_pretty(&result)?);
+        }
         Command::Admin {
             bind,
             config,
@@ -560,6 +624,7 @@ pub(super) async fn run() -> Result<()> {
             native_bot_rooms,
             room_bot_fill,
             resource_capture_map,
+            resource_capture_only,
             resource_capture_mode,
             story_capture_map,
             story_resource_state,
@@ -571,6 +636,14 @@ pub(super) async fn run() -> Result<()> {
             launcher_ready_file,
             managed_stdin,
         } => {
+            ensure!(
+                !continuous_play || game_state.is_some() || resource_capture_only,
+                "continuous play requires a prepared game state or explicit capture-only mode"
+            );
+            ensure!(
+                resource_capture_map.is_none() || native_bot_rooms || resource_capture_only,
+                "resource capture requires native Bot rooms or explicit capture-only mode"
+            );
             let mut ready = serde_json::json!({
                 "kind":"native_services", "lobby_protocol":210, "game_protocol":3,
                 "title_id":local_title_id, "continuous_play":continuous_play,
@@ -660,6 +733,13 @@ pub(super) async fn run() -> Result<()> {
                         )?;
                     }
                     if let Some(map) = resource_capture_map {
+                        if resource_capture_only {
+                            let services = lobby
+                                .services()
+                                .context("resource capture requires local services")?;
+                            game = game
+                                .with_capture_rooms(services.publisher_playlist_version().await?)?;
+                        }
                         game = game.with_resource_capture_map(map)?;
                     }
                     if let Some(mode) = resource_capture_mode {
@@ -837,15 +917,23 @@ async fn shutdown_signal(managed_stdin: bool) -> std::io::Result<()> {
     if !managed_stdin {
         return tokio::signal::ctrl_c().await;
     }
-    let input_closed = async {
-        let mut input = tokio::io::stdin();
-        let mut byte = [0; 1];
-        while tokio::io::AsyncReadExt::read(&mut input, &mut byte).await? != 0 {}
-        Ok(())
-    };
+    // A detached reader must not hold Tokio's blocking pool open after a finite job finishes.
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    std::thread::Builder::new()
+        .name("managed-stdin".into())
+        .spawn(move || {
+            use std::io::Read;
+            let result = (|| {
+                let mut input = std::io::stdin().lock();
+                let mut byte = [0; 1];
+                while input.read(&mut byte)? != 0 {}
+                Ok(())
+            })();
+            let _ = sender.send(result);
+        })?;
     tokio::select! {
         result = tokio::signal::ctrl_c() => result,
-        result = input_closed => result,
+        result = receiver => result.unwrap_or_else(|_| Err(std::io::Error::other("managed stdin reader closed"))),
     }
 }
 

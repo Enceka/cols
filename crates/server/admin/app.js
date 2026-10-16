@@ -30,6 +30,8 @@ let hostingBusy = false;
 let hostingActive = false;
 let hostingPhase = "stopped";
 let hostingCertificateReady = false;
+let resourceDefaults = null;
+let resourcesLoaded = false;
 
 async function api(path, data) {
   const response = await fetch(path, {
@@ -447,6 +449,10 @@ function hostingButtons() {
   $("hosting-fields").disabled = hostingBusy || hostingActive;
   $("hosting-download").disabled = hostingBusy || !hostingCertificateReady;
   $("hosting-renew").disabled = hostingBusy || hostingActive;
+  $("resources-fields").disabled = hostingBusy || hostingActive;
+  $("resources-prepare").disabled = hostingBusy || hostingActive || !resourceDefaults || (hostingDirty());
+  $("resources-cancel").hidden = hostingPhase !== "preparing" && hostingPhase !== "stopping";
+  $("resources-cancel").disabled = hostingBusy || hostingPhase === "stopping";
   $("hosting-edit-state").textContent = hostingDirty() ? "未保存" : "已保存";
 }
 function renderHosting(value) {
@@ -457,9 +463,9 @@ function renderHosting(value) {
     hostingOriginal = JSON.stringify(hostingSettings());
     hostingRevision = value.revision;
   }
-  const labels = { stopped: "未开服", starting: "准备中", running: "运行中", stopping: "停止中", failed: "启动失败" };
+  const labels = { stopped: "未开服", preparing: "资源准备中", starting: "准备中", running: "运行中", stopping: "停止中", failed: "操作失败" };
   hostingPhase = value.phase;
-  hostingActive = ["starting", "running", "stopping"].includes(value.phase);
+  hostingActive = ["preparing", "starting", "running", "stopping"].includes(value.phase);
   $("hosting-phase").textContent = labels[value.phase] || value.phase;
   $("hosting-message").textContent = value.message;
   $("hosting-error").textContent = value.error || "";
@@ -474,6 +480,27 @@ function renderHosting(value) {
   $("hosting-fingerprint").textContent = certificate ? `SHA-256 ${certificate.fingerprint}` : "";
   $("hosting-download").disabled = hostingBusy || !value.certificate.ready;
   $("hosting-renew").disabled = hostingBusy || hostingActive;
+  resourceDefaults = value.resources;
+  if (resourceDefaults && !resourcesLoaded) {
+    $("resources-output").value = resourceDefaults.output_parent;
+    $("resources-source").value = resourceDefaults.source_catalog || "";
+    $("resources-kind").querySelector('[value="client"]').disabled = !resourceDefaults.client_available;
+    $("resources-kind").querySelector('[value="captures"]').disabled = !resourceDefaults.converters_available;
+    resourcesLoaded = true;
+    resourceKindChanged(false);
+  }
+  const progress = resourceDefaults?.progress;
+  $("resources-progress").hidden = value.phase !== "preparing";
+  if (progress) {
+    $("resources-meter").max = Math.max(progress.total || 1, 1);
+    $("resources-meter").value = progress.completed || 0;
+    $("resources-progress-text").textContent = progress.message;
+  } else { $("resources-meter").removeAttribute("value"); $("resources-progress-text").textContent = value.message; }
+  if (resourceDefaults?.result) {
+    $("resources-feedback").textContent = `已应用 ${resourceDefaults.result.maps} 个地图／模式：${resourceDefaults.result.map_catalog}`;
+    $("resources-feedback").classList.remove("error");
+    $("resources-feedback").hidden = false;
+  }
   hostingButtons();
   if (value.phase === "stopping") $("hosting-stop").disabled = true;
 }
@@ -523,4 +550,37 @@ $("hosting-renew").addEventListener("click", async () => {
   try { await api("/api/hosting/certificate", {}); await poll(); toast("本地证书已更新，客户端需要配置新的公开证书"); }
   catch (error) { toast(error.message, true); }
   finally { hostingBusy = false; hostingButtons(); }
+});
+
+function resourceKindChanged(replaceSource = true) {
+  const kind = $("resources-kind").value;
+  $("resources-options").hidden = kind === "catalog";
+  $("resources-share").hidden = kind !== "client";
+  $("resources-mode").querySelector('[value="cha"]').disabled = kind === "client";
+  if (kind === "client") $("resources-mode").value = "war";
+  if (replaceSource) $("resources-source").value = kind === "catalog" ? resourceDefaults?.source_catalog || "" : kind === "client" ? resourceDefaults?.client_directory || "" : "";
+  $("resources-note").textContent = kind === "catalog" ? "选择 catalog.json 或包含它的目录。工具复制全部引用、校验资源，并生成可迁移的独立目录。先保存开服设置中的修改，再准备资源。" : kind === "captures" ? "选择 capture-plan.json，或包含 assets.json 和地图 resource-paths 清单的采集目录。留空地图时转换所选模式的全部采集。需要 Python 3。" : "使用自己的 3.3.3.3 客户端和已有 GameHub Wine10 环境。将启动隔离客户端、切换游戏前台并通过正常鼠标输入进入地图，请先关闭游戏并暂停其它操作。留空地图时采集 mp_afghan。本机采集准备基础地图资源，语音等扩展资源可从已有采集导入；原生验证范围见资源教程。";
+}
+$("resources-kind").addEventListener("change", () => resourceKindChanged());
+$("resources-cancel").addEventListener("click", () => hostingAction("stop"));
+$("resources-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (hostingBusy || hostingActive) return;
+  if (hostingDirty()) { hostingFeedback("请先保存开服设置中的修改，再准备资源。", true); return; }
+  hostingBusy = true; hostingButtons();
+  $("resources-feedback").hidden = true;
+  try {
+    const result = await api("/api/resources/prepare", {
+      kind: $("resources-kind").value, source: $("resources-source").value.trim(),
+      reuse_stun: $("resources-kind").value === "client" && $("resources-reuse").checked,
+      output_parent: $("resources-output").value.trim(), mode: $("resources-mode").value,
+      maps: $("resources-maps").value.trim().split(/[\s,，]+/).filter(Boolean),
+    });
+    renderHosting(result);
+    await poll();
+  } catch (error) {
+    $("resources-feedback").textContent = error.message;
+    $("resources-feedback").classList.add("error");
+    $("resources-feedback").hidden = false;
+  } finally { hostingBusy = false; hostingButtons(); }
 });

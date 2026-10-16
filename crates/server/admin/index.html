@@ -94,6 +94,20 @@
       </section>
 
       <section class="view" id="view-hosting" aria-label="开服设置" hidden>
+        <form class="panel hosting-form" id="resources-form">
+          <div class="panel-heading"><div><h2>本地资源准备</h2><p>从已有资料导入，或使用你自己的客户端采集。完成后自动填入地图路径。</p></div><span class="subtle-badge">仅本地</span></div>
+          <fieldset id="resources-fields"><div class="hosting-paths">
+            <label>资源来源<select id="resources-kind"><option value="catalog">已有地图目录</option><option value="captures">已有只读采集</option><option value="client">本机客户端（macOS / GameHub）</option></select></label>
+            <label>来源路径<input id="resources-source" autocomplete="off" required placeholder="服务器本机上的绝对路径"></label>
+            <label>输出位置<input id="resources-output" autocomplete="off" required placeholder="新资源目录的父目录"></label>
+          </div><div class="hosting-ports" id="resources-options" hidden>
+            <label>模式<select id="resources-mode"><option value="war">战术团队竞技</option><option value="cha">冲锋团队竞技（已有采集）</option></select></label>
+            <label>地图<input id="resources-maps" autocomplete="off" placeholder="mp_afghan, mp_nuked"></label>
+          </div><label class="resource-share" id="resources-share" hidden><input type="checkbox" id="resources-reuse">共用已有本机发现服务（STUN 3074 / 3078）；账号与地图服务仍独立。</label><p class="resource-note" id="resources-note"></p></fieldset>
+          <div class="resource-progress" id="resources-progress" role="status" hidden><progress id="resources-meter"></progress><span id="resources-progress-text"></span></div>
+          <div class="config-feedback" id="resources-feedback" role="status" hidden></div>
+          <div class="editor-actions"><span>每次生成独立目录；只将校验成功的资源应用到开服设置。</span><div><button class="button button-secondary" type="button" id="resources-cancel" hidden>取消准备</button><button class="button button-primary" type="submit" id="resources-prepare">准备并应用资源</button></div></div>
+        </form>
         <form class="panel hosting-form" id="hosting-form">
           <div class="panel-heading"><div><h2>服务资料与地图</h2><p>首次开服自动生成本地证书和缺失的公共配置。游戏地图与玩家资料使用你已准备的文件。</p></div><span class="editor-state" id="hosting-edit-state">已保存</span></div>
           <fieldset id="hosting-fields"><div class="hosting-paths">
@@ -113,7 +127,7 @@
           <div class="editor-actions"><span id="hosting-config-path">开服设置会保存在独立状态目录。</span><button class="button button-primary" id="hosting-save" type="submit" disabled>保存开服设置</button></div>
         </form>
         <article class="panel hosting-certificate"><div><h2>本地连接证书</h2><p id="hosting-certificate-status">首次开服自动生成，用于客户端信任这台服务。</p><code id="hosting-fingerprint"></code></div><div class="hosting-actions"><button class="button button-secondary" id="hosting-renew">更新本地证书</button><button class="button button-secondary" id="hosting-download" disabled><svg><use href="#i-download"/></svg>下载公开证书</button></div></article>
-        <p class="view-footnote">将公开证书配置到独立客户端后连接上方实际服务端点。私钥只保存在服务器；本页不下载游戏资源，也不修改客户端。更新证书后，客户端需要更新信任。</p>
+        <p class="view-footnote">将公开证书配置到独立客户端后连接上方实际服务端点。私钥只保存在服务器；地图由用户在本机提供，自动采集使用隔离客户端副本。更新证书后，客户端需要更新信任。</p>
       </section>
 
       <section class="view" id="view-terminal" aria-label="交互终端" hidden>

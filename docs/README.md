@@ -10,6 +10,7 @@
 
 - [使用教程](USER_GUIDE.md)
 - [独立服务器使用教程](SERVER_GUIDE.md)
+- [一键准备本地资源](RESOURCE_PREPARATION_GUIDE.md)
 - [功能状态与验收边界](REFERENCE_ALIGNMENT.md)
 - [待完成与体验复核](REVIEW_PENDING.md)
 - [服务端重建范围与验证原则](REVERSE_ENGINEERING_PLAN.md)

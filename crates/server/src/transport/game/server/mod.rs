@@ -240,6 +240,18 @@ impl GameServer {
     }
     /// Explicit single-map collection. Captured metadata may be initialized
     /// without gameplay snapshots or substitution of another map's CRC.
+    pub(crate) fn with_capture_rooms(mut self, version: u32) -> Result<Self> {
+        ensure!(version > 0, "capture rooms require publisher version");
+        Arc::get_mut(&mut self.admissions)
+            .ok_or_else(|| anyhow::anyhow!("capture policy must precede admission sharing"))?
+            .bot_rooms = Some(crate::backend::rooms::bots::Policy {
+            version,
+            maps: Default::default(),
+            loadouts: Default::default(),
+        });
+        Ok(self)
+    }
+
     pub fn with_resource_capture_map(mut self, map: String) -> Result<Self> {
         ensure!(
             crate::content::maps::registry::native_id(&map).is_some(),
@@ -317,6 +329,14 @@ impl GameServer {
         self.game_map_catalog
             .as_ref()
             .and_then(|catalog| catalog.select(map, &self.resource_capture_mode).ok())
+            .or_else(|| {
+                self.game_state
+                    .as_ref()
+                    .filter(|state| {
+                        state.map() == map && state.mode() == self.resource_capture_mode
+                    })
+                    .cloned()
+            })
             .map(|state| {
                 let initialized = (*state).clone().resource_initialization()?;
                 let initialized = if let Some(probe) = &self.resource_compass_probe {
@@ -1075,6 +1095,29 @@ mod tests {
                 .with_resource_capture_map("mp_unknown".into())
                 .is_err()
         );
+    }
+    #[tokio::test]
+    async fn cold_capture_requires_only_its_own_metadata_and_never_produces_snapshots() {
+        let temp = tempfile::tempdir().unwrap();
+        let server = GameServer::bind("127.0.0.1:0".parse().unwrap(), temp.path().join("game"))
+            .await
+            .unwrap()
+            .with_capture_rooms(7)
+            .unwrap()
+            .with_resource_capture_map("mp_bog_sh".into())
+            .unwrap();
+        assert!(server.resource_template("mp_bog_sh").unwrap().is_none());
+        let metadata = temp.path().join("bog.json");
+        crate::game::session::catalog::write_synthetic(&metadata, "mp_bog_sh");
+        let server = server.with_game_state(
+            crate::game::session::prepared::PreparedGameState::load(&metadata).unwrap(),
+        );
+        let initialized = server.resource_template("mp_bog_sh").unwrap().unwrap();
+        assert_eq!(initialized.map(), "mp_bog_sh");
+        assert_eq!(initialized.snapshot_limit(), 0);
+        assert!(!initialized.snapshot_probe());
+        assert!(!initialized.has_tdm());
+        assert!(server.resource_template("mp_nuked").unwrap().is_none());
     }
     #[tokio::test]
     async fn an_unprepared_room_map_is_rejected_even_when_a_default_is_available() {

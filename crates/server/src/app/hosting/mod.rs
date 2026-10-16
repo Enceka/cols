@@ -30,6 +30,8 @@ struct State {
     log_file: Option<PathBuf>,
     stop: Option<watch::Sender<bool>>,
     worker: Option<JoinHandle<()>>,
+    resource_result: Option<Value>,
+    resource_progress: Option<Value>,
 }
 
 pub(crate) struct Hosting {
@@ -87,6 +89,8 @@ impl Hosting {
                 log_file: None,
                 stop: None,
                 worker: None,
+                resource_result: None,
+                resource_progress: None,
             }),
         }))
     }
@@ -102,6 +106,10 @@ impl Hosting {
             "phase":state.phase,"message":state.message,"error":state.error,
             "endpoints":state.endpoints,"log_file":state.log_file,"certificate":certificate,
             "missing":state.settings.check_inputs(),
+            "resources": {"result":state.resource_result,"progress":state.resource_progress,
+                "source_catalog":state.settings.map_catalog,"client_directory":std::env::current_dir().ok().map(|p|p.join("client-work/CODOL")),
+                "output_parent":self.root.join("resources"),"client_available":cfg!(target_os="macos") && crate::app::resources::helper().is_ok(),
+                "converters_available":crate::app::resources::helper().is_ok()},
         })
     }
 
@@ -192,12 +200,104 @@ impl Hosting {
         Ok(self.snapshot().await)
     }
 
+    pub async fn prepare_resources(
+        self: &Arc<Self>,
+        request: crate::app::resources::Request,
+    ) -> Result<Value> {
+        request.validate()?;
+        if request.kind != crate::app::resources::Kind::Catalog {
+            crate::app::resources::helper()?;
+        }
+        let mut state = self.state.lock().await;
+        ensure!(!active(state.phase), "请先停止当前服务或准备任务");
+        self.check_saved(&state.settings).await?;
+        state.phase = "preparing";
+        state.message = "正在准备用户本地资源".into();
+        state.error = None;
+        state.resource_result = None;
+        state.resource_progress = None;
+        let (sender, receiver) = watch::channel(false);
+        state.stop = Some(sender);
+        let owner = self.clone();
+        state.worker = Some(tokio::spawn(async move {
+            let worker = owner.clone();
+            let outcome =
+                tokio::spawn(
+                    async move { process::prepare_resources(worker, request, receiver).await },
+                )
+                .await;
+            let mut state = owner.state.lock().await;
+            let cancelled = state.phase == "stopping";
+            if cancelled {
+                match outcome {
+                    Ok(Ok(_)) => {
+                        state.phase = "stopped";
+                        state.message = "资源准备已取消，原开服配置保持不变".into();
+                    }
+                    failure => {
+                        state.phase = "failed";
+                        state.message = "资源任务或清理未完成，原开服配置保持不变".into();
+                        state.error = Some(match failure {
+                            Ok(Err(error)) => format!("{error:#}"),
+                            Err(error) => format!("资源任务异常：{error}"),
+                            _ => unreachable!(),
+                        });
+                    }
+                }
+            } else {
+                let result = async {
+                    let report = outcome
+                        .context("资源准备任务异常")??
+                        .context("资源准备未完成")?;
+                    owner.check_saved(&state.settings).await?;
+                    let mut settings = state.settings.clone();
+                    settings.game_state =
+                        PathBuf::from(report["game_state"].as_str().context("默认地图缺失")?);
+                    settings.map_catalog =
+                        PathBuf::from(report["map_catalog"].as_str().context("地图目录缺失")?);
+                    settings.validate(owner.admin_port)?;
+                    atomic_private_write(
+                        &owner.root.join("server.json"),
+                        &serde_json::to_vec_pretty(&config::Saved {
+                            schema_version: 1,
+                            settings: settings.clone(),
+                        })?,
+                    )
+                    .await?;
+                    state.settings = settings;
+                    state.resource_result = Some(report);
+                    Ok::<(), anyhow::Error>(())
+                }
+                .await;
+                match result {
+                    Ok(()) => {
+                        state.phase = "stopped";
+                        state.message = "本地资源已准备并应用，可以一键开服".into();
+                    }
+                    Err(error) => {
+                        state.phase = "failed";
+                        state.message = "资源准备未完成，原开服配置保持不变".into();
+                        state.error = Some(format!("{error:#}"));
+                    }
+                }
+            }
+            state.stop = None;
+        }));
+        drop(state);
+        Ok(self.snapshot().await)
+    }
+
     pub async fn stop(&self) -> Value {
         let mut state = self.state.lock().await;
         if let Some(stop) = &state.stop {
             stop.send_replace(true);
+            state.message = if state.phase == "preparing" {
+                "正在取消资源准备并清理本次采集"
+            } else {
+                "正在停止本次服务并释放端口"
+            }
+            .into();
             state.phase = "stopping";
-            state.message = "正在停止本次服务并释放端口".into();
         }
         drop(state);
         self.snapshot().await
@@ -231,7 +331,7 @@ impl Hosting {
 
     pub(super) async fn progress(&self, message: &str) {
         let mut state = self.state.lock().await;
-        if state.phase == "starting" {
+        if matches!(state.phase, "starting" | "preparing") {
             state.message = message.into();
         }
     }
@@ -281,7 +381,7 @@ impl Hosting {
 }
 
 fn active(phase: &str) -> bool {
-    matches!(phase, "starting" | "running" | "stopping")
+    matches!(phase, "preparing" | "starting" | "running" | "stopping")
 }
 
 pub(crate) async fn observer_config(path: &Path) -> Result<()> {

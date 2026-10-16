@@ -18,3 +18,9 @@
 本版票据已获真实客户端接受；两层传输均有独立计算向量和原生交互证据，见[AUTH](AUTH_LOBBY_PROGRESS.md)和[游戏通道](GAME_TRANSPORT_PROGRESS.md)。参考固定UID、固定密钥、空成功回执和旧build常量不作为当前运行规则。
 
 参考目录位于工作区的 `CODOL-AlphaBuild/`，不随Rust仓库分发。实际源码和本版消费者优先于参考文档中的完成描述；对未运行的参考服务不作可玩性推断。移植方法见[纯Rust适配](ALPHA_RUST_PORT_PLAN.md)，连杀公共机制见[机制适配](ALPHA_KILLSTREAK_MECHANISMS.md)。
+
+## 地图资源从哪里来
+
+参考服务的 `tools/package/README.md` 将 `gameserver/` 程序与 `game/` 原版数据分开。`tools/codol_package.py` 从本机客户端复制或硬链接语言 FF、主目录 IWD，并从 `C1.exe` 导出所需密钥到 `c1_keys.bin`；运行时通过 `fs_basepath` 只读挂载这些文件。`--skip-game` 只打包程序。打包说明要求含游戏数据的镜像保持私有，不能据此推断具有公开分发原版地图的授权。
+
+这条读取链针对 1.1.1.13 的 FF／IWD，本版使用 3.3.3.3 的 IFS。参考逻辑不能直接成为本版地图下载源或读取器。本项目的面板使用用户提供的本地目录、保留采集或客户端副本，见[资源准备教程](RESOURCE_PREPARATION_GUIDE.md)。

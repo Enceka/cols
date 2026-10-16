@@ -19,19 +19,21 @@ from clientlib import REPO
 
 
 class Client:
-    def __init__(self, experiment):
+    def __init__(self, experiment, probe_dir=None, window_binary=None):
         self.experiment = experiment.resolve()
+        self.window_binary = window_binary or REPO/".tools/game-window"
+        self.probe_args = ["--probe-dir", str(probe_dir)] if probe_dir else []
 
     def state(self):
         result = subprocess.run([sys.executable, str(REPO/'tools/client_state.py'),
-                                 '--experiment', str(self.experiment)], text=True,capture_output=True)
+                                 '--experiment', str(self.experiment), *self.probe_args], text=True,capture_output=True)
         if result.returncode:
             raise subprocess.CalledProcessError(result.returncode,result.args,
                                                 output=result.stdout,stderr=result.stderr)
         return json.loads(result.stdout)['state']
 
     def action(self, kind, *args):
-        return json.loads(subprocess.check_output([str(REPO/'.tools/game-window'),
+        return json.loads(subprocess.check_output([str(self.window_binary),
             str(self.experiment), kind, *map(str, args)], text=True))
 
     def click(self, x, y, content=True):
@@ -65,7 +67,7 @@ class Client:
     def capture(self, mode, ready=None):
         for attempt in range(3):
             command=[sys.executable,str(REPO/'tools/client_state.py'),
-                '--experiment',str(self.experiment),'--'+mode]
+                '--experiment',str(self.experiment),'--'+mode, *self.probe_args]
             if ready is not None:command+=['--sample-ready',str(ready)]
             result = subprocess.run(command,text=True,capture_output=True)
             if result.returncode==0:

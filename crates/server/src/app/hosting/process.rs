@@ -53,19 +53,39 @@ impl OwnedProcess {
         }
         Ok(())
     }
-    async fn close(&mut self) {
+    async fn close(&mut self) -> Result<()> {
+        self.close_timeout(Duration::from_secs(10)).await
+    }
+    async fn close_timeout(&mut self, timeout: Duration) -> Result<()> {
         // Only this owned stdin pipe controls the child; closing it also handles parent crashes.
         drop(self.child.stdin.take());
-        if tokio::time::timeout(Duration::from_secs(10), self.child.wait())
-            .await
-            .is_err()
-        {
+        if !matches!(
+            tokio::time::timeout(timeout, self.child.wait()).await,
+            Ok(Ok(_))
+        ) {
             let _ = self.child.start_kill();
-            let _ = self.child.wait().await;
+            if !matches!(
+                tokio::time::timeout(Duration::from_secs(5), self.child.wait()).await,
+                Ok(Ok(_))
+            ) {
+                for reader in self.readers.drain(..) {
+                    reader.abort();
+                }
+                anyhow::bail!(
+                    "已向自有进程 {:?} 发送终止信号，但系统尚未回收；可能正在等待文件IO",
+                    self.child.id()
+                );
+            }
         }
-        for reader in self.readers.drain(..) {
-            let _ = reader.await;
+        for mut reader in self.readers.drain(..) {
+            if tokio::time::timeout(Duration::from_secs(2), &mut reader)
+                .await
+                .is_err()
+            {
+                reader.abort();
+            }
         }
+        Ok(())
     }
 }
 
@@ -285,9 +305,120 @@ pub(super) async fn run(
     if let Some(child) = &mut resources {
         drop(child.child.stdin.take());
     }
-    backend.close().await;
-    if let Some(child) = &mut resources {
-        child.close().await;
+    let backend_closed = backend.close().await;
+    let observer_closed = if let Some(child) = &mut resources {
+        child.close().await
+    } else {
+        Ok(())
+    };
+    backend_closed?;
+    observer_closed?;
+    outcome
+}
+
+pub(super) async fn prepare_resources(
+    owner: Arc<Hosting>,
+    request: crate::app::resources::Request,
+    mut stop: watch::Receiver<bool>,
+) -> Result<Option<Value>> {
+    use crate::app::resources::Kind;
+    let mut random = [0; 12];
+    openssl::rand::rand_bytes(&mut random)?;
+    let id = random
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
+    let job = owner.root.join("resource-jobs").join(&id);
+    crate::infra::storage::create_directory(&job).await?;
+    let output = request.output_parent.join(&id);
+    let report = job.join("result.json");
+    let progress = job.join("progress.json");
+    let log_path = job.join("resources.log");
+    let mut options = OpenOptions::new();
+    options.create_new(true).append(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
     }
+    let log = Arc::new(Mutex::new(options.open(&log_path)?));
+    owner.state.lock().await.log_file = Some(log_path);
+    let (executable, mut argv) = if request.kind == Kind::Catalog {
+        (owner.executable.clone(), vec!["prepare-resources".into()])
+    } else {
+        (
+            std::path::PathBuf::from("python3"),
+            vec![
+                crate::app::resources::helper()?.display().to_string(),
+                if request.kind == Kind::Client {
+                    "client"
+                } else {
+                    "captures"
+                }
+                .into(),
+                "--server".into(),
+                owner.executable.display().to_string(),
+                "--mode".into(),
+                request.mode.clone(),
+            ],
+        )
+    };
+    for (key, value) in [
+        ("--source", request.source),
+        ("--output", output.clone()),
+        ("--report", report.clone()),
+        ("--progress-file", progress.clone()),
+    ] {
+        argv.push(key.into());
+        argv.push(value.display().to_string());
+    }
+    argv.push("--managed-stdin".into());
+    if request.kind != Kind::Catalog && !request.maps.is_empty() {
+        argv.push("--maps".into());
+        argv.extend(request.maps);
+    }
+    if request.kind == Kind::Client {
+        if request.reuse_stun {
+            argv.push("--reuse-stun".into());
+        }
+        let identity = super::keys::ensure_identity(&owner.root, false).await?;
+        argv.extend([
+            "--certificate-dir".into(),
+            identity
+                .certificate
+                .parent()
+                .context("本地证书目录缺失")?
+                .display()
+                .to_string(),
+        ]);
+    }
+    if *stop.borrow() {
+        return Ok(None);
+    }
+    let mut process = OwnedProcess::spawn(&executable, &argv, log)?;
+    let outcome=async {
+        loop {
+            if *stop.borrow(){return Ok(None)}
+            if let Some(bytes)=read_bounded(&progress,65536).await? {
+                let value:Value=serde_json::from_slice(&bytes)?;
+                let message=value["message"].as_str().unwrap_or("正在准备资源");
+                owner.progress(message).await;
+                owner.state.lock().await.resource_progress=Some(value);
+            }
+            if let Some(status)=process.child.try_wait()? {
+                ensure!(status.success(),"本地资源准备工具退出（{status}），具体缺项见运行日志");
+                let value:Value=serde_json::from_slice(&read_bounded(&report,65536).await?.context("准备结果缺失")?)?;
+                ensure!(value["schema_version"]==1 && value["client_sha256"]==codol_protocol::CLIENT_SHA256 && value["runtime_validated"]==true,"资源准备结果无效");
+                let output=output.canonicalize()?;
+                for field in ["map_catalog","game_state"] {
+                    let path=std::path::PathBuf::from(value[field].as_str().context("准备结果路径缺失")?).canonicalize()?;
+                    ensure!(path.starts_with(&output) && path.is_file(),"准备结果不在本次输出目录");
+                }
+                return Ok(Some(value));
+            }
+            tokio::select!{_ = stop.changed()=>{},_ = tokio::time::sleep(Duration::from_millis(150))=>{}}
+        }
+    }.await;
+    process.close_timeout(Duration::from_secs(120)).await?;
     outcome
 }

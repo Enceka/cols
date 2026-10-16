@@ -39,7 +39,7 @@ sh tools/cargo.sh run --locked -p codol-server -- observe
 sh tools/cargo.sh run --locked -p codol-server -- admin
 ```
 
-访问 `http://127.0.0.1:39080`，在“开服设置”选择已有地图与服务资料，再点击“一键开服”。用法和配置生效范围见[管理面板](docs/ADMIN_PANEL.md)。
+访问 `http://127.0.0.1:39080`，在“开服设置”通过统一入口准备本地资源，确认服务资料与地图路径，再点击“一键开服”。来源、转换及迁移见[资源准备教程](docs/RESOURCE_PREPARATION_GUIDE.md)，配置生效范围见[管理面板](docs/ADMIN_PANEL.md)。
 
 ## 文档
 

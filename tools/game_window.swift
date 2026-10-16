@@ -64,7 +64,9 @@ func focusGame(_ app: NSRunningApplication) throws {
 }
 let windows = CGWindowListCopyWindowInfo(.optionOnScreenOnly, kCGNullWindowID) as? [[String: Any]] ?? []
 let ownedWindows = windows.filter {
-    ($0[kCGWindowOwnerPID as String] as? Int) == pidNumber && ($0[kCGWindowLayer as String] as? Int) == 0
+    // Wine can promote its game surface to the topmost fullscreen layer26.
+    // Ownership and process identity remain authoritative at every layer.
+    ($0[kCGWindowOwnerPID as String] as? Int) == pidNumber
 }
 func windowArea(_ window: [String: Any]) -> Double {
     guard let bounds = window[kCGWindowBounds as String] as? [String: NSNumber] else { return 0 }

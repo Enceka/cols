@@ -22,6 +22,7 @@ def main():
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--build", action="store_true")
     mode.add_argument("--experiment", type=Path, help="a running experiment.json")
+    parser.add_argument("--probe-dir", type=Path, help="isolated directory for the compiled read-only probe")
     parser.add_argument("--prefix-name", help="project-owned build prefix; experiment selects its own prefix")
     parser.add_argument("--sample-ready", type=Path, help="new experiment-local readiness receipt for replay sampling")
     parser.add_argument("--weapon-models-target", choices=("m4_mp","famasss_mp","ak104ss_mp"),
@@ -86,13 +87,13 @@ def main():
         parser.error("prefix ownership marker mismatch")
     sources = [REPO / "tools/ReadClientState.cs", REPO / "tools/ClientAssets.cs", REPO / "tools/HitRegions.cs", REPO / "tools/ClientVoice.cs", REPO / "tools/ClientNuke.cs", REPO / "tools/ClientProps.cs", REPO / "tools/ClientStory.cs"]
     source_hashes = {p.name: sha256(p) for p in sources}
-    binary = REPO / ".tools/ReadClientState.exe"
+    binary = (args.probe_dir.resolve() if args.probe_dir else REPO / ".tools") / "ReadClientState.exe"
     stamp = binary.with_suffix(".build.json")
     env = os.environ.copy()
     env.update(WINEPREFIX=str(prefix.resolve()), WINEDEBUG="-all")
     wine = str(engine / "bin/wine")
     if args.build:
-        binary.parent.mkdir(exist_ok=True)
+        binary.parent.mkdir(parents=True, exist_ok=True)
         with (prefix / ".codol-lock").open("a") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             try:

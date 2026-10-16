@@ -501,6 +501,12 @@ async fn handle(mut stream: TcpStream, state: Arc<State>) -> Result<()> {
                 Err(error) => Err(error.into()),
             }
         }
+        ("POST", "/api/resources/prepare") => {
+            match serde_json::from_slice::<crate::app::resources::Request>(&request.body) {
+                Ok(request) => state.hosting.prepare_resources(request).await,
+                Err(error) => Err(error.into()),
+            }
+        }
         ("POST", "/api/hosting/start") => state.hosting.start().await,
         ("POST", "/api/hosting/stop") => Ok(state.hosting.stop().await),
         ("POST", "/api/hosting/certificate") => state.hosting.certificate(true).await,

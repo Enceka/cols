@@ -260,3 +260,43 @@ async fn stopping_the_panel_cooperatively_releases_its_services() {
     assert!(status.success());
     assert_released(&running["endpoints"]).await;
 }
+
+#[tokio::test]
+async fn preparing_local_resources_adopts_only_validated_paths_and_preserves_other_settings() {
+    let root = tempfile::tempdir().unwrap();
+    let (mut admin, address) = launch(root.path()).await;
+    configure(address, root.path(), 0).await;
+    let (_, before) = api(address, "GET", "/api/hosting", Value::Null).await;
+    let request = json!({"kind":"catalog","source":root.path().join("catalog.json"),"output_parent":root.path().join("resources")});
+    let (code, _) = api(address, "POST", "/api/resources/prepare", request.clone()).await;
+    assert_eq!(code, 200);
+    let ready = phase(address, "stopped").await;
+    assert_eq!(ready["resources"]["result"]["maps"], 1);
+    let mut expected = before["settings"].clone();
+    expected["game_state"] = ready["settings"]["game_state"].clone();
+    expected["map_catalog"] = ready["settings"]["map_catalog"].clone();
+    assert_eq!(ready["settings"], expected);
+    assert!(Path::new(ready["settings"]["map_catalog"].as_str().unwrap()).is_file());
+    std::fs::write(root.path().join("catalog.json"), b"{}").unwrap();
+    assert_eq!(
+        api(address, "POST", "/api/resources/prepare", request)
+            .await
+            .0,
+        200
+    );
+    let failed = tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            let (_, value) = api(address, "GET", "/api/hosting", Value::Null).await;
+            if value["phase"] == "failed" {
+                break value;
+            }
+            tokio::time::sleep(Duration::from_millis(40)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(failed["settings"], ready["settings"]);
+    assert!(failed["error"].is_string());
+    assert!(!failed["resources"]["result"].is_object());
+    admin.kill().await.unwrap();
+}
