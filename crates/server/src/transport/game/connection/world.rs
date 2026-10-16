@@ -3,6 +3,7 @@ use super::*;
 impl Connection {
     pub(super) fn advance_grenades(&mut self, now: u32) -> Result<()> {
         if self.world.tdm.as_ref().is_none_or(|m| m.finished()) {
+            self.publish_airdrop_hint(None)?;
             self.world.scavenger.clear();
             self.world.grenades.clear();
             self.world.smoke.clear();
@@ -55,6 +56,33 @@ impl Connection {
                 }
             }
         }
+        let angles = self.view_angles();
+        let pitch = f32::from(angles[0] as i16) * std::f32::consts::TAU / 65536.0;
+        let yaw = f32::from(angles[1]) * std::f32::consts::TAU / 65536.0;
+        let tdm = self.world.tdm.as_mut().unwrap();
+        let user = crate::game::rewards::airdrops::PickupUser {
+            actor: 0,
+            life: tdm.streaks.life(0),
+            feet: origin,
+            eye,
+            forward: [
+                pitch.cos() * yaw.cos(),
+                pitch.cos() * yaw.sin(),
+                -pitch.sin(),
+            ],
+            active: self.world.vitals.health > 0 && self.replay.kind().is_none(),
+            holding: self.last_input.as_ref().is_some_and(|cmd| {
+                now.saturating_sub(cmd.time) < 200
+                    && cmd.buttons & codol_protocol::game::channel::usercmd::BUTTON_USE != 0
+            }),
+            steal_msec: 8000,
+        };
+        tdm.pickup_airdrop(now, user, self.world.player.as_mut().unwrap(), collision);
+        let hint = tdm.airdrops.hint(0).and_then(|h| match h.contents {
+            crate::game::rewards::airdrops::Contents::Reward(id) => Some(id),
+            crate::game::rewards::airdrops::Contents::Ammo => None,
+        });
+        self.publish_airdrop_hint(hint)?;
         let mut local = state
             .local_player_snapshot(self.world.vitals.health > 0)
             .unwrap();
@@ -62,6 +90,15 @@ impl Connection {
         local.angles = self.view_angles();
         local.weapon = self.world.player.as_ref().unwrap().equipment().weapon;
         for explosion in self.world.grenades.advance(now, collision) {
+            if explosion.definition.marker_reward.is_some() {
+                self.world
+                    .tdm
+                    .as_mut()
+                    .unwrap()
+                    .airdrops
+                    .marker_landed(&explosion, collision);
+                continue;
+            }
             if explosion.definition.gas {
                 let deployed = self.world.gas.deploy(
                     &explosion,
@@ -205,9 +242,11 @@ impl Connection {
                 self.world.vitals.health = self.world.vitals.health.saturating_sub(damage);
                 self.world.vitals.damage_event = self.world.vitals.damage_event.wrapping_add(1);
                 self.world.vitals.damage_count = damage.min(127) as u8;
-                self.world
-                    .health_recovery
-                    .damaged(now, self.world.vitals.health);
+                self.world.health_recovery.damaged_to(
+                    now,
+                    self.world.vitals.health,
+                    self.world.vitals.max_health,
+                );
                 if self.world.vitals.health == 0 {
                     self.world.player_death = Some(now);
                     self.hit_feedback.clear();
@@ -216,6 +255,7 @@ impl Connection {
                         now,
                         local,
                         crate::game::modes::tdm::PlayerHit {
+                            reward_life: None,
                             damage,
                             attacker: 0,
                             weapon: explosion.definition.index,
@@ -263,9 +303,11 @@ impl Connection {
             self.world.vitals.health = self.world.vitals.health.saturating_sub(hit.damage);
             self.world.vitals.damage_event = self.world.vitals.damage_event.wrapping_add(1);
             self.world.vitals.damage_count = hit.damage.min(127) as u8;
-            self.world
-                .health_recovery
-                .damaged(now, self.world.vitals.health);
+            self.world.health_recovery.damaged_to(
+                now,
+                self.world.vitals.health,
+                self.world.vitals.max_health,
+            );
             tracing::info!(
                 now,
                 damage = hit.damage,
@@ -282,6 +324,7 @@ impl Connection {
                     now,
                     local,
                     crate::game::modes::tdm::PlayerHit {
+                        reward_life: None,
                         damage: hit.damage,
                         attacker: hit.attacker,
                         weapon: hit.weapon,
@@ -321,12 +364,24 @@ impl Connection {
             let mut events = tdm.props.drain();
             events.extend(tdm.deployables.drain());
             events.extend(tdm.airspace.drain());
+            events.extend(tdm.aircraft.drain());
             events.extend(tdm.sam_missiles.drain());
+            events.extend(tdm.strikes.drain());
+            events.extend(tdm.remote.drain());
+            events.extend(tdm.drones.drain());
             if events.is_empty() {
                 break;
             }
             for event in events {
                 match event {
+                    crate::game::world::props::Event::Rocket {
+                        weapon,
+                        origin,
+                        normal,
+                        surface,
+                    } => {
+                        self.impacts.rocket(now, weapon, origin, normal, surface);
+                    }
                     crate::game::world::props::Event::Fx { selector, origin } => {
                         self.impacts.fx(now, selector, origin);
                     }
@@ -366,9 +421,11 @@ impl Connection {
                             self.world.vitals.damage_event =
                                 self.world.vitals.damage_event.wrapping_add(1);
                             self.world.vitals.damage_count = damage.min(127) as u8;
-                            self.world
-                                .health_recovery
-                                .damaged(now, self.world.vitals.health);
+                            self.world.health_recovery.damaged_to(
+                                now,
+                                self.world.vitals.health,
+                                self.world.vitals.max_health,
+                            );
                             if self.world.vitals.health == 0 {
                                 self.world.player_death = Some(now);
                                 self.hit_feedback.clear();
@@ -393,6 +450,22 @@ impl Connection {
             }
         }
         self.drain_match_kills(now);
+        Ok(())
+    }
+}
+
+impl Connection {
+    fn publish_airdrop_hint(&mut self, id: Option<u8>) -> Result<()> {
+        if self.airdrop_hint != id {
+            // Captured killstreak_hint resolves ui_ksHint by table C1 and C17.
+            // The native 's' command publishes this dvar after initialization.
+            let name = id
+                .and_then(crate::game::rewards::killstreaks::reward_name)
+                .unwrap_or("");
+            self.server_commands
+                .push(format!("s ui_ksHint \"{name}\"").as_bytes())?;
+            self.airdrop_hint = id;
+        }
         Ok(())
     }
 }

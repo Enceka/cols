@@ -42,13 +42,14 @@ impl Connection {
             self.feedback.push_back("Training player respawned".into());
             tracing::info!(spawn_count,origin=?self.world.motion.as_ref().map(|m| m.origin),"training player respawned");
         }
-        let recovered = self
-            .world
-            .health_recovery
-            .recover(now, self.world.vitals.health);
+        let recovered = self.world.health_recovery.recover_to(
+            now,
+            self.world.vitals.health,
+            self.world.vitals.max_health,
+        );
         if recovered != self.world.vitals.health {
             self.world.vitals.health = recovered;
-            if recovered == 100 {
+            if recovered == self.world.vitals.max_health {
                 self.world.vitals.damage_count = 0;
             }
             tracing::info!(health = recovered, "training player recovered health");
@@ -127,9 +128,11 @@ impl Connection {
                 )
             {
                 self.world.vitals.health = self.world.vitals.health.saturating_sub(damage);
-                self.world
-                    .health_recovery
-                    .damaged(now, self.world.vitals.health);
+                self.world.health_recovery.damaged_to(
+                    now,
+                    self.world.vitals.health,
+                    self.world.vitals.max_health,
+                );
                 self.world.vitals.damage_event = self.world.vitals.damage_event.wrapping_add(1);
                 self.world.vitals.damage_count = damage.min(127) as u8;
                 tracing::info!(
@@ -287,6 +290,20 @@ impl Connection {
         );
         tick.hits.extend(devices.hits);
         tick.impacts.extend(devices.impacts);
+        let aircraft = self.world.tdm.as_mut().unwrap().step_aircraft(
+            now,
+            (
+                local,
+                motion.view_height + 10.0,
+                self.world.player_birth,
+                self.world.player.as_ref().map_or([false; 2], |p| {
+                    [p.helicopter_undetectable(), p.airplane_undetectable()]
+                }),
+            ),
+            collision,
+        );
+        tick.hits.extend(aircraft.hits);
+        tick.impacts.extend(aircraft.impacts);
         for hit in tick.hits {
             if state
                 .nuke_resources()
@@ -300,9 +317,11 @@ impl Connection {
             self.world.vitals.health = self.world.vitals.health.saturating_sub(hit.damage);
             self.world.vitals.damage_event = self.world.vitals.damage_event.wrapping_add(1);
             self.world.vitals.damage_count = hit.damage.min(127) as u8;
-            self.world
-                .health_recovery
-                .damaged(now, self.world.vitals.health);
+            self.world.health_recovery.damaged_to(
+                now,
+                self.world.vitals.health,
+                self.world.vitals.max_health,
+            );
             if self.world.vitals.health == 0 {
                 self.world.player_death = Some(now);
                 self.hit_feedback.clear();
@@ -322,11 +341,12 @@ impl Connection {
                 }
             }
         }
-        self.world.vitals.health = self
-            .world
-            .health_recovery
-            .recover(now, self.world.vitals.health);
-        if self.world.vitals.health == 100 {
+        self.world.vitals.health = self.world.health_recovery.recover_to(
+            now,
+            self.world.vitals.health,
+            self.world.vitals.max_health,
+        );
+        if self.world.vitals.health == self.world.vitals.max_health {
             self.world.vitals.damage_count = 0;
         }
         for (weapon, impact) in tick.impacts {

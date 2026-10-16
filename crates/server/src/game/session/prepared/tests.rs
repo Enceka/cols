@@ -1214,3 +1214,57 @@ fn bootstrap_supplies_a_complete_normal_speed_slowmotion_config() {
     assert_eq!(r.u8().unwrap(), 6);
     r.finish().unwrap();
 }
+
+#[test]
+fn remote_camera_resources_do_not_override_the_immutable_tag_bank() {
+    let mut state = synthetic();
+    let mut resources = crate::game::rewards::remote::test_resources();
+    resources.remote_exit = Some(crate::game::rewards::killstreaks::RemoteExitResources {
+        white: 1000,
+        grain: 1001,
+        material_bank_count: 27,
+    });
+    state.radar_resources = Some(Arc::new(resources));
+    let body = state.body(1).unwrap();
+    let mut reader = codol_protocol::game::channel::wire::Reader::new(&body);
+    assert_eq!(reader.u8().unwrap(), 3);
+    reader.u32().unwrap();
+    for _ in 0..2 {
+        while reader.u8().unwrap() != 0 {}
+    }
+    assert_eq!(reader.u32().unwrap(), state.ncs_crc);
+    assert_eq!(reader.u8().unwrap(), 4);
+    let count = reader.u16().unwrap();
+    let mut previous = -1;
+    let mut exit_materials = Vec::new();
+    for _ in 0..count {
+        let index = if reader.bits(1).unwrap() != 0 {
+            previous + 1
+        } else {
+            reader.bits(13).unwrap() as i32
+        };
+        assert!(
+            !(5379..5443).contains(&index),
+            "registered NCS tag names must not be overridden by remote preparation"
+        );
+        let mut text = Vec::new();
+        loop {
+            let byte = reader.u8().unwrap();
+            if byte == 0 {
+                break;
+            }
+            text.push(byte);
+        }
+        if index == 5355 || index == 5356 {
+            exit_materials.push((index, text));
+        }
+        previous = index;
+    }
+    assert_eq!(
+        exit_materials,
+        vec![
+            (5355, b"white".to_vec()),
+            (5356, b"ac130_overlay_grain".to_vec())
+        ]
+    );
+}

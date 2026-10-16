@@ -98,6 +98,7 @@ struct RewardWeapon {
 
 #[derive(Debug, Clone)]
 pub(crate) struct HeldWeapons {
+    reward_loadout: bool,
     death_weapon_taken: bool,
     offhands: [Option<crate::game::weapons::grenade::Equipped>; 2],
     selected_offhand: Option<usize>,
@@ -107,6 +108,7 @@ pub(crate) struct HeldWeapons {
     throws: Vec<crate::game::weapons::grenade::Throw>,
     marker_phase: Option<u8>,
     perks: crate::game::status::perks::Perks,
+    move_modifier: f32,
     sprinting: bool,
     diving: bool,
     dive_sliding: bool,
@@ -168,6 +170,7 @@ impl HeldWeapons {
             });
         }
         Self {
+            reward_loadout: false,
             death_weapon_taken: false,
             offhands: [None, None],
             selected_offhand: None,
@@ -177,6 +180,7 @@ impl HeldWeapons {
             throws: Vec::new(),
             marker_phase: None,
             perks: Default::default(),
+            move_modifier: 1.0,
             sprinting: false,
             diving: false,
             dive_sliding: false,
@@ -235,12 +239,24 @@ impl HeldWeapons {
     pub fn set_perks(&mut self, perks: crate::game::status::perks::Perks) {
         self.perks = perks;
     }
+    pub(crate) fn inherit_perks(&mut self, original: &Self) {
+        self.perks = original.perks.clone();
+    }
+    pub(crate) fn set_reward_loadout(&mut self) {
+        self.reward_loadout = true;
+    }
     pub fn set_fast_reload(&mut self, allowed: bool) {
         self.current.fast_reload = allowed;
     }
 
     pub(crate) fn sentry_undetectable(&self) -> bool {
         self.perks.has("modNoSentryGuns")
+    }
+    pub(crate) fn helicopter_undetectable(&self) -> bool {
+        self.perks.has("modNoHelicopter")
+    }
+    pub(crate) fn airplane_undetectable(&self) -> bool {
+        self.perks.has("modNoAirplane")
     }
     pub fn explosive_damage(&self, damage: u16) -> u16 {
         (f32::from(damage) * self.perks.value("modArmorExplosiveDamageScale", 1.0)).ceil() as u16
@@ -261,7 +277,7 @@ impl HeldWeapons {
     /// shot per trigger;0 is automatic;2/3/4 fire that many rounds.
     pub fn set_fire_type(&mut self, fire_type: u32) -> anyhow::Result<()> {
         anyhow::ensure!(
-            fire_type <= 5,
+            fire_type <= 6,
             "unsupported special weapon fire type {fire_type}"
         );
         self.current.fire_type = fire_type;
@@ -270,6 +286,10 @@ impl HeldWeapons {
 
     pub fn set_move_scale(&mut self, scale: f32) {
         self.current.move_scale = scale;
+    }
+    pub(crate) fn set_move_modifier(&mut self, scale: f32) {
+        assert!(scale.is_finite() && (0.1..=2.0).contains(&scale));
+        self.move_modifier = scale;
     }
     pub fn set_ads_move_scale(&mut self, scale: f32) {
         self.current.ads_move_scale = if scale > 0.0 { scale } else { 1.0 };
@@ -321,12 +341,14 @@ impl HeldWeapons {
     }
 
     pub fn move_scale(&self) -> f32 {
-        self.current.move_scale * self.perks.value("modMoveSpeedScale", 1.0)
+        self.current.move_scale * self.perks.value("modMoveSpeedScale", 1.0) * self.move_modifier
     }
     /// PM_CmdScale0x416c16..0x416cc4 selects WeaponDef+0x7cc while
     /// aiming, replacing +0x7c8. Motion applies the separate native0.4 factor.
     pub fn ads_move_scale(&self) -> f32 {
-        self.current.ads_move_scale * self.perks.value("modMoveSpeedScale", 1.0)
+        self.current.ads_move_scale
+            * self.perks.value("modMoveSpeedScale", 1.0)
+            * self.move_modifier
     }
     pub fn set_ballistics(&mut self, stats: crate::game::combat::Ballistics) {
         assert!(stats.valid());
@@ -448,7 +470,7 @@ impl HeldWeapons {
             equipment.abilities.masks[0] |= 0x80;
             equipment.abilities.values[13] = 1.0;
         }
-        equipment.move_multiplier = self.perks.value("modMoveSpeedScale", 1.0);
+        equipment.move_multiplier = self.perks.value("modMoveSpeedScale", 1.0) * self.move_modifier;
         equipment.offhands = self.offhands.each_ref().map(|g| {
             g.as_ref()
                 .map(|g| codol_protocol::game::snapshot::OffhandWeapon {

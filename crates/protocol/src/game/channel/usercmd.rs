@@ -6,6 +6,11 @@ use crate::lobby::channel::LobbyError;
 /// Target 3.3.3.3 +activate (default F). Native command-ring capture observed
 /// 0x02000008 while held; the high input flag is independent of the use bit.
 pub const BUTTON_USE: u32 = 0x8;
+/// Native0x45fee4 selects the remote byte pair at usercmd+0x27/+0x28.
+pub const BUTTON_REMOTE: u32 = 0x200000;
+/// Target command producer0x45fdd4/0x45fe00. Confirmation takes precedence.
+pub const BUTTON_LOCATION_CONFIRM: u32 = 0x20000;
+pub const BUTTON_LOCATION_CANCEL: u32 = 0x40000;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct UserCommand {
@@ -14,12 +19,24 @@ pub struct UserCommand {
     pub angles: [u16; 3],
     pub direction: u8,
     pub weapons: [u16; 3],
+    /// Native XY bytes are biased by128 modulo256; yaw is an unbiased byte.
     pub selected: [u8; 3],
     pub remote: [u8; 2],
     pub melee_yaw: u16,
     pub melee_distance: u8,
     pub melee_entity: u16,
 }
+impl UserCommand {
+    /// The native linked-view consumer0x414dac/0x414dbf sign-extends these
+    /// bytes and divides by -127.0 (constant0xc85f58). The producer limits
+    /// to +/-127; retain the consumer's arithmetic even for wire byte128.
+    /// A retained delta pair without BUTTON_REMOTE is not new control.
+    pub fn remote_axes(&self) -> Option<[f32; 2]> {
+        (self.buttons & BUTTON_REMOTE != 0)
+            .then(|| self.remote.map(|v| f32::from(v as i8) / -127.0))
+    }
+}
+
 fn delta(r: &mut Reader<'_>, key: u32, old: u32, width: usize) -> Result<u32, LobbyError> {
     if r.bits(1)? == 0 {
         return Ok(old);
@@ -70,12 +87,12 @@ fn command(r: &mut Reader<'_>, key: u32, old: &UserCommand) -> Result<UserComman
             for i in 0..3 {
                 out.weapons[i] = delta(r, k, u32::from(old.weapons[i]), 10)? as u16;
             }
-            if out.buttons & 0x20000 != 0 {
+            if out.buttons & BUTTON_LOCATION_CONFIRM != 0 {
                 for i in 0..3 {
                     out.selected[i] = byte(r, k, old.selected[i])?;
                 }
             }
-            if out.buttons & 0x200000 != 0 {
+            if out.buttons & BUTTON_REMOTE != 0 {
                 for i in 0..2 {
                     out.remote[i] = byte(r, k, old.remote[i])?;
                 }
@@ -167,6 +184,21 @@ mod tests {
     use crate::game::channel::wire::client_message;
     use crate::game::gamestate::Writer;
     #[test]
+    fn remote_axes_are_signed_and_retained_bytes_require_the_mode_bit() {
+        let mut cmd = UserCommand {
+            remote: [127, 129],
+            ..Default::default()
+        };
+        assert_eq!(cmd.remote_axes(), None);
+        cmd.buttons = BUTTON_REMOTE;
+        assert_eq!(cmd.remote_axes(), Some([-1.0, 1.0]));
+        cmd.remote = [128, 0];
+        assert_eq!(cmd.remote_axes(), Some([128.0 / 127.0, 0.0]));
+        cmd.remote = [1, 255];
+        assert_eq!(cmd.remote_axes(), Some([-1.0 / 127.0, 1.0 / 127.0]));
+    }
+
+    #[test]
     fn captured_first_active_input_checks_tags_tail_and_truncation() {
         // Public protocol vector from client-1791344097175, ACK4. No identity,
         // keys, reliable text or account data; native XOR has been removed.
@@ -192,6 +224,47 @@ mod tests {
         bad[31] = 0;
         assert!(client_message(&bad, Some(4)).is_err());
     }
+    #[test]
+    fn remote_packet_byte_pair_is_gated_separately_from_retained_delta_values() {
+        for remote_mode in [false, true] {
+            let mut w = Writer::default();
+            w.bits(1, 3);
+            w.bytes.push(1);
+            w.bits(0, 1);
+            w.bytes.extend_from_slice(&1000u32.to_le_bytes());
+            w.bits(1, 1);
+            w.bits(1, 1);
+            w.bits(1, 1); // full branch, fire held
+            w.bits(0, 4); // angles and movement retained
+            w.bits(1, 1);
+            w.bits(
+                (if remote_mode { BUTTON_REMOTE >> 1 } else { 0 }) ^ 1000,
+                29,
+            );
+            w.bits(0, 3); // weapon IDs retained
+            if remote_mode {
+                for byte in [129u8, 127] {
+                    w.bits(1, 1);
+                    w.bytes.push(byte ^ (1000u32 as u8));
+                }
+            }
+            w.bits(5, 3);
+            w.bytes.extend_from_slice(&[0; 20]);
+            w.bits(3, 3);
+            let base = UserCommand {
+                remote: [9, 7],
+                ..Default::default()
+            };
+            let message =
+                crate::game::channel::wire::client_message_with_base(&w.bytes, Some(0), &base)
+                    .unwrap();
+            let c = &message.movement.unwrap().commands[0];
+            assert_eq!(c.buttons & 1, 1);
+            assert_eq!(c.remote, if remote_mode { [129, 127] } else { [9, 7] });
+            assert_eq!(c.remote_axes(), remote_mode.then_some([1.0, -1.0]));
+        }
+    }
+
     #[test]
     fn full_melee_input_consumes_the_new_eleven_bit_entity() {
         let mut w = Writer::default();

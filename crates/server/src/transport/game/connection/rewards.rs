@@ -14,14 +14,95 @@ impl Connection {
         let Some(tdm) = &mut self.world.tdm else {
             return Ok(());
         };
+        if let Some(player) = &mut self.world.player
+            && self.world.armor.validate(
+                now,
+                tdm.streaks.life(0),
+                tdm.finished(),
+                player,
+                &mut self.world.vitals,
+            )
+        {
+            self.world.health_recovery = Default::default();
+            self.server_commands
+                .push(format!("a {}", player.equipment().weapon).as_bytes())?;
+        }
+        tdm.validate_remote(
+            now,
+            self.world.vitals.health > 0,
+            self.world.player.as_ref().map(|p| p.equipment().weapon),
+        );
+        for change in tdm.remote.drain_vision() {
+            if change.life == tdm.streaks.life(0)
+                && self.world.vitals.health > 0
+                && !tdm.finished()
+                && tdm.remote.operator_life() == Some(change.life)
+            {
+                self.server_commands.push(&change.command())?;
+            }
+        }
+        for change in tdm.remote.drain_weapon_changes() {
+            if change.life == tdm.streaks.life(0)
+                && self.world.vitals.health > 0
+                && !tdm.finished()
+                && tdm.remote.operator_life() == Some(change.life)
+            {
+                self.server_commands
+                    .push(format!("a {}", change.weapon).as_bytes())?;
+                if let Some(angles) = change.view_angles {
+                    self.spawn_view_anchor = Some((angles, self.native_sent + 1));
+                }
+            }
+        }
+        for returned in tdm.remote.drain_returns() {
+            if returned.life == tdm.streaks.life(0)
+                && self.world.vitals.health > 0
+                && !tdm.finished()
+                && let Some(player) = &mut self.world.player
+            {
+                player.freeze_at(now);
+                if player.equipment().weapon == returned.weapon {
+                    player.remove_reward(returned.weapon);
+                    self.server_commands
+                        .push(format!("a {}", player.equipment().weapon).as_bytes())?;
+                }
+                self.spawn_view_anchor = Some((returned.angles, self.native_sent + 1));
+            }
+        }
+        tdm.validate_strike_selection(
+            now,
+            self.world.vitals.health > 0,
+            self.world.player.as_ref().map(|p| p.equipment().weapon),
+        );
+        if self.world.vitals.health == 0 || tdm.finished() {
+            tdm.cancel_airdrop();
+        } else if let Some(player) = &self.world.player
+            && !resources.radios.iter().any(|r| {
+                crate::game::rewards::mechanisms::Mechanism::marker(r.native_id)
+                    && r.weapon == player.equipment().weapon
+            })
+        {
+            tdm.cancel_airdrop();
+        }
         if let Some(player) = &mut self.world.player {
             player
                 .set_support_arrow(!tdm.finished() && tdm.streaks.sr71_active(tdm.teams()[0], now));
         }
         if self.world.vitals.health > 0
             && !tdm.finished()
+            && !self.world.armor.active()
             && let Some(player) = &mut self.world.player
         {
+            if self.radio_return.is_none() && !tdm.remote.busy() {
+                let mut desired = [None; 3];
+                for (slot, id) in tdm.streaks.owned_radios(0) {
+                    desired[slot] = resources.radio(id).map(|r| r.weapon);
+                }
+                if player.sync_reward_slots(desired) {
+                    self.server_commands
+                        .push(format!("a {}", player.equipment().weapon).as_bytes())?;
+                }
+            }
             for (slot, id) in tdm.streaks.owned_radios(0) {
                 if let Some(r) = resources.radio(id) {
                     if let Some(marker) =
@@ -92,6 +173,7 @@ impl Connection {
         if self.world.vitals.health > 0
             && tdm.streaks.owned(0)
             && !tdm.finished()
+            && !self.world.armor.active()
             && let Some(player) = &mut self.world.player
         {
             player.grant_nuke(&resources);
@@ -162,7 +244,16 @@ impl Connection {
                     );
                     tracing::info!(actor, time, flash = resources.flash_fx, blast = resources.blast_fx, origin = ?point, "nuke explosion FX emitted");
                 }
+                Event::Vision { actor, time } => {
+                    if resources.vision.is_some() {
+                        self.server_commands.push(b"N \"mpnuke\" 3000")?;
+                        tracing::info!(actor, time, "nuke vision started");
+                    }
+                }
                 Event::End { actor, time } => {
+                    if resources.vision.is_some() {
+                        self.server_commands.push(b"N \"mpnuke_aftermath\" 5000")?;
+                    }
                     let state = self.world.game_state.as_ref().unwrap();
                     let mut local = state
                         .local_player_snapshot(self.world.vitals.health > 0)

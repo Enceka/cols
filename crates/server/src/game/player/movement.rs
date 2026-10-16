@@ -80,6 +80,17 @@ pub struct Motion {
     movement_events: Vec<codol_protocol::game::snapshot::events::Event>,
 }
 impl Motion {
+    /// A remote operator remains at the authoritative body location. Advancing
+    /// the input clock prevents a later exit from replaying the remote interval.
+    pub(crate) fn freeze_remote(&mut self, time: u32) {
+        self.cancel_melee_charge();
+        self.cancel_dive();
+        self.cancel_sprint();
+        self.velocity = [0.0; 3];
+        self.command_time = self.command_time.max(time);
+        self.previous_buttons = 0;
+    }
+
     pub(crate) fn wire_snapshot(&self) -> codol_protocol::game::snapshot::MotionSnapshot {
         codol_protocol::game::snapshot::MotionSnapshot {
             pm_time: self.pm_time,
@@ -691,4 +702,30 @@ fn clip_planes(v: V3, planes: &[V3]) -> V3 {
         }
     }
     result
+}
+
+#[cfg(test)]
+mod remote_tests {
+    use super::*;
+    #[test]
+    fn remote_body_freeze_keeps_position_stance_and_ground_and_advances_clock() {
+        let mut m = Motion::new([100.0, 200.0, 30.0]);
+        m.stance = Stance::Crouch;
+        m.flags = 0x4002;
+        m.ground_entity = WORLD;
+        m.velocity = [100.0, 20.0, 0.0];
+        m.command_time = 1000;
+        m.view_height = 40.0;
+        m.view_height_target = 40;
+        m.freeze_remote(60000);
+        assert_eq!(m.origin, [100.0, 200.0, 30.0]);
+        assert_eq!(m.stance, Stance::Crouch);
+        assert_eq!(m.velocity, [0.0; 3]);
+        assert_eq!(m.command_time, 60000);
+        assert_eq!(m.ground_entity, WORLD);
+        assert_eq!(m.flags, 2);
+        assert_eq!(m.view_height, 40.0);
+        m.freeze_remote(59000);
+        assert_eq!(m.command_time, 60000);
+    }
 }

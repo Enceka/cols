@@ -354,6 +354,7 @@ fn player() -> HeldWeapons {
             grenade_time: 0,
             move_multiplier: 1.0,
             inventory_weapon: None,
+            inventory_override: None,
             alternate_weapon: None,
             alternates: [None, None],
             fire_count: 0,
@@ -417,6 +418,32 @@ fn ordinary_radios_and_nuke_switch_without_overwriting_rewards_or_rifle_forms() 
     assert!(p.owns_weapon(301) && p.owns_weapon(323) && p.owns_weapon(353));
     p.remove_reward(301);
     assert!(p.owns_weapon(323));
+}
+#[test]
+fn pickup_slot_changes_preserve_active_reward_and_return_saved_rifle_on_removal() {
+    let mut p = switchable_player(352, 0.9);
+    let timing = crate::game::rewards::killstreaks::test_resources().switch;
+    p.grant_nuke(&crate::game::rewards::killstreaks::test_resources());
+    p.grant_reward(1, 301, timing, 800);
+    p.grant_reward(2, 302, timing, 800);
+    for time in (1100..4000).step_by(100) {
+        p.apply(&UserCommand {
+            time,
+            weapons: [301, 0, 0],
+            ..Default::default()
+        });
+    }
+    assert_eq!(p.equipment().weapon, 301);
+    p.current.equipment.ammo.as_mut().unwrap().clip = 0;
+    assert!(!p.sync_reward_slots([Some(302), None, Some(301)]));
+    assert_eq!(p.active_reward, Some(3));
+    assert_eq!(p.equipment().ammo.unwrap().clip, 0);
+    assert!(p.owns_weapon(352) && p.owns_weapon(323));
+    assert!(p.sync_reward_slots([Some(302), None, None]));
+    assert_eq!(p.equipment().weapon, 352);
+    assert!(!p.owns_weapon(301));
+    p.grant_reward(3, 303, timing, 800);
+    assert!(p.owns_weapon(303) && p.owns_weapon(302) && p.owns_weapon(323));
 }
 #[test]
 fn nuclear_reward_switches_through_native_inventory_and_returns_the_original_weapon() {
@@ -890,7 +917,7 @@ fn ranger_both_triggers_spend_two_shells_but_never_create_an_absent_shell() {
 fn special_modes_are_explicitly_rejected_without_changing_fire_mode() {
     let mut p = player();
     p.set_fire_type(1).unwrap();
-    for fire_type in [6, 7, u32::MAX] {
+    for fire_type in [7, u32::MAX] {
         assert!(p.set_fire_type(fire_type).is_err());
     }
     p.apply(&cmd(1100, 1));
@@ -1469,6 +1496,33 @@ fn reload_events_fire_once_and_loadout_replacement_preserves_event_and_command_c
     assert_eq!(player.equipment().firing.unwrap().remaining_msec, 400);
     player.apply(&select(3629, 353, 0));
     assert_eq!(player.equipment().firing.unwrap().state, 0);
+}
+
+#[test]
+fn remote_frozen_interval_preserves_rifle_ammo_and_restore_does_not_replay_fire() {
+    let mut p = switchable_player(352, 1.0);
+    p.current.equipment.ammo.as_mut().unwrap().clip = 7;
+    p.current.equipment.ammo.as_mut().unwrap().reserve = 21;
+    let rifle = p.equipment().ammo.unwrap();
+    let timing = crate::game::rewards::killstreaks::test_resources().switch;
+    p.grant_reward(1, 325, timing, 800);
+    for time in (1000..5000).step_by(100) {
+        p.apply(&select(time, 325, 0));
+    }
+    assert_eq!(p.equipment().weapon, 325);
+    assert_eq!(p.equipment().ammo.unwrap().clip, 1);
+    for time in (5000..60000).step_by(100) {
+        p.freeze_at(time);
+    }
+    assert!(p.take_shots().is_empty());
+    assert!(p.take_melee_strikes().is_empty());
+    p.remove_reward(325);
+    assert_eq!(p.equipment().weapon, 352);
+    let after = p.equipment().ammo.unwrap();
+    assert_eq!((after.clip, after.reserve), (rifle.clip, rifle.reserve));
+    p.apply(&select(60000, 352, 0));
+    assert!(p.take_shots().is_empty());
+    assert_eq!(p.equipment().ammo.unwrap().clip, 7);
 }
 
 #[test]

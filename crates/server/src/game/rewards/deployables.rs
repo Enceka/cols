@@ -113,15 +113,22 @@ struct Device {
     placement: Placement,
     owner: u8,
     team: u8,
+    life: u32,
     health: u16,
     end: u32,
     next_fire: u32,
     wreck_until: Option<u32>,
     events: codol_protocol::game::snapshot::events::EventQueue,
 }
+pub(crate) struct Source {
+    pub owner: u8,
+    pub team: u8,
+    pub life: u32,
+}
 pub(crate) struct DeviceShot {
     pub owner: u8,
     pub team: u8,
+    pub life: u32,
     pub entity: u16,
     pub eye: [f32; 3],
     pub angles: [u16; 3],
@@ -230,12 +237,12 @@ impl Deployables {
     pub fn place(
         &mut self,
         placement: Placement,
-        owner: u8,
-        team: u8,
+        source: Source,
         now: u32,
         actors: &[Actor],
         collision: &Collision,
     ) -> bool {
+        let Source { owner, team, life } = source;
         let shape = Collider::new(
             placement.entity,
             placement.origin,
@@ -263,6 +270,7 @@ impl Deployables {
             placement,
             owner,
             team,
+            life,
             health: 1000,
             end: now.saturating_add(LIFE_MSEC),
             next_fire: now + 500,
@@ -277,6 +285,7 @@ impl Deployables {
             .devices
             .iter()
             .map(|d| PropSnapshot {
+                actor: None,
                 entity_number: d.placement.entity,
                 model: if d.health == 0 {
                     d.placement.definition.wreck_model
@@ -295,6 +304,8 @@ impl Deployables {
                 // The GENERAL model path has native DObj evidence. TURRET
                 // construction requires additional renderer state before use.
                 turret: false,
+                turret_pose: None,
+                vehicle: None,
             })
             .collect::<Vec<_>>();
         snapshots.sort_by_key(|p| p.entity_number);
@@ -454,6 +465,7 @@ impl Deployables {
                 shots.push(DeviceShot {
                     owner: d.owner,
                     team: d.team,
+                    life: d.life,
                     entity: d.placement.entity,
                     eye,
                     angles,
@@ -518,6 +530,7 @@ impl Deployables {
             if let Some((_, target)) = target {
                 d.next_fire = now.saturating_add(weapon.interval);
                 launches.push(crate::game::rewards::sam::Launch {
+                    reward_life: Some(d.life),
                     owner: d.owner,
                     team: d.team,
                     device: d.placement.entity,
@@ -600,7 +613,17 @@ mod tests {
         let mut d = Deployables::default();
         let owner = actor(0, 1, 0.0, 0.0);
         let plan = d.plan_sentry(&test_resources(), owner, c).unwrap();
-        assert!(d.place(plan, 0, 1, 1000, &[owner], c));
+        assert!(d.place(
+            plan,
+            Source {
+                owner: 0,
+                team: 1,
+                life: 7
+            },
+            1000,
+            &[owner],
+            c
+        ));
         d
     }
     #[test]
@@ -624,7 +647,17 @@ mod tests {
         let owner = actor(0, 1, 0.0, 0.0);
         let mut devices = Deployables::default();
         let plan = devices.plan_sam(&r, owner, &c).unwrap();
-        assert!(devices.place(plan, 0, 1, 1000, &[owner], &c));
+        assert!(devices.place(
+            plan,
+            Source {
+                owner: 0,
+                team: 1,
+                life: 7
+            },
+            1000,
+            &[owner],
+            &c
+        ));
         let mut t = crate::game::rewards::airspace::Target {
             entity: 448,
             source: crate::game::rewards::killstreaks::SupportFlight {
@@ -648,7 +681,9 @@ mod tests {
         let mut distant = t;
         distant.center[0] = 6000.0;
         assert!(devices.sam_launches(1500, &[distant], 0, 16, &c).is_empty());
-        assert_eq!(devices.sam_launches(1500, &[t], 0, 16, &c).len(), 1);
+        let launches = devices.sam_launches(1500, &[t], 0, 16, &c);
+        assert_eq!(launches.len(), 1);
+        assert_eq!(launches[0].reward_life, Some(7));
         assert!(devices.sam_launches(2249, &[t], 0, 16, &c).is_empty());
         assert_eq!(devices.sam_launches(2250, &[t], 0, 16, &c).len(), 1);
     }
@@ -670,7 +705,17 @@ mod tests {
         );
         let mut d = d;
         let plan = d.plan_sentry(&test_resources(), owner, &c).unwrap();
-        assert!(!d.place(plan, 0, 1, 1000, &[owner, actor(6, 2, 96.0, 0.0)], &c));
+        assert!(!d.place(
+            plan,
+            Source {
+                owner: 0,
+                team: 1,
+                life: 7
+            },
+            1000,
+            &[owner, actor(6, 2, 96.0, 0.0)],
+            &c
+        ));
         assert!(d.snapshots().is_empty());
     }
     #[test]
@@ -746,6 +791,7 @@ mod tests {
         let c = collision(false);
         let mut d = placed(&c);
         let blast = Blast {
+            reward_life: None,
             owner: 6,
             source_entity: None,
             weapon: 352,

@@ -19,6 +19,10 @@ pub(crate) struct SnapshotWorld<'a> {
     pub view_offset: [u16; 3],
     pub streaks: codol_protocol::game::snapshot::killstreaks::StreakSnapshot,
     pub radar_flags: Option<u8>,
+    pub location_selection:
+        Option<codol_protocol::game::snapshot::location_selection::LocationSelection>,
+    pub remote: Option<codol_protocol::game::snapshot::remote::Links>,
+    pub remote_exit: Option<codol_protocol::game::snapshot::hit_feedback::RemoteExitSnapshot>,
     pub reward_inventory: [Option<codol_protocol::game::snapshot::EquippedWeapon>; 4],
     pub nuke_hud: Option<codol_protocol::game::snapshot::hit_feedback::NukeHudSnapshot>,
     pub preparation_hud:
@@ -248,6 +252,9 @@ impl PreparedGameState {
     }
     pub(crate) fn streak_previews(&self) -> crate::game::rewards::killstreaks::Previews {
         self.player_streak_previews
+    }
+    pub(crate) fn minimap(&self) -> Option<&crate::content::maps::minimap::Minimap> {
+        self.minimap.as_ref()
     }
     pub(crate) fn spawn_angles(&self) -> [u16; 3] {
         self.match_config
@@ -516,6 +523,15 @@ impl PreparedGameState {
     }
 }
 
+#[cfg(test)]
+pub(crate) fn test_reward_resources(
+    state: &mut PreparedGameState,
+    nuke: crate::game::rewards::killstreaks::NukeResources,
+    radar: crate::game::rewards::killstreaks::RadarResources,
+) {
+    state.nuke_resources = Some(Arc::new(nuke));
+    state.radar_resources = Some(Arc::new(radar));
+}
 #[cfg(test)]
 pub(crate) fn synthetic() -> PreparedGameState {
     PreparedGameState {

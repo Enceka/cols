@@ -1,6 +1,42 @@
 use super::*;
 
 impl HeldWeapons {
+    pub(crate) fn refill_supply(&mut self) {
+        let pools = self
+            .inventory()
+            .filter_map(|w| w.equipment.ammo.map(|a| a.reserve_key))
+            .collect::<std::collections::BTreeSet<_>>();
+        for key in pools {
+            let Some(w) = self
+                .inventory()
+                .find(|w| w.equipment.ammo.is_some_and(|a| a.reserve_key == key))
+            else {
+                continue;
+            };
+            let stock = w
+                .equipment
+                .ammo
+                .unwrap()
+                .reserve
+                .saturating_add(self.ammo_space(w).min(2047) as u16);
+            for w in std::iter::once(&mut self.current)
+                .chain(&mut self.secondary)
+                .chain(&mut self.alternate)
+                .chain(&mut self.secondary_alternate)
+            {
+                if let Some(a) = &mut w.equipment.ammo
+                    && a.reserve_key == key
+                {
+                    a.reserve = stock;
+                }
+            }
+        }
+        for g in self.offhands.iter_mut().flatten() {
+            g.count = g.definition.capacity();
+        }
+        self.sync_ammunition();
+    }
+
     pub fn set_ammo_limits(&mut self, limits: AmmoLimits) {
         self.current.ammo_limits = Some(limits);
     }

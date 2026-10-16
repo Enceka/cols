@@ -383,6 +383,7 @@ mod tests {
             1000,
             victim,
             PlayerHit {
+                reward_life: None,
                 damage: 100,
                 attacker: 0,
                 weapon: 352,

@@ -123,6 +123,7 @@ impl TdmMatch {
                         );
                     }
                     tick.hits.push(PlayerHit {
+                        reward_life: None,
                         damage,
                         attacker,
                         weapon: shot.weapon,

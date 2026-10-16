@@ -177,6 +177,19 @@ impl PreparedGameState {
             // uninitialized slow-motion values and nearly stops client time.
             (6415, "0 0 1 1".to_owned()),
         ];
+        if self
+            .nuke_resources
+            .as_ref()
+            .is_some_and(|r| r.acceptance_dogs)
+            || self
+                .radar_resources()
+                .and_then(|r| r.animals.as_ref())
+                .is_some_and(|a| a.valid())
+        {
+            // Target0x579010..0x57901a parses serverinfo2482 into cgs+0x60;
+            // BG0x40bfa9 gates common_dog on bit2 before tree registration.
+            values[0].1.push_str("\\2482\\2");
+        }
         if self.training_enemy.is_some() {
             // Current build reads these raw nickname strings, not info pairs.
             values.extend([
@@ -226,6 +239,33 @@ impl PreparedGameState {
         if let Some(props) = &self.props_resources {
             values.extend(props.configstrings());
         }
+        if let Some(resources) = &self.radar_resources {
+            if let Some(exit) = resources.remote_exit {
+                for (slot, name) in [(exit.white, "white"), (exit.grain, "ac130_overlay_grain")] {
+                    let index = 4355 + slot;
+                    if let Some((_, existing)) = values.iter().find(|(id, _)| *id == index) {
+                        anyhow::ensure!(
+                            existing == name,
+                            "remote exit material configstring collision"
+                        );
+                    } else {
+                        values.push((index, name.to_owned()));
+                    }
+                }
+            }
+            for (alias, slot) in &resources.loop_sounds {
+                let index =
+                    codol_protocol::game::snapshot::sound::DYNAMIC_SOUND_BASE + u16::from(*slot);
+                if let Some((_, existing)) = values.iter().find(|(id, _)| *id == index) {
+                    anyhow::ensure!(
+                        existing == alias,
+                        "reward loop sound configstring collision"
+                    );
+                } else {
+                    values.push((index, alias.clone()));
+                }
+            }
+        }
         values.sort_by_key(|v| v.0);
         for (index, name) in self.weapon_configstrings() {
             // NCS inherited weapon bank starts at5443; unused indices are
@@ -265,8 +305,8 @@ impl PreparedGameState {
             .collision
             .as_ref()
             .map_or_else(Vec::new, |c| c.destroyed_glass());
-        // Both roster and local appearance are frozen for this match, so
-        // archived views use the same identity even after a backpack refresh.
+        // Ordinary outfits remain fixed across backpack refreshes. A complete
+        // reward body replaces the packed character identity for its lifetime.
         let mut characters = [None; 12];
         characters[0] = self.player_appearance.as_ref().and_then(|a| a.character);
         if let Some(config) = &self.match_config {
@@ -276,6 +316,12 @@ impl PreparedGameState {
                     .as_ref()
                     .and_then(|outfits| outfits[usize::from(config.teams[i + 1] - 1)].character);
             }
+        }
+        if let (Some(current), Some(ordinary)) =
+            (world.local_player, self.local_player_snapshot(true))
+            && !current.same_appearance(ordinary)
+        {
+            characters[0] = None;
         }
         Ok(codol_protocol::game::snapshot::player_frame_with_world(
             server_time,
@@ -293,6 +339,9 @@ impl PreparedGameState {
                 view_offset: world.view_offset,
                 streaks: world.streaks,
                 radar_flags: world.radar_flags,
+                location_selection: world.location_selection,
+                remote: world.remote,
+                remote_exit: world.remote_exit,
                 reward_inventory: world.reward_inventory,
                 nuke_hud: world.nuke_hud,
                 preparation_hud: world.preparation_hud,

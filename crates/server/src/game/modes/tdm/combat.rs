@@ -15,11 +15,13 @@ impl TdmMatch {
         &mut self,
         now: u32,
         victim: EnemySnapshot,
-        attacker: u8,
+        attacker: impl Into<CreditSource>,
         weapon: u16,
         headshot: bool,
         melee: bool,
     ) {
+        let source: CreditSource = attacker.into();
+        let attacker = source.actor;
         if !self.live_at(now) {
             return;
         }
@@ -36,12 +38,18 @@ impl TdmMatch {
         let death = self.rows[usize::from(victim.client_index)].deaths;
         let opposing = self.config.teams[usize::from(attacker)]
             != self.config.teams[usize::from(victim.client_index)];
-        self.streaks.credit(
-            now,
-            victim.client_index,
-            death,
-            opposing.then_some(attacker),
-        );
+        let current_life = (opposing
+            && source
+                .life
+                .is_none_or(|life| life == self.streaks.life(attacker)))
+        .then_some(attacker);
+        if source.life.is_some() {
+            self.streaks
+                .credit_reward(now, victim.client_index, death, current_life);
+        } else {
+            self.streaks
+                .credit(now, victim.client_index, death, current_life);
+        }
         self.rows[usize::from(attacker)].killstreak = u32::from(self.streaks.best(attacker));
         let row = &mut self.rows[usize::from(attacker)];
         let suicide = attacker == victim.client_index;
@@ -79,7 +87,17 @@ impl TdmMatch {
         );
     }
     pub fn player_killed(&mut self, now: u32, victim: EnemySnapshot, hit: PlayerHit) {
-        self.credit(now, victim, hit.attacker, hit.weapon, hit.headshot, false);
+        self.credit(
+            now,
+            victim,
+            CreditSource {
+                actor: hit.attacker,
+                life: hit.reward_life,
+            },
+            hit.weapon,
+            hit.headshot,
+            false,
+        );
     }
     pub fn actor_fell(&mut self, now: u32, victim: EnemySnapshot) {
         if !self.live_at(now) {
@@ -164,6 +182,7 @@ impl TdmMatch {
         self.props.radial(
             now,
             crate::game::world::props::Blast {
+                reward_life: None,
                 source_entity: None,
                 owner: 0,
                 weapon: explosion.definition.index,
@@ -177,6 +196,7 @@ impl TdmMatch {
         self.deployables.radial(
             now,
             crate::game::world::props::Blast {
+                reward_life: None,
                 source_entity: None,
                 owner: 0,
                 weapon: explosion.definition.index,
@@ -189,6 +209,7 @@ impl TdmMatch {
             collision,
         );
         let blast = crate::game::world::props::Blast {
+            reward_life: None,
             source_entity: None,
             owner: 0,
             weapon: explosion.definition.index,
@@ -297,7 +318,16 @@ impl TdmMatch {
             })
             .filter(|(_, d, _)| *d > 0)
             .collect::<Vec<_>>();
-        let feedback = self.damage_bots(now, blast.owner, blast.weapon, &hits, false);
+        let feedback = self.damage_bots(
+            now,
+            CreditSource {
+                actor: blast.owner,
+                life: blast.reward_life,
+            },
+            blast.weapon,
+            &hits,
+            false,
+        );
         let local_hit = if local.alive && (blast.owner == 0 || local.team != team) {
             let damage = crate::game::world::props::radius_damage(
                 blast,
@@ -307,6 +337,7 @@ impl TdmMatch {
                 collision,
             );
             (damage > 0).then_some(PlayerHit {
+                reward_life: blast.reward_life,
                 damage,
                 attacker: blast.owner,
                 weapon: blast.weapon,
@@ -317,6 +348,8 @@ impl TdmMatch {
         };
         self.props.radial(now, blast, collision);
         self.deployables.radial(now, blast, team, collision);
+        self.aircraft.radial(now, blast, team, collision);
+        self.remote.radial_cars(blast, team, collision);
         for source in self.airspace.radial(now, blast, team, collision) {
             self.streaks.stop_flight(source);
         }
@@ -372,6 +405,17 @@ impl TdmMatch {
         collision: &Collision,
         regions: Option<&crate::game::combat::hit_location::HitRegions>,
     ) -> ActorShot {
+        self.player_fire_from(shot, eye, local, collision, regions, 0.into())
+    }
+    pub(crate) fn player_fire_from(
+        &mut self,
+        shot: crate::game::weapons::held::Shot,
+        eye: [f32; 3],
+        local: EnemySnapshot,
+        collision: &Collision,
+        regions: Option<&crate::game::combat::hit_location::HitRegions>,
+        source: CreditSource,
+    ) -> ActorShot {
         if !self.live_at(shot.time) {
             return ActorShot::default();
         }
@@ -388,9 +432,9 @@ impl TdmMatch {
             },
         );
         outcome.committed_feedback =
-            self.damage_bots(shot.time, 0, shot.weapon, &outcome.damage, false);
+            self.damage_bots(shot.time, source, shot.weapon, &outcome.damage, false);
         for &(entity, damage) in &outcome.props_damage {
-            self.damage_world_model(shot.time, entity, damage, 0, false, collision);
+            self.damage_world_model(shot.time, entity, damage, source, false, collision);
         }
         outcome
     }

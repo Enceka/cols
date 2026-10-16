@@ -2,9 +2,17 @@
 use crate::game::gamestate::Writer;
 use crate::lobby::channel::LobbyError;
 
+pub const FIRST_REMOTE_ENTITY: u16 = super::scavenger::END_ENTITY;
+pub const END_REMOTE_ENTITY: u16 = FIRST_REMOTE_ENTITY + 16;
+pub const FIRST_DRONE_ENTITY: u16 = END_REMOTE_ENTITY;
+pub const END_DRONE_ENTITY: u16 = FIRST_DRONE_ENTITY + 16;
+pub const FIRST_GUNNER_ENTITY: u16 = END_DRONE_ENTITY;
+pub const END_GUNNER_ENTITY: u16 = FIRST_GUNNER_ENTITY + 64;
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MissileSnapshot {
     pub entity_number: u16,
+    pub events: super::events::EventQueue,
     pub origin: [f32; 3],
     pub weapon: u16,
     pub present: bool,
@@ -21,7 +29,9 @@ pub(crate) fn write(
         for (i, state) in states.iter().enumerate() {
             if !((1700..1708).contains(&state.entity_number)
                 || (1400..1496).contains(&state.entity_number)
-                || (1648..1664).contains(&state.entity_number))
+                || (1600..1664).contains(&state.entity_number)
+                || (FIRST_REMOTE_ENTITY..END_GUNNER_ENTITY).contains(&state.entity_number))
+                || state.events.validate().is_err()
                 || !(1..900).contains(&state.weapon)
                 || state.owner >= 12
                 || state
@@ -57,7 +67,7 @@ pub(crate) fn write(
         out.bits(1, 1);
         out.bits(36, 6);
         let mut previous = -1;
-        for index in [0, 1, 2, 6, 7, 8, 16, 17, 20, 33, 36] {
+        for index in [0, 1, 2, 6, 7, 8, 15, 16, 17, 20, 21, 22, 23, 24, 33, 36] {
             gap(out, (index - previous) as u32);
             previous = index;
             match index {
@@ -75,6 +85,10 @@ pub(crate) fn write(
                         u32::from(current.origin[axis].round_ties_even() as i16 as u16),
                         16,
                     );
+                }
+                15 => super::events::write_sequence(out, current.events.sequence),
+                21..=24 => {
+                    super::events::write_event(out, current.events.slots[(index - 21) as usize])
                 }
                 17 => scalar(out, 1, u32::from(base.is_some()), 8),
                 6 | 7 | 16 => {
@@ -178,6 +192,16 @@ mod tests {
                     assert_eq!(reader.bits(2).unwrap(), 0);
                     u32::from(reader.u16().unwrap())
                 }
+                -75 => {
+                    assert_eq!(reader.bits(1).unwrap(), 0);
+                    u32::from(reader.u8().unwrap())
+                }
+                -94 => {
+                    assert_eq!(reader.bits(1).unwrap(), 1);
+                    let event = reader.u8().unwrap();
+                    assert_eq!(reader.bits(1).unwrap(), 0);
+                    u32::from(event)
+                }
                 -98 => {
                     assert_eq!(reader.bits(1).unwrap(), 1);
                     reader.bits(30).unwrap()
@@ -202,8 +226,76 @@ mod tests {
         result
     }
     #[test]
+    fn boost_queue_preserves_parent_entity_and_sequence_on_full_delta_and_retransmit() {
+        let base = MissileSnapshot {
+            events: Default::default(),
+            entity_number: 1800,
+            origin: [100.0, 200.0, 14000.0],
+            weapon: 345,
+            present: true,
+            generation: 1,
+            owner: 0,
+            angles: [9000, 30000, 0],
+        };
+        let mut current = base;
+        current
+            .events
+            .push(super::super::events::MISSILE_REMOTE_BOOST, 0)
+            .unwrap();
+        let names: serde_json::Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/protocol/native-event-names-3.3.3.3.json"
+        )))
+        .unwrap();
+        assert_eq!(names["names"][130], "EV_MISSILE_REMOTE_BOOST");
+        for old in [None, Some(base)] {
+            let mut out = Writer::default();
+            write(&mut out, &[current], &old.into_iter().collect::<Vec<_>>()).unwrap();
+            let mut reader = Reader::new(&out.bytes);
+            assert_eq!(reader.bits(2).unwrap(), 2);
+            assert_eq!(reader.bits(11).unwrap(), 1800);
+            assert_eq!(reader.bits(3).unwrap(), 6);
+            let mut baseline = BTreeMap::new();
+            if old.is_some() {
+                baseline.insert(0xd0, 345);
+                baseline.insert(0xc, 1);
+            }
+            let decoded = fields(&mut reader, &baseline);
+            assert_eq!(decoded[&0xac], 1);
+            assert_eq!(decoded[&0xb0], 130);
+            assert_eq!(decoded[&0xb8], 0);
+            assert_eq!(decoded[&0xd0], 345);
+        }
+        let mut repeated = Writer::default();
+        write(&mut repeated, &[current], &[current]).unwrap();
+        assert!(repeated.bytes.is_empty());
+        assert_eq!(current.events.sequence, 1);
+    }
+    #[test]
+    fn remote_payload_entities_are_disjoint_and_bounded() {
+        let mut missile = MissileSnapshot {
+            events: Default::default(),
+            entity_number: 1800,
+            origin: [0.0, 0.0, 14000.0],
+            weapon: 345,
+            present: true,
+            generation: 1,
+            owner: 0,
+            angles: [1000, 0, 0],
+        };
+        for entity in [1800, 1815, 1816, 1831, 1832, 1895] {
+            missile.entity_number = entity;
+            assert!(write(&mut Writer::default(), &[missile], &[]).is_ok());
+        }
+        for entity in [1720, 1736, 1799, 1896] {
+            missile.entity_number = entity;
+            assert!(write(&mut Writer::default(), &[missile], &[]).is_err());
+        }
+    }
+    #[test]
     fn native_missile_fields_survive_every_bit_alignment_and_reused_slots() {
         let first = MissileSnapshot {
+            events: Default::default(),
             owner: 7,
             angles: [8192, 49152, 1024],
             entity_number: 1648,
@@ -213,6 +305,7 @@ mod tests {
             generation: 1,
         };
         let second = MissileSnapshot {
+            events: Default::default(),
             origin: [20.0, -4.0, 8.0],
             weapon: 232,
             generation: 2,

@@ -248,6 +248,7 @@ impl PreparedGameState {
                 grenade_time: 0,
                 move_multiplier: 1.0,
                 inventory_weapon: None,
+                inventory_override: None,
                 alternate_weapon: None,
                 alternates: [None, None],
                 fire_count: 0,
@@ -383,7 +384,47 @@ impl PreparedGameState {
             tdm.streaks.enable();
             tdm.streaks.acceptance_seed(resources.acceptance_seed);
             tdm.acceptance_stationary = resources.acceptance_stationary;
+            if resources.acceptance_attack_aircraft {
+                tdm.streaks.acceptance_enable_attack_aircraft();
+            }
+            if resources.acceptance_remote_missile {
+                tdm.streaks.acceptance_enable_predator();
+            }
+            if resources.acceptance_remote_vehicles
+                && let Some(radar) = self.radar_resources()
+            {
+                tdm.streaks.acceptance_enable_remote_vehicles(radar);
+            }
+            if resources.acceptance_gunners
+                && let Some(radar) = self.radar_resources()
+            {
+                tdm.streaks.acceptance_enable_gunners(radar);
+            }
+            if resources.acceptance_armor
+                && let Some(radar) = self.radar_resources()
+            {
+                tdm.streaks.acceptance_enable_armor(radar);
+                if resources.acceptance_kingpin_stock {
+                    ensure!(
+                        tdm.streaks.pickup_reward(0, 24, 1000),
+                        "isolated Kingpin stock could not be supplied"
+                    );
+                    tracing::warn!(
+                        "diagnostic Kingpin stock supplied; not a verified natural acquisition entry"
+                    );
+                }
+            }
             tdm.acceptance_fire_after_msec = resources.acceptance_fire_after_msec;
+            if resources.acceptance_missile_drone
+                && let Some(radar) = self.radar_resources()
+            {
+                tdm.streaks.acceptance_enable_drone(radar);
+            }
+            if resources.acceptance_dogs
+                && let Some(radar) = self.radar_resources()
+            {
+                tdm.streaks.acceptance_enable_dogs(radar);
+            }
         }
         tdm.set_weapon_move_scale(
             self.match_weapon

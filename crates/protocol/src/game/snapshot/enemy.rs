@@ -29,6 +29,14 @@ pub struct EnemySnapshot {
 }
 
 impl EnemySnapshot {
+    /// Client appearance is inherited by delta snapshots until a full frame.
+    pub fn same_appearance(self, other: Self) -> bool {
+        self.client_index == other.client_index
+            && self.team == other.team
+            && self.model == other.model
+            && self.attachment_models == other.attachment_models
+            && self.attachment_tags == other.attachment_tags
+    }
     fn validate(self) -> Result<(), LobbyError> {
         self.events.validate()?;
         let animation = |value: u16| value < 2048 && value & 0x3ff != 0;
@@ -76,12 +84,7 @@ pub(crate) fn write_enemy_entity(
         }
     } else if let Some(base) = baseline {
         base.validate()?;
-        if !base.alive
-            || enemy.model != base.model
-            || enemy.attachment_models != base.attachment_models
-            || enemy.attachment_tags != base.attachment_tags
-            || enemy.team != base.team
-        {
+        if !base.alive || !enemy.same_appearance(base) {
             return Err(LobbyError("enemy appearance must match its live baseline"));
         }
     }

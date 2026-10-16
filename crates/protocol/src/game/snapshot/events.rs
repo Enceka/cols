@@ -8,6 +8,7 @@ use crate::game::gamestate::Writer;
 use crate::lobby::channel::LobbyError;
 
 pub const SOUND_ALIAS: u8 = 3;
+pub const MISSILE_REMOTE_BOOST: u8 = 130;
 pub const ITEM_PICKUP: u8 = 16;
 pub const NO_AMMO: u8 = 18;
 pub const RESET_ADS: u8 = 23;

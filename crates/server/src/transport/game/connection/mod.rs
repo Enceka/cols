@@ -106,10 +106,11 @@ pub(crate) struct Connection {
     nuke_banner: Option<(u32, u16)>,
     nuke_return_at: Option<u32>,
     radio_return: Option<(u32, u16)>,
+    airdrop_hint: Option<u8>,
     nuke_tick_second: Option<u32>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 struct WorldHistory {
     weapon_drops: Vec<codol_protocol::game::snapshot::weapon_drops::WeaponDropSnapshot>,
     props: Vec<codol_protocol::game::snapshot::props::PropSnapshot>,

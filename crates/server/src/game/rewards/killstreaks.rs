@@ -19,6 +19,7 @@ struct Catalog {
 #[derive(Deserialize)]
 struct Reward {
     native_id: u8,
+    name: String,
     cost_c4: Option<u8>,
 }
 #[derive(Deserialize)]
@@ -46,6 +47,15 @@ pub(crate) struct Previews {
     targets: [u8; 3],
 }
 impl Previews {
+    fn highest_target(self) -> u8 {
+        self.ids
+            .into_iter()
+            .zip(self.targets)
+            .filter(|(id, _)| *id != 0)
+            .map(|(_, target)| target)
+            .max()
+            .unwrap_or(0)
+    }
     pub fn from_profile(snapshot: &[u8], class: u8, owned: &[u32], shift: f32) -> Result<Self> {
         let offsets = CATALOG
             .class_offsets
@@ -118,13 +128,122 @@ pub(crate) struct RadarResources {
     #[serde(default)]
     pub models: BTreeMap<String, u16>,
     #[serde(default)]
+    pub tags: BTreeMap<String, u8>,
+    #[serde(default)]
+    pub vehicles: BTreeMap<String, u8>,
+    #[serde(default)]
+    pub animations: BTreeMap<String, AnimationBinding>,
+    #[serde(default)]
+    pub loop_sounds: BTreeMap<String, u8>,
+    #[serde(default)]
     pub model_bounds: BTreeMap<String, ModelBounds>,
     #[serde(default)]
+    pub camera_mounts: BTreeMap<String, CameraMount>,
+    #[serde(default)]
     pub effects: BTreeMap<String, u16>,
+    #[serde(default)]
+    pub selectors: BTreeMap<String, u8>,
     #[serde(default)]
     pub weapons: BTreeMap<String, WeaponFacts>,
     #[serde(default)]
     pub air_route: Option<AirRoute>,
+    #[serde(default)]
+    pub air_paths: Option<crate::game::rewards::paths::FlightNodes>,
+    #[serde(default)]
+    pub remote_spawns: Option<RemoteSpawns>,
+    #[serde(default)]
+    pub remote_vision: Option<RemoteVisionResources>,
+    #[serde(default)]
+    pub remote_exit: Option<RemoteExitResources>,
+    #[serde(default)]
+    pub animals: Option<super::dogs::Resources>,
+}
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RemoteExitResources {
+    pub white: u16,
+    pub grain: u16,
+    pub material_bank_count: u16,
+}
+impl RemoteExitResources {
+    pub(crate) fn valid(self) -> bool {
+        self.white == 1000 && self.grain == 1001 && self.material_bank_count < 1000
+    }
+    pub(crate) fn snapshot(
+        self,
+    ) -> codol_protocol::game::snapshot::hit_feedback::RemoteExitSnapshot {
+        codol_protocol::game::snapshot::hit_feedback::RemoteExitSnapshot {
+            visible: true,
+            white: self.white,
+            grain: self.grain,
+        }
+    }
+}
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RemoteVisionResources {
+    pub flight: String,
+    #[serde(default)]
+    pub arena_absent: bool,
+    pub rawfiles_sha256: BTreeMap<String, String>,
+}
+impl RemoteVisionResources {
+    pub(crate) fn inverted_name(&self) -> Option<&'static str> {
+        (self.flight_name().is_some()
+            && self
+                .rawfiles_sha256
+                .contains_key("vision/missilecam.vision"))
+        .then_some("missilecam")
+    }
+    pub(crate) fn flight_name(&self) -> Option<&'static str> {
+        let expected = match self.flight.as_str() {
+            "thermal_mp" => "thermal_mp",
+            "thermal_snowlevel_mp" => "thermal_snowlevel_mp",
+            _ => return None,
+        };
+        let mut required = vec![
+            "vision/black_bw.vision".to_owned(),
+            format!("vision/{expected}.vision"),
+        ];
+        if !self.arena_absent {
+            required.push("mp/basemaps.arena".to_owned());
+        }
+        if self
+            .rawfiles_sha256
+            .contains_key("vision/missilecam.vision")
+        {
+            required.push("vision/missilecam.vision".to_owned());
+        }
+        (self.flight == expected
+            && (!self.arena_absent || expected == "thermal_mp")
+            && self.rawfiles_sha256.len() == required.len()
+            && required.iter().all(|name| {
+                self.rawfiles_sha256.get(name).is_some_and(|hash| {
+                    hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit())
+                })
+            }))
+        .then_some(expected)
+    }
+}
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RemoteSpawns {
+    pub sources_sha256: [String; 1],
+    pub points: Vec<RemoteSpawn>,
+}
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RemoteSpawn {
+    pub origin: [f32; 3],
+    pub target: [f32; 3],
+}
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct AnimationBinding {
+    pub tree: u8,
+    pub node: u16,
+    #[serde(default)]
+    pub parent: u16,
 }
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -137,6 +256,22 @@ pub(crate) struct AirRoute {
 pub(crate) struct ModelBounds {
     pub min: [f32; 3],
     pub max: [f32; 3],
+}
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct CameraMount {
+    pub rotation: [f32; 4],
+    pub translation: [f32; 3],
+}
+impl CameraMount {
+    pub(crate) fn valid(self) -> bool {
+        self.rotation.iter().all(|n| n.is_finite())
+            && (0.5..=2.0).contains(&self.rotation.iter().map(|n| n * n).sum::<f32>())
+            && self
+                .translation
+                .iter()
+                .all(|n| n.is_finite() && n.abs() <= 30000.0)
+    }
 }
 impl ModelBounds {
     pub fn valid(self) -> bool {
@@ -192,20 +327,41 @@ pub(crate) struct WeaponFacts {
     pub ammo_key: Option<u16>,
     pub switch: crate::game::weapons::held::SwitchTiming,
     pub fire_interval_msec: u16,
+    #[serde(default)]
+    pub fire_delay_msec: u16,
+    #[serde(default)]
+    pub clip_size: u16,
+    #[serde(default)]
+    pub reload_msec: u16,
     pub radius: u32,
     pub inner_damage: u32,
     pub outer_damage: u32,
     #[serde(default)]
     pub projectile_speed: u32,
     #[serde(default)]
+    pub projectile: Option<ProjectileFacts>,
+    #[serde(default)]
     pub marker: Option<MarkerFacts>,
     #[serde(default)]
     pub damage_stages: [u32; 6],
     #[serde(default)]
     pub damage_ranges: [f32; 6],
+    #[serde(default)]
+    pub operator: Option<super::armor::OperatorFacts>,
 }
-/// Effect handlers explicitly publish their implemented IDs.
-pub(crate) const SUPPORT_IDS: [u8; 6] = [1, 3, 14, 16, 19, 21];
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ProjectileFacts {
+    pub lifetime_msec: u32,
+    pub explosion_kind: u8,
+}
+pub(crate) fn reward_name(id: u8) -> Option<&'static str> {
+    CATALOG
+        .rewards
+        .iter()
+        .find(|r| r.native_id == id)
+        .map(|r| r.name.as_str())
+}
 impl RadarResources {
     pub fn load(path: &Path, map: &str, crc: u32) -> Result<Self> {
         ensure!(
@@ -242,7 +398,43 @@ impl RadarResources {
                     .radios
                     .iter()
                     .all(|r| CATALOG.rewards.iter().any(|c| c.native_id == r.native_id))
+                && result
+                    .loop_sounds
+                    .iter()
+                    .all(|(name, slot)| name == "weap_cobra_20mm_fire_npc" && *slot == 240)
+                && result
+                    .remote_spawns
+                    .as_ref()
+                    .is_none_or(|spawns| spawns.points.len() <= 64
+                        && spawns
+                            .sources_sha256
+                            .iter()
+                            .all(|h| h.len() == 64 && h.bytes().all(|b| b.is_ascii_hexdigit()))
+                        && spawns.points.iter().all(|p| p
+                            .origin
+                            .iter()
+                            .chain(&p.target)
+                            .all(|v| v.is_finite() && v.abs() <= 30000.0)
+                            && p.origin
+                                .iter()
+                                .zip(p.target)
+                                .map(|(a, b)| (a - b).powi(2))
+                                .sum::<f32>()
+                                > 1.0))
+                && result.remote_exit.is_none_or(RemoteExitResources::valid)
+                && result
+                    .remote_vision
+                    .as_ref()
+                    .is_none_or(|v| v.flight_name().is_some())
+                && result.tags.values().all(|v| (1..64).contains(v))
+                && result.tags.values().collect::<BTreeSet<_>>().len() == result.tags.len()
                 && result.models.values().all(|v| (1..1024).contains(v))
+                && result.vehicles.values().all(|v| (1..32).contains(v))
+                && result.vehicles.values().collect::<BTreeSet<_>>().len() == result.vehicles.len()
+                && result.animations.values().all(|a| (1..16).contains(&a.tree)
+                    && (1..2048).contains(&a.node)
+                    && a.parent < 2048
+                    && a.parent != a.node)
                 && result.air_route.as_ref().is_none_or(|r| r
                     .center
                     .iter()
@@ -254,10 +446,27 @@ impl RadarResources {
                     .model_bounds
                     .iter()
                     .all(|(name, bounds)| result.models.contains_key(name) && bounds.valid())
+                && result
+                    .camera_mounts
+                    .iter()
+                    .all(|(name, mount)| result.models.contains_key(name) && mount.valid())
+                && result.air_paths.as_ref().is_none_or(|paths| paths.valid())
+                && result.animals.as_ref().is_none_or(|a| a.valid())
                 && result.effects.values().all(|v| (1..400).contains(v))
+                && result.selectors.values().all(|v| (1..=3).contains(v))
+                && result.selectors.values().collect::<BTreeSet<_>>().len()
+                    == result.selectors.len()
                 && result.weapons.values().all(|w| (1..900).contains(&w.weapon)
+                    && w.operator
+                        .as_ref()
+                        .is_none_or(|o| o.valid() && w.weapon_type == 0)
                     && w.weapon_type <= 6
+                    && w.projectile.is_none_or(|p| w.weapon_type == 2
+                        && (1..=3_600_000).contains(&p.lifetime_msec)
+                        && p.explosion_kind <= 7)
                     && w.weapon_class <= 32
+                    && w.reload_msec <= 15000
+                    && w.fire_delay_msec <= 15000
                     && w.clip_key.is_none_or(|v| v < 1024)
                     && w.ammo_key.is_none_or(|v| v < 1024)
                     && [
@@ -354,6 +563,8 @@ pub(crate) struct SupportFlight {
 pub(crate) struct AcceptanceSupport {
     pub after_msec: u32,
     pub native_id: u8,
+    #[serde(default)]
+    pub gunner_delay_msec: Option<u32>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -375,14 +586,50 @@ pub(crate) struct NukeResources {
     pub music_sound: u16,
     pub earned_text: u16,
     pub called_text: u16,
+    /// Content hashes of both native naked-vision rawfiles.
+    #[serde(default)]
+    pub vision: Option<NukeVision>,
     #[serde(default)]
     pub acceptance_seed: u8,
     #[serde(default)]
     pub acceptance_stationary: bool,
     #[serde(default)]
+    pub acceptance_attack_aircraft: bool,
+    #[serde(default)]
+    pub acceptance_remote_missile: bool,
+    #[serde(default)]
+    pub acceptance_remote_vehicles: bool,
+    #[serde(default)]
+    pub acceptance_gunners: bool,
+    #[serde(default)]
+    pub acceptance_missile_drone: bool,
+    #[serde(default)]
+    pub acceptance_dogs: bool,
+    #[serde(default)]
+    pub acceptance_armor: bool,
+    #[serde(default)]
+    pub acceptance_kingpin_stock: bool,
+    #[serde(default)]
     pub acceptance_fire_after_msec: Option<u32>,
     #[serde(default)]
     pub acceptance_enemy_support: Vec<AcceptanceSupport>,
+}
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct NukeVision {
+    pub rawfiles_sha256: BTreeMap<String, String>,
+}
+impl NukeVision {
+    fn valid(&self) -> bool {
+        self.rawfiles_sha256.len() == 2
+            && ["vision/mpnuke.vision", "vision/mpnuke_aftermath.vision"]
+                .into_iter()
+                .all(|name| {
+                    self.rawfiles_sha256
+                        .get(name)
+                        .is_some_and(|h| h.len() == 64 && h.bytes().all(|b| b.is_ascii_hexdigit()))
+                })
+    }
 }
 impl NukeResources {
     pub fn load(path: &Path, map: &str, crc: u32) -> Result<Self> {
@@ -401,12 +648,24 @@ impl NukeResources {
                     .iter()
                     .all(|s| result.acceptance_stationary
                         && (1000..=600_000).contains(&s.after_msec)
-                        && matches!(s.native_id, 1 | 3))
+                        && matches!(s.native_id, 1 | 3 | 14 | 20)
+                        && s.gunner_delay_msec.is_none_or(
+                            |delay| s.native_id == 14 && (1000..=15000).contains(&delay)
+                        ))
                 && result
                     .acceptance_enemy_support
                     .windows(2)
                     .all(|w| w[0].after_msec < w[1].after_msec)
                 && result.acceptance_seed <= 24
+                && (!result.acceptance_attack_aircraft || result.acceptance_stationary)
+                && (!result.acceptance_remote_missile || result.acceptance_stationary)
+                && (!result.acceptance_remote_vehicles || result.acceptance_stationary)
+                && (!result.acceptance_gunners || result.acceptance_stationary)
+                && (!result.acceptance_missile_drone || result.acceptance_stationary)
+                && (!result.acceptance_dogs || result.acceptance_stationary)
+                && (!result.acceptance_armor || result.acceptance_stationary)
+                && (!result.acceptance_kingpin_stock
+                    || result.acceptance_armor && result.acceptance_stationary)
                 && ((result.acceptance_seed == 0 && !result.acceptance_stationary)
                     || path
                         .parent()
@@ -415,6 +674,7 @@ impl NukeResources {
         );
         ensure!(
             result.schema_version == 1
+                && result.vision.as_ref().is_none_or(NukeVision::valid)
                 && result.client_sha256 == codol_protocol::CLIENT_SHA256
                 && result.map == map
                 && result.ncs_crc == crc
@@ -466,8 +726,17 @@ pub(crate) fn test_resources() -> NukeResources {
         music_sound: 1976,
         earned_text: 448,
         called_text: 556,
+        vision: None,
         acceptance_seed: 0,
         acceptance_stationary: false,
+        acceptance_attack_aircraft: false,
+        acceptance_remote_missile: false,
+        acceptance_remote_vehicles: false,
+        acceptance_gunners: false,
+        acceptance_missile_drone: false,
+        acceptance_dogs: false,
+        acceptance_armor: false,
+        acceptance_kingpin_stock: false,
         acceptance_fire_after_msec: None,
         acceptance_enemy_support: Vec::new(),
     }
@@ -496,6 +765,7 @@ pub(crate) fn called_message(name: &str) -> Vec<u8> {
 
 struct Actor {
     count: u16,
+    record_count: u16,
     best: u16,
     death: u32,
     alive: bool,
@@ -505,10 +775,48 @@ struct Actor {
     inventory: crate::game::rewards::inventory::Inventory,
     radios_granted: [bool; 3],
 }
+impl Actor {
+    fn hud_progress(&self) -> u8 {
+        // Ordinary rewards repeat over the highest selected threshold. The
+        // completion kill still shows the full bar; the next kill starts at1.
+        // Full eligible life kills remain independent for the record and nuke.
+        let span = u16::from(self.previews.highest_target());
+        if span == 0 {
+            self.count.min(255) as u8
+        } else if self.count == 0 {
+            0
+        } else {
+            ((self.count - 1) % span + 1) as u8
+        }
+    }
+    fn display(&self) -> Previews {
+        let mut p = self.previews;
+        let owned = self.inventory.owned_ids();
+        let visible = &owned[..owned.len().min(3)];
+        for &id in visible {
+            if p.ids.contains(&id) {
+                continue;
+            }
+            let slot = (0..3)
+                .rev()
+                .find(|&s| !visible.contains(&p.ids[s]))
+                .expect("an undisplayed reward has a replaceable slot");
+            p.ids[slot] = id;
+            p.targets[slot] = CATALOG
+                .rewards
+                .iter()
+                .find(|r| r.native_id == id)
+                .and_then(|r| r.cost_c4)
+                .unwrap_or(0);
+        }
+        p
+    }
+}
 impl Default for Actor {
     fn default() -> Self {
         Self {
             count: 0,
+            record_count: 0,
             best: 0,
             death: 0,
             alive: true,
@@ -525,6 +833,7 @@ pub(crate) enum Event {
     Earned { actor: u8, time: u32 },
     Called { actor: u8, time: u32 },
     Explosion { actor: u8, time: u32 },
+    Vision { actor: u8, time: u32 },
     End { actor: u8, time: u32 },
 }
 #[derive(Clone, Copy)]
@@ -532,6 +841,7 @@ struct Incoming {
     actor: u8,
     start: u32,
     exploded: bool,
+    vision_started: bool,
     ended: bool,
 }
 #[derive(Default)]
@@ -560,7 +870,7 @@ impl Streaks {
     }
     /// Explicit isolated diagnostic stock, never reported as earned kills.
     pub(crate) fn acceptance_supply_support(&mut self, actor: u8, id: u8) {
-        assert!(actor > 0 && actor < 12 && matches!(id, 1 | 3));
+        assert!(actor > 0 && actor < 12 && matches!(id, 1 | 3 | 14 | 20));
         self.configure_radios(
             actor,
             Previews {
@@ -581,19 +891,68 @@ impl Streaks {
             .radios
             .iter()
             .filter(|r| {
-                SUPPORT_IDS.contains(&r.native_id)
-                    && (r.native_id != 16
-                        || crate::game::rewards::deployables::DeviceDefinition::from_resources(
-                            resources,
-                        )
-                        .is_some())
-                    && (r.native_id != 21
-                        || crate::game::rewards::deployables::DeviceDefinition::sam_from_resources(
-                            resources,
-                        )
-                        .is_some())
+                crate::game::rewards::mechanisms::Mechanism::radio_available(r.native_id, resources)
             })
             .fold(0, |m, r| m | (1u64 << r.native_id));
+    }
+    /// Caller must use the resource loader's marked stationary diagnostic.
+    pub(crate) fn acceptance_enable_attack_aircraft(&mut self) {
+        self.available |= (1 << 7) | (1 << 8) | (1 << 10);
+        tracing::warn!("diagnostic attack aircraft controllers enabled; native acceptance pending");
+    }
+    /// Caller must use the resource loader's marked stationary diagnostic.
+    pub(crate) fn acceptance_enable_predator(&mut self) {
+        self.available |= 1 << 5;
+    }
+    pub(crate) fn acceptance_enable_remote_vehicles(&mut self, r: &RadarResources) {
+        if super::remote_car::Car::resources_present(r) && r.tags.contains_key("tag_player") {
+            self.available |= 1 << 18;
+        }
+    }
+    pub(crate) fn acceptance_enable_gunners(&mut self, r: &RadarResources) {
+        for id in [12, 13] {
+            if super::gunners::Gunners::resources_present(r, id) {
+                self.available |= 1 << id;
+            }
+        }
+    }
+    pub(crate) fn acceptance_enable_armor(&mut self, r: &RadarResources) {
+        if r.weapons
+            .get("mg4juggernaut_mp")
+            .is_some_and(|w| w.operator.as_ref().is_some_and(|o| o.valid()))
+            && [
+                "mp_fullbody_juggernaut_explosive_so",
+                "viewhands_juggernaut_ally",
+            ]
+            .into_iter()
+            .all(|n| r.models.contains_key(n))
+        {
+            self.available |= 1 << 23;
+        }
+        if r.weapons
+            .get("minigungunship_mp")
+            .is_some_and(|w| w.clip_key.is_some() && w.operator.as_ref().is_some_and(|o| o.valid()))
+            && [
+                "c_kp_juggernaut_tf_00",
+                "c_kp_juggernaut_sc_00",
+                "viewhands_player_kp_juggernaut_tf",
+                "viewhands_player_kp_juggernaut_sc",
+            ]
+            .into_iter()
+            .all(|n| r.models.contains_key(n))
+        {
+            self.available |= 1 << 24;
+        }
+    }
+    pub(crate) fn acceptance_enable_dogs(&mut self, r: &RadarResources) {
+        if super::dogs::Dogs::resources_present(r) {
+            self.available |= 1 << 20;
+        }
+    }
+    pub(crate) fn acceptance_enable_drone(&mut self, r: &RadarResources) {
+        if super::drones::Drones::resources_present(r) {
+            self.available |= 1 << 26;
+        }
     }
     pub fn emp_active(&self, team: u8, now: u32) -> bool {
         self.support
@@ -614,11 +973,13 @@ impl Streaks {
         snapshot: &mut StreakSnapshot,
     ) {
         let state = &self.actors[usize::from(actor)];
-        state.previews.apply(snapshot);
+        let display = state.display();
+        display.apply(snapshot);
         for slot in 0..3 {
             if state.alive
-                && state.inventory.contains(state.previews.ids[slot])
-                && let Some(radio) = resources.radio(state.previews.ids[slot])
+                && self.available & (1u64 << display.ids[slot]) != 0
+                && state.inventory.contains(display.ids[slot])
+                && let Some(radio) = resources.radio(display.ids[slot])
             {
                 snapshot.action_types[slot + 1] = 1;
                 snapshot.action_weapons[slot + 1] = radio.weapon;
@@ -628,12 +989,31 @@ impl Streaks {
     pub fn owned_radios(&self, actor: u8) -> impl Iterator<Item = (usize, u8)> + '_ {
         let state = &self.actors[usize::from(actor)];
         state
-            .previews
+            .display()
             .ids
-            .iter()
-            .copied()
+            .into_iter()
             .enumerate()
-            .filter(|(_, id)| state.inventory.contains(*id))
+            .filter(|(_, id)| self.available & (1u64 << id) != 0 && state.inventory.contains(*id))
+    }
+    pub fn life(&self, actor: u8) -> u32 {
+        self.actors[usize::from(actor)].death
+    }
+    pub fn pickup_reward(&mut self, actor: u8, id: u8, time: u32) -> bool {
+        if actor >= 12
+            || !CATALOG
+                .rewards
+                .iter()
+                .any(|r| r.native_id == id && r.cost_c4.is_some_and(|cost| cost > 0))
+        {
+            return false;
+        }
+        let state = &mut self.actors[usize::from(actor)];
+        if !state.alive || !state.inventory.grant(actor, id, state.death) {
+            return false;
+        }
+        self.radio_events
+            .push_back(RadioEvent::Earned { actor, id, time });
+        true
     }
     pub fn can_radio(&self, actor: u8, team: u8, id: u8, now: u32) -> bool {
         if !self.radios_enabled
@@ -646,10 +1026,7 @@ impl Streaks {
             return false;
         }
         let state = &self.actors[usize::from(actor)];
-        let Some(slot) = state.previews.ids.iter().position(|v| *v == id) else {
-            return false;
-        };
-        state.alive && state.inventory.contains(state.previews.ids[slot])
+        state.alive && state.inventory.contains(id)
     }
     pub fn reserve_radio(
         &mut self,
@@ -788,6 +1165,7 @@ impl Streaks {
         if count != 0 {
             self.acceptance_seed = count;
             self.actors[0].count = u16::from(count);
+            self.actors[0].record_count = u16::from(count);
             tracing::warn!(
                 count,
                 "diagnostic nuclear streak starting progress; not natural kills"
@@ -801,6 +1179,7 @@ impl Streaks {
         self.actors[usize::from(actor)].alive = true;
         if actor == 0 && self.acceptance_seed != 0 {
             self.actors[0].count = u16::from(self.acceptance_seed);
+            self.actors[0].record_count = u16::from(self.acceptance_seed);
             tracing::warn!(
                 count = self.acceptance_seed,
                 "diagnostic nuclear starting progress on new life; not natural kills"
@@ -808,12 +1187,26 @@ impl Streaks {
         }
     }
     pub fn credit(&mut self, time: u32, victim: u8, death: u32, attacker: Option<u8>) {
+        self.credit_kill(time, victim, death, attacker, true);
+    }
+    pub fn credit_reward(&mut self, time: u32, victim: u8, death: u32, attacker: Option<u8>) {
+        self.credit_kill(time, victim, death, attacker, false);
+    }
+    fn credit_kill(
+        &mut self,
+        time: u32,
+        victim: u8,
+        death: u32,
+        attacker: Option<u8>,
+        earns_rewards: bool,
+    ) {
         let victim_state = &mut self.actors[usize::from(victim)];
         if death <= victim_state.death {
             return;
         }
         victim_state.death = death;
         victim_state.count = 0;
+        victim_state.record_count = 0;
         victim_state.alive = false;
         victim_state.granted = false;
         victim_state.radios_granted = [false; 3];
@@ -825,14 +1218,23 @@ impl Streaks {
         if !actor.alive {
             return;
         }
+        actor.record_count = actor.record_count.saturating_add(1);
+        actor.best = actor.best.max(actor.record_count);
+        if !earns_rewards {
+            return;
+        }
         actor.count = actor.count.saturating_add(1);
-        actor.best = actor.best.max(actor.count);
+        let progress = actor.hud_progress();
+        if self.radios_enabled && progress == 1 {
+            actor.radios_granted = [false; 3];
+            actor.inventory.reset_natural_round(actor.death);
+        }
         if self.radios_enabled {
             for slot in 0..3 {
                 let id = actor.previews.ids[slot];
                 if id < 64
                     && self.available & (1u64 << id) != 0
-                    && actor.count >= u16::from(actor.previews.targets[slot])
+                    && progress >= actor.previews.targets[slot]
                     && !actor.radios_granted[slot]
                 {
                     actor.radios_granted[slot] = true;
@@ -866,7 +1268,7 @@ impl Streaks {
     pub fn snapshot(&self, actor: u8, weapon: u16) -> StreakSnapshot {
         let actor = &self.actors[usize::from(actor)];
         let mut result = StreakSnapshot {
-            progress: actor.count.min(255) as u8,
+            progress: actor.hud_progress(),
             ..Default::default()
         };
         if actor.owned && actor.alive && weapon != 0 {
@@ -889,6 +1291,7 @@ impl Streaks {
             actor,
             start: time,
             exploded: false,
+            vision_started: false,
             ended: false,
         });
         self.events.push_back(Event::Called { actor, time });
@@ -904,6 +1307,13 @@ impl Streaks {
             self.events.push_back(Event::Explosion {
                 actor: incoming.actor,
                 time: incoming.start + COUNTDOWN_MSEC,
+            });
+        }
+        if elapsed >= COUNTDOWN_MSEC + 250 && !incoming.vision_started {
+            incoming.vision_started = true;
+            self.events.push_back(Event::Vision {
+                actor: incoming.actor,
+                time: incoming.start + COUNTDOWN_MSEC + 250,
             });
         }
         if elapsed >= COUNTDOWN_MSEC + AFTER_FLASH_MSEC && !incoming.ended {
@@ -946,10 +1356,21 @@ mod tests {
             map: "mp_afghan".into(),
             ncs_crc: 123,
             models: Default::default(),
+            tags: Default::default(),
+            vehicles: Default::default(),
+            animations: Default::default(),
+            loop_sounds: Default::default(),
             model_bounds: Default::default(),
+            camera_mounts: Default::default(),
             effects: Default::default(),
+            selectors: Default::default(),
             weapons: Default::default(),
             air_route: None,
+            air_paths: None,
+            remote_spawns: None,
+            remote_vision: None,
+            remote_exit: None,
+            animals: None,
             radios: vec![
                 Radio {
                     native_id: 1,
@@ -996,10 +1417,10 @@ mod tests {
             kill(&mut s, n);
         }
         assert!(s.owned(0));
-        assert_eq!(s.owned_radios(0).collect::<Vec<_>>(), [(1, 3)]);
+        assert_eq!(s.owned_radios(0).collect::<Vec<_>>(), [(0, 1), (1, 3)]);
         let mut hud = s.snapshot(0, 323);
         s.radio_snapshot(0, &r, &mut hud);
-        assert_eq!(hud.action_weapons, [323, 0, 302, 0, 0]);
+        assert_eq!(hud.action_weapons, [323, 301, 302, 0, 0]);
         assert!(s.try_radio(0, 1, 3, 26000));
         assert!(s.try_use(0, 26000));
         assert!(!s.try_radio(0, 1, 8, 26000));
@@ -1008,8 +1429,203 @@ mod tests {
                 .iter()
                 .filter(|e| matches!(e, RadioEvent::Earned { .. }))
                 .count(),
-            2
+            3
         );
+    }
+    #[test]
+    fn three_four_five_rewards_share_one_life_count_and_all_are_owned_at_five() {
+        for use_first_reward in [false, true] {
+            let mut s = Streaks::default();
+            let mut r = radar_resources();
+            let mut third = r.radios[0].clone();
+            third.native_id = 19;
+            third.weapon = 336;
+            r.radios.push(third);
+            s.enable_supported(&r);
+            s.configure_radios(
+                0,
+                Previews {
+                    ids: [1, 3, 19],
+                    targets: [3, 4, 5],
+                },
+            );
+            for n in 1..=5 {
+                kill(&mut s, n);
+                let mut hud = s.snapshot(0, 0);
+                s.radio_snapshot(0, &r, &mut hud);
+                assert_eq!(hud.progress, n as u8);
+                assert_eq!(hud.targets, [0, 3, 4, 5, 0]);
+                let mut expected = [0, u8::from(n >= 3), u8::from(n >= 4), u8::from(n >= 5), 0];
+                if use_first_reward && n > 3 {
+                    expected[1] = 0;
+                }
+                assert_eq!(
+                    hud.action_types, expected,
+                    "kill {n}, use_first={use_first_reward}"
+                );
+                if use_first_reward && n == 3 {
+                    assert!(s.try_radio(0, 1, 1, 3100));
+                    assert_eq!(s.snapshot(0, 0).progress, 3);
+                }
+            }
+            let earned = s
+                .drain_radios()
+                .into_iter()
+                .filter_map(|e| match e {
+                    RadioEvent::Earned { id, time, .. } => Some((id, time)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(earned, [(1, 3000), (3, 4000), (19, 5000)]);
+            assert_eq!(s.actors[0].count, 5);
+            assert!(s.actors[0].inventory.contains(3));
+            assert!(s.actors[0].inventory.contains(19));
+            assert_eq!(s.actors[0].inventory.contains(1), !use_first_reward);
+        }
+    }
+    fn configure_three_four_five(s: &mut Streaks) {
+        let mut r = radar_resources();
+        let mut third = r.radios[0].clone();
+        third.native_id = 19;
+        third.weapon = 336;
+        r.radios.push(third);
+        s.enable_supported(&r);
+        s.configure_radios(
+            0,
+            Previews {
+                ids: [1, 3, 19],
+                targets: [3, 4, 5],
+            },
+        );
+    }
+    #[test]
+    fn three_four_five_repeats_at_eight_nine_ten_without_death() {
+        let mut s = Streaks::default();
+        configure_three_four_five(&mut s);
+        let mut earned = Vec::new();
+        for n in 1..=15 {
+            kill(&mut s, n);
+            let progress = ((n - 1) % 5 + 1) as u8;
+            assert_eq!(s.snapshot(0, 0).progress, progress);
+            let id = match progress {
+                3 => Some(1),
+                4 => Some(3),
+                5 => Some(19),
+                _ => None,
+            };
+            if let Some(id) = id {
+                assert!(s.try_radio(0, 1, id, n * 1000 + 1));
+                assert!(!s.try_radio(0, 1, id, n * 1000 + 2));
+            }
+            earned.extend(s.drain_radios().into_iter().filter_map(|e| match e {
+                RadioEvent::Earned { id, time, .. } => Some((id, time)),
+                _ => None,
+            }));
+        }
+        assert_eq!(
+            earned,
+            [
+                (1, 3000),
+                (3, 4000),
+                (19, 5000),
+                (1, 8000),
+                (3, 9000),
+                (19, 10000),
+                (1, 13000),
+                (3, 14000),
+                (19, 15000)
+            ]
+        );
+        assert_eq!(s.actors[0].count, 15);
+        assert_eq!(s.life(0), 0);
+    }
+    #[test]
+    fn unspent_skills_do_not_stack_across_rounds_or_backfill_after_use() {
+        let mut s = Streaks::default();
+        configure_three_four_five(&mut s);
+        for n in 1..=8 {
+            kill(&mut s, n);
+        }
+        assert_eq!(
+            s.drain_radios()
+                .iter()
+                .filter(|e| matches!(e, RadioEvent::Earned { .. }))
+                .count(),
+            3
+        );
+        // Round2's A threshold was already reached while A was still owned.
+        assert!(s.try_radio(0, 1, 1, 8100));
+        s.configure_radios(
+            0,
+            Previews {
+                ids: [3, 1, 19],
+                targets: [4, 3, 5],
+            },
+        );
+        kill(&mut s, 9);
+        kill(&mut s, 10);
+        assert!(!s.try_radio(0, 1, 1, 10100));
+        for n in 11..=13 {
+            kill(&mut s, n);
+        }
+        assert!(s.try_radio(0, 1, 1, 13100));
+        assert!(!s.try_radio(0, 1, 1, 13101));
+        assert!(s.try_radio(0, 1, 3, 13200));
+        assert!(!s.try_radio(0, 1, 3, 13201));
+    }
+    #[test]
+    fn reward_kills_only_change_the_record_not_reward_progress_or_nuke() {
+        let mut s = Streaks::default();
+        s.enable();
+        configure_three_four_five(&mut s);
+        kill(&mut s, 1);
+        kill(&mut s, 2);
+        for death in 3..=30 {
+            s.credit_reward(death * 1000, 1, death, Some(0));
+        }
+        assert_eq!(s.snapshot(0, 323).progress, 2);
+        assert_eq!(s.actors[0].count, 2);
+        assert_eq!(s.best(0), 30);
+        assert!(!s.owned(0));
+        assert!(s.owned_radios(0).next().is_none());
+        kill(&mut s, 31);
+        assert_eq!(s.snapshot(0, 323).progress, 3);
+        assert!(s.actors[0].inventory.contains(1));
+        for death in 32..=53 {
+            kill(&mut s, death);
+        }
+        assert_eq!(s.actors[0].count, 25);
+        assert!(s.owned(0));
+        assert_eq!(s.best(0), 53);
+    }
+    #[test]
+    fn highest_selected_cost_cycles_the_hud_without_resetting_life_count_or_nuke() {
+        let mut s = Streaks::default();
+        s.enable();
+        s.configure_radios(
+            0,
+            Previews {
+                ids: [1, 3, 19],
+                targets: [3, 4, 5],
+            },
+        );
+        // An unavailable handler still belongs to the selected progression
+        // span; readiness must not shorten it to the last available reward.
+        for n in 1..=25 {
+            kill(&mut s, n);
+        }
+        assert_eq!(s.snapshot(0, 323).progress, 5);
+        assert_eq!(s.actors[0].count, 25);
+        assert_eq!(s.best(0), 25);
+        assert!(s.owned(0));
+        assert!(s.try_use(0, 26000));
+        assert_eq!(s.snapshot(0, 323).progress, 5);
+        s.credit(27000, 0, 1, None);
+        assert_eq!(s.snapshot(0, 323).progress, 0);
+        assert_eq!(s.best(0), 25);
+        s.spawn(0);
+        kill(&mut s, 26);
+        assert_eq!(s.snapshot(0, 323).progress, 1);
     }
     #[test]
     fn team_support_stacks_expires_survives_death_and_counters_only_opponents() {
@@ -1109,7 +1725,7 @@ mod tests {
         assert_eq!(s.owned_radios(0).collect::<Vec<_>>(), [(0, 3)]);
     }
     #[test]
-    fn independent_reward_instances_stack_across_lives_and_class_changes_keep_stock() {
+    fn repeated_rounds_and_class_changes_keep_at_most_one_stock_per_skill() {
         let mut s = Streaks::default();
         let preview = Previews {
             ids: [1, 0, 0],
@@ -1138,9 +1754,9 @@ mod tests {
         kill(&mut s, 6);
         kill(&mut s, 7);
         assert!(s.try_radio(0, 1, 1, 8000));
-        assert!(s.try_radio(0, 1, 1, 8001));
+        assert!(!s.try_radio(0, 1, 1, 8001));
         assert!(!s.try_radio(0, 1, 1, 8002));
-        assert_eq!(s.support_flights(8002).len(), 3);
+        assert_eq!(s.support_flights(8002).len(), 2);
     }
     #[test]
     fn deferred_radio_permission_is_revoked_by_death_without_losing_the_stock() {
@@ -1166,6 +1782,43 @@ mod tests {
         assert!(!s.cancel_radio(0, pending));
     }
     #[test]
+    fn pickup_overflow_queues_stock_and_does_not_revoke_a_hidden_pending_instance() {
+        let mut s = Streaks::default();
+        s.configure_radios(
+            0,
+            Previews {
+                ids: [1, 3, 19],
+                targets: [3, 4, 8],
+            },
+        );
+        s.available = [1, 3, 16, 19]
+            .into_iter()
+            .fold(0, |mask, id| mask | (1 << id));
+        for id in [1, 3, 19] {
+            assert!(s.pickup_reward(0, id, 1000));
+        }
+        let pending = s.reserve_radio(0, 1, 1, 1000).unwrap();
+        assert!(s.pickup_reward(0, 16, 1100));
+        let visible = s.owned_radios(0).map(|(_, id)| id).collect::<BTreeSet<_>>();
+        assert_eq!(visible, BTreeSet::from([3, 16, 19]));
+        assert!(s.commit_radio(0, 1, pending, 1200));
+        assert!(!s.commit_radio(0, 1, pending, 1201));
+        // Preserve a real unfinished pool reward as stock, without publishing
+        // an activator or borrowing another reward's effect handler.
+        assert!(s.pickup_reward(0, 5, 1300));
+        let mut r = radar_resources();
+        let mut activator = r.radios[0].clone();
+        activator.native_id = 5;
+        activator.weapon = 325;
+        r.radios.push(activator);
+        let mut hud = s.snapshot(0, 0);
+        s.radio_snapshot(0, &r, &mut hud);
+        let slot = hud.ids.iter().position(|&id| id == 5).unwrap();
+        assert_eq!(hud.action_types[slot], 0);
+        assert!(!s.owned_radios(0).any(|(_, id)| id == 5));
+        assert!(s.actors[0].inventory.contains(5));
+    }
+    #[test]
     fn radar_bindings_reject_wrong_map_crc_duplicates_and_bad_timing() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("radar.json");
@@ -1179,6 +1832,18 @@ mod tests {
         assert!(RadarResources::load(&path, "mp_afghan", 123).is_ok());
         assert!(RadarResources::load(&path, "mp_rust", 123).is_err());
         assert!(RadarResources::load(&path, "mp_afghan", 124).is_err());
+        json["remote_exit"] =
+            serde_json::json!({"white":1000,"grain":1001,"material_bank_count":27});
+        write(&json);
+        assert!(RadarResources::load(&path, "mp_afghan", 123).is_ok());
+        for (field, value) in [("white", 1), ("grain", 1000), ("material_bank_count", 1000)] {
+            let mut bad = json.clone();
+            bad["remote_exit"][field] = value.into();
+            write(&bad);
+            assert!(RadarResources::load(&path, "mp_afghan", 123).is_err());
+        }
+        json.as_object_mut().unwrap().remove("remote_exit");
+
         json["radios"][1]["weapon"] = 301.into();
         write(&json);
         assert!(RadarResources::load(&path, "mp_afghan", 123).is_err());
@@ -1264,16 +1929,44 @@ mod tests {
         assert!(NukeResources::load(&path, "mp_afghan", 123).is_ok());
         assert!(NukeResources::load(&path, "mp_afghan", 124).is_err());
         assert!(NukeResources::load(&path, "mp_nuked", 123).is_err());
+        for flag in [
+            "acceptance_remote_vehicles",
+            "acceptance_missile_drone",
+            "acceptance_gunners",
+            "acceptance_dogs",
+            "acceptance_armor",
+            "acceptance_kingpin_stock",
+        ] {
+            resource[flag] = true.into();
+            write(&resource);
+            assert!(NukeResources::load(&path, "mp_afghan", 123).is_err());
+            resource.as_object_mut().unwrap().remove(flag);
+        }
+        resource["acceptance_attack_aircraft"] = true.into();
+        write(&resource);
+        assert!(NukeResources::load(&path, "mp_afghan", 123).is_err());
         resource["acceptance_stationary"] = true.into();
         write(&resource);
         assert!(NukeResources::load(&path, "mp_afghan", 123).is_err());
         std::fs::write(directory.path().join(".codol-nuke-acceptance"), b"").unwrap();
         assert!(NukeResources::load(&path, "mp_afghan", 123).is_ok());
+        resource["acceptance_remote_missile"] = true.into();
+        write(&resource);
+        assert!(NukeResources::load(&path, "mp_afghan", 123).is_ok());
+        resource["acceptance_stationary"] = false.into();
+        write(&resource);
+        assert!(NukeResources::load(&path, "mp_afghan", 123).is_err());
+        resource["acceptance_stationary"] = true.into();
+        resource["acceptance_remote_missile"] = false.into();
+        resource["acceptance_attack_aircraft"] = false.into();
         resource["acceptance_enemy_support"] =
             serde_json::json!([{"after_msec":2000,"native_id":1}]);
         write(&resource);
         assert!(NukeResources::load(&path, "mp_afghan", 123).is_ok());
         resource["acceptance_enemy_support"][0]["native_id"] = 14.into();
+        write(&resource);
+        assert!(NukeResources::load(&path, "mp_afghan", 123).is_ok());
+        resource["acceptance_enemy_support"][0]["native_id"] = 23.into();
         write(&resource);
         assert!(NukeResources::load(&path, "mp_afghan", 123).is_err());
         resource["acceptance_enemy_support"][0]["native_id"] = 1.into();
@@ -1418,6 +2111,16 @@ mod tests {
             [Event::Explosion {
                 actor: 0,
                 time: 40000
+            }]
+        );
+        s.advance(40249);
+        assert!(s.drain().is_empty());
+        s.advance(40250);
+        assert_eq!(
+            s.drain(),
+            [Event::Vision {
+                actor: 0,
+                time: 40250
             }]
         );
         s.advance(41500);

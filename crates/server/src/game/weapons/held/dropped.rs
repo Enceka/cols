@@ -81,6 +81,9 @@ impl HeldWeapons {
         bundle
     }
     pub fn take_death_weapon(&mut self) -> Option<DroppedWeapon> {
+        if self.reward_loadout {
+            return None;
+        }
         if std::mem::replace(&mut self.death_weapon_taken, true) {
             return None;
         }
@@ -259,6 +262,7 @@ pub(crate) mod tests {
             Equipment {
                 weapon: id,
                 inventory_weapon: None,
+                inventory_override: None,
                 alternate_weapon: None,
                 alternates: [None; 2],
                 ammo: Some(Ammo {

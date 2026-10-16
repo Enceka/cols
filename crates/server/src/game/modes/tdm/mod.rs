@@ -12,7 +12,9 @@ use codol_protocol::game::snapshot::enemy::EnemySnapshot;
 use codol_protocol::game::snapshot::events::EventQueue;
 use codol_protocol::game::snapshot::scoreboard::ScoreboardRow;
 use codol_protocol::game::snapshot::scoreboard::ScoreboardSnapshot;
+mod aircraft;
 mod config;
+mod location_strikes;
 mod spawns;
 #[cfg(test)]
 use config::default_teams;
@@ -70,6 +72,26 @@ pub(crate) struct PlayerHit {
     pub attacker: u8,
     pub weapon: u16,
     pub headshot: bool,
+    pub reward_life: Option<u32>,
+}
+#[derive(Clone, Copy)]
+pub(crate) struct CreditSource {
+    actor: u8,
+    // Some marks reward damage and its original life, including secondary blasts.
+    life: Option<u32>,
+}
+impl CreditSource {
+    pub(crate) fn reward(actor: u8, life: u32) -> Self {
+        Self {
+            actor,
+            life: Some(life),
+        }
+    }
+}
+impl From<u8> for CreditSource {
+    fn from(actor: u8) -> Self {
+        Self { actor, life: None }
+    }
 }
 #[derive(Default)]
 pub(crate) struct Tick {
@@ -87,7 +109,14 @@ pub(crate) struct TdmMatch {
     pub(crate) props: crate::game::world::props::Props,
     pub(crate) deployables: crate::game::rewards::deployables::Deployables,
     pub(crate) airspace: crate::game::rewards::airspace::Airspace,
+    pub(crate) aircraft: crate::game::rewards::aircraft::Aircraft,
+    pub(crate) remote: crate::game::rewards::remote::Remotes,
+    pub(crate) drones: crate::game::rewards::drones::Drones,
+    pub(crate) dogs: crate::game::rewards::dogs::Dogs,
     pub(crate) sam_missiles: crate::game::rewards::sam::Missiles,
+    pub(crate) airdrops: crate::game::rewards::airdrops::Airdrops,
+    pub(crate) strikes: crate::game::rewards::strikes::Strikes,
+    selection: Option<crate::game::rewards::selection::Selection>,
     pub(crate) acceptance_stationary: bool,
     pub(crate) acceptance_fire_after_msec: Option<u32>,
     kills: Vec<Kill>,
@@ -96,6 +125,8 @@ pub(crate) struct TdmMatch {
     navigation: std::sync::Arc<crate::game::ai::navigation::Navigation>,
     next_diagnostics: u32,
     acceptance_support_index: usize,
+    last_world_time: u32,
+    marker_reservation: Option<(u8, u16, crate::game::rewards::inventory::Ticket)>,
     next_route_client: usize,
     spawns: spawns::Spawns,
 }
@@ -293,7 +324,14 @@ impl TdmMatch {
             props: Default::default(),
             deployables: Default::default(),
             airspace: Default::default(),
+            aircraft: Default::default(),
+            remote: Default::default(),
+            drones: Default::default(),
+            dogs: Default::default(),
             sam_missiles: Default::default(),
+            airdrops: Default::default(),
+            strikes: Default::default(),
+            selection: None,
             acceptance_stationary: false,
             acceptance_fire_after_msec: None,
             kills: Vec::new(),
@@ -302,6 +340,8 @@ impl TdmMatch {
             navigation,
             next_diagnostics: 0,
             acceptance_support_index: 0,
+            last_world_time: 0,
+            marker_reservation: None,
             next_route_client: 0,
             spawns,
         })
@@ -430,6 +470,8 @@ impl TdmMatch {
         if !self.rules.finished {
             self.rules.finished = true;
             self.rules.finished_at = Some(now);
+            self.cancel_strike_selection();
+            self.strikes.clear();
             for bot in &mut self.bots {
                 bot.poison.clear();
                 bot.tactical.clear();
@@ -485,10 +527,12 @@ impl TdmMatch {
         now: u32,
         entity: u16,
         damage: u16,
-        owner: u8,
+        source: impl Into<CreditSource>,
         splash: bool,
         collision: &Collision,
     ) -> bool {
+        let source = source.into();
+        let owner = source.actor;
         if (crate::game::rewards::deployables::FIRST_ENTITY
             ..crate::game::rewards::deployables::END_ENTITY)
             .contains(&entity)
@@ -514,20 +558,56 @@ impl TdmMatch {
                 self.streaks.stop_flight(source);
             }
             true
+        } else if (crate::game::rewards::aircraft::FIRST_ENTITY
+            ..crate::game::rewards::aircraft::END_ENTITY)
+            .contains(&entity)
+        {
+            self.aircraft.damage(
+                now,
+                entity,
+                damage,
+                (owner, self.config.teams[usize::from(owner)]),
+                splash,
+                collision,
+            )
+        } else if (656..688).contains(&entity) {
+            self.dogs.damage(
+                now,
+                entity,
+                damage,
+                self.config.teams[usize::from(owner)],
+                collision,
+            )
+        } else if (624..640).contains(&entity) {
+            self.remote
+                .damage_gunner(entity, damage, self.config.teams[usize::from(owner)])
+        } else if (608..624).contains(&entity) {
+            self.remote
+                .damage_car(entity, damage, self.config.teams[usize::from(owner)])
         } else {
-            self.props
-                .damage(now, entity, damage, owner, splash, collision)
+            self.props.damage(
+                now,
+                entity,
+                damage,
+                crate::game::world::props::DamageSource {
+                    owner,
+                    reward_life: source.life,
+                },
+                splash,
+                collision,
+            )
         }
     }
     fn damage_bots(
         &mut self,
         now: u32,
-        attacker: u8,
+        attacker: impl Into<CreditSource> + Copy,
         weapon: u16,
         hits: &[(u8, u16, bool)],
         melee: bool,
     ) -> Option<codol_protocol::game::snapshot::hit_feedback::HitKind> {
         use codol_protocol::game::snapshot::hit_feedback::HitKind;
+        let source: CreditSource = attacker.into();
         let mut feedback = None;
         for &(client, damage, headshot) in hits.iter().filter(|h| h.0 != 0) {
             if !self.live_at(now) {
@@ -548,7 +628,7 @@ impl TdmMatch {
                 bot.death = Some(now);
                 bot.snapshot.alive = false;
                 bot.controller.kill(now);
-                self.credit(now, victim, attacker, weapon, headshot, melee);
+                self.credit(now, victim, source, weapon, headshot, melee);
             }
         }
         feedback
@@ -615,3 +695,5 @@ mod combat;
 mod bots;
 
 mod rules;
+
+mod remote;

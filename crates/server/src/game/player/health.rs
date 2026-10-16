@@ -17,7 +17,11 @@ impl HealthRecovery {
         self.last_time = Some(now);
         true
     }
+    #[cfg(test)]
     pub fn damaged(&mut self, now: u32, health: u16) {
+        self.damaged_to(now, health, 100);
+    }
+    pub fn damaged_to(&mut self, now: u32, health: u16, maximum: u16) {
         if !self.clock(now) {
             return;
         }
@@ -26,10 +30,14 @@ impl HealthRecovery {
             self.severe = false;
             return;
         }
-        self.severe |= health <= 55;
+        self.severe |= u32::from(health) * 100 <= u32::from(maximum) * 55;
         self.next_tick = Some(now.wrapping_add(5000));
     }
+    #[cfg(test)]
     pub fn recover(&mut self, now: u32, health: u16) -> u16 {
+        self.recover_to(now, health, 100)
+    }
+    pub fn recover_to(&mut self, now: u32, health: u16, maximum: u16) -> u16 {
         if !self.clock(now) || health == 0 {
             return health;
         }
@@ -43,12 +51,12 @@ impl HealthRecovery {
         let ticks = elapsed / 50 + 1;
         let healed = if self.severe {
             u32::from(health)
-                .saturating_add(ticks.saturating_mul(10))
-                .min(100) as u16
+                .saturating_add(ticks.saturating_mul(u32::from(maximum).div_ceil(10)))
+                .min(u32::from(maximum)) as u16
         } else {
-            100
+            maximum
         };
-        if healed == 100 {
+        if healed == maximum {
             self.next_tick = None;
             self.severe = false;
         } else {
@@ -69,6 +77,17 @@ mod tests {
         assert_eq!(r.recover(6000, 44), 44);
         assert_eq!(r.recover(6150, 44), 74);
         assert_eq!(r.recover(6300, 74), 100);
+    }
+    #[test]
+    fn recovery_scales_to_the_current_maximum_and_never_revives() {
+        let mut r = HealthRecovery::default();
+        r.damaged_to(1000, 400, 1000);
+        assert_eq!(r.recover_to(5999, 400, 1000), 400);
+        assert_eq!(r.recover_to(6000, 400, 1000), 500);
+        assert_eq!(r.recover_to(6000, 500, 1000), 500);
+        assert_eq!(r.recover_to(6250, 500, 1000), 1000);
+        r.damaged_to(6300, 0, 1000);
+        assert_eq!(r.recover_to(15000, 0, 1000), 0);
     }
     #[test]
     fn new_damage_restarts_delay_and_death_never_heals() {

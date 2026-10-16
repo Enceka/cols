@@ -26,6 +26,32 @@ pub(crate) struct MaterialProof {
 }
 
 impl Minimap {
+    /// Inverse of the native compass projection. Commands0x45fd1a encode
+    /// clamped normalized cursor coordinates using255, then adds128 modulo256
+    /// (0x45fd18/0x45fd41). A centered native cursor therefore sends byte0.
+    pub fn selected_position(&self, selected: [u8; 3]) -> ([f32; 2], f32) {
+        let (sin, cos) = self.north_yaw.to_radians().sin_cos();
+        let delta = [
+            self.lower_right[0] - self.upper_left[0],
+            self.lower_right[1] - self.upper_left[1],
+        ];
+        let width = delta[0] * sin - delta[1] * cos;
+        let height = -delta[0] * cos - delta[1] * sin;
+        let x = f32::from(selected[0].wrapping_sub(128)) / 255.0 * width;
+        let y = f32::from(selected[1].wrapping_sub(128)) / 255.0 * height;
+        (
+            [
+                self.upper_left[0] + sin * x - cos * y,
+                self.upper_left[1] - cos * x - sin * y,
+            ],
+            (self.north_yaw + f32::from(selected[2]) * 360.0 / 255.0).rem_euclid(360.0),
+        )
+    }
+    pub fn world_height(&self) -> f32 {
+        let (sin, cos) = self.north_yaw.to_radians().sin_cos();
+        -(self.lower_right[0] - self.upper_left[0]) * cos
+            - (self.lower_right[1] - self.upper_left[1]) * sin
+    }
     pub fn validate(&self, map: &str, ncs_crc: u32) -> Result<()> {
         // Loaded 3.3.3.3 Crash material references the _dlc image. The
         // generated _tropical material uses the default image instead.

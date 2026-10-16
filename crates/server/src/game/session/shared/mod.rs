@@ -304,7 +304,10 @@ impl SharedMatch {
                     ai.route.clear();
                 }
             }
-            human.vitals.health = human.recovery.recover(now, human.vitals.health);
+            human.vitals.health =
+                human
+                    .recovery
+                    .recover_to(now, human.vitals.health, human.vitals.max_health);
             while human
                 .inputs
                 .first_key_value()
@@ -481,7 +484,9 @@ impl SharedMatch {
         target.vitals.health = target.vitals.health.saturating_sub(damage);
         target.vitals.damage_event = target.vitals.damage_event.wrapping_add(1);
         target.vitals.damage_count = damage.min(127) as u8;
-        target.recovery.damaged(now, target.vitals.health);
+        target
+            .recovery
+            .damaged_to(now, target.vitals.health, target.vitals.max_health);
         let killed = target.vitals.health == 0;
         if killed {
             target.motion.cancel_dive();

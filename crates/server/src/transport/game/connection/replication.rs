@@ -1,6 +1,33 @@
 use super::*;
 
 impl Connection {
+    /// A full client section is required when a suit changes or restores the
+    /// body. Delta clients inherit both the model and packed character data.
+    pub(super) fn world_baseline(
+        &self,
+        replay_epoch: u32,
+        top_players_scene: bool,
+        local: Option<codol_protocol::game::snapshot::enemy::EnemySnapshot>,
+        players: &[codol_protocol::game::snapshot::enemy::EnemySnapshot],
+    ) -> Option<&WorldHistory> {
+        self.world.tdm.as_ref()?;
+        self.world_history.iter().rev().find(|h| {
+            h.sequence <= self.native_ack
+                && h.replay_epoch == replay_epoch
+                && h.top_players_scene == top_players_scene
+                && self.native_sent + 1 - h.sequence < 24
+                && h.players.len() == players.len()
+                && h.players
+                    .iter()
+                    .zip(players)
+                    .all(|(old, current)| current.same_appearance(*old))
+                && match (h.local, local) {
+                    (Some(old), Some(current)) => current.same_appearance(old),
+                    (None, None) => true,
+                    _ => false,
+                }
+        })
+    }
     /// An explicitly bounded stream at 20 Hz. The probe has no physics/input
     /// execution and is disabled unless explicitly selected by the operator.
     pub fn poll_snapshot(&mut self, now: Instant) -> Result<Option<Vec<u8>>> {
@@ -222,6 +249,11 @@ impl Connection {
             .player
             .as_ref()
             .map(|p| self.hud_equipment(p.equipment()));
+        if let (Some(tdm), Some(current)) = (&self.world.tdm, equipment)
+            && let Some(gunner) = tdm.remote.gunner_equipment(current)
+        {
+            equipment = Some(gunner);
+        }
         let perk_display = self.perk_display(equipment);
         let state = self.world.game_state.as_ref().expect("enabled state");
         let mut angles = if state.has_spawn() {
@@ -242,6 +274,9 @@ impl Connection {
         let mut missiles = self.world.grenades.snapshots();
         if let Some(tdm) = &self.world.tdm {
             missiles.extend(tdm.sam_missiles.snapshots());
+            missiles.extend(tdm.strikes.missiles(server_time));
+            missiles.extend(tdm.remote.missiles());
+            missiles.extend(tdm.drones.snapshots());
             missiles.sort_by_key(|m| m.entity_number);
         }
         let mut smokes = self.world.smoke.snapshots(server_time);
@@ -282,6 +317,12 @@ impl Connection {
             self.local_baseline = state.local_player_snapshot(true);
         }
         let mut local_player = state.local_player_snapshot(self.world.vitals.health > 0);
+        if let Some(local) = &mut local_player {
+            self.world.armor.appearance(
+                local,
+                self.world.tdm.as_ref().map_or(0, |m| m.streaks.life(0)),
+            );
+        }
         if let (Some(local), Some(motion)) = (&mut local_player, self.world.motion.as_ref()) {
             local.origin = motion.origin;
             local.angles = angles;
@@ -331,11 +372,32 @@ impl Connection {
             enemy = None;
         }
         let mut snapshot_motion = self.snapshot_motion();
+        if self
+            .world
+            .tdm
+            .as_ref()
+            .is_some_and(|m| m.remote.zero_body_prediction())
+            && let Some(motion) = &mut snapshot_motion
+        {
+            // Native missile mode0x80000 skips ordinary keyboard movement
+            // production. RC uses a camera-only link and zero prediction speed;
+            // the authority still intercepts every command and freezes the body.
+            motion.speed = 0;
+            motion.velocity = [0.0; 3];
+        }
         let mut props = self
             .world
             .tdm
             .as_ref()
             .map_or(Vec::new(), |m| m.world_models());
+        if let Some(aim) = self
+            .world
+            .tdm
+            .as_ref()
+            .and_then(|m| m.remote.gunner_angles())
+        {
+            angles = aim;
+        }
         let mut view_offset = self.view_offset;
         let mut streaks = self.world.tdm.as_ref().map_or(Default::default(), |m| {
             if m.finished() {
@@ -372,11 +434,29 @@ impl Connection {
         {
             m.streaks.radio_snapshot(0, resources, &mut streaks);
         }
+        if self.world.armor.active()
+            || self
+                .world
+                .tdm
+                .as_ref()
+                .is_some_and(|m| m.streaks.emp_active(m.teams()[0], server_time))
+        {
+            streaks.action_types = [0; 5];
+            streaks.action_weapons = [0; 5];
+        }
         let mut reward_inventory = self
             .world
             .player
             .as_ref()
             .map_or([None; 4], |p| p.reward_inventory());
+        if self
+            .world
+            .tdm
+            .as_ref()
+            .is_some_and(|m| m.remote.gunner_active())
+        {
+            reward_inventory = [None; 4];
+        }
         self.world.vitals.emp_jammed = self.world.emp.active(server_time)
             || self.world.tdm.as_ref().is_some_and(|m| {
                 m.streaks.emp_active(m.teams()[0], server_time)
@@ -533,21 +613,14 @@ impl Connection {
         let match_baselines = self.world.tdm.as_ref().map_or(&[][..], |m| m.baselines());
         // parseClients is circular; a multiplayer delta cannot retain the
         // original full frame's appearance-record indices indefinitely.
-        let previous = if self.world.tdm.is_some() {
-            self.world_history
-                .iter()
-                .rev()
-                .find(|h| {
-                    h.sequence <= self.native_ack
-                        && h.replay_epoch == replay_epoch
-                        && h.top_players_scene == top_players_scene
-                        && self.native_sent + 1 - h.sequence < 24
-                        && h.players.len() == match_players.len()
-                })
-                .cloned()
-        } else {
-            None
-        };
+        let previous = self
+            .world_baseline(
+                replay_epoch,
+                top_players_scene,
+                local_player,
+                &match_players,
+            )
+            .cloned();
         let full = if self.world.tdm.is_some() {
             previous.is_none()
         } else {
@@ -589,6 +662,30 @@ impl Connection {
                 streaks,
                 reward_inventory,
                 radar_flags,
+                remote: self
+                    .world
+                    .tdm
+                    .as_ref()
+                    .filter(|m| {
+                        self.world.vitals.health > 0
+                            && !m.finished()
+                            && self.replay.kind().is_none()
+                    })
+                    .and_then(|m| m.remote.links()),
+                remote_exit: self.world.tdm.as_ref().and_then(|m| {
+                    m.remote.exit_overlay().map(|mut exit| {
+                        exit.visible &= self.world.vitals.health > 0
+                            && !m.finished()
+                            && self.replay.kind().is_none();
+                        exit
+                    })
+                }),
+                location_selection: self
+                    .world
+                    .tdm
+                    .as_ref()
+                    .filter(|_| replay_wire.is_none() && self.world.vitals.health > 0)
+                    .and_then(|m| m.selection_snapshot()),
                 nuke_hud: self.world.tdm.as_ref().and_then(|m| {
                     let end = m.streaks.countdown_end();
                     let text = self

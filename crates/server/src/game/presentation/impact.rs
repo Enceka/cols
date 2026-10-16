@@ -50,6 +50,25 @@ impl ImpactEvents {
             codol_protocol::game::snapshot::impact::ImpactEvent::GrenadeExplosion,
         )
     }
+    pub fn rocket(
+        &mut self,
+        now: u32,
+        weapon: u16,
+        origin: [f32; 3],
+        normal: [f32; 3],
+        surface: u8,
+    ) -> Option<ImpactSnapshot> {
+        self.push_event(
+            now,
+            weapon,
+            crate::game::combat::WorldImpact {
+                origin,
+                normal,
+                surface,
+            },
+            codol_protocol::game::snapshot::impact::ImpactEvent::RocketExplosion,
+        )
+    }
     pub fn smoke(
         &mut self,
         now: u32,
@@ -152,7 +171,7 @@ impl ImpactEvents {
             .contains(&self.next_entity)
         {
             codol_protocol::game::snapshot::weapon_drops::END_ENTITY
-        } else if (1648..1664).contains(&self.next_entity) {
+        } else if (1600..1664).contains(&self.next_entity) {
             1664
         } else if (1400..1496).contains(&self.next_entity) {
             1496
@@ -202,6 +221,20 @@ mod tests {
             origin: [90.0, 0.0, 30.0],
             normal: [-1.0, 0.0, 0.0],
             surface: 0,
+        }
+    }
+    #[test]
+    fn event_allocator_skips_all_reward_missiles_and_preserves_sound_slots() {
+        let mut events = ImpactEvents {
+            next_entity: 1599,
+            ..Default::default()
+        };
+        assert_eq!(events.fx(1000, 67, [0.0; 3]).unwrap().entity_number, 1599);
+        assert_eq!(events.fx(1050, 67, [0.0; 3]).unwrap().entity_number, 1664);
+        for now in (1100..3000).step_by(50) {
+            let n = events.fx(now, 67, [0.0; 3]).unwrap().entity_number;
+            assert!(!(1600..1664).contains(&n));
+            assert!(n < 1668);
         }
     }
 

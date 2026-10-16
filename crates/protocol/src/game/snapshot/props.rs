@@ -6,6 +6,35 @@ use std::collections::BTreeSet;
 pub const FIRST_ENTITY: u16 = 256;
 pub const END_ENTITY: u16 = 1024;
 #[derive(Clone, Copy, Debug, PartialEq)]
+pub struct VehiclePose {
+    pub definition: u8,
+    pub slot: u8,
+    pub tree: u8,
+    pub gun: [f32; 2],
+    pub animation: u16,
+    pub animation_parent: u16,
+    /// Dynamic CS3107+slot; type13 loopSound field is only eight bits.
+    pub loop_sound: u8,
+    pub animation_time: u32,
+}
+/// Native type19 animal identity. Slot and species selector occupy the
+/// low two bytes of ES+0x58; its tree is installed by serverinfo2482.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ActorPose {
+    pub team: u8,
+    pub slot: u8,
+    pub selector: u8,
+    pub animation: u16,
+    pub animation_parent: u16,
+    pub animation_ancestors: [u16; 4],
+}
+/// Measured target type12 controller; short angles decode to float degrees.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TurretPose {
+    pub gun: [u16; 3],
+    pub firing: bool,
+}
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PropSnapshot {
     pub entity_number: u16,
     pub model: u16,
@@ -17,13 +46,66 @@ pub struct PropSnapshot {
     pub events: crate::game::snapshot::events::EventQueue,
     /// Native ET_TURRET11 shares descriptor0's field order (0xc56cb8+11*8).
     pub turret: bool,
+    pub turret_pose: Option<TurretPose>,
+    /// Target type13 vehicle presentation; model is ES+0xe0, not ES+0x98.
+    pub vehicle: Option<VehiclePose>,
+    pub actor: Option<ActorPose>,
 }
 impl PropSnapshot {
     fn valid(self) -> bool {
         (FIRST_ENTITY..END_ENTITY).contains(&self.entity_number)
             && (1..1024).contains(&self.model)
             && self.weapon < 900
+            && self.actor.is_some() == (656..688).contains(&self.entity_number)
+            && self.actor.is_none_or(|a| {
+                !self.turret
+                    && self.turret_pose.is_none()
+                    && self.vehicle.is_none()
+                    && matches!(a.team, 1 | 2)
+                    && a.slot < 32
+                    && a.selector == 1
+                    && u16::from(a.slot) == self.entity_number - 656
+                    && a.animation > 0
+                    && a.animation < 2048
+                    && a.animation_parent < 2048
+                    && a.animation_parent != a.animation
+                    && a.animation_ancestors
+                        .iter()
+                        .all(|&n| n < 2048 && n != a.animation)
+                    && a.animation_ancestors
+                        .iter()
+                        .copied()
+                        .rev()
+                        .find(|&n| n != 0)
+                        .unwrap_or(0)
+                        == a.animation_parent
+            })
             && (!self.turret || self.weapon > 0)
+            && self
+                .turret_pose
+                .is_none_or(|_| !self.turret && self.vehicle.is_none() && self.weapon > 0)
+            && self.turret_pose.is_some() == (576..608).contains(&self.entity_number)
+            && (!(560..576).contains(&self.entity_number)
+                && !(608..624).contains(&self.entity_number)
+                || self.vehicle.is_some())
+            && self.vehicle.is_none_or(|_| {
+                (560..576).contains(&self.entity_number) || (608..640).contains(&self.entity_number)
+            })
+            && self.vehicle.is_none_or(|v| {
+                !self.turret
+                    && self.weapon > 0
+                    && (1..32).contains(&v.definition)
+                    && v.slot < 16
+                    && (!(560..576).contains(&self.entity_number)
+                        || u16::from(v.slot) == self.entity_number - 560)
+                    && v.tree < 16
+                    && v.animation < 2048
+                    && v.animation_parent < 2048
+                    && (v.animation_parent == 0 || v.animation_parent != v.animation)
+                    && (v.animation == 0 || v.tree > 0)
+                    && v.animation_time <= i32::MAX as u32
+                    && v.gun.iter().all(|a| a.is_finite())
+            })
             && self.events.validate().is_ok()
             && self
                 .origin
@@ -37,11 +119,21 @@ pub(crate) fn write(
     baseline: &[PropSnapshot],
 ) -> Result<(), LobbyError> {
     for list in [current, baseline] {
-        if list.len() > 208
+        if list.len() > 288
             || list.iter().any(|p| !p.valid())
             || list
                 .windows(2)
                 .any(|p| p[0].entity_number >= p[1].entity_number)
+            || list
+                .iter()
+                .filter(|p| p.present)
+                .filter_map(|p| p.vehicle.map(|v| v.slot))
+                .collect::<BTreeSet<_>>()
+                .len()
+                != list
+                    .iter()
+                    .filter(|p| p.present && p.vehicle.is_some())
+                    .count()
         {
             return Err(LobbyError("invalid map prop snapshots"));
         }
@@ -72,6 +164,18 @@ pub(crate) fn write(
         };
         out.bits(1, 1);
         out.bits(1, 1); // changed, absolute position/angle bases
+        if prop.actor.is_some() {
+            super::animal::fields(out, *prop, old.copied());
+            continue;
+        }
+        if prop.vehicle.is_some() {
+            super::helicopter::fields(out, *prop, old.copied());
+            continue;
+        }
+        if prop.turret_pose.is_some() {
+            super::turret::fields(out, *prop, old.copied());
+            continue;
+        }
         out.bits(32, 6); // last changed GENERAL field, including roll
         gap(out, 1);
         out.bytes.push(if prop.turret { 11 } else { 0 });
@@ -164,6 +268,49 @@ fn gap(out: &mut Writer, distance: u32) {
 mod tests {
     use super::*;
     use crate::game::channel::wire::Reader;
+    #[test]
+    fn rc_and_aircraft_share_native_vehicle_slots_and_reject_a_collision() {
+        let aircraft = PropSnapshot {
+            actor: None,
+            entity_number: 560,
+            model: 146,
+            origin: [0.0, 0.0, 1000.0],
+            angles: [0; 3],
+            present: true,
+            weapon: 302,
+            events: Default::default(),
+            turret: false,
+            turret_pose: None,
+            vehicle: Some(VehiclePose {
+                definition: 3,
+                slot: 0,
+                tree: 0,
+                gun: [0.0; 2],
+                animation: 0,
+                animation_parent: 0,
+                loop_sound: 0,
+                animation_time: 1000,
+            }),
+        };
+        let mut car = PropSnapshot {
+            actor: None,
+            entity_number: 608,
+            model: 132,
+            origin: [0.0; 3],
+            weapon: 338,
+            vehicle: Some(VehiclePose {
+                definition: 7,
+                slot: 1,
+                ..aircraft.vehicle.unwrap()
+            }),
+            ..aircraft
+        };
+        assert!(write(&mut Writer::default(), &[aircraft, car], &[]).is_ok());
+        car.vehicle.as_mut().unwrap().slot = 0;
+        assert!(write(&mut Writer::default(), &[aircraft, car], &[]).is_err());
+        car.present = false;
+        assert!(write(&mut Writer::default(), &[aircraft, car], &[]).is_ok());
+    }
     fn decode(
         body: &[u8],
         baseline: Option<PropSnapshot>,
@@ -256,6 +403,7 @@ mod tests {
     fn general_model_and_all_pose_axes_decode_and_changed_wreck_or_removal_do_not_inherit_an_old_model()
      {
         let first = PropSnapshot {
+            actor: None,
             entity_number: 256,
             model: 192,
             origin: [123.0, -456.0, 7.0],
@@ -264,10 +412,13 @@ mod tests {
             weapon: 0,
             events: Default::default(),
             turret: false,
+            turret_pose: None,
+            vehicle: None,
         };
         for prop in [
             first,
             PropSnapshot {
+                actor: None,
                 model: 191,
                 ..first
             },
@@ -304,6 +455,7 @@ mod tests {
         write(
             &mut gone,
             &[PropSnapshot {
+                actor: None,
                 present: false,
                 ..first
             }],
@@ -316,6 +468,7 @@ mod tests {
             write(
                 &mut invalid,
                 &[PropSnapshot {
+                    actor: None,
                     entity_number: 54,
                     ..first
                 }],
@@ -341,6 +494,7 @@ mod tests {
         assert_eq!(turret["field_table_va"], general["table_va"]);
         assert_eq!(turret["fire_event"], 70);
         let mut prop = PropSnapshot {
+            actor: None,
             entity_number: 384,
             model: 125,
             origin: [96.0, 0.0, 1.0],
@@ -348,6 +502,8 @@ mod tests {
             present: true,
             weapon: 347,
             turret: true,
+            turret_pose: None,
+            vehicle: None,
             events: crate::game::snapshot::events::EventQueue {
                 sequence: 254,
                 ..Default::default()

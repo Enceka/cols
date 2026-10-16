@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 #[derive(Default)]
 pub(crate) struct LocalWorld {
+    pub(crate) armor: crate::game::rewards::armor::Armor,
     pub(crate) weapon_drops: crate::game::world::weapon_drops::WeaponDrops,
     pub(crate) game_state: Option<Arc<crate::game::session::prepared::PreparedGameState>>,
     pub(crate) player: Option<crate::game::weapons::held::HeldWeapons>,

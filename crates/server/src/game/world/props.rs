@@ -185,8 +185,22 @@ struct State {
     health: u16,
     phase: Phase,
     owner: u8,
+    reward_life: Option<u32>,
     burn_time: u32,
     fire_time: u32,
+}
+#[derive(Clone, Copy)]
+pub(crate) struct DamageSource {
+    pub owner: u8,
+    pub reward_life: Option<u32>,
+}
+impl From<u8> for DamageSource {
+    fn from(owner: u8) -> Self {
+        Self {
+            owner,
+            reward_life: None,
+        }
+    }
 }
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Blast {
@@ -197,9 +211,16 @@ pub(crate) struct Blast {
     pub radius: f32,
     pub inner: u16,
     pub outer: u16,
+    pub reward_life: Option<u32>,
 }
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum Event {
+    Rocket {
+        weapon: u16,
+        origin: [f32; 3],
+        normal: [f32; 3],
+        surface: u8,
+    },
     Fx {
         selector: u16,
         origin: [f32; 3],
@@ -232,6 +253,7 @@ impl Props {
                 },
                 phase: Phase::Intact,
                 owner: 0,
+                reward_life: None,
                 burn_time: 0,
                 fire_time: 0,
             })
@@ -250,6 +272,7 @@ impl Props {
             .flat_map(|r| r.props.iter())
             .zip(&self.states)
             .map(|(p, s)| PropSnapshot {
+                actor: None,
                 entity_number: p.entity_number,
                 model: if s.phase == Phase::Wreck {
                     p.destroyed_model.unwrap()
@@ -262,6 +285,8 @@ impl Props {
                 weapon: 0,
                 events: Default::default(),
                 turret: false,
+                turret_pose: None,
+                vehicle: None,
             })
             .collect()
     }
@@ -288,10 +313,12 @@ impl Props {
         now: u32,
         entity: u16,
         damage: u16,
-        owner: u8,
+        source: impl Into<DamageSource>,
         splash: bool,
         collision: &crate::game::world::collision::Collision,
     ) -> bool {
+        let source = source.into();
+        let owner = source.owner;
         if damage == 0 || owner >= 12 {
             return false;
         }
@@ -307,6 +334,7 @@ impl Props {
         let p = &r.props[i];
         let s = &mut self.states[i];
         s.owner = owner;
+        s.reward_life = source.reward_life;
         s.health = s.health.saturating_sub(damage);
         tracing::info!(
             now,
@@ -368,6 +396,7 @@ impl Props {
             origin,
         });
         self.events.push_back(Event::Blast(Blast {
+            reward_life: s.reward_life,
             owner: s.owner,
             source_entity: Some(p.entity_number),
             weapon: r.damage_weapon,
@@ -430,7 +459,17 @@ impl Props {
             .collect::<Vec<_>>();
         for (id, origin, height) in targets {
             let damage = radius_damage(blast, origin, height, Some(id), collision);
-            self.damage(now, id, damage, blast.owner, true, collision);
+            self.damage(
+                now,
+                id,
+                damage,
+                DamageSource {
+                    owner: blast.owner,
+                    reward_life: blast.reward_life,
+                },
+                true,
+                collision,
+            );
         }
     }
     pub fn drain(&mut self) -> Vec<Event> {
@@ -510,6 +549,48 @@ mod tests {
             props,
             unsupported_models: vec![],
         })
+    }
+    #[test]
+    fn reward_ignition_and_chained_explosions_keep_the_reward_origin() {
+        let c = collision();
+        let mut props = Props::new(
+            resources(vec![
+                definition(256, Kind::Barrel, 50.0),
+                definition(257, Kind::Barrel, 90.0),
+            ]),
+            &c,
+        );
+        props.damage(
+            1000,
+            256,
+            1,
+            DamageSource {
+                owner: 0,
+                reward_life: Some(7),
+            },
+            true,
+            &c,
+        );
+        let first = props
+            .drain()
+            .into_iter()
+            .find_map(|event| match event {
+                Event::Blast(blast) => Some(blast),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(first.reward_life, Some(7));
+        props.radial(1000, first, &c);
+        let second = props
+            .drain()
+            .into_iter()
+            .find_map(|event| match event {
+                Event::Blast(blast) if blast.source_entity == Some(257) => Some(blast),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(second.reward_life, Some(7));
+        assert_eq!(second.owner, 0);
     }
     #[test]
     fn real_shot_hits_the_nearest_prop_and_destruction_removes_its_collision_once() {
@@ -657,6 +738,7 @@ mod tests {
         let ray = c.raycast([0.0, 0.0, 30.0], [200.0, 0.0, 30.0]);
         assert!((ray.fraction - 0.475).abs() < 0.001);
         let blast = Blast {
+            reward_life: None,
             source_entity: None,
             owner: 0,
             weapon: 73,

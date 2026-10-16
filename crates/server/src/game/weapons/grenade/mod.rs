@@ -9,6 +9,8 @@ pub(crate) struct Definition {
     pub name: String,
     #[serde(default)]
     pub marker_reward: Option<u8>,
+    #[serde(skip)]
+    pub marker_call: u32,
     pub index: u16,
     items: Vec<u32>,
     #[serde(rename = "type")]
@@ -89,6 +91,7 @@ impl Definition {
         let d = Self {
             name: name.into(),
             marker_reward: Some(id),
+            marker_call: 0,
             index: w.weapon,
             items: vec![],
             weapon_type: 1,
@@ -369,7 +372,10 @@ impl Grenades {
         let desired: [f32; 3] = std::array::from_fn(|i| eye[i] + forward[i] * 8.0);
         let trace = collision.projectile_trace(eye, desired, 2.0);
         let origin = std::array::from_fn(|i| eye[i] + (desired[i] - eye[i]) * trace.fraction);
-        let def = request.definition;
+        let mut def = request.definition;
+        if def.marker_reward.is_some() {
+            def.marker_call = request.time;
+        }
         let mut velocity =
             std::array::from_fn(|i| forward[i] * f32::from(def.speed) + inherited[i]);
         velocity[0] += yaw.cos() * f32::from(def.speed_forward);
@@ -393,6 +399,7 @@ impl Grenades {
         });
         self.missiles.push(Missile {
             snapshot: codol_protocol::game::snapshot::missile::MissileSnapshot {
+                events: Default::default(),
                 owner: 0,
                 angles: [0; 3],
                 entity_number,

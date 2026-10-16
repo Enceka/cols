@@ -97,6 +97,7 @@ fn room_team_assignment_selects_bot_outfits_and_their_pinned_baselines() {
             move_multiplier: 1.0,
             weapon: 352,
             inventory_weapon: None,
+            inventory_override: None,
             alternate_weapon: None,
             alternates: [None, None],
             fire_count: 0,
@@ -418,6 +419,7 @@ fn sentry_consumes_only_successful_placement_and_retains_owner_credit_after_deat
         2500,
         local,
         PlayerHit {
+            reward_life: None,
             damage: 100,
             attacker: 11,
             weapon: 352,
@@ -441,8 +443,12 @@ fn sentry_consumes_only_successful_placement_and_retains_owner_credit_after_deat
     };
     game.step(5300, (dead, 70.0, 0), weapon, &collision, |s, _, _, _| s)
         .unwrap();
+    // The old device still scores after the owner has actually begun a new
+    // life; its kills must not become that life's streak progress.
+    game.streaks.spawn(0);
+    assert_eq!(game.streaks.life(0), 1);
     for time in (6400..=6600).step_by(50) {
-        game.step_deployables(time, (dead, 70.0, 0), false, &collision);
+        game.step_deployables(time, (local, 70.0, 100), false, &collision);
     }
     let kills = game.take_kills();
     assert!(
@@ -1187,6 +1193,7 @@ fn grenade_blast_excludes_allies_and_suicide_never_awards_a_kill() {
         3000,
         template(),
         PlayerHit {
+            reward_life: None,
             damage,
             attacker: 0,
             weapon: 95,
@@ -1648,6 +1655,7 @@ fn score_and_time_limits_stop_combat_without_additional_score() {
         2300,
         template(),
         PlayerHit {
+            reward_life: None,
             damage: 100,
             attacker: 6,
             weapon: 352,
@@ -1885,4 +1893,556 @@ fn captured_bot_ground_contacts() {
             output.display()
         );
     }
+}
+
+#[test]
+fn mortar_selection_owns_one_stock_commit_and_real_damage_keeps_room_teams() {
+    use codol_protocol::game::channel::usercmd::{BUTTON_LOCATION_CONFIRM, UserCommand};
+    let collision = world();
+    let resources = crate::game::rewards::strikes_tests::resources();
+    let map=serde_json::from_value(serde_json::json!({"material":"compass_map_mp_afghan","north_yaw":0,"upper_left":[1000,1000],"lower_right":[-1000,-1000]})).unwrap();
+    let mut game = TdmMatch::new(config(), template(), 190.0, &collision).unwrap();
+    game.streaks.configure_radios(0, Default::default());
+    game.streaks.enable_supported(&resources);
+    assert!(game.streaks.pickup_reward(0, 17, 2000));
+    let mut cmd = UserCommand {
+        time: 2100,
+        weapons: [333, 0, 0],
+        ..Default::default()
+    };
+    assert_eq!(
+        game.select_strike(17, &cmd, &resources, &map, &collision),
+        None
+    );
+    assert!(game.selection_snapshot().is_some());
+    assert!(game.strikes.missiles(2100).is_empty());
+    cmd.time = 2300;
+    cmd.buttons = BUTTON_LOCATION_CONFIRM;
+    cmd.selected = [0, 0, 0];
+    assert_eq!(
+        game.select_strike(17, &cmd, &resources, &map, &collision),
+        None
+    );
+    game.validate_strike_selection(2400, true, Some(352));
+    assert!(game.selection_snapshot().is_none());
+    assert!(game.streaks.can_radio(0, 2, 17, 2500));
+    cmd.time = 2600;
+    cmd.buttons = 0;
+    assert_eq!(
+        game.select_strike(17, &cmd, &resources, &map, &collision),
+        None
+    );
+    for n in 0..3 {
+        cmd.time = 2800 + n * 200;
+        cmd.buttons = BUTTON_LOCATION_CONFIRM;
+        assert_eq!(
+            game.select_strike(17, &cmd, &resources, &map, &collision),
+            if n == 2 { Some(true) } else { None }
+        );
+        cmd.time += 100;
+        cmd.buttons = 0;
+        if n < 2 {
+            game.select_strike(17, &cmd, &resources, &map, &collision);
+        }
+    }
+    assert!(game.selection_snapshot().is_none());
+    assert!(!game.streaks.can_radio(0, 2, 17, 3500));
+    let mut local = template();
+    local.origin = [-2000.0, 0.0, 0.0];
+    for now in (3500..30000).step_by(50) {
+        assert!(
+            game.advance_strikes(now, local, 70.0, 100, 0, &collision)
+                .hits
+                .is_empty()
+        );
+    }
+    assert!(game.rows[0].kills > 0);
+    for b in &game.bots {
+        if b.snapshot.team == 2 {
+            assert_eq!(b.health, 100);
+        }
+    }
+    assert!(
+        game.kills
+            .iter()
+            .all(|k| k.attacker == 0 && k.weapon == 333 && k.victim.team == 1)
+    );
+}
+
+#[test]
+fn strike_owner_damage_is_real_and_suicide_does_not_award_a_kill() {
+    let c = world();
+    let r = crate::game::rewards::strikes_tests::resources();
+    let mut game = TdmMatch::new(config(), template(), 190.0, &c).unwrap();
+    let points = [crate::game::rewards::selection::Point {
+        origin: [0.0; 3],
+        yaw: 0.0,
+        coverage: Some(1100.0),
+    }];
+    let source = crate::game::rewards::strikes::Source {
+        owner: 0,
+        team: 2,
+        life: 0,
+    };
+    let plan = game.strikes.plan(2000, 6, source, &points, &r, &c).unwrap();
+    game.strikes.launch(plan);
+    let local = template();
+    let mut health = 100u16;
+    let mut fatal = None;
+    for now in (2000..12000).step_by(50) {
+        let tick = game.advance_strikes(now, local, 70.0, health, 0, &c);
+        for hit in tick.hits {
+            health = health.saturating_sub(hit.damage);
+            if health == 0 {
+                fatal = Some((now, hit));
+                break;
+            }
+        }
+        if fatal.is_some() {
+            break;
+        }
+    }
+    let (now, hit) = fatal.expect("a strike on the owner must cause real health damage");
+    assert_eq!(hit.attacker, 0);
+    assert_eq!(hit.weapon, 298);
+    let kills = game.rows[0].kills;
+    game.player_killed(now, local, hit);
+    assert_eq!(game.rows[0].deaths, 1);
+    assert_eq!(game.rows[0].kills, kills);
+    assert!(
+        game.kills
+            .iter()
+            .any(|k| k.victim.client_index == 0 && k.attacker == 0)
+    );
+    for b in &game.bots {
+        if b.snapshot.team == 2 {
+            assert_eq!(b.health, 100);
+        }
+    }
+}
+
+#[test]
+fn reward_kills_keep_score_but_never_advance_streak_in_old_or_current_life() {
+    let c = world();
+    let mut game = TdmMatch::new(config(), template(), 190.0, &c).unwrap();
+    game.streaks.enable();
+    game.player_killed(
+        2100,
+        template(),
+        PlayerHit {
+            reward_life: None,
+            damage: 100,
+            attacker: 6,
+            weapon: 352,
+            headshot: false,
+        },
+    );
+    game.streaks.spawn(0);
+    assert_eq!(game.streaks.life(0), 1);
+    let old = CreditSource::reward(0, 0);
+    assert!(
+        game.damage_bots(5000, old, 298, &[(6, 100, false)], false)
+            .is_some()
+    );
+    assert_eq!(game.rows[0].kills, 1);
+    assert_eq!(game.streaks.snapshot(0, 0).progress, 0);
+    assert!(
+        game.damage_bots(
+            5100,
+            CreditSource::reward(0, 1),
+            298,
+            &[(7, 100, false)],
+            false
+        )
+        .is_some()
+    );
+    assert_eq!(game.rows[0].kills, 2);
+    assert_eq!(game.streaks.snapshot(0, 0).progress, 0);
+    assert_eq!(game.streaks.best(0), 1);
+    assert_eq!(game.rows[0].score, 200);
+    assert!(
+        game.damage_bots(5200, 0, 352, &[(8, 100, false)], false)
+            .is_some()
+    );
+    assert_eq!(game.rows[0].kills, 3);
+    assert_eq!(game.rows[0].score, 300);
+    assert_eq!(game.streaks.snapshot(0, 0).progress, 1);
+    assert_eq!(game.streaks.best(0), 2);
+}
+
+#[test]
+fn delayed_reward_killing_local_player_keeps_the_attackers_original_life() {
+    let c = world();
+    let mut game = TdmMatch::new(config(), template(), 190.0, &c).unwrap();
+    game.streaks.enable();
+    game.streaks.credit(2100, 6, 1, None);
+    game.streaks.spawn(6);
+    assert_eq!(game.streaks.life(6), 1);
+    game.player_killed(
+        5000,
+        template(),
+        PlayerHit {
+            damage: 100,
+            attacker: 6,
+            weapon: 302,
+            headshot: false,
+            reward_life: Some(0),
+        },
+    );
+    assert_eq!(game.rows[6].kills, 1);
+    assert_eq!(game.streaks.snapshot(6, 0).progress, 0);
+    game.streaks.spawn(0);
+    game.player_killed(
+        6000,
+        template(),
+        PlayerHit {
+            damage: 100,
+            attacker: 6,
+            weapon: 302,
+            headshot: false,
+            reward_life: Some(1),
+        },
+    );
+    assert_eq!(game.rows[6].kills, 2);
+    assert_eq!(game.streaks.snapshot(6, 0).progress, 0);
+}
+
+#[test]
+fn remote_terminal_cancellation_preserves_stock_and_commit_requires_payload_plan() {
+    let (mut game, mut resources, collision) = remote_test_match();
+    let cmd = |time| codol_protocol::game::channel::usercmd::UserCommand {
+        time,
+        weapons: [325, 0, 0],
+        ..Default::default()
+    };
+    assert_eq!(
+        game.remote_action(3000, 5, &cmd(3000), [0.0; 3], &resources, &collision),
+        None
+    );
+    assert!(game.remote.missiles().is_empty());
+    game.validate_remote(3100, true, Some(352));
+    assert!(game.streaks.can_radio(0, 2, 5, 3100));
+    assert!(!game.remote.busy());
+    assert_eq!(
+        game.remote_action(4000, 5, &cmd(4000), [0.0; 3], &resources, &collision),
+        None
+    );
+    let weapon = resources
+        .weapons
+        .remove("remotemissile_projectile_mp")
+        .unwrap();
+    assert_eq!(
+        game.remote_action(5800, 5, &cmd(5800), [0.0; 3], &resources, &collision),
+        Some(false)
+    );
+    assert!(game.streaks.can_radio(0, 2, 5, 5800));
+    assert!(game.remote.links().is_none());
+    resources
+        .weapons
+        .insert("remotemissile_projectile_mp".into(), weapon);
+    assert_eq!(
+        game.remote_action(6000, 5, &cmd(6000), [0.0; 3], &resources, &collision),
+        None
+    );
+    assert_eq!(
+        game.remote_action(7799, 5, &cmd(7799), [0.0; 3], &resources, &collision),
+        None
+    );
+    assert_eq!(
+        game.remote_action(7800, 5, &cmd(7800), [0.0; 3], &resources, &collision),
+        Some(true)
+    );
+    assert!(!game.streaks.can_radio(0, 2, 5, 7800));
+    assert!(game.remote.links().is_some());
+    game.validate_remote(7900, false, None);
+    assert!(game.remote.links().is_none());
+    assert_eq!(game.remote.drain_returns().len(), 1);
+    assert_eq!(game.remote.missiles().len(), 1); // payload retains original life
+    game.remote.advance(8000, true, 0, &collision);
+    assert!(game.remote.missiles().is_empty());
+}
+
+fn remote_test_match() -> (
+    TdmMatch,
+    crate::game::rewards::killstreaks::RadarResources,
+    Collision,
+) {
+    let collision = world();
+    let mut resources = crate::game::rewards::remote::test_resources();
+    let radio = resources.radios[0].clone();
+    resources
+        .radios
+        .push(crate::game::rewards::killstreaks::Radio {
+            native_id: 5,
+            weapon: 325,
+            ..radio
+        });
+    let mut game = TdmMatch::new(config(), template(), 190.0, &collision).unwrap();
+    let catalog: serde_json::Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../fixtures/protocol/killstreaks-3.3.3.3.json"
+    )))
+    .unwrap();
+    let item = catalog["marketplace"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["native_id"] == 5)
+        .unwrap()["item_id"]
+        .as_u64()
+        .unwrap() as u32;
+    let offset = catalog["class_offsets"][0][0].as_u64().unwrap() as usize;
+    let mut profile = vec![0; offset + 12];
+    profile[offset..offset + 4].copy_from_slice(&(item + 1).to_le_bytes());
+    let preview =
+        crate::game::rewards::killstreaks::Previews::from_profile(&profile, 0, &[item], 0.0)
+            .unwrap();
+    game.streaks.configure_radios(0, preview);
+    game.streaks.enable_supported(&resources);
+    assert!(!crate::game::rewards::mechanisms::Mechanism::radio_available(5, &resources));
+    game.streaks.acceptance_enable_predator();
+    for victim in 6..=10 {
+        game.damage_bots(2200, 0, 352, &[(victim, 100, false)], false);
+    }
+    assert!(game.streaks.can_radio(0, 2, 5, 2200));
+    (game, resources, collision)
+}
+
+#[test]
+fn remote_missile_splash_includes_the_operator_and_preserves_call_life() {
+    let (mut game, mut resources, collision) = remote_test_match();
+    resources.remote_spawns = Some(crate::game::rewards::killstreaks::RemoteSpawns {
+        sources_sha256: ["0".repeat(64)],
+        points: vec![crate::game::rewards::killstreaks::RemoteSpawn {
+            origin: [0.0, 0.0, 2000.0],
+            target: [0.0; 3],
+        }],
+    });
+    let cmd = |time| codol_protocol::game::channel::usercmd::UserCommand {
+        time,
+        weapons: [325, 0, 0],
+        ..Default::default()
+    };
+    assert_eq!(
+        game.remote_action(3000, 5, &cmd(3000), [0.0; 3], &resources, &collision),
+        None
+    );
+    let life = game.streaks.life(0);
+    assert_eq!(
+        game.remote_action(4800, 5, &cmd(4800), [0.0; 3], &resources, &collision),
+        Some(true)
+    );
+    let mut local = template();
+    local.origin = [0.0; 3];
+    local.alive = true;
+    let mut hit = None;
+    for now in (4850..20000).step_by(50) {
+        let tick = game.advance_strikes(now, local, 70.0, 100, 0, &collision);
+        if let Some(damage) = tick.hits.first() {
+            hit = Some(*damage);
+            break;
+        }
+    }
+    let hit = hit.expect("controlled missile must damage its operator at the target");
+    assert_eq!(hit.attacker, 0);
+    assert_eq!(hit.weapon, 345);
+    assert_eq!(hit.reward_life, Some(life));
+    assert!(hit.damage >= 100);
+    assert!(game.remote.links().is_none());
+    assert!(game.remote.missiles().is_empty());
+    assert_eq!(game.remote.drain_returns().len(), 1);
+}
+
+fn gunner_match(id: u8) -> (TdmMatch, Collision, u16) {
+    let c = world();
+    let mut r = crate::game::rewards::gunner_test_resources();
+    let terminal = if id == 12 { 318 } else { 312 };
+    r.radios.push(crate::game::rewards::killstreaks::Radio {
+        native_id: id,
+        weapon: terminal,
+        ..r.radios[0].clone()
+    });
+    r.radios.push(crate::game::rewards::killstreaks::Radio {
+        native_id: 14,
+        weapon: 315,
+        ..r.radios[0].clone()
+    });
+    let mut game = TdmMatch::new(config(), template(), 190.0, &c).unwrap();
+    game.advance_clock(1000);
+    game.streaks.enable();
+    game.streaks.configure_radios(0, Default::default());
+    game.streaks.enable_supported(&r);
+    game.streaks.acceptance_enable_gunners(&r);
+    assert!(game.streaks.pickup_reward(0, id, 2000));
+    let cmd = |time| codol_protocol::game::channel::usercmd::UserCommand {
+        time,
+        weapons: [terminal, 0, 0],
+        ..Default::default()
+    };
+    assert_eq!(
+        game.remote_action(3000, id, &cmd(3000), [0.0; 3], &r, &c),
+        None
+    );
+    assert_eq!(
+        game.remote_action(4800, id, &cmd(4800), [0.0; 3], &r, &c),
+        Some(true)
+    );
+    assert!(!game.streaks.can_radio(0, 2, id, 4800));
+    (game, c, terminal)
+}
+
+#[test]
+fn gunner_shell_kills_and_self_damage_keep_original_life_without_earning_rewards() {
+    use codol_protocol::game::channel::usercmd::UserCommand;
+    let (mut game, c, _) = gunner_match(13);
+    let life = game.streaks.life(0);
+    let camera = game
+        .remote
+        .props()
+        .iter()
+        .find(|p| p.entity_number == 624)
+        .unwrap()
+        .origin;
+    // A command delta points the active cannon straight down; the controller
+    // clamps it to its native85-degree limit.
+    game.remote.input(
+        &UserCommand {
+            time: 4820,
+            weapons: [289, 0, 0],
+            ..Default::default()
+        },
+        &c,
+    );
+    game.remote.input(
+        &UserCommand {
+            time: 4840,
+            weapons: [289, 0, 0],
+            angles: [16384, 0, 0],
+            buttons: 1,
+            ..Default::default()
+        },
+        &c,
+    );
+    let mut local = template();
+    local.origin = [camera[0], camera[1], 0.0];
+    for bot in &mut game.bots {
+        bot.health = 0;
+        bot.snapshot.alive = false;
+    }
+    let victim = &mut game.bots[5];
+    victim.health = 100;
+    victim.snapshot.alive = true;
+    victim.snapshot.origin = local.origin;
+    let progress = game.streaks.snapshot(0, 0).progress;
+    let mut damage = None;
+    for now in (4860..=9000).step_by(20) {
+        let tick = game.advance_strikes(now, local, 70.0, 100, 0, &c);
+        if let Some(hit) = tick.hits.first() {
+            damage = Some(*hit);
+            break;
+        }
+    }
+    let hit = damage.expect("cannon must resolve operator splash through the match");
+    assert_eq!(
+        (hit.attacker, hit.weapon, hit.reward_life),
+        (0, 289, Some(life))
+    );
+    assert!(hit.damage >= 100);
+    assert_eq!(game.rows[0].kills, 1);
+    assert_eq!(game.rows[0].score, 100);
+    assert_eq!(game.streaks.snapshot(0, 0).progress, progress);
+    game.player_killed(9100, local, hit);
+    game.validate_remote(9100, false, None);
+    game.remote.advance(9120, false, 0, &c);
+    assert!(game.remote.links().is_none());
+    assert!(game.remote.props().is_empty());
+    assert!(game.remote.drain_vision().is_empty());
+    assert!(game.remote.drain_weapon_changes().is_empty());
+    assert_eq!(game.remote.drain_returns().len(), 1);
+    game.streaks.spawn(0);
+    assert_ne!(game.streaks.life(0), life);
+    assert_eq!(game.streaks.snapshot(0, 0).progress, 0);
+    game.advance_strikes(12000, local, 70.0, 100, 0, &c);
+    assert_eq!(game.rows[0].kills, 1);
+}
+
+#[test]
+fn enemy_emp_cancels_both_gunners_and_airborne_shells_with_a_single_return() {
+    for id in [12, 13] {
+        let (mut game, c, terminal) = gunner_match(id);
+        let weapon = if id == 12 { 304 } else { 289 };
+        let cmd = |time, buttons| codol_protocol::game::channel::usercmd::UserCommand {
+            time,
+            buttons,
+            weapons: [weapon, 0, 0],
+            ..Default::default()
+        };
+        game.remote.input(&cmd(4820, 0), &c);
+        game.remote.input(&cmd(4840, 1), &c);
+        game.remote.advance(4860, false, 0, &c);
+        if id == 13 {
+            assert!(!game.remote.missiles().is_empty());
+        }
+        game.remote.drain_gunner_shots();
+        assert!(game.streaks.pickup_reward(6, 14, 4900));
+        assert!(game.streaks.try_radio(6, 1, 14, 4900));
+        assert!(game.streaks.emp_active(2, 4900));
+        game.validate_remote(4900, true, Some(terminal));
+        game.remote.advance(4900, false, 1 << 2, &c);
+        assert!(game.remote.links().is_none());
+        assert!(game.remote.props().is_empty());
+        assert!(game.remote.missiles().is_empty());
+        assert!(game.remote.drain_hits().is_empty());
+        assert!(game.remote.drain().is_empty());
+        assert!(game.remote.drain_vision().is_empty());
+        assert!(game.remote.drain_weapon_changes().is_empty());
+        let returns = game.remote.drain_returns();
+        assert_eq!(returns.len(), 1);
+        assert_eq!(
+            (returns[0].life, returns[0].weapon),
+            (game.streaks.life(0), terminal)
+        );
+        game.remote.advance(12000, false, 1 << 2, &c);
+        assert!(game.remote.drain_returns().is_empty());
+        assert!(game.remote.drain_hits().is_empty());
+    }
+}
+
+#[test]
+fn helicopter_gunner_bullet_reaches_match_damage_and_never_advances_reward_progress() {
+    use codol_protocol::game::channel::usercmd::UserCommand;
+    let (mut game, c, _) = gunner_match(12);
+    for bot in &mut game.bots {
+        bot.health = 0;
+        bot.snapshot.alive = false;
+    }
+    let enemy = &mut game.bots[5];
+    enemy.health = 100;
+    enemy.snapshot.alive = true;
+    enemy.snapshot.origin = [160.0, 0.0, 0.125];
+    game.remote.input(
+        &UserCommand {
+            time: 4820,
+            weapons: [304, 0, 0],
+            ..Default::default()
+        },
+        &c,
+    );
+    game.remote.input(
+        &UserCommand {
+            time: 4840,
+            weapons: [304, 0, 0],
+            angles: [16384, 0, 0],
+            buttons: 1,
+            ..Default::default()
+        },
+        &c,
+    );
+    game.advance_strikes(4860, template(), 70.0, 100, 0, &c);
+    game.step_aircraft(4860, (template(), 70.0, 0, [false; 2]), &c);
+    assert_eq!(game.rows[0].kills, 1);
+    assert_eq!(game.rows[0].score, 100);
+    assert_eq!(game.streaks.snapshot(0, 0).progress, 0);
+    assert!(!game.streaks.owned(0));
+    assert_eq!(game.take_kills()[0].weapon, 304);
 }

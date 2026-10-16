@@ -90,6 +90,35 @@ impl Connection {
                 self.last_input = Some(input);
                 continue;
             }
+            if let (Some(tdm), Some(state)) = (&mut self.world.tdm, &self.world.game_state) {
+                tdm.validate_remote(
+                    input.time,
+                    self.world.vitals.health > 0,
+                    self.world.player.as_ref().map(|p| p.equipment().weapon),
+                );
+                let body_angles = tdm.remote.body_angles();
+                if let Some(collision) = state.collision.as_ref()
+                    && tdm.remote.input(&input, collision)
+                {
+                    if let Some(player) = &mut self.world.player {
+                        player.freeze_at(input.time);
+                    }
+                    if let Some(motion) = &mut self.world.motion {
+                        motion.freeze_remote(input.time);
+                    }
+                    if let Some(angles) = body_angles {
+                        input.angles = angles;
+                    }
+                    self.input_count += 1;
+                    self.last_input = Some(input);
+                    continue;
+                }
+            }
+            if self.world.armor.active()
+                && let Some(player) = &self.world.player
+            {
+                input.weapons = player.equipment().input_weapons();
+            }
             if let Some(motion) = &mut self.world.motion
                 && let Some(collision) = self
                     .world
@@ -247,6 +276,20 @@ impl Connection {
                     ];
                     let origin = motion.origin;
                     for request in throws {
+                        if let Some(id) = request.definition.marker_reward {
+                            if self
+                                .world
+                                .tdm
+                                .as_mut()
+                                .is_none_or(|m| !m.launch_airdrop_marker(request.time, id))
+                            {
+                                continue;
+                            }
+                            self.radio_return = Some((
+                                request.time + u32::from(request.definition.throw_msec),
+                                request.definition.index,
+                            ));
+                        }
                         let cue = (!request.in_hand && !request.dropped)
                             .then(|| {
                                 crate::game::presentation::voice::throw_suffix(
@@ -289,7 +332,21 @@ impl Connection {
                             local.origin = origin;
                             local.weapon = shot.weapon;
                             local.angles = shot.angles;
-                            let outcome = tdm.player_fire(shot, eye, local, &collision, None);
+                            let outcome = if let Some(source) = self.world.armor.source() {
+                                tdm.player_fire_from(
+                                    shot,
+                                    eye,
+                                    local,
+                                    &collision,
+                                    None,
+                                    crate::game::modes::tdm::CreditSource::reward(
+                                        source.owner,
+                                        source.life,
+                                    ),
+                                )
+                            } else {
+                                tdm.player_fire(shot, eye, local, &collision, None)
+                            };
                             if let Some(kind) = outcome.committed_feedback {
                                 self.hit_feedback.record(through, kind);
                                 tracing::info!(time = through, ?kind, "player damage feedback");
@@ -385,6 +442,13 @@ impl Connection {
                 }
             }
             self.input_count += 1;
+            if let Some(tdm) = &mut self.world.tdm {
+                tdm.validate_strike_selection(
+                    input.time,
+                    self.world.vitals.health > 0,
+                    self.world.player.as_ref().map(|p| p.equipment().weapon),
+                );
+            }
             if let (Some(tdm), Some(player), Some(resources)) = (
                 &self.world.tdm,
                 &mut self.world.player,
@@ -417,9 +481,116 @@ impl Connection {
                 && let Some(radio) = resources
                     .radios
                     .iter()
-                    .find(|r| r.weapon == player.equipment().weapon)
+                    // Nuclear stock belongs to the independent extra slot;
+                    // its registered activator must reach try_use below.
+                    .find(|r| r.native_id != 15 && r.weapon == player.equipment().weapon)
             {
-                if matches!(radio.native_id, 16 | 21) {
+                if crate::game::rewards::mechanisms::Mechanism::marker(radio.native_id) {
+                    if !tdm.prepare_airdrop(through, radio.native_id, resources) {
+                        player.return_reward();
+                    }
+                } else if crate::game::rewards::mechanisms::Mechanism::for_reward(radio.native_id)
+                    == Some(crate::game::rewards::mechanisms::Mechanism::Remote)
+                {
+                    let state = self.world.game_state.as_ref().unwrap();
+                    let motion = self.world.motion.as_ref().unwrap();
+                    let mut command = input.clone();
+                    command.weapons[0] = player.equipment().weapon;
+                    let eligible =
+                        motion.ground_entity != 2047 && player.equipment().offhand_weapon == 0;
+                    if !eligible
+                        || tdm.remote_action(
+                            through,
+                            radio.native_id,
+                            &command,
+                            motion.origin,
+                            resources,
+                            state.collision.as_ref().unwrap(),
+                        ) == Some(false)
+                    {
+                        player.return_reward();
+                        let _ = self
+                            .server_commands
+                            .push(format!("a {}", player.equipment().weapon).as_bytes());
+                    }
+                } else if crate::game::rewards::mechanisms::Mechanism::for_reward(radio.native_id)
+                    == Some(crate::game::rewards::mechanisms::Mechanism::LocationStrike)
+                {
+                    let state = self.world.game_state.as_ref().unwrap();
+                    if let Some(map) = state.minimap() {
+                        let mut command = input.clone();
+                        command.weapons[0] = player.equipment().weapon;
+                        match tdm.select_strike(
+                            radio.native_id,
+                            &command,
+                            resources,
+                            map,
+                            state.collision.as_ref().unwrap(),
+                        ) {
+                            None => {}
+                            Some(true) => self.radio_return = Some((through + 50, radio.weapon)),
+                            Some(false) => {
+                                player.return_reward();
+                                let _ = self
+                                    .server_commands
+                                    .push(format!("a {}", player.equipment().weapon).as_bytes());
+                            }
+                        }
+                    } else {
+                        player.return_reward();
+                    }
+                } else if matches!(radio.native_id, 23 | 24) {
+                    let plan = crate::game::rewards::armor::Plan::new(
+                        resources,
+                        radio.native_id,
+                        tdm.teams()[0],
+                        player.equipment(),
+                    );
+                    if !self.world.armor.active()
+                        && let Some(plan) = plan
+                        && tdm
+                            .streaks
+                            .try_radio(0, tdm.teams()[0], radio.native_id, through)
+                    {
+                        player.remove_reward(radio.weapon);
+                        self.world.armor.start(
+                            plan,
+                            crate::game::rewards::strikes::Source {
+                                owner: 0,
+                                team: tdm.teams()[0],
+                                life: tdm.streaks.life(0),
+                            },
+                            through,
+                            player,
+                            &mut self.world.vitals,
+                        );
+                        self.world.health_recovery = Default::default();
+                        tdm.mark_combat(0);
+                        let _ = self
+                            .server_commands
+                            .push(format!("a {}", player.equipment().weapon).as_bytes());
+                    } else {
+                        player.return_reward();
+                    }
+                } else if radio.native_id == 26 {
+                    let state = self.world.game_state.as_ref().unwrap();
+                    let motion = self.world.motion.as_ref().unwrap();
+                    if tdm.call_drone(
+                        through,
+                        motion.origin,
+                        input.angles,
+                        resources,
+                        state.collision.as_ref().unwrap(),
+                    ) {
+                        self.radio_return =
+                            Some((through + u32::from(radio.switch.raise_msec), radio.weapon));
+                    } else {
+                        player.return_reward();
+                        let _ = self
+                            .server_commands
+                            .push(format!("a {}", player.equipment().weapon).as_bytes());
+                    }
+                } else if crate::game::rewards::mechanisms::Mechanism::device(radio.native_id) {
                     if player.equipment().firing.is_none_or(|f| f.state == 0) {
                         let state = self.world.game_state.as_ref().unwrap();
                         let motion = self.world.motion.as_ref().unwrap();
@@ -503,9 +674,11 @@ impl Connection {
         self.world.vitals.health = self.world.vitals.health.saturating_sub(damage);
         self.world.vitals.damage_event = self.world.vitals.damage_event.wrapping_add(1);
         self.world.vitals.damage_count = damage.min(127) as u8;
-        self.world
-            .health_recovery
-            .damaged(now, self.world.vitals.health);
+        self.world.health_recovery.damaged_to(
+            now,
+            self.world.vitals.health,
+            self.world.vitals.max_health,
+        );
         tracing::info!(
             now,
             raw_damage = landing.damage,

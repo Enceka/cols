@@ -2,6 +2,7 @@
   "schema_version": 1,
   "client_sha256": "e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b",
   "native_gameplay_acceptance": false,
+  "evidence": "Fixed target instruction checks; native link/payload gameplay remains unverified",
   "player_state_descriptor_sha256": "56b46d3430513982131602b42ce6a8f9c376320b2de8e383627676c88d9c2495",
   "fields": [
     {
@@ -11,25 +12,25 @@
       "codec_bits": 32
     },
     {
-      "name": "link_flags_candidate",
+      "name": "link_flags",
       "offset": 16,
       "index": 54,
       "codec_bits": 28
     },
     {
-      "name": "camera_entity_candidate",
+      "name": "camera_entity",
       "offset": 84,
       "index": 168,
       "codec_bits": 11
     },
     {
-      "name": "camera_tag_candidate",
+      "name": "camera_tag",
       "offset": 88,
       "index": 169,
       "codec_bits": 6
     },
     {
-      "name": "controls_entity_candidate",
+      "name": "controls_entity",
       "offset": 92,
       "index": 170,
       "codec_bits": 11
@@ -41,27 +42,424 @@
       "codec_bits": 11
     }
   ],
-  "verified_consumer": {
-    "address": 4308220,
-    "operation": "test dword ptr [esi+0xc],0x80000; jne0x41bdf9",
-    "meaning": "bypasses ordinary view-angle update path including call0x41af10"
+  "consumers": [
+    {
+      "va": 5430046,
+      "bytes": "f64010027407e80750ffff",
+      "meaning": "camera link flag dispatch",
+      "sha256": "11e3962a04c370bb88e92c9eee32e7869c6eb3d0db1c4f3f1a135687fc753b83"
+    },
+    {
+      "va": 5385035,
+      "bytes": "8b47543dff070000",
+      "meaning": "camera entity and NONE sentinel",
+      "sha256": "7108c6d80cebd9756cf7ea7157ec82b174266513d6bd0ff89dc391b096c72bef"
+    },
+    {
+      "va": 5385120,
+      "bytes": "8b4f5881c103150000",
+      "meaning": "camera tag configstring5379+index",
+      "sha256": "7d7de44bd3417bc16963a9868398d22f35e7b03d72284e7d85cdf0182b44daef"
+    },
+    {
+      "va": 5385242,
+      "bytes": "8b471084c00f8885000000",
+      "meaning": "tag orientation bit7 branch",
+      "sha256": "c0e881b1b789f4249406e34207e4a80cc2583cd0068f7578a45c811e1ce43787"
+    },
+    {
+      "va": 4308220,
+      "bytes": "f7460c000008000f85f0000000",
+      "meaning": "ordinary angle update remote gate",
+      "sha256": "597aa00d712d519cd5a4e1a6105ea5808b4d94336c3236eea2edb59c513a8fbf"
+    },
+    {
+      "va": 4587696,
+      "bytes": "f74618000008007417",
+      "meaning": "snapshot PS remote input mode",
+      "sha256": "340d7a45e843e50a7fff19acbf12dccdd31e775e1e9aa444e2513a7986f4bf85"
+    },
+    {
+      "va": 4587236,
+      "bytes": "814e0400002000",
+      "meaning": "remote input command flag",
+      "sha256": "10386eb133e0deb04acaa6f972d40f3a249d492d88a85d68a5dbb7dc65073c45"
+    },
+    {
+      "va": 4587468,
+      "bytes": "884627",
+      "meaning": "pitch byte command+0x27",
+      "sha256": "84f4984e729684bf7e8d934b92f079222e6afbb130959f3ca7fcf3ded9cf0c82"
+    },
+    {
+      "va": 4587624,
+      "bytes": "884e28",
+      "meaning": "yaw byte command+0x28",
+      "sha256": "53f0c7dd0af3d5ea63f6219c947cf8b8fbc101f88bcb91a480d92e267180c761"
+    },
+    {
+      "va": 4279724,
+      "bytes": "0fbe4827",
+      "meaning": "signed pitch consumer",
+      "sha256": "42c3b08c089b021ae5127ea306aa1054a1a547bf502de23312f77a135b9a5003"
+    },
+    {
+      "va": 4279743,
+      "bytes": "0fbe4028",
+      "meaning": "signed yaw consumer",
+      "sha256": "72bc3a2ff441a284da007bb3695dbb0f89dc62576a542248c548a0124668f48b"
+    },
+    {
+      "va": 5322824,
+      "bytes": "51285100",
+      "meaning": "rocket90 native dispatch",
+      "sha256": "122106265605d0879d573823913db32da972ec304c5f042b32a83309636632c9"
+    },
+    {
+      "va": 5322984,
+      "bytes": "79355100",
+      "meaning": "remote boost130 native dispatch",
+      "sha256": "be9a19140cf3225c97840402c6ddaa56861fabfbf2bfbe33a3e2384be5b87903"
+    },
+    {
+      "va": 5319045,
+      "bytes": "8b8620090000",
+      "meaning": "rocket weapon explosion sound field920",
+      "sha256": "74b13561149c4070608abd5f44015f0995bb15d6a2b8acc06ae85740df0fab86"
+    },
+    {
+      "va": 5302121,
+      "bytes": "8bbb18090000",
+      "meaning": "projectile explosion FX field918",
+      "sha256": "83d09f870f7a9894467bf3366fa2d5dc013efdf781e767d9608127ffcd1a3a44"
+    },
+    {
+      "va": 5301092,
+      "bytes": "f6401002",
+      "meaning": "boost camera-linked gate",
+      "sha256": "3de4dcf9fb37fb623e39ecf561c04251b283d2dbd1f700ec80707c18484e654c"
+    },
+    {
+      "va": 5301098,
+      "bytes": "8b48543b8ef00000007537",
+      "meaning": "boost matches camera-linked missile entity",
+      "sha256": "c1612dfe27cf45cf62ed6f3f7089a6c1cd0c327e4d3a3b2b800c2b7b8dbd0744"
+    },
+    {
+      "va": 5137325,
+      "bytes": "d905b455c800",
+      "meaning": "remote normal speed3000 default",
+      "sha256": "42791371d41c026df7af78b30943c144ec1c47ccd905c26ee2bd128828053784"
+    },
+    {
+      "va": 5137339,
+      "bytes": "d905045ac800",
+      "meaning": "remote boost speed6000 default",
+      "sha256": "b114432e5c8fb05af29fd0b9f8bcd62655af3edcb909fe72813d5c091dad1b68"
+    },
+    {
+      "va": 5137433,
+      "bytes": "d9059455c800",
+      "meaning": "remote acceleration2000 default",
+      "sha256": "21cb0640a0fe2918b95452fcd8f4247db9cdb91ee0080376715ee08506b7e31f"
+    },
+    {
+      "va": 5137530,
+      "bytes": "d905b855c800",
+      "meaning": "remote deceleration500 default",
+      "sha256": "b4eae0f01607fe35b7c83c88eb09a5fa6439715887c256dbb61266229d6ae075"
+    },
+    {
+      "va": 4268951,
+      "bytes": "d9052858c800d91c246870d4c500",
+      "meaning": "pitch rate35 registration",
+      "sha256": "b8bf70d10a02881ea068fd04e2b62316ce9f78447c31aeefd8cad3aa03147f5f"
+    },
+    {
+      "va": 4269007,
+      "bytes": "d9052858c800d91c246874d4c500",
+      "meaning": "yaw rate35 registration",
+      "sha256": "e7e2963200b7a6a5e3980618cb547b0843c177b93506c49c3a12092b4c6ee115"
+    }
+  ],
+  "constants": {
+    "remote_byte_divisor": {
+      "va": 13131608,
+      "value": -127.0
+    },
+    "msec_to_seconds": {
+      "va": 13129224,
+      "value": 0.0010000000474974513
+    },
+    "linked_control_fov": {
+      "va": 11932656,
+      "value": 100.0
+    },
+    "default_pitch_yaw_rate": {
+      "va": 13129768,
+      "value": 35.0
+    },
+    "default_min_pitch": {
+      "va": 12955336,
+      "value": 20.0
+    },
+    "default_max_pitch": {
+      "va": 13132504,
+      "value": 87.0
+    },
+    "default_normal_speed": {
+      "va": 13129140,
+      "value": 3000.0
+    },
+    "default_boost_speed": {
+      "va": 13130244,
+      "value": 6000.0
+    },
+    "default_acceleration": {
+      "va": 13129108,
+      "value": 2000.0
+    },
+    "default_deceleration": {
+      "va": 13129144,
+      "value": 500.0
+    }
   },
-  "alpha_reference": {
-    "camera_flag": 2,
-    "camera_tag_flag": 128,
-    "controls_flag": 524288,
-    "unlink_controls_entity": 2047,
-    "warning": "Reference C1 script offsets are candidate semantics only; target descriptor widths differ (PS+0xc32, PS+0x1028), so do not copy whole flags or infer camera acceptance."
+  "weapon_view": {
+    "eflags": 4,
+    "eflags_index": 154,
+    "entity_index": 68,
+    "entity_offset": 496,
+    "clamp_indices": [
+      120,
+      119
+    ],
+    "unlimited_clamp": 180.0,
+    "thermal_flag": 8,
+    "thermal_state_offset": 1490896,
+    "camera_mode_blocks_weapon_cycle": true,
+    "consumers": [
+      {
+        "va": 5388435,
+        "bytes": "f6461008",
+        "meaning": "thermal otherFlags8 getter"
+      },
+      {
+        "va": 5429834,
+        "bytes": "f6401404",
+        "meaning": "weapon-view eFlags4 dispatch"
+      },
+      {
+        "va": 5429848,
+        "bytes": "8b88f0010000",
+        "meaning": "weapon-view entity PS1f0"
+      },
+      {
+        "va": 5622904,
+        "bytes": "8b5010f6c20275e9",
+        "meaning": "camera2 mode blocks native weapon cycling"
+      },
+      {
+        "va": 4305057,
+        "bytes": "d905c057c800d89cb774010000",
+        "meaning": "weapon-view angle clamp ranges PS174/178"
+      }
+    ]
   },
-  "sampling": {
-    "read_only": true,
-    "predicted_and_snapshot": true,
-    "raw_field_names": true
+  "missile_vision": {
+    "command": "P",
+    "slot": 2,
+    "name_limit_bytes": 64,
+    "transition_unit": "milliseconds",
+    "name_storage_offset": 1487912,
+    "handler_va": 5758308,
+    "consumers": [
+      {
+        "va": 5756335,
+        "bytes": "83f87d0f87e10b00000fb680a4e25700ff2485ace15700",
+        "meaning": "reliable command bounded two-stage dispatcher"
+      },
+      {
+        "va": 5758308,
+        "bytes": "6a406a018db728b41600",
+        "meaning": "missilecam command reads bounded name into cg16b428"
+      },
+      {
+        "va": 5758336,
+        "bytes": "6a02e8d9d4ebff83c40450e8d8905700",
+        "meaning": "missilecam transition parses argument2 as integer milliseconds"
+      },
+      {
+        "va": 5758355,
+        "bytes": "508bceb802000000e810a3edff",
+        "meaning": "missilecam applies vision slot2 with transition"
+      }
+    ],
+    "resource_binding_required": true,
+    "native_visual_acceptance": false
   },
-  "remaining": [
-    "Prove target camera link flag and entity/tag consumers",
-    "Prove target controls entity consumer and input encoding",
-    "Implement body/weapon lifetime transaction and routed authority",
-    "Verify native enter exit death disconnect EMP and payload gameplay"
+  "thermal_vision": {
+    "command": "Q",
+    "slot": 3,
+    "name_storage_offset": 1487976,
+    "transition_unit": "milliseconds",
+    "consumers": [
+      {
+        "va": 5758388,
+        "bytes": "6a406a018db768b41600",
+        "meaning": "thermal command reads bounded name into cg16b468"
+      },
+      {
+        "va": 5758416,
+        "bytes": "6a02e889d4ebff83c40450e888905700",
+        "meaning": "thermal parses integer milliseconds"
+      },
+      {
+        "va": 5758435,
+        "bytes": "508bceb803000000e8c0a2edff",
+        "meaning": "thermal applies vision slot3"
+      },
+      {
+        "va": 4556147,
+        "bytes": "80bed0bf1600007407b903000000",
+        "meaning": "active thermal renderer selects vision slot3"
+      }
+    ]
+  },
+  "naked_vision": {
+    "command": "N",
+    "slot": 0,
+    "name_storage_offset": 1487784,
+    "transition_unit": "milliseconds",
+    "consumers": [
+      {
+        "va": 5758151,
+        "bytes": "6a406a018db7a8b31600",
+        "meaning": "naked vision bounded name"
+      },
+      {
+        "va": 5758179,
+        "bytes": "6a02e876d5ebff83c40450e875915700",
+        "meaning": "naked vision integer milliseconds"
+      },
+      {
+        "va": 5758198,
+        "bytes": "508bce33c0e8b0a3edff",
+        "meaning": "naked vision slot0"
+      }
+    ]
+  },
+  "fof_overlay": {
+    "player_state_offset": 16,
+    "descriptor_index": 54,
+    "flag": 16,
+    "reference_delay_msec": 150,
+    "consumers": [
+      {
+        "va": 5501107,
+        "bytes": "f647101074098b74241ce8ce3a0200",
+        "meaning": "CG playerState otherFlags16 dispatches FOF drawing"
+      },
+      {
+        "va": 5647248,
+        "bytes": "5156e839ffffff83c40456e800feffff",
+        "meaning": "FOF draws local marker and other player markers"
+      },
+      {
+        "va": 4479609,
+        "bytes": "6850f4c500a398f9a101e8f8db6500",
+        "meaning": "hostile FOF material registration"
+      },
+      {
+        "va": 4479643,
+        "bytes": "6880f4c500a3a0f9a101e8d6db6500",
+        "meaning": "self FOF material registration"
+      },
+      {
+        "va": 5646924,
+        "bytes": "a19cf9a101",
+        "meaning": "hostile FOF drawing material"
+      },
+      {
+        "va": 5647158,
+        "bytes": "8b35a4f9a101",
+        "meaning": "self FOF drawing material"
+      }
+    ],
+    "material_registration": "client-owned native HUD registration",
+    "native_visual_acceptance": false
+  },
+  "static_exit": {
+    "reference_duration_msec": 500,
+    "archived": true,
+    "material_type": 4,
+    "align_screen": 68,
+    "width_offset": 68,
+    "height_offset": 72,
+    "width": 640,
+    "height": 480,
+    "sort": [
+      10,
+      20
+    ],
+    "material_configstring_base": 4355,
+    "consumers": [
+      {
+        "va": 5330582,
+        "bytes": "8b404c",
+        "meaning": "MATERIAL HUD material index offset76"
+      },
+      {
+        "va": 5330603,
+        "bytes": "8d8803110000e89a41feff",
+        "meaning": "MATERIAL HUD reads configstring4355+slot"
+      },
+      {
+        "va": 5326120,
+        "bytes": "8b482c80e1f080f940",
+        "meaning": "HUD horizontal fullscreen alignment4"
+      },
+      {
+        "va": 5326131,
+        "bytes": "d94708da4df8",
+        "meaning": "HUD horizontal extent uses fullscreen scale"
+      },
+      {
+        "va": 5326296,
+        "bytes": "8b482c80e10f80f904",
+        "meaning": "HUD vertical fullscreen alignment4"
+      },
+      {
+        "va": 5326307,
+        "bytes": "d9470c",
+        "meaning": "HUD vertical extent uses fullscreen scale"
+      }
+    ],
+    "actual_material_capture_required": true,
+    "native_visual_acceptance": false
+  },
+  "camera": {
+    "flag": 2,
+    "tag_angles_flag": 128,
+    "tag_configstring_base": 5379,
+    "tag_bank": "immutable NCS category9",
+    "tag_slot_must_be_captured": true,
+    "configstring_override": false,
+    "entity_none": 2047
+  },
+  "controls": {
+    "pm_flag": 524288,
+    "input_flag": 2097152,
+    "input_bytes": [
+      39,
+      40
+    ],
+    "signed": true,
+    "divisor": -127.0,
+    "entity_none": 2047
+  },
+  "unverified": [
+    "PS+0x5c controls entity routing semantics",
+    "native camera enter/exit and body restoration",
+    "missile/RC/gunner/AC130 payload authority and acceptance"
   ]
 }

@@ -63,6 +63,21 @@ pub struct PreparationHudSnapshot {
     pub remaining_seconds: u8,
     pub text: Option<u16>,
 }
+/// Two archived full-screen MATERIAL elements used during remote camera exit.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RemoteExitSnapshot {
+    pub visible: bool,
+    pub white: u16,
+    pub grain: u16,
+}
+impl RemoteExitSnapshot {
+    pub fn valid(self) -> bool {
+        !self.visible
+            || ((1..1024).contains(&self.white)
+                && (1..1024).contains(&self.grain)
+                && self.white != self.grain)
+    }
+}
 impl DeathWaypointSnapshot {
     pub fn valid(self) -> bool {
         (1..1024).contains(&self.material)
@@ -102,6 +117,22 @@ pub(crate) fn write_hud_with_preparation(
     nuke: Option<NukeHudSnapshot>,
     preparation: Option<PreparationHudSnapshot>,
 ) -> Result<(), LobbyError> {
+    write_hud_with_remote_exit(out, feedback, deaths, replay, nuke, preparation, None)
+}
+
+pub(crate) fn write_hud_with_remote_exit(
+    out: &mut Writer,
+    feedback: Option<HitFeedbackSnapshot>,
+    deaths: &[DeathWaypointSnapshot],
+    replay: Option<ReplayHudSnapshot>,
+    nuke: Option<NukeHudSnapshot>,
+    preparation: Option<PreparationHudSnapshot>,
+    remote_exit: Option<RemoteExitSnapshot>,
+) -> Result<(), LobbyError> {
+    if remote_exit.is_some_and(|exit| !exit.valid()) {
+        return Err(LobbyError("invalid remote exit materials"));
+    }
+    let remote_exit = remote_exit.filter(|exit| exit.visible);
     let feedback = feedback.unwrap_or_default();
     if feedback.visible && !(1..1024).contains(&feedback.material) {
         return Err(LobbyError("invalid hit feedback material"));
@@ -121,9 +152,16 @@ pub(crate) fn write_hud_with_preparation(
     out.bits(1, 1); // HUD extension is present.
     // Wire order is archival then current; memory order is the reverse.
     // 0x5a4230 writes PS+0x1ed0 first, then PS+0xa78 (0x5a51f6 region).
-    out.bits(u32::from(feedback.visible), 5);
+    out.bits(
+        u32::from(feedback.visible) + if remote_exit.is_some() { 2 } else { 0 },
+        5,
+    );
     if feedback.visible {
         write_hit(out, feedback);
+    }
+    if let Some(exit) = remote_exit {
+        write_remote_exit_element(out, exit.white, 10.0);
+        write_remote_exit_element(out, exit.grain, 20.0);
     }
     out.bits(
         deaths.len() as u32
@@ -164,6 +202,34 @@ pub(crate) fn write_hud_with_preparation(
         }
     }
     Ok(())
+}
+
+fn write_remote_exit_element(out: &mut Writer, material: u16, sort: f32) {
+    out.bits(22, 6);
+    let mut previous = None;
+    for index in [0u32, 3, 4, 5, 6, 7, 11, 14, 21] {
+        field_gap(out, previous.map_or(index + 1, |p| index - p));
+        previous = Some(index);
+        match index {
+            0 => color(out, [255; 3], 31),
+            3 => unsigned(out, 4, 4),
+            4 => unsigned(out, u32::from(material), 10),
+            // Target0x514510 consumes HUD+0x44 as horizontal extent;
+            // 0x5145c0 consumes +0x48 as vertical extent. Descriptor order
+            // places +0x48 before +0x44, so do not swap width and height.
+            5 => unsigned(out, 480, 10),
+            6 => unsigned(out, 640, 10),
+            7 => unsigned(out, 2047, 11),
+            11 => unsigned(out, 0x44, 8),
+            14 => unsigned(out, 1, 18),
+            21 => {
+                out.bits(1, 1);
+                out.bits(1, 1);
+                out.bytes.extend_from_slice(&sort.to_bits().to_le_bytes());
+            }
+            _ => unreachable!(),
+        }
+    }
 }
 
 fn write_preparation_element(out: &mut Writer, seconds: u8, text: Option<u16>) {
@@ -402,6 +468,84 @@ mod tests {
     use crate::game::channel::wire::Reader;
     use std::collections::BTreeMap;
 
+    #[test]
+    fn remote_exit_archives_two_fullscreen_layers_and_clears_them_explicitly() {
+        let mut out = Writer::default();
+        write_hud_with_remote_exit(
+            &mut out,
+            None,
+            &[],
+            None,
+            None,
+            None,
+            Some(RemoteExitSnapshot {
+                visible: true,
+                white: 1000,
+                grain: 1001,
+            }),
+        )
+        .unwrap();
+        let mut reader = Reader::new(&out.bytes);
+        assert_eq!(reader.bits(1).unwrap(), 1);
+        let archive = read_array(&mut reader);
+        assert_eq!(archive.len(), 2);
+        for (index, element) in archive.iter().enumerate() {
+            assert_eq!(element[&0], 4);
+            assert_eq!(element[&76], 1000 + index as u32);
+            assert_eq!(element[&68], 640);
+            assert_eq!(element[&72], 480);
+            assert_eq!(element[&44], 0x44);
+            assert_eq!(element[&48], u32::MAX);
+            assert_eq!(element[&164], 1);
+            assert_eq!(f32::from_bits(element[&136]), 10.0 + index as f32 * 10.0);
+        }
+        assert!(read_array(&mut reader).is_empty());
+        let mut clear = Writer::default();
+        write_hud_with_remote_exit(
+            &mut clear,
+            None,
+            &[],
+            None,
+            None,
+            None,
+            Some(RemoteExitSnapshot::default()),
+        )
+        .unwrap();
+        let mut reader = Reader::new(&clear.bytes);
+        assert_eq!(reader.bits(1).unwrap(), 1);
+        assert!(read_array(&mut reader).is_empty());
+        assert!(read_array(&mut reader).is_empty());
+        for exit in [
+            RemoteExitSnapshot {
+                visible: true,
+                white: 0,
+                grain: 1,
+            },
+            RemoteExitSnapshot {
+                visible: true,
+                white: 1000,
+                grain: 1000,
+            },
+            RemoteExitSnapshot {
+                visible: true,
+                white: 1024,
+                grain: 1001,
+            },
+        ] {
+            assert!(
+                write_hud_with_remote_exit(
+                    &mut Writer::default(),
+                    None,
+                    &[],
+                    None,
+                    None,
+                    None,
+                    Some(exit)
+                )
+                .is_err()
+            );
+        }
+    }
     fn fixture() -> serde_json::Value {
         let value: serde_json::Value = serde_json::from_str(include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),

@@ -9,6 +9,8 @@
 //! Export coverage is world brushes and terrain. Registered destructible props
 //! use explicit oriented bounds from their native models; other model meshes
 //! and moving entities are outside this geometry export.
+mod bounds;
+
 use anyhow::{Context, Result, ensure};
 use serde::Deserialize;
 use std::{

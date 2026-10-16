@@ -117,6 +117,73 @@ fn preparing_connection() -> Connection {
 }
 
 #[test]
+fn registered_nuclear_activator_reaches_the_extra_slot_instead_of_ordinary_radio_rejection() {
+    let mut c = preparing_connection();
+    let nuke = crate::game::rewards::killstreaks::test_resources();
+    let mut radar = crate::game::rewards::remote::test_resources();
+    radar.radios.push(crate::game::rewards::killstreaks::Radio {
+        native_id: 15,
+        weapon: nuke.weapon,
+        switch: nuke.switch,
+        fire_interval_msec: nuke.fire_interval_msec,
+    });
+    crate::game::session::prepared::test_reward_resources(
+        Arc::make_mut(c.world.game_state.as_mut().unwrap()),
+        nuke.clone(),
+        radar,
+    );
+    let tdm = c.world.tdm.as_mut().unwrap();
+    tdm.advance_clock(1000);
+    tdm.advance_clock(7000);
+    tdm.streaks.enable();
+    tdm.streaks.acceptance_seed(24);
+    tdm.streaks.credit(7000, 6, 1, Some(0));
+    assert!(tdm.streaks.owned(0));
+    c.world.player.as_mut().unwrap().grant_nuke(&nuke);
+    c.world
+        .player
+        .as_mut()
+        .unwrap()
+        .set_switch_timing(nuke.switch);
+    for time in (7050..=10000).step_by(50) {
+        c.pending_inputs.insert(
+            time,
+            codol_protocol::game::channel::usercmd::UserCommand {
+                time,
+                weapons: [nuke.weapon, 0, 0],
+                ..Default::default()
+            },
+        );
+        c.consume_inputs(time);
+        if c.world
+            .tdm
+            .as_ref()
+            .unwrap()
+            .streaks
+            .countdown_end()
+            .is_some()
+        {
+            break;
+        }
+    }
+    assert!(!c.world.tdm.as_ref().unwrap().streaks.owned(0));
+    assert!(
+        c.world
+            .tdm
+            .as_ref()
+            .unwrap()
+            .streaks
+            .countdown_end()
+            .is_some()
+    );
+    assert!(c.nuke_return_at.is_some());
+    assert_eq!(
+        c.world.player.as_ref().unwrap().equipment().weapon,
+        nuke.weapon
+    );
+}
+
+#[test]
 fn frozen_input_advances_ack_without_motion_ammo_actions_or_weapon_selection_and_unlocks_once() {
     let mut c = preparing_connection();
     let origin = c.world.motion.as_ref().unwrap().origin;
@@ -469,6 +536,7 @@ fn training_backpack_changes_wait_for_the_next_spawn() {
             grenade_time: 0,
             move_multiplier: 1.0,
             inventory_weapon: None,
+            inventory_override: None,
             alternate_weapon: None,
             alternates: [None, None],
             fire_count: 0,
@@ -1004,4 +1072,48 @@ fn gamestate_requires_probe_ack_and_client_commands_commit_atomically() {
     wire[..4].copy_from_slice(&6u32.to_le_bytes());
     assert!(connection.handle(&wire, 1, 7).unwrap().is_none());
     assert_eq!(connection.client_commands.sequence(), 1);
+}
+
+#[test]
+fn body_changes_require_an_acknowledged_matching_appearance_baseline() {
+    let mut c = preparing_connection();
+    c.native_sent = 8;
+    c.native_ack = 8;
+    let ordinary = c.world.tdm.as_ref().unwrap().baselines()[0];
+    let mut suit = ordinary;
+    suit.model = 109;
+    suit.attachment_models = [0; 10];
+    suit.attachment_tags = [0; 10];
+    c.world_history.push_back(WorldHistory {
+        sequence: 7,
+        local: Some(ordinary),
+        ..Default::default()
+    });
+    assert!(c.world_baseline(0, false, Some(suit), &[]).is_none());
+    c.world_history.push_back(WorldHistory {
+        sequence: 9,
+        local: Some(suit),
+        ..Default::default()
+    });
+    assert!(c.world_baseline(0, false, Some(suit), &[]).is_none());
+    c.native_ack = 9;
+    c.native_sent = 9;
+    let mut firing = suit;
+    firing.weapon = 187;
+    firing.origin[0] += 40.0;
+    assert_eq!(
+        c.world_baseline(0, false, Some(firing), &[])
+            .unwrap()
+            .sequence,
+        9
+    );
+    // Respawn may safely select the acknowledged ordinary appearance again.
+    assert_eq!(
+        c.world_baseline(0, false, Some(ordinary), &[])
+            .unwrap()
+            .sequence,
+        7
+    );
+    c.world_history.pop_front();
+    assert!(c.world_baseline(0, false, Some(ordinary), &[]).is_none());
 }

@@ -22,11 +22,21 @@ pub(crate) struct Weapon {
 }
 impl Weapon {
     pub fn from_resources(r: &RadarResources) -> Option<Self> {
-        let w = r.weapons.get("tow_turret_mp")?;
+        Self::registered(r, "tow_turret_mp", false)
+    }
+    pub(crate) fn aircraft(r: &RadarResources, id: u8) -> Option<Self> {
+        match id {
+            8 => Self::registered(r, "cobra_ffar_mp", true),
+            7 => Self::registered(r, "harrier_missile_mp", true),
+            _ => None,
+        }
+    }
+    fn registered(r: &RadarResources, name: &str, aircraft: bool) -> Option<Self> {
+        let w = r.weapons.get(name)?;
         if w.weapon_type != 2
             || w.projectile_speed == 0
             || w.projectile_speed > 50000
-            || w.fire_interval_msec == 0
+            || (!aircraft && w.fire_interval_msec == 0)
             || w.damage_stages[0] == 0
             || w.damage_stages[0] > u32::from(u16::MAX)
             || w.radius == 0
@@ -39,7 +49,11 @@ impl Weapon {
         Some(Self {
             index: w.weapon,
             speed: w.projectile_speed as f32,
-            interval: u32::from(w.fire_interval_msec),
+            interval: if aircraft {
+                5000
+            } else {
+                u32::from(w.fire_interval_msec)
+            },
             direct: w.damage_stages[0] as u16,
             radius: w.radius as f32,
             inner: w.inner_damage as u16,
@@ -55,6 +69,7 @@ pub(crate) struct Launch {
     pub origin: [f32; 3],
     pub target: Target,
     pub weapon: Weapon,
+    pub reward_life: Option<u32>,
 }
 struct Missile {
     snapshot: MissileSnapshot,
@@ -63,6 +78,8 @@ struct Missile {
     weapon: Weapon,
     last_time: u32,
     end: u32,
+    decoy: Option<[f32; 3]>,
+    reward_life: Option<u32>,
 }
 pub(crate) struct Hit {
     pub entity: u16,
@@ -99,6 +116,7 @@ impl Missiles {
         self.generation = self.generation.wrapping_add(1);
         self.active.push(Missile {
             snapshot: MissileSnapshot {
+                events: Default::default(),
                 entity_number: entity,
                 origin: request.origin,
                 weapon: request.weapon.index,
@@ -112,6 +130,8 @@ impl Missiles {
             weapon: request.weapon,
             last_time: now,
             end: now.saturating_add(5000),
+            decoy: None,
+            reward_life: request.reward_life,
         });
         tracing::info!(
             now,
@@ -139,11 +159,18 @@ impl Missiles {
         for mut missile in self.active.drain(..) {
             // Entity slots may be reused. A lost support identity never becomes
             // permission to acquire a replacement plane with the same number.
-            let Some(target) = targets
-                .iter()
-                .find(|t| t.entity == missile.target.entity && t.source == missile.target.source)
-            else {
-                continue;
+            let target = if let Some(center) = missile.decoy {
+                Target {
+                    center,
+                    ..missile.target
+                }
+            } else {
+                let Some(target) = targets.iter().find(|t| {
+                    t.entity == missile.target.entity && t.source == missile.target.source
+                }) else {
+                    continue;
+                };
+                *target
             };
             if now >= missile.end {
                 continue;
@@ -157,7 +184,10 @@ impl Missiles {
                     std::array::from_fn(|i| target.center[i] - missile.snapshot.origin[i]);
                 let distance = delta.into_iter().map(|v| v * v).sum::<f32>().sqrt();
                 if distance < 1.0 {
-                    exploded = Some((target.center, Some(target.entity)));
+                    exploded = Some((
+                        target.center,
+                        missile.decoy.is_none().then_some(target.entity),
+                    ));
                     break;
                 }
                 let travel = (missile.weapon.speed * msec as f32 * 0.001).min(distance);
@@ -194,6 +224,7 @@ impl Missiles {
                     origin,
                 });
                 self.events.push_back(Event::Blast(Blast {
+                    reward_life: missile.reward_life,
                     owner: missile.snapshot.owner,
                     source_entity: Some(missile.device),
                     weapon: missile.weapon.index,
@@ -214,6 +245,19 @@ impl Missiles {
         let mut s = self.active.iter().map(|m| m.snapshot).collect::<Vec<_>>();
         s.sort_by_key(|s| s.entity_number);
         s
+    }
+    pub(crate) fn divert(&mut self, target: Target) {
+        if let Some(m) = self
+            .active
+            .last_mut()
+            .filter(|m| m.target.entity == target.entity && m.target.source == target.source)
+        {
+            let delta: [f32; 3] = std::array::from_fn(|i| m.snapshot.origin[i] - target.center[i]);
+            let distance = delta.iter().map(|d| d * d).sum::<f32>().sqrt().max(1.0);
+            m.decoy = Some(std::array::from_fn(|i| {
+                target.center[i] + delta[i] / distance * 1000.0
+            }));
+        }
     }
     pub fn drain(&mut self) -> Vec<Event> {
         self.events.drain(..).collect()
@@ -246,6 +290,7 @@ mod tests {
     }
     fn launch(target: Target) -> Launch {
         Launch {
+            reward_life: None,
             owner: 0,
             team: 1,
             device: 384,
@@ -285,6 +330,27 @@ mod tests {
         assert_eq!(missiles.drain().len(), 2);
         assert!(missiles.advance(200, false, &[t], &collision()).is_empty());
         assert!(missiles.drain().is_empty());
+    }
+    #[test]
+    fn diverted_missile_reaches_flare_without_direct_damage_or_requiring_live_plane() {
+        let mut missiles = Missiles::default();
+        let mut t = target(1000);
+        t.center = [3000.0, 0.0, 100.0];
+        assert!(missiles.launch(1000, launch(t)));
+        missiles.divert(t);
+        let c = collision();
+        assert!(missiles.advance(2000, false, &[], &c).is_empty());
+        assert!(missiles.snapshots().is_empty());
+        let events = missiles.drain();
+        assert_eq!(events.len(), 2);
+        let Event::Blast(blast) = events[1] else {
+            panic!("missing flare detonation")
+        };
+        assert!((blast.origin[0] - 2000.0).abs() < 0.01);
+        assert_eq!(
+            crate::game::world::props::radius_damage(blast, t.center, 0.0, None, &c),
+            0
+        );
     }
     #[test]
     fn projectile_excludes_launcher_but_hits_aircraft_or_other_live_geometry() {

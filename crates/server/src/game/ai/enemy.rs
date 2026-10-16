@@ -217,6 +217,7 @@ mod tests {
                 move_multiplier: 1.0,
                 weapon: 352,
                 inventory_weapon: None,
+                inventory_override: None,
                 alternate_weapon: None,
                 alternates: [None, None],
                 fire_count: 0,

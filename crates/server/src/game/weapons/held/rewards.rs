@@ -1,6 +1,39 @@
 use super::*;
 
 impl HeldWeapons {
+    /// HUD slots can change after a pickup while the authoritative inventory
+    /// keeps the same reward. Move its weapon state with it, including an
+    /// active marker's saved rifle and ammunition.
+    pub fn sync_reward_slots(&mut self, desired: [Option<u16>; 3]) -> bool {
+        let before = self.current.equipment.weapon;
+        let active = self
+            .active_reward
+            .filter(|s| *s > 0)
+            .map(|s| self.rewards[s].as_ref().unwrap().id);
+        if active.is_some_and(|id| !desired.contains(&Some(id))) {
+            self.return_reward();
+        }
+        let active = self
+            .active_reward
+            .filter(|s| *s > 0)
+            .map(|s| self.rewards[s].as_ref().unwrap().id);
+        let mut old = std::array::from_fn::<_, 3, _>(|i| self.rewards[i + 1].take());
+        for (i, id) in desired.into_iter().enumerate() {
+            self.rewards[i + 1] = id.and_then(|id| {
+                old.iter_mut()
+                    .find(|r| r.as_ref().is_some_and(|r| r.id == id))
+                    .and_then(Option::take)
+            });
+            if id.is_some() && id == active {
+                self.active_reward = Some(i + 1);
+            }
+        }
+        if self.switch_target.is_some_and(|id| !self.owns_weapon(id)) {
+            self.switch_target = None;
+            self.begin_raise();
+        }
+        before != self.current.equipment.weapon
+    }
     pub fn grant_nuke(&mut self, resources: &crate::game::rewards::killstreaks::NukeResources) {
         self.grant_reward(
             0,

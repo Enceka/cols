@@ -6,18 +6,10 @@ use crate::lobby::channel::LobbyError;
 
 /// Match the native DirToByte maximum-dot search over the measured table.
 pub fn normal_byte(normal: [f32; 3]) -> Result<u8, LobbyError> {
-    static DIRECTIONS: std::sync::OnceLock<Vec<[f32; 3]>> = std::sync::OnceLock::new();
     if normal.iter().any(|v| !v.is_finite()) || normal.iter().map(|v| v * v).sum::<f32>() < 1e-12 {
         return Err(LobbyError("invalid impact normal"));
     }
-    let directions = DIRECTIONS.get_or_init(|| {
-        let fixture: serde_json::Value = serde_json::from_str(include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../fixtures/protocol/bullet-impact-3.3.3.3.json"
-        )))
-        .expect("verified impact fixture");
-        serde_json::from_value(fixture["directions"].clone()).expect("verified direction table")
-    });
+    let directions = directions();
     let mut best_dot = f32::NEG_INFINITY;
     let mut best = 0;
     for (index, direction) in directions.iter().enumerate() {
@@ -28,6 +20,17 @@ pub fn normal_byte(normal: [f32; 3]) -> Result<u8, LobbyError> {
         }
     }
     Ok(best as u8)
+}
+fn directions() -> &'static [[f32; 3]] {
+    static DIRECTIONS: std::sync::OnceLock<Vec<[f32; 3]>> = std::sync::OnceLock::new();
+    DIRECTIONS.get_or_init(|| {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/protocol/bullet-impact-3.3.3.3.json"
+        )))
+        .expect("verified impact fixture");
+        serde_json::from_value(fixture["directions"].clone()).expect("verified direction table")
+    })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -48,6 +51,8 @@ pub enum ImpactEvent {
     #[default]
     Bullet,
     GrenadeExplosion,
+    /// EV_ROCKET_EXPLODE90 consumes this weapon's own impact FX and sound.
+    RocketExplosion,
     FlashExplosion,
     CustomExplosion {
         /// ES+0x58: the caller's actual missile expiry time, unchanged.
@@ -230,6 +235,7 @@ pub(crate) fn write_impacts_with_baselines(
             ImpactEvent::PlayFx { .. } => 122,
             ImpactEvent::Bullet => 96,
             ImpactEvent::GrenadeExplosion => 109,
+            ImpactEvent::RocketExplosion => 112,
             ImpactEvent::FlashExplosion => 114, // EV_FLASHBANG_EXPLODE92
             ImpactEvent::CustomExplosion { .. } | ImpactEvent::SmokeExplosion { .. } => 115, // EV_CUSTOM_EXPLODE93
         });
@@ -270,13 +276,40 @@ pub(crate) fn write_impacts_with_baselines(
             }
             previous = 11;
         }
+        let fx_angles = matches!(impact.event, ImpactEvent::PlayFx { .. }).then(|| {
+            // Native EV100 ->0x50dc40 calls AnglesToAxis on ES+0x3c.
+            // The eventParm is the FX selector, so a normal byte alone cannot
+            // orient ground explosions; send the actual three angle fields.
+            let n = directions()[usize::from(impact.normal_byte)];
+            let angle = |r: f32| (r * 65536.0 / std::f32::consts::TAU).round() as i32 as u16;
+            [
+                angle(-n[2].atan2(n[0].hypot(n[1]))),
+                angle(n[1].atan2(n[0])),
+                0,
+            ]
+        });
+        if let Some(angles) = fx_angles {
+            gap(out, 14 - previous);
+            out.bits(0, 2);
+            out.bytes.extend_from_slice(&angles[0].to_le_bytes());
+            previous = 14;
+        }
         // shooter(field9)=local0, impact flags(field10)=0 inherit zero.
         gap(out, 16 - previous);
         out.bits(1, 1);
         out.bytes.extend_from_slice(
             &(u32::from(impact.weapon) ^ base.map_or(0, |b| u32::from(b.weapon))).to_le_bytes(),
         );
-        gap(out, 22 - 16);
+        previous = 16;
+        if let Some(angles) = fx_angles {
+            for (field, value) in [(20, angles[1]), (21, angles[2])] {
+                gap(out, field - previous);
+                out.bits(0, 2);
+                out.bytes.extend_from_slice(&value.to_le_bytes());
+                previous = field;
+            }
+        }
+        gap(out, 22 - previous);
         out.bits(1, 1); // -96 compact world2046; 2047 would suppress FX
         if custom_fields {
             gap(out, 40 - 22);
@@ -316,6 +349,49 @@ mod tests {
         assert_eq!(value["table_va"], 0xc52888);
         assert_eq!(value["fields"].as_array().unwrap().len(), 61);
         value
+    }
+    #[test]
+    fn rocket_explosion_carries_weapon345_surface_and_normal_through_native_event90() {
+        let names: serde_json::Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/protocol/native-event-names-3.3.3.3.json"
+        )))
+        .unwrap();
+        assert_eq!(names["names"][90], "EV_ROCKET_EXPLODE");
+        for alignment in 0..8 {
+            let current = ImpactSnapshot {
+                event: ImpactEvent::RocketExplosion,
+                weapon: 345,
+                normal_byte: normal_byte([0.0, 0.0, 1.0]).unwrap(),
+                surface: 7,
+                ..impact()
+            };
+            let mut out = Writer::default();
+            out.bits(0x55, alignment);
+            write_impacts(&mut out, &[current], false).unwrap();
+            let mut reader = Reader::new(&out.bytes);
+            reader.bits(alignment).unwrap();
+            let (_, decoded) = decode(&mut reader);
+            assert_eq!(decoded[&4], 112);
+            assert_eq!(decoded[&0xd0], 345);
+            assert_eq!(decoded[&0xa8], u32::from(current.normal_byte));
+        }
+    }
+    #[test]
+    fn play_fx_sends_the_native_surface_axis_and_keeps_selector_separate() {
+        let normal_byte = normal_byte([0.0, 0.0, 1.0]).unwrap();
+        let s = ImpactSnapshot {
+            event: ImpactEvent::PlayFx { selector: 67 },
+            normal_byte,
+            ..impact()
+        };
+        let mut out = Writer::default();
+        write_impacts(&mut out, &[s], false).unwrap();
+        let (_, fields) = decode(&mut Reader::new(&out.bytes));
+        assert_eq!(fields[&0x3c], 0xc000);
+        assert_eq!(fields[&0x40], 0);
+        assert_eq!(fields[&0x44], 0);
+        assert_eq!(fields[&0xa8], 67);
     }
 
     // Independent decoder follows the current field table. In particular -93
@@ -357,7 +433,13 @@ mod tests {
                     assert_eq!(r.bits(1).unwrap(), 1);
                     r.bits(16).unwrap()
                 }
-                -93 => r.bits(8).unwrap(),
+                -93 => r
+                    .bits(if fields.get(&4) == Some(&122) { 9 } else { 8 })
+                    .unwrap(),
+                -79 => {
+                    assert_eq!(r.bits(2).unwrap(), 0);
+                    u32::from(r.u16().unwrap())
+                }
                 -96 => {
                     assert_eq!(r.bits(1).unwrap(), 1);
                     2046

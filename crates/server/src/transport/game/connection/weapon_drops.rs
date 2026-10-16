@@ -60,6 +60,7 @@ impl Connection {
                 -pitch.sin(),
             ],
             active: self.world.vitals.health > 0
+                && !self.world.armor.active()
                 && !self.replay.pending()
                 && self.world.tdm.as_ref().is_some_and(|m| m.live_at(now)),
             use_button: self.last_input.as_ref().is_some_and(|cmd| {

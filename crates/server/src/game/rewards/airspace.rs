@@ -211,6 +211,7 @@ impl Airspace {
             .flights
             .iter()
             .map(|f| PropSnapshot {
+                actor: None,
                 entity_number: f.plan.entity,
                 model: f.plan.definition.model,
                 origin: f.origin,
@@ -219,6 +220,8 @@ impl Airspace {
                 weapon: 0,
                 events: Default::default(),
                 turret: false,
+                turret_pose: None,
+                vehicle: None,
             })
             .collect::<Vec<_>>();
         snapshots.sort_by_key(|s| s.entity_number);

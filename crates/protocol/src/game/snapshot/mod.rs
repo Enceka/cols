@@ -27,6 +27,9 @@ pub struct Equipment {
     pub weapon: u16,
     /// Owned inventory slot for a held alternate mode; the parent owns it.
     pub inventory_weapon: Option<u16>,
+    /// Fixed native inventory slots, independent of the selected weapon.
+    /// Used by vehicle guns; ordinary held equipment derives its slots below.
+    pub inventory_override: Option<[Option<EquippedWeapon>; 15]>,
     /// PS+0x344: paired presentation weapon for a models-only alternate.
     pub alternate_weapon: Option<u16>,
     /// Native0x410300 looks up every selected form directly in PS.weapons.
@@ -125,6 +128,7 @@ pub struct Firing {
 #[derive(Debug, Clone, Copy)]
 pub struct PlayerVitals {
     pub health: u16,
+    pub max_health: u16,
     pub damage_event: u8,
     pub damage_count: u8,
     pub spawn_count: u8,
@@ -137,6 +141,7 @@ impl Default for PlayerVitals {
     fn default() -> Self {
         Self {
             health: 100,
+            max_health: 100,
             damage_event: 0,
             damage_count: 0,
             spawn_count: 1,
@@ -249,6 +254,9 @@ pub fn player_frame_with_motion(
             view_offset: [0; 3],
             streaks: Default::default(),
             radar_flags: None,
+            location_selection: None,
+            remote: None,
+            remote_exit: None,
             reward_inventory: [None; 4],
             nuke_hud: None,
             preparation_hud: None,
@@ -307,6 +315,9 @@ pub struct WorldSnapshot<'a> {
     pub view_offset: [u16; 3],
     pub streaks: crate::game::snapshot::killstreaks::StreakSnapshot,
     pub radar_flags: Option<u8>,
+    pub location_selection: Option<location_selection::LocationSelection>,
+    pub remote: Option<remote::Links>,
+    pub remote_exit: Option<hit_feedback::RemoteExitSnapshot>,
     pub reward_inventory: [Option<EquippedWeapon>; 4],
     pub nuke_hud: Option<crate::game::snapshot::hit_feedback::NukeHudSnapshot>,
     pub preparation_hud: Option<crate::game::snapshot::hit_feedback::PreparationHudSnapshot>,
@@ -376,11 +387,25 @@ pub fn player_frame_with_world(
     }
     let shellshock = world.shellshock;
     let vitals = world.vitals;
+    let location_selection = world
+        .location_selection
+        .map(|s| s.native_byte())
+        .transpose()?;
+    if location_selection.is_some() && (motion.is_none() || world.replay.is_some()) {
+        return Err(LobbyError(
+            "location selection requires a live authoritative view",
+        ));
+    }
     if shellshock.is_some_and(|s| s.index > 15 || motion.is_none()) {
         return Err(LobbyError("invalid authoritative shellshock state"));
     }
     if vitals.is_some_and(|v| {
-        v.health > 100 || v.damage_count > 127 || v.corpse_slot >= 8 || motion.is_none()
+        v.max_health == 0
+            || v.max_health > 10000
+            || v.health > v.max_health
+            || v.damage_count > 127
+            || v.corpse_slot >= 8
+            || motion.is_none()
     }) {
         return Err(LobbyError("invalid authoritative player vitals"));
     }
@@ -445,22 +470,43 @@ pub fn player_frame_with_world(
         return Err(LobbyError("invalid inventory weapon"));
     }
     if let Some(e) = equipment {
-        let mut seen = BTreeSet::new();
-        seen.extend(inventory_weapon);
-        seen.extend(e.secondary.map(|w| w.weapon));
-        seen.extend(e.offhands.into_iter().flatten().map(|w| w.weapon));
-        for reward in world.reward_inventory.into_iter().flatten() {
-            if reward.weapon == 0 || reward.weapon >= 900 || !seen.insert(reward.weapon) {
-                return Err(LobbyError("invalid reward inventory weapon"));
+        if let Some(slots) = e.inventory_override {
+            if slots[0].is_none()
+                || e.inventory_weapon.is_some()
+                || e.secondary.is_some()
+                || e.alternates.iter().any(Option::is_some)
+                || e.offhands.iter().any(Option::is_some)
+                || world.reward_inventory.iter().any(Option::is_some)
+            {
+                return Err(LobbyError("conflicting native inventory projection"));
             }
-        }
-        for other in e.alternates.into_iter().flatten() {
-            if other.weapon == 0 || other.weapon >= 900 || !seen.insert(other.weapon) {
-                return Err(LobbyError("invalid alternate inventory weapon"));
+            let mut seen = BTreeSet::new();
+            for w in slots.into_iter().flatten() {
+                if !(1..900).contains(&w.weapon) || !seen.insert(w.weapon) {
+                    return Err(LobbyError("invalid projected inventory weapon"));
+                }
             }
-        }
-        if !seen.contains(&e.weapon) {
-            return Err(LobbyError("held form missing from native inventory"));
+            if !seen.contains(&e.weapon) {
+                return Err(LobbyError("held form missing from native inventory"));
+            }
+        } else {
+            let mut seen = BTreeSet::new();
+            seen.extend(inventory_weapon);
+            seen.extend(e.secondary.map(|w| w.weapon));
+            seen.extend(e.offhands.into_iter().flatten().map(|w| w.weapon));
+            for reward in world.reward_inventory.into_iter().flatten() {
+                if reward.weapon == 0 || reward.weapon >= 900 || !seen.insert(reward.weapon) {
+                    return Err(LobbyError("invalid reward inventory weapon"));
+                }
+            }
+            for other in e.alternates.into_iter().flatten() {
+                if other.weapon == 0 || other.weapon >= 900 || !seen.insert(other.weapon) {
+                    return Err(LobbyError("invalid alternate inventory weapon"));
+                }
+            }
+            if !seen.contains(&e.weapon) {
+                return Err(LobbyError("held form missing from native inventory"));
+            }
         }
     }
     let ammo = equipment.and_then(|e| e.ammo);
@@ -502,6 +548,14 @@ pub fn player_frame_with_world(
     }
     let ammunition: Vec<Ammo> = ammo
         .into_iter()
+        .chain(
+            equipment
+                .and_then(|e| e.inventory_override)
+                .into_iter()
+                .flatten()
+                .flatten()
+                .filter_map(|w| w.ammo),
+        )
         .chain(secondary.and_then(|other| other.ammo))
         .chain(
             world
@@ -581,6 +635,27 @@ pub fn player_frame_with_world(
     if origin.is_some_and(|v| v.iter().any(|n| !n.is_finite() || n.abs() > 1_000_000.0)) {
         return Err(LobbyError("bootstrap origin out of range"));
     }
+    if world.remote_exit.is_some_and(|exit| exit.visible)
+        && world
+            .remote
+            .is_none_or(|links| links.camera.is_none() || links.controls.is_some())
+    {
+        return Err(LobbyError("remote exit requires a camera-only link"));
+    }
+    if let Some(links) = world.remote {
+        links.validate()?;
+        if origin.is_none()
+            || equipment.is_none()
+            || motion.is_none()
+            || world.replay.is_some()
+            || world.location_selection.is_some()
+            || vitals.is_some_and(|v| v.health == 0 || v.intermission)
+        {
+            return Err(LobbyError(
+                "remote links require living authoritative player",
+            ));
+        }
+    }
     let mut fields = Vec::new();
     if let Some(origin) = origin {
         if motion.is_some() {
@@ -612,8 +687,36 @@ pub fn player_frame_with_world(
             ),
             (47, u32::from(motion.map_or(2047, |m| m.ground_entity)), 11),
             (61, 2047, 16),
-            (68, 2047, 11),
+            (
+                68,
+                world
+                    .remote
+                    .filter(|l| l.weapon_view)
+                    .and_then(|l| l.camera)
+                    .map_or(2047, |c| u32::from(c.entity)),
+                11,
+            ),
         ]);
+        if motion.is_some() {
+            fields.push((
+                154,
+                if world.remote.is_some_and(|l| l.weapon_view) {
+                    4
+                } else {
+                    0
+                },
+                3,
+            ));
+            // Target PM angle clamp0x41b070 reads pitch/yaw ranges here.
+            // Zero would force a weapon-view operator's angles back to zero.
+            let range = if world.remote.is_some_and(|l| l.weapon_view) {
+                180f32.to_bits()
+            } else {
+                0
+            };
+            fields.extend([(119, range, 100), (120, range, 100)]);
+            fields.extend(remote::fields(world.remote));
+        }
         if let Some(shellshock) = shellshock {
             // Duration104 belongs exclusively to the later hint-2 pass.
             fields.extend([
@@ -736,7 +839,7 @@ pub fn player_frame_with_world(
                         0x400
                     } else {
                         0
-                    },
+                    } | world.remote.map_or(0, remote::Links::camera_flags),
                     28,
                 ),
             ]);
@@ -756,7 +859,8 @@ pub fn player_frame_with_world(
             fields.push((56, u32::from(model), 10));
         }
         // Motion and ADS share PS.pm_flags. Emit their combined word once.
-        let flags = motion.map_or(0, |m| m.flags)
+        let flags = motion.map_or(0, |m| m.flags & !remote::CONTROLS_FLAG)
+            | world.remote.map_or(0, remote::Links::control_flags)
             | aim.map_or(0, |a| {
                 (u32::from(a.button) * 0x10) | (u32::from(a.movement_slow) * 0x40)
             });
@@ -776,6 +880,9 @@ pub fn player_frame_with_world(
         }
     }
     if motion.is_some() {
+        if let Some(byte) = location_selection {
+            fields.push((143, u32::from(byte), 8));
+        }
         for (field, angle) in [70, 45, 191].into_iter().zip(world.view_offset) {
             fields.push((field, u32::from(angle), 101));
         }
@@ -866,7 +973,8 @@ pub fn player_frame_with_world(
     out.bytes
         .extend_from_slice(&vitals.map_or(100, |v| v.health).to_le_bytes());
     if weapon.is_some() {
-        out.bytes.extend_from_slice(&100u16.to_le_bytes()); // stats[2], max health
+        out.bytes
+            .extend_from_slice(&vitals.map_or(100, |v| v.max_health).to_le_bytes()); // stats[2], max health
         if let Some(vitals) = vitals {
             out.bytes.push(vitals.spawn_count);
         } // current stats[3], directbyte
@@ -881,26 +989,27 @@ pub fn player_frame_with_world(
         }
         out.bits(0, 1); // clip list terminator
         out.bits(1, 1); // equipped weapon section
-        out.bits(1, 1); // slot0 changed
-        out.bits(1, 1); // weapon ID present
-        out.bits(u32::from(inventory_weapon.unwrap()), 10);
-        out.bits(u32::from(equipment.unwrap().needs_rechamber) << 3, 5);
-        for slot in 1..15 {
-            let other = if slot == 1 {
-                secondary
-            } else if slot <= 3 {
-                equipment.unwrap().offhands[slot - 2].map(|g| EquippedWeapon {
+        let slots = equipment.unwrap().inventory_override.unwrap_or_else(|| {
+            let e = equipment.unwrap();
+            let mut slots = [None; 15];
+            slots[0] = Some(EquippedWeapon {
+                weapon: inventory_weapon.unwrap(),
+                ammo: e.ammo,
+                needs_rechamber: e.needs_rechamber,
+            });
+            slots[1] = e.secondary;
+            for (slot, g) in e.offhands.into_iter().enumerate() {
+                slots[slot + 2] = g.map(|g| EquippedWeapon {
                     weapon: g.weapon,
                     ammo: None,
                     needs_rechamber: false,
-                })
-            } else if slot <= 5 {
-                equipment.unwrap().alternates[slot - 4]
-            } else if (6..10).contains(&slot) {
-                world.reward_inventory[slot - 6]
-            } else {
-                None
-            };
+                });
+            }
+            slots[4..6].copy_from_slice(&e.alternates);
+            slots[6..10].copy_from_slice(&world.reward_inventory);
+            slots
+        });
+        for other in slots {
             out.bits(u32::from(other.is_some()), 1);
             if let Some(other) = other {
                 out.bits(1, 1);
@@ -929,6 +1038,7 @@ pub fn player_frame_with_world(
         || world.replay.is_some()
         || world.nuke_hud.is_some()
         || world.preparation_hud.is_some()
+        || world.remote_exit.is_some()
     {
         let replay_hud =
             world
@@ -937,14 +1047,18 @@ pub fn player_frame_with_world(
                     end_time: r.end_time,
                     skip_text: r.skip_text,
                 });
-        if world.nuke_hud.is_some() || world.preparation_hud.is_some() {
-            crate::game::snapshot::hit_feedback::write_hud_with_preparation(
+        if world.nuke_hud.is_some()
+            || world.preparation_hud.is_some()
+            || world.remote_exit.is_some()
+        {
+            crate::game::snapshot::hit_feedback::write_hud_with_remote_exit(
                 &mut out,
                 world.hit_feedback,
                 world.death_waypoints.unwrap_or(&[]),
                 replay_hud,
                 world.nuke_hud,
                 world.preparation_hud,
+                world.remote_exit,
             )?;
         } else {
             crate::game::snapshot::hit_feedback::write_hud(
@@ -963,8 +1077,16 @@ pub fn player_frame_with_world(
         out.bits(0, 1); // HUD
     }
     out.bits(0, 4); // four final indexed lists
-    out.bits(0, 1); // animation command section (0x5a3b50)
-    out.bits(0, 1); // actors (0x46cc60)
+    crate::game::snapshot::helicopter::animations(&mut out, world.props, server_time);
+    crate::game::snapshot::animal::actors(
+        &mut out,
+        world.props,
+        if establish_baseline {
+            &[]
+        } else {
+            world.prop_baselines
+        },
+    );
     if let Some(player) = world.local_player {
         crate::game::snapshot::enemy::write_enemy_entity(
             &mut out,
@@ -1101,6 +1223,7 @@ pub fn player_frame_with_world(
                 .chain(world.enemy)
                 .chain(world.players.iter().copied()),
             world.corpses,
+            world.replay.map_or(0, |r| u16::from(r.client)),
         );
         let baseline = if !world.held_weapons_in_baseline {
             Default::default()
@@ -1112,6 +1235,7 @@ pub fn player_frame_with_world(
                     .chain(world.enemy_baseline.filter(|_| world.enemy.is_some()))
                     .chain(world.player_baselines.iter().copied()),
                 world.corpse_baselines,
+                world.replay.map_or(0, |r| u16::from(r.client)),
             )
         };
         crate::game::snapshot::held_weapon::write(&mut out, &current, &baseline, tag)?;
@@ -1323,6 +1447,200 @@ mod tests {
     use crate::game::channel::wire::Reader;
     use crate::game::snapshot::events::EventQueue;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn remote_enter_exit_and_camera_only_preserve_emp_and_body_flags() {
+        use remote::{Camera, Links};
+        let equipment = Equipment {
+            weapon: 352,
+            inventory_weapon: None,
+            inventory_override: None,
+            alternate_weapon: None,
+            alternates: [None; 2],
+            offhands: [None; 2],
+            offhand_weapon: 0,
+            grenade_time: 0,
+            move_multiplier: 1.0,
+            perks: [0; 3],
+            abilities: Default::default(),
+            fire_count: 0,
+            queued_burst: false,
+            barrel_flags: 0,
+            spread_scale: 1.0,
+            needs_rechamber: false,
+            ammo: None,
+            viewmodel: None,
+            firing: None,
+            aim: None,
+            secondary: None,
+            events: None,
+        };
+        let camera = Camera {
+            entity: 1600,
+            tag: 1,
+            tag_angles: true,
+        };
+        for delta in [0, 1] {
+            for links in [
+                Some(Links {
+                    fof_overlay: false,
+                    thermal_vision: false,
+                    weapon_view: false,
+                    camera: Some(camera),
+                    controls: Some(1600),
+                }),
+                Some(Links {
+                    camera: Some(camera),
+                    controls: Some(1600),
+                    fof_overlay: true,
+                    thermal_vision: true,
+                    weapon_view: false,
+                }),
+                None,
+                Some(Links {
+                    fof_overlay: false,
+                    thermal_vision: false,
+                    weapon_view: false,
+                    camera: Some(Camera {
+                        tag_angles: false,
+                        ..camera
+                    }),
+                    controls: None,
+                }),
+                Some(Links {
+                    camera: Some(camera),
+                    controls: None,
+                    fof_overlay: true,
+                    thermal_vision: true,
+                    weapon_view: true,
+                }),
+            ] {
+                let packet = player_frame_with_world(
+                    10000,
+                    9950,
+                    Some([100.0, 200.0, 300.0]),
+                    false,
+                    Some(equipment),
+                    [123, 456, 0],
+                    WorldSnapshot {
+                        motion: Some(MotionSnapshot {
+                            flags: 0x88000,
+                            ..authoritative_motion()
+                        }),
+                        vitals: Some(PlayerVitals {
+                            health: 100,
+                            emp_jammed: true,
+                            ..Default::default()
+                        }),
+                        remote: links,
+                        delta_distance: delta,
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+                let mut r = Reader::new(&packet);
+                r.u8().unwrap();
+                r.u32().unwrap();
+                assert_eq!(r.u8().unwrap(), delta);
+                r.u8().unwrap();
+                assert_eq!(r.bits(2).unwrap(), 2);
+                let (fields, _) = read_fields(&mut r);
+                assert_eq!(
+                    fields[&168],
+                    links
+                        .filter(|l| !l.weapon_view)
+                        .and_then(|l| l.camera)
+                        .map_or(2047, |c| u32::from(c.entity))
+                );
+                assert_eq!(
+                    fields.get(&169).copied().unwrap_or(0),
+                    links
+                        .filter(|l| !l.weapon_view)
+                        .and_then(|l| l.camera)
+                        .map_or(0, |c| u32::from(c.tag))
+                );
+                assert_eq!(
+                    fields[&170],
+                    links.and_then(|l| l.controls).map_or(2047, u32::from)
+                );
+                assert_eq!(fields[&54], 0x1400 | links.map_or(0, Links::camera_flags));
+                assert_eq!(fields[&20], 0x8000 | links.map_or(0, Links::control_flags));
+                assert_eq!(fields[&227], 2047);
+                assert_eq!(fields[&8], 100f32.to_bits());
+            }
+        }
+        for links in [
+            Links::default(),
+            Links {
+                camera: None,
+                controls: Some(1600),
+                fof_overlay: true,
+                thermal_vision: true,
+                weapon_view: false,
+            },
+            Links {
+                fof_overlay: false,
+                thermal_vision: false,
+                weapon_view: false,
+                camera: Some(Camera {
+                    entity: 2047,
+                    ..camera
+                }),
+                controls: None,
+            },
+            Links {
+                fof_overlay: false,
+                thermal_vision: false,
+                weapon_view: false,
+                camera: Some(Camera { tag: 64, ..camera }),
+                controls: None,
+            },
+            Links {
+                fof_overlay: false,
+                thermal_vision: false,
+                weapon_view: false,
+                camera: None,
+                controls: Some(2047),
+            },
+        ] {
+            assert!(links.validate().is_err());
+        }
+        for vitals in [
+            PlayerVitals {
+                health: 0,
+                ..Default::default()
+            },
+            PlayerVitals {
+                health: 100,
+                intermission: true,
+                ..Default::default()
+            },
+        ] {
+            assert!(
+                player_frame_with_world(
+                    10000,
+                    9950,
+                    Some([0.0; 3]),
+                    false,
+                    Some(equipment),
+                    [0; 3],
+                    WorldSnapshot {
+                        motion: Some(authoritative_motion()),
+                        vitals: Some(vitals),
+                        remote: Some(Links {
+                            fof_overlay: false,
+                            thermal_vision: false,
+                            weapon_view: false,
+                            camera: Some(camera),
+                            controls: Some(1600),
+                        }),
+                        ..Default::default()
+                    }
+                )
+                .is_err()
+            );
+        }
+    }
 
     #[test]
     fn ground_weapon_hint_uses_current_ps_fields_and_clears_on_the_next_view() {
@@ -1617,6 +1935,7 @@ mod tests {
                         Some(Equipment {
                             weapon: 352,
                             inventory_weapon: None,
+                            inventory_override: None,
                             alternate_weapon: None,
                             alternates: [None, None],
                             fire_count: 0,
@@ -2024,6 +2343,7 @@ mod tests {
             move_multiplier: 1.0,
             weapon: 352,
             inventory_weapon: None,
+            inventory_override: None,
             alternate_weapon: None,
             alternates: [None, None],
             fire_count: 0,
@@ -2111,6 +2431,7 @@ mod tests {
         let equipment = Equipment {
             weapon: 352,
             inventory_weapon: None,
+            inventory_override: None,
             alternate_weapon: None,
             alternates: [None, None],
             fire_count: 0,
@@ -2303,6 +2624,66 @@ mod tests {
     }
 
     #[test]
+    fn health_stats_encode_current_and_maximum_independently() {
+        for (health, max_health) in [(100, 100), (750, 1000), (0, 1000)] {
+            let mut e = Equipment {
+                perks: Default::default(),
+                abilities: Default::default(),
+                offhands: [None; 2],
+                offhand_weapon: 0,
+                grenade_time: 0,
+                move_multiplier: 1.0,
+                weapon: 187,
+                inventory_weapon: None,
+                inventory_override: None,
+                alternate_weapon: None,
+                alternates: [None; 2],
+                fire_count: 0,
+                queued_burst: false,
+                barrel_flags: 0,
+                spread_scale: 0.0,
+                needs_rechamber: false,
+                ammo: None,
+                viewmodel: None,
+                firing: None,
+                aim: None,
+                secondary: None,
+                events: None,
+            };
+            e.events = Some(Default::default());
+            let packet = player_frame_with_world(
+                1000,
+                950,
+                Some([0.0; 3]),
+                true,
+                Some(e),
+                [0; 3],
+                WorldSnapshot {
+                    motion: Some(authoritative_motion()),
+                    vitals: Some(PlayerVitals {
+                        health,
+                        max_health,
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let mut r = Reader::new(&packet);
+            r.u8().unwrap();
+            r.u32().unwrap();
+            r.u8().unwrap();
+            r.u8().unwrap();
+            assert_eq!(r.bits(2).unwrap(), 2);
+            read_fields(&mut r);
+            assert_eq!(r.bits(1).unwrap(), 1);
+            assert_eq!(r.bits(4).unwrap(), 13);
+            assert_eq!(r.u16().unwrap(), health);
+            assert_eq!(r.u16().unwrap(), max_health);
+        }
+    }
+
+    #[test]
     fn killcam_fields_select_the_archived_player_and_clear_on_return() {
         let equipment = Equipment {
             perks: Default::default(),
@@ -2313,6 +2694,7 @@ mod tests {
             move_multiplier: 1.0,
             weapon: 352,
             inventory_weapon: None,
+            inventory_override: None,
             alternate_weapon: None,
             alternates: [None, None],
             fire_count: 0,
@@ -2435,6 +2817,52 @@ mod tests {
     }
 
     #[test]
+    fn location_selection_field_decodes_and_clears_in_full_and_delta_frames() {
+        use super::location_selection::LocationSelection;
+        for distance in [0, 1, 3] {
+            for selection in [
+                Some(LocationSelection {
+                    shader: 1,
+                    radius: 6,
+                    directional: true,
+                }),
+                Some(LocationSelection {
+                    shader: 2,
+                    radius: 10,
+                    directional: false,
+                }),
+                None,
+            ] {
+                let body = player_frame_with_world(
+                    1000,
+                    950,
+                    Some([0.0; 3]),
+                    distance == 0,
+                    None,
+                    [0; 3],
+                    WorldSnapshot {
+                        location_selection: selection,
+                        motion: Some(authoritative_motion()),
+                        delta_distance: distance,
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+                let mut r = Reader::new(&body);
+                r.u8().unwrap();
+                r.u32().unwrap();
+                r.u8().unwrap();
+                r.u8().unwrap();
+                assert_eq!(r.bits(2).unwrap(), 2);
+                let (fields, _) = read_fields(&mut r);
+                assert_eq!(
+                    fields.get(&143).copied().unwrap_or(0),
+                    selection.map_or(0, |s| u32::from(s.native_byte().unwrap()))
+                );
+            }
+        }
+    }
+    #[test]
     fn native_streak_slots_decode_and_clear_in_full_and_acknowledged_frames() {
         use crate::game::snapshot::killstreaks::StreakSnapshot;
         for distance in [0, 1, 7] {
@@ -2552,6 +2980,7 @@ mod tests {
             grenade_time: 0,
             move_multiplier: 1.0,
             inventory_weapon: None,
+            inventory_override: None,
             alternate_weapon: Some(180),
             alternates: [None, None],
             fire_count: 1,
@@ -2783,6 +3212,7 @@ mod tests {
             grenade_time: 0,
             move_multiplier: 1.0,
             inventory_weapon: None,
+            inventory_override: None,
             alternate_weapon: Some(180),
             alternates: [
                 Some(EquippedWeapon {
@@ -2945,6 +3375,7 @@ mod tests {
             grenade_time: 0,
             move_multiplier: 1.0,
             inventory_weapon: None,
+            inventory_override: None,
             alternate_weapon: None,
             alternates: [None, None],
             fire_count: 0,
@@ -2982,6 +3413,7 @@ mod tests {
         let missing = Equipment {
             weapon: 180,
             inventory_weapon: Some(163),
+            inventory_override: None,
             ammo: None,
             ..bad
         };
@@ -3156,20 +3588,24 @@ mod tests {
 }
 
 pub mod abilities;
+mod animal;
 pub mod character;
 pub mod corpse;
 pub mod enemy;
 pub mod events;
 pub mod glass;
 pub mod held_weapon;
+mod helicopter;
 pub mod hit_feedback;
 pub mod impact;
 pub mod killstreaks;
+pub mod location_selection;
 pub mod missile;
 pub mod obituary;
 pub mod player_card;
 pub mod progression;
 pub mod props;
+pub mod remote;
 pub mod scavenger;
 pub mod scoreboard;
 pub mod shellshock;
@@ -3177,4 +3613,5 @@ pub mod smoke;
 pub mod sound;
 pub mod stats;
 pub mod target;
+mod turret;
 pub mod weapon_drops;

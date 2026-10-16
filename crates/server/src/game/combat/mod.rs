@@ -522,7 +522,9 @@ impl Ballistics {
         self.damage > 0
             && self.range.is_finite()
             && self.range > 0.0
-            && self.range <= 8192.0
+            // Captured vehicle guns reach16000; normal map weapon ranges are
+            // still validated individually by their resource loaders.
+            && self.range <= 32768.0
             && self.near_range.is_finite()
             && self.near_range > 0.0
             && self.near_range <= self.range
@@ -1465,7 +1467,7 @@ mod tests {
                 ..ballistics()
             },
             Ballistics {
-                range: 8193.0,
+                range: 32769.0,
                 ..ballistics()
             },
             Ballistics {

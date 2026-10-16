@@ -379,7 +379,11 @@ impl Navigation {
         }
         false
     }
+    #[cfg(test)]
     fn closest(&self, position: V3, collision: &Collision) -> Option<usize> {
+        self.closest_checked(position, |a, b| Self::clear(a, b, collision))
+    }
+    fn closest_checked(&self, position: V3, clear: impl Fn(V3, V3) -> bool) -> Option<usize> {
         let x = (position[0] / CELL).round() as i32;
         let y = (position[1] / CELL).round() as i32;
         let mut near = Vec::new();
@@ -397,7 +401,7 @@ impl Navigation {
         }
         near.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
         near.into_iter()
-            .find(|(i, _)| Self::clear(position, self.positions[*i], collision))
+            .find(|(i, _)| clear(position, self.positions[*i]))
             .map(|(i, _)| i)
     }
     #[cfg(test)]
@@ -412,20 +416,60 @@ impl Navigation {
         seed: u64,
         recent: &[V3],
     ) -> Vec<Waypoint> {
+        self.route_checked(start, goal, collision, (seed, recent), false, |_, _, _| {
+            true
+        })
+    }
+    /// Animal callers use the shared ground graph but must sweep their own
+    /// complete bounds and reject human jump edges.
+    pub fn route_walking(
+        &self,
+        start: V3,
+        goal: V3,
+        collision: &Collision,
+        clear: impl Fn(V3, V3) -> bool,
+    ) -> Vec<Waypoint> {
+        self.route_checked(start, goal, collision, (0, &[]), true, |a, b, jump| {
+            !jump && clear(a, b)
+        })
+    }
+    fn route_checked(
+        &self,
+        start: V3,
+        goal: V3,
+        collision: &Collision,
+        variation: (u64, &[V3]),
+        animal: bool,
+        allowed: impl Fn(V3, V3, bool) -> bool,
+    ) -> Vec<Waypoint> {
+        let (seed, recent) = variation;
         let planning = collision.navigation_view();
         let collision = &planning;
+        let clear = |a, b| {
+            if animal {
+                allowed(a, b, false)
+            } else {
+                Self::clear(a, b, collision)
+            }
+        };
         // A long capsule sweep's broadphase covers much of the map. Use the
         // precomputed graph for distant goals instead of tracing through it.
-        if distance(start, goal) <= CELL * 4.0 && Self::clear(start, goal, collision) {
+        if distance(start, goal) <= CELL * 4.0 && clear(start, goal) && allowed(start, goal, false)
+        {
             return vec![Waypoint::walk(goal)];
         }
         let (Some(start_index), Some(goal_index)) = (
-            self.closest(start, collision),
-            self.closest(goal, collision),
+            self.closest_checked(start, clear),
+            self.closest_checked(goal, clear),
         ) else {
             return Vec::new();
         };
         let mut best = vec![f32::INFINITY; self.positions.len()];
+        if !allowed(start, self.positions[start_index], false)
+            || !allowed(self.positions[goal_index], goal, false)
+        {
+            return Vec::new();
+        }
         let mut parent = vec![usize::MAX; best.len()];
         let mut jumps = vec![None; best.len()];
         let mut visited = vec![false; best.len()];
@@ -454,6 +498,13 @@ impl Navigation {
                 return path;
             }
             for edge in &self.links[index] {
+                if !allowed(
+                    self.positions[index],
+                    self.positions[edge.to],
+                    edge.jump.is_some(),
+                ) {
+                    continue;
+                }
                 let next = edge.to;
                 let p = self.positions[next];
                 if weights[next] == 0.0 {

@@ -1,0 +1,219 @@
+{
+  "schema_version": 1,
+  "client_sha256": "e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b",
+  "map": "mp_afghan",
+  "ncs_crc": 523897474,
+  "native_gameplay_acceptance": false,
+  "projectile": {
+    "name": "remotemissile_projectile_mp",
+    "weapon": 345,
+    "model_name": "projectile_hellfire_missile",
+    "model": 111,
+    "initial_speed": 10,
+    "radius": 450,
+    "inner_damage": 1000,
+    "outer_damage": 10,
+    "independent_of_weapon339": true,
+    "lifetime_msec": 12000,
+    "lifetime_field_offset": 2308,
+    "explosion_kind": 1,
+    "explosion_kind_field_offset": 2324
+  },
+  "spawn_bindings": {
+    "sources_sha256": [
+      "95458ffa69217d71405374587566d6f3b4355d3ccf348446c0c3778e1ae994bd"
+    ],
+    "points": [
+      {
+        "origin": [
+          7048.0,
+          792.0,
+          4616.0
+        ],
+        "target": [
+          3656.0,
+          824.0,
+          152.0
+        ]
+      },
+      {
+        "origin": [
+          -2332.8,
+          -1882.1,
+          4584.0
+        ],
+        "target": [
+          620.8,
+          -213.9,
+          120.0
+        ]
+      },
+      {
+        "origin": [
+          -4088.0,
+          1320.0,
+          4728.0
+        ],
+        "target": [
+          -696.0,
+          1288.0,
+          264.0
+        ]
+      },
+      {
+        "origin": [
+          1784.0,
+          6584.0,
+          4744.0
+        ],
+        "target": [
+          1752.0,
+          3192.0,
+          280.0
+        ]
+      },
+      {
+        "origin": [
+          4408.0,
+          104.0,
+          1608.0
+        ],
+        "target": [
+          1256.0,
+          1432.0,
+          168.0
+        ]
+      }
+    ]
+  },
+  "speed_defaults": {
+    "default_normal_speed": {
+      "va": 13129140,
+      "value": 3000.0
+    },
+    "default_boost_speed": {
+      "va": 13130244,
+      "value": 6000.0
+    },
+    "default_acceleration": {
+      "va": 13129108,
+      "value": 2000.0
+    },
+    "default_deceleration": {
+      "va": 13129144,
+      "value": 500.0
+    }
+  },
+  "server_compatibility": {
+    "collision": "Alpha G_RunMissile point G_LocationalTrace; G_LocationalTrace passes vec3_origin for both SV_Trace bounds",
+    "contact_epsilon": 0.125,
+    "expiry": "Alpha G_FireRocket nextthink uses projLifetime; handler9 is G_ExplodeMissile and G_RunThink dispatches it at the deadline",
+    "equal_spawn_score": "first captured entry",
+    "reference": "Alpha remote missile mechanics adapted to target resources; target client image does not provide server-authority evidence",
+    "reference_sources_sha256": {
+      "asmsource/_g_missile.asm": "44e536907787d8ea611c4ddec7113c49bee59a3082c89fb022d8210436021ae7",
+      "asmsource/_g_main_mp.asm": "1c4f4f25b18a4154d4d8d7c494ccdf5bd84795497c093e31169500e32d265b96",
+      "asmsource/_cm_trace.asm": "b9828d60df200217ab60bd0c8edabbebc042154964b7b07ebc230880fac07933",
+      "g_main_mp.cpp": "d8dac19f516fccaa570849d3ffdf084cc9a090a5e52616215471958db8135c71"
+    }
+  },
+  "verification": {
+    "real_map_routes": 5,
+    "log": "research-output/attack-aircraft-20261015/predator-native-lifetime-real-map-check.log",
+    "native_view_body_restore_weapon_fx_audio": false,
+    "native_partial_evidence": [
+      "predator-controlled-result.json",
+      "predator-native-observed-effects.json",
+      "predator-death-v2-result.json"
+    ],
+    "native_camera_thermal_steering_boost_static_exit_body_weapon_restore": true,
+    "native_operator_death_respawn_links_clear": true,
+    "native_visible_hostile_and_self_fof": true
+  },
+  "pending": [
+    "Complete native impact FX/audio acceptance",
+    "Native acceptance of point collision and lifetime explosion adapted from Alpha"
+  ],
+  "camera_tag": {
+    "category": 9,
+    "base": 5379,
+    "slot": 18,
+    "name": "tag_origin",
+    "source": "initialized Afghan NCS; immutable category, never publish a replacement configstring"
+  },
+  "native_events": {
+    "impact": {
+      "id": 90,
+      "name": "EV_ROCKET_EXPLODE",
+      "handler_va": 5318737,
+      "effect_field_offset": 2328,
+      "sound_field_offset": 2336
+    },
+    "boost": {
+      "id": 130,
+      "name": "EV_MISSILE_REMOTE_BOOST",
+      "handler_va": 5322105,
+      "requires_camera_entity_match": true,
+      "source": "missile event queue"
+    }
+  },
+  "missile_vision": {
+    "command": "P",
+    "slot": 2,
+    "intro": "black_bw",
+    "intro_transition_msec": 0,
+    "flight_transition_msec": 1000,
+    "selection": "captured mp/basemaps.arena unique map thermal=invert selects thermal_snowlevel_mp; otherwise thermal_mp",
+    "required_content_sha256": [
+      "mp/basemaps.arena",
+      "vision/black_bw.vision",
+      "selected flight vision rawfile"
+    ],
+    "target_command_verified": true,
+    "authority_queue_implemented": true,
+    "actual_afghan_resource_capture": false,
+    "native_visual_acceptance": false,
+    "queue_scope": "operator entity generation and original life"
+  },
+  "fof_overlay": {
+    "player_state_offset": 16,
+    "descriptor_index": 54,
+    "flag": 16,
+    "target_dispatch_va": 5501107,
+    "delay_msec": 150,
+    "authority_implemented": true,
+    "native_visual_acceptance": false
+  },
+  "static_exit": {
+    "duration_msec": 500,
+    "authority_implemented": true,
+    "controls_unlinked_during_exit": true,
+    "camera_link_retained_until_exit": true,
+    "body_frozen_until_exit": true,
+    "archived_material_layers": [
+      "white",
+      "ac130_overlay_grain"
+    ],
+    "sort": [
+      10,
+      20
+    ],
+    "align_screen": 68,
+    "extent_offsets": {
+      "horizontal": 68,
+      "vertical": 72
+    },
+    "extents": [
+      640,
+      480
+    ],
+    "dynamic_material_slots": [
+      1000,
+      1001
+    ],
+    "requires_both_actual_loaded_materials": true,
+    "actual_afghan_material_capture": false,
+    "native_visual_acceptance": false,
+    "explicit_hidden_clear_after_exit": true
+  }
+}

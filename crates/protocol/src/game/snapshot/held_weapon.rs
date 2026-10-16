@@ -19,14 +19,18 @@ pub fn entity_for(parent: u16) -> u16 {
 pub(crate) fn weapons(
     players: impl Iterator<Item = EnemySnapshot>,
     corpses: &[CorpseSnapshot],
+    viewed_player: u16,
 ) -> BTreeMap<u16, u16> {
     players
-        .filter(|p| p.alive)
+        // First-person hands are owned by playerState. A linked world weapon
+        // for the hidden viewed body can be deferred twice after respawn;
+        // target0x504fa0 then loops forever through centity+0x224.
+        .filter(|p| p.alive && p.entity_number != viewed_player)
         .map(|p| (p.entity_number, p.weapon))
         .chain(
             corpses
                 .iter()
-                .filter(|c| c.present)
+                .filter(|c| c.present && !c.weapon_dropped)
                 .map(|c| (c.entity_number, c.weapon)),
         )
         .collect()
@@ -120,6 +124,75 @@ fn gap(out: &mut Writer, distance: u32) {
 mod tests {
     use super::*;
     use crate::game::channel::wire::Reader;
+    #[test]
+    fn visible_world_weapons_follow_the_viewer_and_keep_corpse_and_podium_models() {
+        let actor = EnemySnapshot {
+            entity_number: 0,
+            client_index: 0,
+            team: 2,
+            model: 4,
+            attachment_models: [0; 10],
+            attachment_tags: [0; 10],
+            origin: [0.0; 3],
+            angles: [0; 3],
+            legs_animation: 395,
+            torso_animation: 395,
+            weapon: 352,
+            events: Default::default(),
+            alive: true,
+        };
+        let other = EnemySnapshot {
+            entity_number: 1,
+            client_index: 1,
+            weapon: 355,
+            ..actor
+        };
+        let podium = EnemySnapshot {
+            entity_number: 12,
+            ..actor
+        };
+        let corpse = CorpseSnapshot {
+            entity_number: 20,
+            donor_client: 0,
+            origin: [0.0; 3],
+            angles: [0; 3],
+            legs_animation: 395,
+            torso_animation: 395,
+            weapon: 352,
+            weapon_dropped: false,
+            present: true,
+            phase: crate::game::snapshot::corpse::CorpsePhase::Playing,
+            death_sequence: 1,
+        };
+        assert_eq!(
+            weapons([actor, other, podium].into_iter(), &[corpse], 0),
+            BTreeMap::from([(1, 355), (12, 352), (20, 352)])
+        );
+        assert_eq!(
+            weapons(
+                [actor, other, podium].into_iter(),
+                &[CorpseSnapshot {
+                    weapon_dropped: true,
+                    ..corpse
+                }],
+                0
+            ),
+            BTreeMap::from([(1, 355), (12, 352)]),
+            "the death gun must not also remain linked to the corpse"
+        );
+        assert_eq!(
+            weapons([actor, other, podium].into_iter(), &[corpse], 1),
+            BTreeMap::from([(0, 352), (12, 352), (20, 352)])
+        );
+        let dead = EnemySnapshot {
+            alive: false,
+            ..actor
+        };
+        assert_eq!(
+            weapons([dead, other].into_iter(), &[corpse], 0),
+            BTreeMap::from([(1, 355), (20, 352)])
+        );
+    }
     #[test]
     fn native_table_decodes_spawn_switch_remove_and_reused_parent_for_every_pool_alignment() {
         let f: serde_json::Value = serde_json::from_str(include_str!(concat!(
