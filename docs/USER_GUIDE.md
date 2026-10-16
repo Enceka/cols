@@ -2,6 +2,8 @@
 
 本教程面向在本机启动 CODOL 3.3.3.3、配置玩家并进入 Bot 对局的使用者。已准备好这台电脑的运行环境时，可以直接从“启动游戏”开始。
 
+需要单独运行后端、让多个客户端共用服务，或部署 Linux 成品时，使用[独立服务器教程](SERVER_GUIDE.md)。该模式由服务端常驻运行，客户端另行连接。
+
 ## 运行前需要什么
 
 当前已验证的本机环境为 macOS Apple Silicon、GameHub Wine10 和 Rust 服务端。源码仓库不包含游戏客户端和地图资源，首次下载代码后还需要准备以下资料：
@@ -171,4 +173,4 @@ target/release/cols-launcher native-recover --config profiles/native.local.json
 
 图形启动器的日志区域显示本次状态；命令行也会输出进度。原生启动记录位于对应配置的 `state_dir` 下，默认在 `launcher/state/native/`；脚本实验记录位于 `server/research-output/gamehub/`。
 
-多人共享对局已有核心验收，但常规启动器每个会话仍自行管理本地后端，双端需要独立目录、身份和共同服务配置。准备联机时参照[多人验收](MULTICLIENT_ACCEPTANCE.md)，远端部署参照[Linux 联调](REMOTE_LINUX_ACCEPTANCE.md)；仅填写“连接转发”的服务器地址不能完成整个 UDP 游戏链路。
+独立服务启动、客户端连接配置和 Linux 部署见[服务器教程](SERVER_GUIDE.md)。多人共享对局的验证范围见[多人验收](MULTICLIENT_ACCEPTANCE.md)；仅填写“连接转发”的服务器地址不能完成整个 UDP 游戏链路。

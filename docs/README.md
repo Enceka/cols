@@ -2,13 +2,14 @@
 
 本仓库面向固定CODOL 3.3.3.3客户端和纯Rust服务端。文档描述当前状态、接口、运行方法与证据边界；不保存开发时间线。文件名中的 `PROGRESS`、`PREPARATION`、`PLAN` 和 `LOG` 保留为稳定链接，完成状态以正文为准。
 
-初次运行先读[使用教程](USER_GUIDE.md)，已有环境的快捷入口见[本地游玩](LOCAL_PLAY.md)。了解整体能力读[功能状态](REFERENCE_ALIGNMENT.md)，开发前读[AGENT.md](../AGENT.md)和[模块结构](SERVER_MODULARIZATION_PLAN.md)。待完成实现及需要用户协助的体验统一见[复核清单](REVIEW_PENDING.md)。
+初次运行先读[使用教程](USER_GUIDE.md)，独立部署与共享客户端接入读[服务器教程](SERVER_GUIDE.md)，已有本机环境的快捷入口见[本地游玩](LOCAL_PLAY.md)。了解整体能力读[功能状态](REFERENCE_ALIGNMENT.md)，开发前读[AGENT.md](../AGENT.md)和[模块结构](SERVER_MODULARIZATION_PLAN.md)。待完成实现及需要用户协助的体验统一见[复核清单](REVIEW_PENDING.md)。
 
 代码实现、真实资源服务端验证、原生只读状态与画面／听感分别说明。证据文件保存在本机忽略目录，文档中无完整路径的证据名按专题查找；命令占位符见[运行手册](FOUNDATION.md)。
 
 ## 总览、运行与结构
 
 - [使用教程](USER_GUIDE.md)
+- [独立服务器使用教程](SERVER_GUIDE.md)
 - [功能状态与验收边界](REFERENCE_ALIGNMENT.md)
 - [待完成与体验复核](REVIEW_PENDING.md)
 - [服务端重建范围与验证原则](REVERSE_ENGINEERING_PLAN.md)

@@ -23,6 +23,8 @@ sh tools/cargo.sh run --locked -p codol-server -- check-config
 
 初次使用请读[使用教程](docs/USER_GUIDE.md)，按步骤配置启动器、选择玩家并进入对局。已有本机客户端、服务资料及地图时，也可按[本地游玩](docs/LOCAL_PLAY.md)快捷启动。正常准备使用 7500 分／10 分钟，运行会话持续至退出。资源和本机路径需要自行准备，仓库不能直接充当便携游戏包。
 
+独立运行后端、配置多个客户端或部署 Linux 成品，见[服务器模式教程](docs/SERVER_GUIDE.md)。当前各游戏服务限制监听回环地址，远端接入需要相应的 TCP／UDP 转发链路。
+
 仅观察 TCP 字节流：
 
 ```sh
