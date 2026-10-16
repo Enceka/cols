@@ -185,7 +185,7 @@ fn flare_is_single_use_and_old_entity_identity_cannot_spend_new_stock() {
     assert!(a.decoy(a.targets()[0]));
 }
 #[test]
-fn emp_only_crashes_enemy_aircraft_and_never_enables_unverified_actions() {
+fn emp_only_crashes_enemy_aircraft_and_experimental_policy_exposes_the_normal_helicopter() {
     let r = resources();
     let c = collision();
     let mut a = Aircraft::default();
@@ -196,7 +196,7 @@ fn emp_only_crashes_enemy_aircraft_and_never_enables_unverified_actions() {
     a.emp(1200, 1);
     assert!(a.flights[0].crash.is_some());
     assert!(a.targets().is_empty());
-    assert!(!crate::game::rewards::mechanisms::Mechanism::radio_available(8, &r));
+    assert!(crate::game::rewards::mechanisms::Mechanism::radio_available(8, &r));
     assert!(!crate::game::rewards::mechanisms::Mechanism::radio_available(10, &r));
 }
 
@@ -330,4 +330,19 @@ fn cobra_loop_follows_shots_stops_after_silence_and_does_not_survive_crash() {
     let entity = a.snapshots()[0].entity_number;
     assert!(a.damage(8500, entity, u16::MAX, (1, 1), true, &c));
     assert_eq!(a.snapshots()[0].vehicle.unwrap().loop_sound, 0);
+}
+
+#[test]
+fn unchecked_aircraft_routes_require_explicit_experimental_resource_permission() {
+    let file = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(file.path(), serde_json::to_vec(&serde_json::json!({
+        "schema_version":1,"read_only":true,"client_sha256":codol_protocol::CLIENT_SHA256,
+        "map":"maps/mp/test.d3dbsp","ncs_crc":0,
+        "brushes":[{"center":[0,0,0],"half":[25000,25000,25000],"contents":1,"planes":[]}],"triangles":[]
+    })).unwrap()).unwrap();
+    let blocked = Collision::load(file.path()).unwrap();
+    let mut r = resources();
+    assert!(Aircraft::default().plan(&r, 8, &blocked).is_none());
+    r.experimental_air_routes = true;
+    assert!(Aircraft::default().plan(&r, 8, &blocked).is_some());
 }

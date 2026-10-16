@@ -58,6 +58,24 @@ impl Mechanism {
             Some(Self::LocationStrike) if id != 7 => {
                 super::strikes::Strikes::resources_present(resources, id)
             }
+            // The runtime exposes these experimental controllers when the
+            // map has their bound resources. Availability is not a stability claim.
+            Some(Self::Remote) if id == 5 => {
+                resources
+                    .weapons
+                    .contains_key("remotemissile_projectile_mp")
+                    && resources.models.contains_key("projectile_hellfire_missile")
+                    && resources.tags.contains_key("tag_origin")
+                    && resources.remote_spawns.is_some()
+            }
+            Some(Self::AttackAircraft) if id == 8 => {
+                resources.weapons.contains_key("cobra_20mm_mp")
+                    && resources.models.contains_key("vehicle_mi24p_hind_mp")
+                    && resources.model_bounds.contains_key("vehicle_mi24p_hind_mp")
+                    && resources.vehicles.contains_key("cobra_mp")
+                    && resources.animations.contains_key("bh_rotors")
+                    && resources.air_paths.is_some()
+            }
             // The complete random airdrop pool includes the controllers below.
             // Geometry and pickup tests do not establish native usability.
             _ => false,
@@ -91,4 +109,55 @@ mod tests {
         assert_eq!(Mechanism::for_reward(23), Some(Mechanism::Armor));
         assert_eq!(Mechanism::for_reward(24), Some(Mechanism::Armor));
     }
+}
+
+#[cfg(test)]
+#[test]
+#[ignore = "requires CODOL_REWARD_CATALOG and the prepared local maps"]
+fn prepared_catalog_exposes_experimental_rewards_on_each_map() {
+    let catalog = std::path::PathBuf::from(std::env::var_os("CODOL_REWARD_CATALOG").unwrap());
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&catalog).unwrap()).unwrap();
+    let entries = manifest["entries"].as_array().unwrap();
+    assert!(!entries.is_empty());
+    let mut failures = Vec::new();
+    for entry in entries {
+        let path = catalog
+            .parent()
+            .unwrap()
+            .join(entry["file"].as_str().unwrap());
+        let state = crate::game::session::prepared::PreparedGameState::load(&path).unwrap();
+        let resources = state.radar_resources().expect("map reward resources");
+        for id in [1, 3, 5, 8, 16] {
+            assert!(
+                resources.radio(id).is_some() && Mechanism::radio_available(id, resources),
+                "{} / {} lacks reward {id}",
+                entry["map"],
+                entry["mode"]
+            );
+        }
+        assert!(state.nuke_resources().is_some(), "map nuclear resources");
+        let collision = state.collision.as_ref().unwrap();
+        let player = state.local_player_snapshot(true).unwrap();
+        let missile = super::remote::Remotes::default()
+            .plan(resources, player.origin, player.angles, &[], collision)
+            .is_some();
+        let helicopter = super::aircraft::Aircraft::default()
+            .plan(resources, 8, collision)
+            .is_some();
+        eprintln!(
+            "{} / {}: predator_plan={missile}, helicopter_plan={helicopter}",
+            entry["map"], entry["mode"]
+        );
+        if !missile || !helicopter {
+            failures.push(serde_json::json!({"map":entry["map"],"mode":entry["mode"],"predator":missile,"helicopter":helicopter}));
+        }
+    }
+    if let Some(path) = std::env::var_os("CODOL_REWARD_PLAN_REPORT") {
+        std::fs::write(path, serde_json::to_vec_pretty(&failures).unwrap()).unwrap();
+    }
+    assert!(
+        failures.is_empty(),
+        "experimental map plans failed: {failures:?}"
+    );
 }

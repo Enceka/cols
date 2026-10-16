@@ -2199,7 +2199,7 @@ fn remote_test_match() -> (
             .unwrap();
     game.streaks.configure_radios(0, preview);
     game.streaks.enable_supported(&resources);
-    assert!(!crate::game::rewards::mechanisms::Mechanism::radio_available(5, &resources));
+    assert!(crate::game::rewards::mechanisms::Mechanism::radio_available(5, &resources));
     game.streaks.acceptance_enable_predator();
     for victim in 6..=10 {
         game.damage_bots(2200, 0, 352, &[(victim, 100, false)], false);

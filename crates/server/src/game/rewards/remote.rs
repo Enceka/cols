@@ -1,7 +1,7 @@
 //! Operator lifetime and predator payload. Native camera/input facts are target
 //! captures, including registered speed defaults. Laptop timing and the
 //! acceleration/boost, point collision and expiry explosion follow Alpha.
-//! Normal availability remains disabled until native payload acceptance.
+//! The runtime exposes the controller experimentally with matched map resources.
 use super::{
     inventory::Ticket,
     killstreaks::RadarResources,

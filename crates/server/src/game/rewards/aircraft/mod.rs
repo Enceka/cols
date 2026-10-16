@@ -119,16 +119,20 @@ impl Aircraft {
         })?;
         for &start in graph.entries.get("heli_start")? {
             let mut ingress = routes::authored(graph, start, false)?;
-            if !routes::fit(c, bounds, &mut ingress, None, None) {
+            if !r.experimental_air_routes && !routes::fit(c, bounds, &mut ingress, None, None) {
                 continue;
             }
             let end = ingress.nodes.last()?.origin;
             for &loop_start in graph.entries.get("heli_loop_start")? {
                 let mut patrol = routes::authored(graph, loop_start, id == 10)?;
-                if !routes::fit(c, bounds, &mut patrol, Some(end), None) {
+                if !routes::fit(c, bounds, &mut patrol, Some(end), None)
+                    && !r.experimental_air_routes
+                {
                     continue;
                 }
-                if routes::exit_path(patrol.nodes[0].origin, graph, bounds, c, None).is_none() {
+                if !r.experimental_air_routes
+                    && routes::exit_path(patrol.nodes[0].origin, graph, bounds, c, None).is_none()
+                {
                     continue;
                 }
                 return Some(Plan {
@@ -669,7 +673,7 @@ impl Aircraft {
             ],
             repeat: None,
         };
-        if !routes::fit(c, bounds, &mut ingress, None, None) {
+        if !r.experimental_air_routes && !routes::fit(c, bounds, &mut ingress, None, None) {
             return None;
         }
         let center = ingress.nodes[1].origin;

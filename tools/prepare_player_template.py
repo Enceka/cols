@@ -12,6 +12,7 @@ from pathlib import Path
 
 from prepare_inventory import public_snapshot, selected_items
 from prepare_lobby_profile import mark_complete
+from prepare_default_rewards import seed_empty_rewards
 from schema_fields import flatten, value
 from unlock_all_items import catalogue
 
@@ -28,7 +29,9 @@ def prepare(assets, public, user_id):
     expected = b"".join(b"\x07" + snapshot[f["offset"]:f["offset"] + 4] for f in projected) + b"\0"
     if len(projected) != 125 or expected != tail:
         raise ValueError("starter projections mismatch")
-    starter = selected_items(fields, snapshot)
+    public, rewards, _ = seed_empty_rewards(public, fields)
+    snapshot, _ = public_snapshot(public)
+    starter = list(dict.fromkeys(selected_items(fields, snapshot) + rewards))
     if any(item not in items for item in starter):
         raise ValueError("starter equipment is absent from this catalogue")
     if not 0 < user_id <= 0xffffffffffffffff:

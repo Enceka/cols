@@ -119,6 +119,10 @@ pub(crate) struct Radio {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RadarResources {
+    /// Experimental permission to attempt authored/compatible aerial routes
+    /// even when the conservative full-body preflight cannot prove clearance.
+    #[serde(default)]
+    pub experimental_air_routes: bool,
     pub schema_version: u8,
     pub client_sha256: String,
     pub sources_sha256: [String; 2],
@@ -1234,7 +1238,7 @@ impl Streaks {
                 let id = actor.previews.ids[slot];
                 if id < 64
                     && self.available & (1u64 << id) != 0
-                    && progress >= actor.previews.targets[slot]
+                    && progress == actor.previews.targets[slot]
                     && !actor.radios_granted[slot]
                 {
                     actor.radios_granted[slot] = true;
@@ -1350,6 +1354,7 @@ mod tests {
     fn radar_resources() -> RadarResources {
         let timing = test_resources();
         RadarResources {
+            experimental_air_routes: false,
             schema_version: 1,
             client_sha256: codol_protocol::CLIENT_SHA256.into(),
             sources_sha256: ["0".repeat(64), "1".repeat(64)],
@@ -2133,5 +2138,95 @@ mod tests {
         );
         s.advance(50000);
         assert!(s.drain().is_empty());
+    }
+    fn configure_three_five_seven(s: &mut Streaks) -> RadarResources {
+        let mut resources = radar_resources();
+        for (id, weapon) in [(5, 325), (8, 319)] {
+            let mut radio = resources.radios[0].clone();
+            radio.native_id = id;
+            radio.weapon = weapon;
+            resources.radios.push(radio);
+        }
+        s.available = (1 << 1) | (1 << 5) | (1 << 8);
+        s.configure_radios(
+            0,
+            Previews {
+                ids: [1, 5, 8],
+                targets: [3, 5, 7],
+            },
+        );
+        resources
+    }
+
+    #[test]
+    fn each_three_five_seven_threshold_awards_and_enables_only_its_own_slot_for_three_rounds() {
+        let mut streaks = Streaks::default();
+        let resources = configure_three_five_seven(&mut streaks);
+        let mut earned = Vec::new();
+        for kills in 1..=21 {
+            kill(&mut streaks, kills);
+            let progress = (kills - 1) % 7 + 1;
+            let expected = match progress {
+                3 => Some((1usize, 1u8)),
+                5 => Some((2, 5)),
+                7 => Some((3, 8)),
+                _ => None,
+            };
+            let mut snapshot = streaks.snapshot(0, 0);
+            streaks.radio_snapshot(0, &resources, &mut snapshot);
+            for slot in 1..=3 {
+                assert_eq!(
+                    snapshot.action_types[slot],
+                    u8::from(expected.is_some_and(|(expected_slot, _)| expected_slot == slot)),
+                    "kill {kills}, slot {slot}"
+                );
+            }
+            let events = streaks
+                .drain_radios()
+                .into_iter()
+                .filter_map(|e| match e {
+                    RadioEvent::Earned { id, time, .. } => Some((id, time)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                events,
+                expected
+                    .map(|(_, id)| vec![(id, kills * 1000)])
+                    .unwrap_or_default(),
+                "kill {kills}"
+            );
+            earned.extend(events);
+            if let Some((_, id)) = expected {
+                assert!(streaks.try_radio(0, 1, id, kills * 1000 + 1));
+            }
+        }
+        assert_eq!(
+            earned,
+            vec![
+                (1, 3000),
+                (5, 5000),
+                (8, 7000),
+                (1, 10000),
+                (5, 12000),
+                (8, 14000),
+                (1, 17000),
+                (5, 19000),
+                (8, 21000)
+            ]
+        );
+    }
+
+    #[test]
+    fn skipped_earlier_thresholds_are_not_backfilled_when_a_later_reward_is_reached() {
+        let mut streaks = Streaks::default();
+        let resources = configure_three_five_seven(&mut streaks);
+        streaks.acceptance_seed(6);
+        kill(&mut streaks, 1);
+        let mut snapshot = streaks.snapshot(0, 0);
+        streaks.radio_snapshot(0, &resources, &mut snapshot);
+        assert_eq!(snapshot.progress, 7);
+        assert_eq!(snapshot.action_types, [0, 0, 0, 1, 0]);
+        assert_eq!(streaks.owned_radios(0).collect::<Vec<_>>(), [(2, 8)]);
     }
 }
