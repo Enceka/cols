@@ -33,13 +33,13 @@ sh tools/cargo.sh run --locked -p codol-server -- observe
 
 默认观察端口为 `127.0.0.1:39001`、`127.0.0.1:39002`，不会提供游戏响应。实际游戏服务使用 `serve-auth`，参数与启动契约见[原生启动器接口](docs/NATIVE_LAUNCHER.md)。
 
-本地管理面板：
+本地管理面板支持一键开服、自动生成证书／私钥、启停与日志：
 
 ```sh
 sh tools/cargo.sh run --locked -p codol-server -- admin
 ```
 
-访问 `http://127.0.0.1:39080`；功能及配置生效范围见[管理面板](docs/ADMIN_PANEL.md)。
+访问 `http://127.0.0.1:39080`，在“开服设置”选择已有地图与服务资料，再点击“一键开服”。用法和配置生效范围见[管理面板](docs/ADMIN_PANEL.md)。
 
 ## 文档
 

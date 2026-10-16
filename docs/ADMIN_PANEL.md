@@ -1,6 +1,6 @@
-# 本地管理面板
+# 本地管理面板与一键开服
 
-CODOL Control 是 Rust 可执行文件内置的本地 Web 管理界面。无需安装 Node 或前端依赖。
+CODOL Control 内置于 Rust 服务程序，提供独立服务器启停、开服设置、本地证书、日志与诊断。无需 Node、Python 或外部 OpenSSL 命令。
 
 在 `server/` 下启动：
 
@@ -8,28 +8,50 @@ CODOL Control 是 Rust 可执行文件内置的本地 Web 管理界面。无需�
 sh tools/cargo.sh run --locked -p codol-server -- admin
 ```
 
-打开 `http://127.0.0.1:39080`。Ctrl-C 关闭面板。可通过 `--bind 127.0.0.1:39081` 更换本地端口，`--config` 指定观察服务的 TOML 文件。
+已有构建产物时直接执行 `target/release/codol-server admin`，打开 `http://127.0.0.1:39080`。`--bind` 可更换回环管理端口，`--state-dir` 可指定持久化开服目录，缺省为 `client-work/server-control`。
 
-读取现有 GameHub 后端日志：
+## 一键开服
+
+1. 进入“开服设置”，确认服务资料目录、默认地图和地图目录文件；使用服务器上的绝对路径。
+2. 设置各端口和房间人数。默认补齐12人，真人加入时替换Bot；也可选择“不自动补位”。
+3. 点击“一键开服”。首次自动生成本地证书／私钥，并仅补齐缺失的必需公共配置，不覆盖已有玩家资料或公共配置。
+4. 等待状态变为“运行中”，概览显示实际已绑定的AUTH、大厅、两处STUN、游戏UDP和资源观察端点。
+5. 点击“停止服务”停止本次进程并释放端口；证书、开服设置和玩家资料保留，再次开服直接复用。
+
+地图仍需事先按本版资源准备。找不到输入时显示具体缺项；不能用空地图或其它图的CRC补齐。资源观察器只记录请求，不分发游戏资源。完整部署与客户端连接方法见[独立服务器教程](SERVER_GUIDE.md)。
+
+开服由面板启动同一个 `codol-server` 可执行文件的受管子进程，不执行shell命令。只有本次进程的就绪记录通过身份、协议、地图和端点校验后，才显示运行中；失败会回收本次服务。启动／运行／停止期间禁止修改配置和更新证书，重复开服不产生第二套进程。
+
+关闭浏览器页面不会停服；在面板点击停止，或在运行面板的终端按Ctrl-C。面板关停通知自有子进程协作退出，超过清理期限时只回收仍未退出的自有进程。独立 `serve-auth` 的手动启动方式继续可用，勿与受管服务争用相同端口或资料根目录。
+
+## 证书与持久化
+
+首次生成RSA-2048密钥和SHA-256签名的本地自签名证书，包含localhost／127.0.0.1，期限365天。密钥在Unix上以0600保存，不经HTTP接口返回；页面提供公开证书下载、SHA-256指纹和有效期。现有证书无效、缺失配套私钥或过期时明确报错，不静默替换。
+
+停止服务后可点击“更新本地证书”，创建新的配套证书与密钥。旧代保留，新的索引只在文件完整落盘后切换；客户端随后需要更新信任。面板不操作客户端文件，也不改系统信任库。
+
+状态目录保存 `server.json`、`identity.json`、`tls/` 和 `runs/`。`server.json`不含私钥，保存检查版本，拒绝过期页面和外部文件变更；同一个状态目录只允许一个管理面板。受管服务对资料目录加独占锁；手动CLI与其它工具仍应由操作者避免并发写同一资料。
+
+## 日志和诊断
+
+开服后日志页面自动读取本次两个子进程的标准输出／错误。磁盘日志限制8MiB并循环写入，界面读取最新128KiB中最多500行；面板操作记录最多200条。暂停更新只冻结当前日志视图，导出使用当前筛选结果。
+
+也可使用 `--log-file PATH` 接入已有日志；存在受管服务日志时优先显示本次服务。日志不是就绪判据，运行状态来自进程监控和就绪记录。
+
+内置终端支持 `help`、`status`、`listeners`、`check-config`、`show-config`、`tail`、`clear`，不会执行任意系统shell。⌘/Ctrl-K打开终端，方向键查看历史、Tab补全。
+
+“服务配置”页保留观察器TOML编辑，`--config`可显式指定文件；缺省优先使用已有 `configs/local.toml`，否则在状态目录创建观察配置。TOML编辑不会改变“一键开服”的服务参数，后者使用独立“开服设置”。保存TOML前校验并备份，检查文件SHA-256版本，观察器需通过对应启动流程重启后生效。
+
+面板及游戏端点均限制回环访问；HTTP校验Host／Origin，写入接口要求JSON。远端管理通过专用转发链路，当前不提供公网管理认证或公网UDP直连。服务功能与未覆盖范围见[功能状态](REFERENCE_ALIGNMENT.md)。
+
+页面资源在 `crates/server/admin/`，后端在 `crates/server/src/admin/`，受管开服位于 `crates/server/src/app/hosting/`；修改后重建二进制。
+
+## 验证
 
 ```sh
-sh tools/cargo.sh run --locked -p codol-server -- admin \
-  --config configs/local.toml \
-  --log-file "research-output/你的运行目录/tls-status.log"
+sh tools/cargo.sh test --locked -p codol-server --lib admin::tests
+sh tools/cargo.sh test --locked -p codol-server --lib app::hosting
+sh tools/cargo.sh test --locked -p codol-server --test admin_hosting
 ```
 
-`--log-file` 需替换为实际运行日志路径；也可以读取 `observer.log`。默认显示面板操作日志，日志文件不存在时显示读取提示。面板每 3 秒刷新，读取文件最新 128 KiB 内最多 500 行，面板操作记录保留最新 200 条。暂停更新仅冻结当前页面的日志视图，导出使用当前筛选结果。文件追加、截断或替换后，后续刷新读取新内容。
-
-界面包含服务概览、交互终端、运行日志和服务配置。概览中的运行时间属于管理面板；监听端点来自配置，不主动连接研究端口，也不表示 AUTH、游戏或地图资源已就绪。服务实际状态请结合对应服务日志确认。
-
-终端支持 `help`、`status`、`listeners`、`check-config`、`show-config`、`tail` 和 `clear`，提供命令历史及 Tab 补全。⌘/Ctrl-K 打开终端。此处是内置诊断控制台，不执行任意系统 shell，也不启动、重启或停止游戏进程。
-
-配置页读写启动时指定的观察配置文件。校验沿用 `Config::validate`，保留 TOML 注释和原始文本。保存前检查 SHA-256 文件版本，原文件备份到同目录的 `*.toml.backup-*`，通过同目录临时文件替换配置，并保留原文件权限。外部修改导致版本冲突时保留草稿，可导出后重新加载。⌘/Ctrl-S 保存。配置保存后需通过原启动流程重新启动观察服务才能生效；AUTH、游戏服务的 CLI 参数和 publisher 文件不属于此编辑器。
-
-面板只允许绑定 loopback，校验请求 Host 与 Origin，写入接口要求 JSON；未提供远程访问和账号认证。页面资源随二进制编译内置，修改 `crates/server/src/admin/` 后需重新编译。
-
-验证：
-
-```sh
-sh tools/cargo.sh test --locked -p codol-server admin::tests
-```
+集成检查使用真实受管进程及合成地图，覆盖自动密钥、全部端点、重复启动、占用失败与重试、取消、停服释放、重开保留资料和面板关停。它不代替原生游戏玩法验收。

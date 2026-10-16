@@ -37,10 +37,11 @@
       <span>CODOL<span class="brand-subtitle">CONTROL CENTER</span></span>
       <span class="brand-dot"></span>
     </a>
-    <div class="workspace-picker"><span class="workspace-avatar">L</span><div><strong>本地开发环境</strong><span>Local workspace</span></div><span class="picker-mark">⌄</span></div>
+    <div class="workspace-picker"><span class="workspace-avatar">L</span><div><strong>独立游戏服务器</strong><span>Server workspace</span></div><span class="picker-mark">⌄</span></div>
     <span class="nav-label">工作空间</span>
     <nav aria-label="主导航">
       <button class="nav-item active" data-view="overview" aria-current="page"><svg><use href="#i-grid"/></svg>服务概览</button>
+      <button class="nav-item" data-view="hosting"><svg><use href="#i-server"/></svg>开服设置</button>
       <button class="nav-item" data-view="terminal"><svg><use href="#i-terminal"/></svg>终端<span class="nav-shortcut">⌘ K</span></button>
       <button class="nav-item" data-view="logs"><svg><use href="#i-logs"/></svg>运行日志<span class="nav-count" id="nav-log-count">0</span></button>
       <button class="nav-item" data-view="config"><svg><use href="#i-sliders"/></svg>服务配置</button>
@@ -62,10 +63,15 @@
       <div class="page-heading"><div><p class="eyebrow">SERVER MANAGEMENT</p><h1 id="page-title">服务概览<span class="heading-dot">.</span></h1><p class="page-description" id="page-description">从这里了解运行环境，管理你的 CODOL 服务。</p></div><div class="heading-meta"><span class="connection-badge" id="connection-badge"><span class="status-dot"></span><span id="connection-text">连接中</span></span><span class="last-sync" id="last-sync">正在同步数据…</span></div></div>
       <div class="connection-error" id="connection-error" role="alert" hidden></div>
 
+      <article class="panel hosting-hero" aria-label="服务器控制">
+        <div class="hosting-summary"><div class="hosting-heading"><span class="status-dot" id="hosting-dot"></span><h2 id="hosting-phase">未开服</h2><span class="subtle-badge">3.3.3.3 · 本机 / 隧道接入</span></div><p id="hosting-message">正在读取开服设置…</p><p class="hosting-error" id="hosting-error" role="alert" hidden></p></div>
+        <div class="hosting-actions"><button class="button button-secondary" data-go="hosting">开服设置</button><button class="button button-secondary" id="hosting-stop" disabled>停止服务</button><button class="button button-primary" id="hosting-start" disabled>一键开服<svg><use href="#i-arrow"/></svg></button></div>
+      </article>
+
       <section class="view" id="view-overview" aria-label="服务概览">
         <div class="metric-grid">
           <article class="metric-card"><div class="metric-label">面板运行时间<svg><use href="#i-clock"/></svg></div><div class="metric-value mono" id="metric-uptime">—</div><div class="metric-foot"><span class="status-dot"></span>管理服务在线</div></article>
-          <article class="metric-card"><div class="metric-label">监听端点<svg><use href="#i-server"/></svg></div><div class="metric-value"><span id="metric-listeners">—</span><span class="metric-unit">个</span></div><div class="metric-foot">来自当前观察服务配置</div></article>
+          <article class="metric-card"><div class="metric-label">监听端点<svg><use href="#i-server"/></svg></div><div class="metric-value"><span id="metric-listeners">—</span><span class="metric-unit">个</span></div><div class="metric-foot">来自实际开服端点</div></article>
           <article class="metric-card"><div class="metric-label">日志来源<svg><use href="#i-logs"/></svg></div><div class="metric-value metric-word" id="metric-log-source">面板日志</div><div class="metric-foot" id="metric-log-note">操作事件实时记录</div></article>
           <article class="metric-card"><div class="metric-label">配置状态<svg><use href="#i-shield"/></svg></div><div class="metric-value metric-word" id="metric-config">待校验</div><div class="metric-foot">版本 <code id="metric-revision">—</code></div></article>
         </div>
@@ -80,11 +86,34 @@
             </article>
           </div>
           <div class="overview-aside">
-            <article class="panel endpoints-panel"><div class="panel-heading"><h2>服务端点</h2><span class="subtle-badge" id="endpoint-count">— 个端点</span></div><div id="endpoint-list" class="endpoint-list"><div class="empty-state">正在读取监听配置…</div></div><div class="endpoint-note"><svg><use href="#i-shield"/></svg><span>展示配置地址；运行状态由服务日志确认。</span></div></article>
+            <article class="panel endpoints-panel"><div class="panel-heading"><h2>服务端点</h2><span class="subtle-badge" id="endpoint-count">— 个端点</span></div><div id="endpoint-list" class="endpoint-list"><div class="empty-state">正在读取监听配置…</div></div><div class="endpoint-note"><svg><use href="#i-shield"/></svg><span>开服完成后显示实际绑定地址。</span></div></article>
             <article class="panel config-summary"><div class="panel-heading"><h2>配置快照</h2><button class="text-button" data-go="config">管理<svg><use href="#i-arrow"/></svg></button></div><dl><div><dt>最大连接数</dt><dd class="mono" id="summary-connections">—</dd></div><div><dt>空闲超时</dt><dd class="mono" id="summary-timeout">—</dd></div><div><dt>客户端版本</dt><dd class="mono">3.3.3.3</dd></div></dl><div class="config-file-label"><svg><use href="#i-file"/></svg><span id="config-filename">local.toml</span><span>TOML</span></div></article>
           </div>
         </div>
         <article class="panel recent-logs"><div class="panel-heading"><div class="heading-with-note"><h2>最近日志</h2><span class="live-label"><span class="status-dot"></span>LIVE</span></div><button class="text-button" data-go="logs">查看全部<svg><use href="#i-arrow"/></svg></button></div><div class="table-scroll"><table class="log-table"><thead><tr><th>时间</th><th>级别</th><th>来源</th><th>消息</th></tr></thead><tbody id="recent-log-body"></tbody></table></div></article>
+      </section>
+
+      <section class="view" id="view-hosting" aria-label="开服设置" hidden>
+        <form class="panel hosting-form" id="hosting-form">
+          <div class="panel-heading"><div><h2>服务资料与地图</h2><p>首次开服自动生成本地证书和缺失的公共配置。游戏地图与玩家资料使用你已准备的文件。</p></div><span class="editor-state" id="hosting-edit-state">已保存</span></div>
+          <fieldset id="hosting-fields"><div class="hosting-paths">
+            <label>服务资料目录<input id="hosting-service_data_dir" name="service_data_dir" autocomplete="off" required placeholder="账号、库存与公共配置所在的绝对目录"></label>
+            <label>默认地图文件<input id="hosting-game_state" name="game_state" autocomplete="off" required placeholder="默认地图准备 JSON 的绝对路径"></label>
+            <label>地图目录文件<input id="hosting-map_catalog" name="map_catalog" autocomplete="off" required placeholder="包含地图和模式的目录 JSON 绝对路径"></label>
+          </div><div class="hosting-section-heading"><h3>端口与房间</h3><p>游戏服务监听 127.0.0.1；共享战术房间由真人替换 Bot。</p></div><div class="hosting-ports">
+            <label>AUTH 端口<input id="hosting-auth_port" name="auth_port" type="number" min="1" max="65535" required></label>
+            <label>大厅端口<input id="hosting-lobby_port" name="lobby_port" type="number" min="1" max="65535" required></label>
+            <label>游戏 UDP 端口<input id="hosting-game_port" name="game_port" type="number" min="1" max="65535" required></label>
+            <label>STUN 主端口<input id="hosting-stun_port" name="stun_port" type="number" min="1" max="65535" required></label>
+            <label>STUN 备用端口<input id="hosting-stun_alt_port" name="stun_alt_port" type="number" min="1" max="65535" required></label>
+            <label>资源观察端口<input id="hosting-resource_port" name="resource_port" type="number" min="1" max="65535" required></label>
+            <label>房间补齐人数<select id="hosting-room_bot_fill" name="room_bot_fill"><option value="0">不自动补位</option><option value="4">4 人</option><option value="5">5 人</option><option value="6">6 人</option><option value="7">7 人</option><option value="8">8 人</option><option value="9">9 人</option><option value="10">10 人</option><option value="11">11 人</option><option value="12">12 人</option></select></label>
+          </div></fieldset>
+          <div class="hosting-input-warning" id="hosting-missing" role="status" hidden></div><div class="config-feedback" id="hosting-feedback" role="status" hidden></div>
+          <div class="editor-actions"><span id="hosting-config-path">开服设置会保存在独立状态目录。</span><button class="button button-primary" id="hosting-save" type="submit" disabled>保存开服设置</button></div>
+        </form>
+        <article class="panel hosting-certificate"><div><h2>本地连接证书</h2><p id="hosting-certificate-status">首次开服自动生成，用于客户端信任这台服务。</p><code id="hosting-fingerprint"></code></div><div class="hosting-actions"><button class="button button-secondary" id="hosting-renew">更新本地证书</button><button class="button button-secondary" id="hosting-download" disabled><svg><use href="#i-download"/></svg>下载公开证书</button></div></article>
+        <p class="view-footnote">将公开证书配置到独立客户端后连接上方实际服务端点。私钥只保存在服务器；本页不下载游戏资源，也不修改客户端。更新证书后，客户端需要更新信任。</p>
       </section>
 
       <section class="view" id="view-terminal" aria-label="交互终端" hidden>

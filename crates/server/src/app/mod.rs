@@ -1,4 +1,5 @@
 pub mod config;
+pub(crate) mod hosting;
 
 mod cli;
 mod readiness;

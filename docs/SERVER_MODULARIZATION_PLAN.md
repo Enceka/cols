@@ -11,6 +11,7 @@ crates/server/src/
 ├── app/
 │   ├── cli.rs                      # CLI 解析、命令执行与启动装配
 │   ├── readiness.rs                # 原生启动器的进程身份与就绪契约
+│   ├── hosting/                    # 开服配置、本地证书与自有服务进程管理
 │   ├── config.rs
 │   └── services/                   # LocalServices：业务组合、房间投递与档案快照
 ├── contracts/                     # 无凭据的 AccountId、接收者身份与任务结果

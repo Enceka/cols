@@ -49,11 +49,14 @@ enum Command {
     Admin {
         #[arg(long, default_value = "127.0.0.1:39080")]
         bind: std::net::SocketAddr,
-        #[arg(long, default_value = "configs/local.toml")]
-        config: PathBuf,
+        #[arg(long)]
+        config: Option<PathBuf>,
         /// Optional existing backend log, such as a GameHub tls-status.log.
         #[arg(long)]
         log_file: Option<PathBuf>,
+        /// Private settings, certificates and managed server sessions.
+        #[arg(long, default_value = "client-work/server-control")]
+        state_dir: PathBuf,
     },
     /// Select captured TDM starts that fit the gameplay capsule, preserving rejected evidence.
     PrepareMapStarts {
@@ -218,6 +221,9 @@ enum Command {
         /// Atomically publish the native launcher contract after services are assembled.
         #[arg(long, requires_all = ["local_title_id", "lobby_bind", "service_data_dir", "stun_bind", "game_bind", "game_state", "game_map_catalog"])]
         launcher_ready_file: Option<PathBuf>,
+        /// Stop managed services when the controlling process closes stdin.
+        #[arg(long)]
+        managed_stdin: bool,
     },
     /// Parse an observed task-10 JSON body; identifiers are omitted from output.
     InspectAuth {
@@ -236,6 +242,9 @@ enum Command {
         /// Atomically publish the observer's bound listeners to the native launcher.
         #[arg(long)]
         launcher_ready_file: Option<PathBuf>,
+        /// Stop this managed observer when its controlling stdin closes.
+        #[arg(long)]
+        managed_stdin: bool,
     },
     /// Validate listener configuration without opening sockets.
     CheckConfig {
@@ -270,8 +279,10 @@ pub(super) async fn run() -> Result<()> {
             bind,
             config,
             log_file,
+            state_dir,
         } => {
-            let admin = crate::admin::AdminServer::bind(bind, config, log_file).await?;
+            let admin =
+                crate::admin::AdminServer::managed(bind, config, log_file, state_dir).await?;
             println!("CODOL Control: http://{}", admin.address());
             admin.run().await?;
         }
@@ -558,6 +569,7 @@ pub(super) async fn run() -> Result<()> {
             game_capture_every,
             hit_regions,
             launcher_ready_file,
+            managed_stdin,
         } => {
             let mut ready = serde_json::json!({
                 "kind":"native_services", "lobby_protocol":210, "game_protocol":3,
@@ -686,7 +698,7 @@ pub(super) async fn run() -> Result<()> {
                     super::readiness::publish(&path, ready).await?;
                 }
                 let outcome = tokio::select! {
-                    result=tokio::signal::ctrl_c()=>result.context("shutdown signal"),
+                    result=shutdown_signal(managed_stdin)=>result.context("shutdown signal"),
                     result=tasks.join_next()=>result.context("service task missing")?.context("service task failed")?,
                 };
                 stop.send_replace(true);
@@ -696,7 +708,7 @@ pub(super) async fn run() -> Result<()> {
                 outcome?;
             } else {
                 tracing::info!(address=%server.address()?, directory=%server.directory().display(), "Rust AUTH listener ready");
-                server.run(tokio::signal::ctrl_c()).await?;
+                server.run(shutdown_signal(managed_stdin)).await?;
             }
         }
         Command::InspectAuth { input } => {
@@ -745,6 +757,7 @@ pub(super) async fn run() -> Result<()> {
         Command::Observe {
             config,
             launcher_ready_file,
+            managed_stdin,
         } => {
             let observer = Observer::bind(Config::load(&config)?).await?;
             tracing::info!(directory = %observer.directory().display(), "observation run created; no game responses enabled");
@@ -760,7 +773,7 @@ pub(super) async fn run() -> Result<()> {
                 )
                 .await?;
             }
-            observer.run(tokio::signal::ctrl_c()).await?;
+            observer.run(shutdown_signal(managed_stdin)).await?;
             tracing::info!("all capture sessions closed");
         }
         Command::Bootstrap {
@@ -818,6 +831,22 @@ async fn wait_for_stop(mut receiver: tokio::sync::watch::Receiver<bool>) -> std:
         let _ = receiver.changed().await;
     }
     Ok(())
+}
+
+async fn shutdown_signal(managed_stdin: bool) -> std::io::Result<()> {
+    if !managed_stdin {
+        return tokio::signal::ctrl_c().await;
+    }
+    let input_closed = async {
+        let mut input = tokio::io::stdin();
+        let mut byte = [0; 1];
+        while tokio::io::AsyncReadExt::read(&mut input, &mut byte).await? != 0 {}
+        Ok(())
+    };
+    tokio::select! {
+        result = tokio::signal::ctrl_c() => result,
+        result = input_closed => result,
+    }
 }
 
 #[cfg(test)]

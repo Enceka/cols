@@ -1,5 +1,6 @@
 //! Loopback management UI with bounded diagnostic commands and a fixed config/log path.
 use crate::app::config::Config;
+use crate::app::hosting::{Hosting, Settings};
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -39,6 +40,7 @@ struct State {
     started: Instant,
     logs: Mutex<VecDeque<LogEntry>>,
     config_lock: Mutex<()>,
+    hosting: Arc<Hosting>,
 }
 
 pub struct AdminServer {
@@ -52,11 +54,36 @@ impl AdminServer {
         config: PathBuf,
         log_file: Option<PathBuf>,
     ) -> Result<Self> {
+        let root = config
+            .parent()
+            .unwrap_or(Path::new("."))
+            .join(".server-control");
+        Self::managed(address, Some(config), log_file, root).await
+    }
+
+    pub async fn managed(
+        address: SocketAddr,
+        config: Option<PathBuf>,
+        log_file: Option<PathBuf>,
+        state_dir: PathBuf,
+    ) -> Result<Self> {
         ensure!(address.ip().is_loopback(), "admin must bind to loopback");
-        Config::load(&config)?;
-        let config = std::fs::canonicalize(config).context("resolve admin config")?;
         let listener = TcpListener::bind(address).await?;
         let address = listener.local_addr()?;
+        let hosting = Hosting::open(state_dir.clone(), address).await?;
+        let config = match config {
+            Some(config) => config,
+            None if Path::new("configs/local.toml").is_file() => {
+                PathBuf::from("configs/local.toml")
+            }
+            None => {
+                let path = state_dir.join("observer.toml");
+                crate::app::hosting::observer_config(&path).await?;
+                path
+            }
+        };
+        Config::load(&config)?;
+        let config = std::fs::canonicalize(config).context("resolve admin config")?;
         let state = Arc::new(State {
             address,
             config,
@@ -64,6 +91,7 @@ impl AdminServer {
             started: Instant::now(),
             logs: Mutex::new(VecDeque::new()),
             config_lock: Mutex::new(()),
+            hosting,
         });
         state
             .record("INFO", format!("管理面板已就绪 · http://{address}"))
@@ -87,6 +115,13 @@ impl AdminServer {
     }
 
     pub async fn run(self) -> Result<()> {
+        let hosting = self.state.hosting.clone();
+        let result = self.serve().await;
+        hosting.shutdown().await;
+        result
+    }
+
+    async fn serve(self) -> Result<()> {
         let limit = Arc::new(Semaphore::new(32));
         let mut tasks = tokio::task::JoinSet::new();
         let shutdown = tokio::signal::ctrl_c();
@@ -146,14 +181,20 @@ impl State {
             "config_path": self.config, "revision": config["revision"],
             "config_valid": config["valid"], "config_error": config["error"],
             "listeners": parsed.map(|value| value.listeners).unwrap_or_default(),
-            "log_file": self.log_file, "time": now(),
+            "log_file": self.hosting.log_file().await.or_else(|| self.log_file.clone()), "time": now(),
+            "hosting": self.hosting.snapshot().await,
         }))
     }
 
     async fn logs(&self) -> Value {
         let mut lines = Vec::new();
         let mut warning = None;
-        if let Some(path) = &self.log_file {
+        let log_file = self
+            .hosting
+            .log_file()
+            .await
+            .or_else(|| self.log_file.clone());
+        if let Some(path) = &log_file {
             match read_tail(path).await {
                 Ok(tail) => lines = tail
                     .lines()
@@ -179,7 +220,7 @@ impl State {
             lines.reverse();
         }
         lines.extend(self.logs.lock().await.iter().map(|entry| json!(entry)));
-        json!({"entries": lines, "warning": warning, "file": self.log_file})
+        json!({"entries": lines, "warning": warning, "file": log_file})
     }
 
     async fn command(&self, command: &str) -> Result<Value> {
@@ -412,6 +453,13 @@ struct CommandInput {
     command: String,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HostingEdit {
+    settings: Settings,
+    revision: String,
+}
+
 async fn handle(mut stream: TcpStream, state: Arc<State>) -> Result<()> {
     let request = match read_request(&mut stream).await {
         Ok(request) => request,
@@ -438,6 +486,8 @@ async fn handle(mut stream: TcpStream, state: Arc<State>) -> Result<()> {
         ("GET", "/api/status") => state.status().await,
         ("GET", "/api/logs") => Ok(state.logs().await),
         ("GET", "/api/config") => state.config_snapshot().await,
+        ("GET", "/api/hosting") => Ok(state.hosting.snapshot().await),
+        ("GET", "/api/hosting/certificate") => state.hosting.certificate(false).await,
         ("POST", _) if !request.json => {
             return respond_json(&mut stream, 415, json!({"error": "需要 application/json"})).await;
         }
@@ -445,6 +495,15 @@ async fn handle(mut stream: TcpStream, state: Arc<State>) -> Result<()> {
             Ok(input) => state.command(&input.command).await,
             Err(error) => Err(error.into()),
         },
+        ("POST", "/api/hosting/config") => {
+            match serde_json::from_slice::<HostingEdit>(&request.body) {
+                Ok(input) => state.hosting.save(input.settings, &input.revision).await,
+                Err(error) => Err(error.into()),
+            }
+        }
+        ("POST", "/api/hosting/start") => state.hosting.start().await,
+        ("POST", "/api/hosting/stop") => Ok(state.hosting.stop().await),
+        ("POST", "/api/hosting/certificate") => state.hosting.certificate(true).await,
         ("POST", "/api/config/validate") => {
             match serde_json::from_slice::<ConfigEdit>(&request.body) {
                 Ok(input) => validate_config(&input.content)

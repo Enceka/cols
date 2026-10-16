@@ -4,6 +4,7 @@ const $ = (id) => document.getElementById(id);
 const commands = ["help", "status", "listeners", "check-config", "show-config", "tail", "clear"];
 const views = {
   overview: ["服务概览", "从这里了解运行环境，管理你的 CODOL 服务。"],
+  hosting: ["开服设置", "准备资料、管理证书，让独立服务器一键运行。"],
   terminal: ["交互终端", "一个轻巧的服务控制台，让诊断与检查触手可及。"],
   logs: ["运行日志", "跟踪服务事件，在细节中找到线索。"],
   config: ["服务配置", "查看、校验和调整你的本地服务配置。"],
@@ -23,6 +24,12 @@ let commandHistory = [];
 let historyPosition = 0;
 let historyDraft = "";
 let toastTimer;
+let hostingOriginal = "";
+let hostingRevision = "";
+let hostingBusy = false;
+let hostingActive = false;
+let hostingPhase = "stopped";
+let hostingCertificateReady = false;
 
 async function api(path, data) {
   const response = await fetch(path, {
@@ -96,8 +103,11 @@ function basename(path) {
 }
 
 function renderStatus(status) {
+  renderHosting(status.hosting);
   $("metric-uptime").textContent = uptime(status.uptime_seconds);
-  $("metric-listeners").textContent = status.listeners.length;
+  const live = status.hosting?.phase === "running";
+  const listeners = live ? Object.entries(status.hosting.endpoints).map(([name, bind]) => ({ name, bind })) : [];
+  $("metric-listeners").textContent = listeners.length;
   $("metric-log-source").textContent = status.log_file ? "服务端日志" : "面板日志";
   $("metric-log-note").textContent = status.log_file ? basename(status.log_file) : "操作事件实时记录";
   $("metric-log-note").title = status.log_file || "";
@@ -106,10 +116,10 @@ function renderStatus(status) {
   $("sidebar-address").textContent = status.address;
   $("sidebar-version").textContent = `v${status.version}`;
   $("config-filename").textContent = basename(status.config_path);
-  $("endpoint-count").textContent = `${status.listeners.length} 个端点`;
-  $("logs-source-note").textContent = status.log_file ? `服务端日志：${status.log_file} · 同时显示面板操作日志` : "当前来源：面板操作日志。启动时使用 --log-file 接入已有服务端日志。";
+  $("endpoint-count").textContent = `${listeners.length} 个端点`;
+  $("logs-source-note").textContent = status.log_file ? `服务端日志：${status.log_file} · 同时显示面板操作日志` : "当前来源：面板操作日志；开服后自动接入服务端日志。";
   $("endpoint-list").replaceChildren();
-  for (const listener of status.listeners) {
+  for (const listener of listeners) {
     const row = document.createElement("div");
     row.className = "endpoint-row";
     const badge = document.createElement("span");
@@ -125,14 +135,14 @@ function renderStatus(status) {
     content.append(name, address);
     const state = document.createElement("span");
     state.className = "endpoint-state";
-    state.textContent = "已配置";
+    state.textContent = "运行中";
     row.append(badge, content, state);
     $("endpoint-list").append(row);
   }
-  if (!status.listeners.length) {
+  if (!listeners.length) {
     const empty = document.createElement("div");
     empty.className = "empty-state";
-    empty.textContent = status.config_error || "暂无监听端点";
+    empty.textContent = "开服后显示实际服务端点";
     $("endpoint-list").append(empty);
   }
 }
@@ -417,10 +427,100 @@ document.addEventListener("keydown", (event) => {
 });
 window.addEventListener("hashchange", () => showView(location.hash.slice(1), false));
 window.addEventListener("beforeunload", (event) => {
-  if (configLoaded && $("config-editor").value !== configOriginal) { event.preventDefault(); event.returnValue = ""; }
+  if ((configLoaded && $("config-editor").value !== configOriginal) || hostingDirty()) { event.preventDefault(); event.returnValue = ""; }
 });
 document.addEventListener("visibilitychange", () => { if (!document.hidden) poll(); });
 showView(location.hash.slice(1) || "overview", false);
 updateEditor();
 poll();
 setInterval(() => { if (!document.hidden) poll(); }, 3000);
+
+const hostingKeys = ["service_data_dir", "game_state", "map_catalog", "auth_port", "lobby_port", "stun_port", "stun_alt_port", "game_port", "resource_port", "room_bot_fill"];
+function hostingSettings() {
+  return Object.fromEntries(hostingKeys.map((key) => [key, key.endsWith("_port") || key === "room_bot_fill" ? Number($("hosting-" + key).value) : $("hosting-" + key).value.trim()]));
+}
+function hostingDirty() { return hostingOriginal !== "" && JSON.stringify(hostingSettings()) !== hostingOriginal; }
+function hostingButtons() {
+  $("hosting-save").disabled = hostingBusy || hostingActive || !hostingDirty();
+  $("hosting-start").disabled = hostingBusy || hostingActive || !hostingRevision;
+  $("hosting-stop").disabled = hostingBusy || !hostingActive || hostingPhase === "stopping";
+  $("hosting-fields").disabled = hostingBusy || hostingActive;
+  $("hosting-download").disabled = hostingBusy || !hostingCertificateReady;
+  $("hosting-renew").disabled = hostingBusy || hostingActive;
+  $("hosting-edit-state").textContent = hostingDirty() ? "未保存" : "已保存";
+}
+function renderHosting(value) {
+  if (!value) return;
+  const dirty = hostingDirty();
+  if (!hostingRevision || !dirty) {
+    for (const key of hostingKeys) $("hosting-" + key).value = value.settings[key];
+    hostingOriginal = JSON.stringify(hostingSettings());
+    hostingRevision = value.revision;
+  }
+  const labels = { stopped: "未开服", starting: "准备中", running: "运行中", stopping: "停止中", failed: "启动失败" };
+  hostingPhase = value.phase;
+  hostingActive = ["starting", "running", "stopping"].includes(value.phase);
+  $("hosting-phase").textContent = labels[value.phase] || value.phase;
+  $("hosting-message").textContent = value.message;
+  $("hosting-error").textContent = value.error || "";
+  $("hosting-error").hidden = !value.error;
+  $("hosting-dot").className = "status-dot" + (value.phase === "running" ? "" : hostingActive ? " busy" : " offline");
+  $("hosting-config-path").textContent = value.path;
+  $("hosting-missing").textContent = value.missing.join("\n");
+  $("hosting-missing").hidden = !value.missing.length;
+  hostingCertificateReady = value.certificate.ready;
+  const certificate = value.certificate.details;
+  $("hosting-certificate-status").textContent = certificate ? `已准备 · 有效期至 ${certificate.expires}` : value.certificate.error || "首次开服自动生成，本机保存并持续复用。";
+  $("hosting-fingerprint").textContent = certificate ? `SHA-256 ${certificate.fingerprint}` : "";
+  $("hosting-download").disabled = hostingBusy || !value.certificate.ready;
+  $("hosting-renew").disabled = hostingBusy || hostingActive;
+  hostingButtons();
+  if (value.phase === "stopping") $("hosting-stop").disabled = true;
+}
+function hostingFeedback(message, error = false) {
+  $("hosting-feedback").textContent = message;
+  $("hosting-feedback").hidden = false;
+  $("hosting-feedback").classList.toggle("error", error);
+}
+async function saveHosting() {
+  const value = await api("/api/hosting/config", { settings: hostingSettings(), revision: hostingRevision });
+  hostingOriginal = "";
+  hostingRevision = "";
+  renderHosting(value);
+  hostingFeedback("开服设置已保存；启动时会检查地图与全部服务端点。");
+}
+async function hostingAction(action) {
+  if (hostingBusy) return;
+  if (action === "start" && !$("hosting-form").checkValidity()) { showView("hosting"); $("hosting-form").reportValidity(); return; }
+  hostingBusy = true;
+  hostingButtons();
+  try {
+    if (action === "start" && hostingDirty()) await saveHosting();
+    if (action === "save") await saveHosting();
+    else renderHosting(await api("/api/hosting/" + action, {}));
+    await poll();
+  } catch (error) {
+    hostingFeedback(error.message, true);
+    toast(error.message, true);
+    if (action !== "stop") showView("hosting");
+  } finally { hostingBusy = false; hostingButtons(); }
+}
+$("hosting-form").addEventListener("input", hostingButtons);
+$("hosting-form").addEventListener("submit", (event) => { event.preventDefault(); hostingAction("save"); });
+$("hosting-start").addEventListener("click", () => hostingAction("start"));
+$("hosting-stop").addEventListener("click", () => hostingAction("stop"));
+$("hosting-download").addEventListener("click", async () => {
+  try {
+    const value = await api("/api/hosting/certificate");
+    const url = URL.createObjectURL(new Blob([value.pem], { type: "application/x-pem-file" }));
+    const link = document.createElement("a"); link.href = url; link.download = "codol-server.pem"; link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  } catch (error) { toast(error.message, true); }
+});
+$("hosting-renew").addEventListener("click", async () => {
+  if (hostingBusy) return;
+  hostingBusy = true; hostingButtons();
+  try { await api("/api/hosting/certificate", {}); await poll(); toast("本地证书已更新，客户端需要配置新的公开证书"); }
+  catch (error) { toast(error.message, true); }
+  finally { hostingBusy = false; hostingButtons(); }
+});
