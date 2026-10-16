@@ -129,6 +129,10 @@ def main():
         command = [wine, str(binary)] + (["--story-bundle"] if args.story_bundle else ["--story-assets"] if args.story_assets else ["--reward-assets"] if args.reward_assets else ["--props-state"] if args.props_state else ["--props-frame"] if args.props_frame else ["--props-assets"] if args.props_assets else ["--nuke-assets"] if args.nuke_assets else ["--nuke-state"] if args.nuke_state else ["--nuke-frame"] if args.nuke_frame else ["--voice-playback"] if args.voice_playback else ["--voice-assets"] if args.voice_assets else ["--frontend-assets"] if args.frontend_assets else ["--glass"] if args.glass else ["--map-check"] if args.map_check else ["--hud-assets"] if args.hud_assets else ["--tactical-assets"] if args.tactical_assets else ["--appearance-load"] if args.appearance_load else ["--outfits"] if args.outfits else ["--grounding"] if args.grounding else ["--dive"] if args.dive else ["--replay"] if args.replay else ["--feedback"] if args.feedback else ["--assets"] if args.assets else ["--profiles"] if args.profiles else ["--net-constants"] if args.net_constants else ["--map-entities"] if args.map_entities else ["--bootstrap-weapon"] if args.bootstrap_weapon else ["--weapon-models"] if args.weapon_models else ["--arsenal"] if args.arsenal else ["--collision"] if args.collision else ["--weapon-registry"] if args.weapon_registry else ["--training-target"] if args.training_target else ["--bullet-impacts"] if args.bullet_impacts else ["--characters"] if args.characters else ["--hit-regions"] if args.hit_regions else [])
         if args.weapon_models_target:
             command.append(args.weapon_models_target)
+        # Unix and Wine process IDs differ. The native probe resolves the exact
+        # marked image and compares it to this experiment's executable path.
+        # Avoid substituting the Unix PID into Toolhelp32's Win32 PID namespace.
+        command += ["--image", "Z:" + str(Path(state["argv"][1]).resolve()).replace("/", "\\")]
         if args.sample_ready:
             # Consume the native marker while stdout remains file-backed. This
             # avoids both startup races and pipe deadlocks from large frames.

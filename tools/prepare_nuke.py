@@ -9,6 +9,7 @@ import struct
 
 from clientlib import manifest
 from prepare_game_state import compute
+from prepare_reward_resources import captured_rawfile
 
 
 def prepare(assets_raw, ncs_raw):
@@ -48,7 +49,7 @@ def prepare(assets_raw, ncs_raw):
     if not a['map'].startswith('maps/mp/mp_') or not a['map'].endswith('.d3dbsp'):
         raise ValueError('invalid nuclear map identity')
     map_name = a['map'][8:-7]
-    return dict(schema_version=1, client_sha256=client,
+    result = dict(schema_version=1, client_sha256=client,
                 sources_sha256=[hashlib.sha256(r).hexdigest() for r in (assets_raw, ncs_raw)],
                 map=map_name, ncs_crc=crc, weapon=w['index'], damage_weapon=damage['index'],
                 switch=dict(drop_msec=word(0x74c), raise_msec=word(0x750),
@@ -59,6 +60,14 @@ def prepare(assets_raw, ncs_raw):
                 tick_sound=slot(5, 'ui_mp_nukebomb_timer') + 511,
                 music_sound=slot(5, 'nuke_music') + 511,
                 earned_text=slot(4, 'MP_EARNED_NUKE'), called_text=slot(4, 'MP_TACTICAL_NUKE_CALLED'))
+    rawfiles = a.get('remote_vision_rawfiles', {})
+    names = ['vision/mpnuke.vision', 'vision/mpnuke_aftermath.vision']
+    if all(rawfiles.get(name, {}).get('found') is True for name in names):
+        result['vision'] = dict(rawfiles_sha256={
+            name: hashlib.sha256(captured_rawfile(rawfiles[name], name, 256 * 1024)).hexdigest()
+            for name in names})
+    return result
+
 
 
 def main():

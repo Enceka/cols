@@ -46,6 +46,21 @@ class NukePreparation(unittest.TestCase):
         self.assertNotIn('acceptance_seed', r)
         self.assertNotIn('acceptance_stationary', r)
 
+    def test_nuclear_vision_requires_both_complete_native_rawfiles(self):
+        a, n = captures()
+        def record(name):
+            body = b'511 "1"\n'
+            return dict(found=True, name=name, length=len(body), compressed_length=0,
+                        buffer_base64=base64.b64encode(body).decode())
+        names = ['vision/mpnuke.vision', 'vision/mpnuke_aftermath.vision']
+        a['remote_vision_rawfiles'] = {name: record(name) for name in names}
+        self.assertEqual(set(self.prepare(a, n)['vision']['rawfiles_sha256']), set(names))
+        bad = copy.deepcopy(a)
+        bad['remote_vision_rawfiles'][names[1]]['length'] += 1
+        with self.assertRaises(ValueError): self.prepare(bad, n)
+        a['remote_vision_rawfiles'][names[1]]['found'] = False
+        self.assertNotIn('vision', self.prepare(a, n))
+
     def test_wrong_build_uninitialized_map_and_mismatched_registration_are_rejected(self):
         a, n = captures()
         for key, value in [('schema_version', 2), ('read_only', False), ('client_sha256', 'b'*64),

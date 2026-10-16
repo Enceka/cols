@@ -67,8 +67,12 @@ partial class ClientAssets {
                 if(pointer!=0)try{alias=r.Name(r.Word(pointer));}catch{}
                 firingAliases["0x"+offset.ToString("x")]=alias;
             }
+            object projectileExplosion=null;
+            if(all&&name=="remotemissile_projectile_mp")
+                projectileExplosion=r.EffectDefinition(r.Word(def+0x918));
             weapons.Add(Obj("name",name,"index",i,"definition_base64",Convert.ToBase64String(r.Read(def,0xe28)),
-                "runtime_fields",r.WeaponRuntimeFields(def),"firing_aliases",firingAliases));
+                "runtime_fields",r.WeaponRuntimeFields(def),"firing_aliases",firingAliases,
+                "projectile_explosion_effect",projectileExplosion));
         }
         var effects=new List<object>();
         for(uint i=1;i<=399;i++) {
@@ -78,9 +82,19 @@ partial class ClientAssets {
                 effects.Add(Obj("name",name,"selector",i));
         }
         var sounds=new List<object>();
-        foreach(string name in new string[]{"nuke_incoming","nuke_explosion","nuke_wave","ui_mp_nukebomb_timer","nuke_music"}) {
+        foreach(string name in new string[]{"nuke_incoming","nuke_explosion","nuke_wave","ui_mp_nukebomb_timer","nuke_music","weap_cobra_20mm_fire_npc"}) {
             uint entry;uint asset=r.Find(11,name,out entry,false);
             sounds.Add(Obj("name",name,"found",asset!=0,"loaded",asset!=0&&(r.Read(entry,28)[17]&5)!=0));
+        }
+        var remoteVision=new Dictionary<string,object>();
+        if(all)foreach(string name in new string[]{"vision/black_bw.vision","vision/thermal_mp.vision","vision/thermal_snowlevel_mp.vision","vision/missilecam.vision","vision/mpnuke.vision","vision/mpnuke_aftermath.vision"}) {
+            try{remoteVision[name]=r.RawFile(name,256*1024,false);}catch(Exception e){remoteVision[name]=Obj("error",e.Message);}
+        }
+        if(all)try{remoteVision["mp/basemaps.arena"]=r.RawFile("mp/basemaps.arena",2*1024*1024,false);}catch(Exception e){remoteVision["mp/basemaps.arena"]=Obj("error",e.Message);}
+        var remoteMaterials=new List<object>();
+        if(all)foreach(string name in new string[]{"white","ac130_overlay_grain","hud_fofbox_hostile","hud_fofbox_self"}) {
+            uint entry;uint asset=r.Find(5,name,out entry,false);
+            remoteMaterials.Add(Obj("name",name,"found",asset!=0,"loaded",asset!=0&&(r.Read(entry,28)[17]&5)!=0));
         }
         var aceTables=new Dictionary<string,object>();
         if(all)foreach(string name in new string[]{"mp/item_etk.csv","mp/item_kis.csv","mp/coAceStreakStatsTable.csv","mp/coAceKillstreakStatsTable.csv","mp/coAceKillstreakTable.csv"})aceTables[name]=r.Table(name,false);
@@ -88,6 +102,31 @@ partial class ClientAssets {
         if(all)foreach(string name in new string[]{"killstreak_locker_mp","super_katana_mp","killstreak_consumable_mp","killstreak_pro_ac130_mp"}) {
             uint entry;uint asset=r.Find(28,name,out entry,false);
             optional.Add(Obj("name",name,"found",asset!=0,"loaded",asset!=0&&(r.Read(entry,28)[17]&5)!=0,"layout",asset==0?null:r.Layout(asset,0x40,1)));
+        }
+        var actorRawfiles=new Dictionary<string,object>();
+        if(all)foreach(string name in new string[]{"animlists/common_dog.animlist","animtrees/dog.atr"}) {
+            try{actorRawfiles[name]=r.RawFile(name,256*1024,false);}catch(Exception e){actorRawfiles[name]=Obj("error",e.Message);}
+        }
+        var actorTrees=new List<object>();uint actorMask=0;
+        if(all) {
+            uint bgs=r.Word(0x07817b80);actorMask=r.Word(bgs+0x96de8);
+            for(uint selector=0;selector<6;selector++) {
+                uint tree=r.Word(bgs+0x94d54+selector*20);if(tree==0)continue;
+                var ids=new List<uint>();
+                for(uint id=1;id<16;id++)if(r.Word(0x02f371c4+id*4)==tree)ids.Add(id);
+                var partsList=new List<object>();var parents=new List<uint>();int countNodes=Count(r.Word(tree),2048);
+                for(int node=0;node<countNodes;node++)parents.Add(BitConverter.ToUInt16(r.Read(tree+6+(uint)node*8,2),0));
+                for(int node=1;node<countNodes;node++) {
+                    uint at=tree+4+(uint)node*8;
+                    if(BitConverter.ToUInt16(r.Read(at,2),0)!=0)continue;
+                    uint parts=r.Word(at+4);string name;
+                    try{name=r.Name(r.Word(parts));}catch{continue;}
+                    partsList.Add(Obj("node",node,"parent",BitConverter.ToUInt16(r.Read(at+2,2),0),"name",name,
+                        "loop_flag",r.Read(parts+0x10,1)[0]&1,"frames",BitConverter.ToUInt16(r.Read(parts+0xe,2),0),
+                        "frame_rate",BitConverter.ToSingle(r.Read(parts+0x28,4),0)));
+                }
+                actorTrees.Add(Obj("selector",selector,"registered_tree_ids",ids,"tree_layout",r.Layout(tree,0x100,1),"parts",partsList,"parents",parents));
+            }
         }
         var models=new List<object>();
         if(all) {
@@ -97,18 +136,52 @@ partial class ClientAssets {
             for(uint id=1;id<1024;id++) {
                 uint model=U(registered,(int)id*4);if(model==0)continue;
                 byte[] bounds=r.Read(model+0x140,24);
-                string name=r.Name(r.Word(model));var bones=new List<string>();
-                if(name.StartsWith("sentry",StringComparison.Ordinal)||name.StartsWith("t5_weapon_sam",StringComparison.Ordinal)) {
+                string name=r.Name(r.Word(model));var bones=new List<string>();var attachments=new Dictionary<string,object>();
+                if(name.StartsWith("sentry",StringComparison.Ordinal)||name.StartsWith("t5_weapon_sam",StringComparison.Ordinal)||name.StartsWith("t5_veh_rcbomb_",StringComparison.Ordinal)||name.StartsWith("vehicle_",StringComparison.Ordinal)||name.StartsWith("german_sheperd",StringComparison.Ordinal)||name=="weapon_minigun"||name=="c130_zoomrig"||name=="tag_origin") {
                     int countBones=Count(r.Read(model+4,1)[0],253);byte[] ids=r.Read(r.Word(model+0x2c),countBones*2);uint strings=r.Word(0x02f37164);
-                    for(int bone=0;bone<countBones;bone++)bones.Add(r.Name(strings+4+(uint)BitConverter.ToUInt16(ids,bone*2)*20));
+                    for(int bone=0;bone<countBones;bone++) {
+                        string boneName=r.Name(strings+4+(uint)BitConverter.ToUInt16(ids,bone*2)*20);bones.Add(boneName);
+                        // Current0x684244 reads XModel+0x40's 32-byte bind
+                        // matrices before rotating a vehicle attachment point.
+                        if(((name.StartsWith("t5_veh_rcbomb_",StringComparison.Ordinal)||name.StartsWith("vehicle_",StringComparison.Ordinal)||name=="c130_zoomrig")&&(boneName=="tag_player"||boneName=="tag_origin"))||boneName=="tag_gunner_left"||boneName=="tag_gunner_right"||name=="weapon_minigun"&&boneName.StartsWith("tag_",StringComparison.Ordinal))
+                            attachments[boneName]=Floats(r.Read(r.Word(model+0x40)+(uint)bone*32,32),0,8);
+                    }
                 }
-                models.Add(Obj("name",name,"index",id,"bounds_center",Floats(bounds,0,3),"bounds_half",Floats(bounds,12,3),"bone_names",bones));
+                models.Add(Obj("name",name,"index",id,"bounds_center",Floats(bounds,0,3),"bounds_half",Floats(bounds,12,3),"bone_names",bones,"attachment_bind_matrices",attachments));
+            }
+        }
+        var vehicles=new List<object>();var vehicleTags=new List<object>();var vehicleTrees=new List<object>();
+        if(all) {
+            // Target initialization0x683762: net constants0xc04..0xc22,
+            // asset type41 and registry0x37a49d0; bounded read only.
+            for(uint id=1;id<32;id++) {
+                uint def=r.Word(0x037a49d0+id*4);if(def==0)continue;
+                vehicles.Add(Obj("index",id,"name",r.Name(r.Word(def)),"layout",r.Layout(def,0x2d0,1)));
+            }
+            foreach(uint address in new uint[]{0x02c24a50,0x02c24a52,0x02c24a56,0x02c24992,0x02c2498e}) {
+                uint id=BitConverter.ToUInt16(r.Read(address,2),0),pool=r.Word(0x02f37164);
+                vehicleTags.Add(Obj("address",address,"name",r.Name(pool+id*20+4)));
+            }
+            for(uint id=1;id<16;id++) {
+                uint tree=r.Word(0x02f371c4+id*4);if(tree==0)continue;
+                int countNodes=Count(r.Word(tree),2048);var rotorParts=new List<object>();var allParts=new List<object>();
+                for(int node=0;node<countNodes;node++) {
+                    if(BitConverter.ToUInt16(r.Read(tree+4+(uint)node*8,2),0)!=0)continue;
+                    uint parts=r.Word(tree+8+(uint)node*8);string animName=null;
+                    try {animName=r.Name(r.Word(parts));}catch {continue;}
+                    allParts.Add(Obj("node",node,"name",animName,"loop_flag",r.Read(parts+0x10,1)[0]&1));
+                    if(animName!="bh_rotors")continue;
+                    int countBones=Count(r.Read(parts+0x1a,1)[0],253);byte[] ids=r.Read(r.Word(parts+0x30),countBones*2);uint pool=r.Word(0x02f37164);var names=new List<string>();
+                    for(int bone=0;bone<countBones;bone++)names.Add(r.Name(pool+4+(uint)BitConverter.ToUInt16(ids,bone*2)*20));
+                    rotorParts.Add(Obj("node",node,"name",animName,"bone_names",names,"loop_flag",r.Read(parts+0x10,1)[0]&1));
+                }
+                vehicleTrees.Add(Obj("index",id,"layout",r.Layout(tree,allParts.Exists(v=>((Dictionary<string,object>)v)["name"].ToString().StartsWith("german_shepherd_",StringComparison.Ordinal))?4+countNodes*8:0x100,1),"rotor_parts",rotorParts,"parts",allParts));
             }
         }
         var output=Obj("schema_version",1,"read_only",true,
             "client_sha256","e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b",
             "connection_state",r.Word(0x01a2e7ec),"map",r.Name(r.Word(0x02dfb000)),
-            "ncs_crc",r.Word(0x02df7d90),"weapons",weapons,"effects",effects,"sounds",sounds,"models",models,"optional_assets",optional,"ace_tables",aceTables);
+            "ncs_crc",r.Word(0x02df7d90),"weapons",weapons,"effects",effects,"sounds",sounds,"models",models,"vehicles",vehicles,"vehicle_tags",vehicleTags,"vehicle_animtrees",vehicleTrees,"optional_assets",optional,"ace_tables",aceTables,"remote_vision_rawfiles",remoteVision,"remote_material_assets",remoteMaterials,"actor_animlist_mask",actorMask,"actor_trees",actorTrees,"actor_rawfiles",actorRawfiles);
         var serializer=new JavaScriptSerializer();serializer.MaxJsonLength=16*1024*1024;Console.WriteLine(serializer.Serialize(output));
     }
     public static void ExportNukeState(IntPtr process,bool once=false) {
@@ -139,9 +212,10 @@ partial class ClientAssets {
                     "compass_last_update",r.Word(actor),"compass_last_entity",r.Word(actor+0x54),
                     "compass_last_scan",r.Word(actor+0x58),"compass_flags",r.Word(actor+0x6c)));
             }
-            frames.Add(Obj("time",r.Word(cg+0xae4c8),"pm_type",r.Word(cg+4),"health",r.Word(cg+0x190),
+            frames.Add(Obj("time",r.Word(cg+0xae4c8),"pm_type",r.Word(cg+4),"health",r.Word(cg+0x190),"max_health",r.Word(cg+0x198),
                 "player_flags",r.Word(cg+0x10),"ability_mask_0",r.Word(cg+0x4cc),
                 "progress",r.Word(cg+0x64),"ids",ids,"targets",targets,"action_types",types,"action_weapons",weapons,
+                "location_selection",r.Word(cg+0x234),"location_cursor",Floats(r.Read(cg+0xc6f9c,12),0,3),
                 "weapon",r.Word(cg+0x340),"weapon_state",r.Word(cg+0x27c),"weapon_animation",r.Word(cg+0x26c),
                 "selected_weapon",r.Word(cg+0xbd00c),"view_offset",Floats(r.Read(cg+0xa0,12),0,3),
                 "inventory",inventory,"replay_active",r.Word(cg+0xc6fe8),"actors",actors,

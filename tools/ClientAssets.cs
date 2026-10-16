@@ -44,7 +44,9 @@ partial class ClientAssets {
             uint entry=checked(0x01fc4e28+index*28);byte[] raw=Read(entry,28);
             if(U(raw,0)==kind) {
                 uint header=U(raw,8);
-                if(String.Equals(Name(Word(header+(kind==5?0x10u:0u))),name,StringComparison.OrdinalIgnoreCase)) {
+                // Current type27 name getter0x483d70 dereferences header+4;
+                // LocalizeEntry stores value first, then its ASCII key.
+                if(String.Equals(Name(Word(header+(kind==5?0x10u:kind==27?4u:0u))),name,StringComparison.OrdinalIgnoreCase)) {
                     if(requireLoaded&&(raw[17]&5)==0)throw new Exception("asset is not loaded");
                     entryAddress=entry;return header;
                 }
@@ -118,16 +120,22 @@ partial class ClientAssets {
         for(int i=0;i<cols*rows;i++)cells.Add(Convert.ToBase64String(StringBytes(U(values,i*8))));
         return Obj("found",true,"entry",entry,"address",at,"name",Name(U(t,0)),"loaded",(Read(entry+17,1)[0]&5)!=0,"columns",cols,"rows",rows,"cells_base64",cells);
     }
+    object Localized(string name) {
+        uint entry;uint at=Find(27,name,out entry,false);if(at==0)return Obj("found",false);
+        return Obj("found",true,"entry",entry,"address",at,"name",Name(Word(at+4)),
+            "loaded",(Read(entry+17,1)[0]&5)!=0,
+            "value_base64",Convert.ToBase64String(StringBytes(Word(at))));
+    }
     object AnimationRules(string name) {
         return RawFile(name,2*1024*1024);
     }
-    object RawFile(string name,int limit) {
-        uint entry;uint at=Find(36,name,out entry);if(at==0)return Obj("found",false);
+    object RawFile(string name,int limit,bool requireLoaded=true) {
+        uint entry;uint at=Find(36,name,out entry,requireLoaded);if(at==0)return Obj("found",false);
         // Current rawfile type36: name, compressedLen, len, buffer. Export
         // bounded bytes read-only; decode compressed text outside the game.
         byte[] header=Read(at,16);int compressed=Count(U(header,4),limit);
         int length=Count(U(header,8),limit);int bytes=compressed!=0?compressed:length;
-        return Obj("found",true,"name",name,"compressed_length",compressed,"length",length,
+        return Obj("found",true,"name",name,"loaded",(Read(entry+17,1)[0]&5)!=0,"entry_flags",Read(entry+17,1)[0],"compressed_length",compressed,"length",length,
             "buffer_base64",Convert.ToBase64String(Read(U(header,12),bytes)));
     }
     public static void ExportFrontendAssets(IntPtr process) {
@@ -239,7 +247,11 @@ partial class ClientAssets {
         object market;try{market=reader.MarketplaceHeader();}catch(Exception e){market=Obj("error",e.Message);}
         object runtime;try{runtime=reader.RuntimeSkus();}catch(Exception e){runtime=Obj("error",e.Message);}
         object progression;try{progression=reader.ProgressionItems();}catch(Exception e){progression=Obj("error",e.Message);}
-        var output=Obj("schema_version",1,"read_only",true,"client_sha256","e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b","schemas",schemas,"tables",tables,"marketplace",market,"runtime_marketplace",runtime,"progression_items",progression);
+        var modeLabels=new Dictionary<string,object>();
+        foreach(string name in new string[]{"MPUI_TEAM_DEATHMATCH","MPUI_CLASH","MPUI_ROLE","MPUI_CHA","MPUI_BORG","MP_MATCH_STARTING_IN"}) {
+            try{modeLabels[name]=reader.Localized(name);}catch(Exception e){modeLabels[name]=Obj("error",e.Message);}
+        }
+        var output=Obj("schema_version",1,"read_only",true,"client_sha256","e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b","schemas",schemas,"tables",tables,"marketplace",market,"runtime_marketplace",runtime,"progression_items",progression,"mode_localizations",modeLabels);
         var serializer=new JavaScriptSerializer();serializer.MaxJsonLength=32*1024*1024;
         Console.WriteLine(serializer.Serialize(output));
     }
@@ -336,7 +348,6 @@ partial class ClientAssets {
         if(r.Word(0x01a2e7ec)==10)output.Add("progression_splashes",r.ProgressionSplashes());
         Console.WriteLine(new JavaScriptSerializer().Serialize(output));
     }
-
     object ProgressionOwnedWeapons() {
         // 0x4a7a50 bucket/hash walk and 0x695a80 record+0x18 XP, VM_READ only.
         // Fixed M4/M9 allowlist; no account keys or arbitrary memory exported.
@@ -1003,6 +1014,20 @@ partial class ClientAssets {
         }
         return smokes;
     }
+    object EventLinks() {
+        try {
+            uint bank=Word(0x07817bb0),entities=Word(0x01a19510+bank*4)^0x2168f672;
+            uint node=Word(0x02d27b40);var seen=new HashSet<uint>();var nodes=new List<object>();
+            while(node!=0 && nodes.Count<128 && seen.Add(node)) {
+                if(node<entities || (node-entities)%0x238!=0 || (node-entities)/0x238>=2048)
+                    return Obj("invalid_pointer",node,"nodes",nodes);
+                uint next=Word(node+0x224);
+                nodes.Add(Obj("entity",(node-entities)/0x238,"type",Word(node+0xf4),"link_parent",BitConverter.ToUInt16(Read(node+0x1d4,2),0),"next",next));
+                node=next;
+            }
+            return Obj("cycle",node!=0&&seen.Contains(node),"terminal",node,"nodes",nodes);
+        } catch(Exception error) {return Obj("error",error.Message);}
+    }
     object EffectStates() {
         try {
             // 0x4d5480 traverses the live handle ring, not a dense FX array.
@@ -1016,7 +1041,7 @@ partial class ClientAssets {
                 uint address=checked(arena+handle*4);byte[] effect=Read(address,0x38);
                 if((U(effect,4)&0x1fff)==0||(U(effect,4)&0xc0000000)!=0)continue;
                 string name=Name(Word(U(effect,0)));
-                if(name.IndexOf("grenade",StringComparison.Ordinal)<0&&!name.StartsWith("explosions/",StringComparison.Ordinal)&&name!="dust/nuke_aftermath_mp"&&!name.StartsWith("props/barrel",StringComparison.Ordinal)&&!name.StartsWith("smoke/car_damage_",StringComparison.Ordinal))continue;
+                if(name.IndexOf("grenade",StringComparison.Ordinal)<0&&!name.StartsWith("explosions/",StringComparison.Ordinal)&&name!="maps/mp_maps/fx_mp_exp_rc_bomb"&&name!="dust/nuke_aftermath_mp"&&!name.StartsWith("props/barrel",StringComparison.Ordinal)&&!name.StartsWith("smoke/",StringComparison.Ordinal)&&!name.StartsWith("weapon/",StringComparison.Ordinal)&&!name.StartsWith("muzzleflashes/",StringComparison.Ordinal)&&!name.StartsWith("fire/",StringComparison.Ordinal)&&!name.StartsWith("misc/flares",StringComparison.Ordinal))continue;
                 byte[] checkedState=Read(address,0x94);
                 if(U(checkedState,0)!=U(effect,0)||U(checkedState,0x30)!=U(effect,0x30)
                     ||(U(checkedState,4)&0x1fff)==0||(U(checkedState,4)&0xc0000000)!=0)continue;
@@ -1642,6 +1667,52 @@ partial class ClientAssets {
         Console.WriteLine(serializer.Serialize(Obj("schema_version",1,"read_only",true,
             "client_sha256","e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b",
             "ncs_crc",crc,"frames",frames)));
+    }
+    object AircraftAnimation(uint entity,uint dobjSlot) {
+        try {
+            if(dobjSlot==0||dobjSlot>=2048||(Word(entity+0x204)&1)==0)return null;
+            uint bank=Word(0x07817ba8);if(bank>=256)return null;
+            uint cg=Word(0x01a19510+bank*4)^0xfbb2c97a,dobj=0x02e8e850+dobjSlot*0xcc,tree=Word(dobj),id=Word(entity+0xf0);
+            var nodes=new List<object>();
+            if(tree!=0) {
+                var pending=new Stack<uint>();var visited=new HashSet<uint>();pending.Push(BitConverter.ToUInt16(Read(tree+4,2),0));
+                while(pending.Count>0) {
+                    uint index=pending.Pop();if(index==0)continue;
+                    if(!visited.Add(index)||visited.Count>64)throw new Exception("aircraft animation tree budget/cycle");
+                    byte[] n=Read(0x0374db08+index*0x38,0x38);
+                    pending.Push(BitConverter.ToUInt16(n,0xa));pending.Push(BitConverter.ToUInt16(n,0xc));
+                    nodes.Add(Obj("animation",BitConverter.ToUInt16(n,0x10),"binding",BitConverter.ToUInt16(n,0x12),"time",BitConverter.ToSingle(n,0x18),"goal",BitConverter.ToSingle(n,0x28),"weight",BitConverter.ToSingle(n,0x2c),"rate",BitConverter.ToSingle(n,0x30)));
+                }
+            }
+            uint snap=Word(cg+0x3578);var commands=new List<object>();int count=snap==0?0:Count(Word(snap+0x353c),128);
+            for(int i=0;i<count;i++) {
+                byte[] command=Read(snap+0x3540+(uint)i*0x2c,0x2c);
+                commands.Add(Obj("type",U(command,4),"time",U(command,8),"entity",U(command,0x10),"node",U(command,0x14),"weight",BitConverter.ToSingle(command,0x1c),"blend",BitConverter.ToSingle(command,0x24),"rate",BitConverter.ToSingle(command,0x20),"flags",U(command,0x28)));
+            }
+            return Obj("time",Word(cg+0xae4c8),"tree_present",tree!=0,"tree_index",Word(entity+0x184),"last_entity_command",Word(cg+0xac4c0+id*4),"global_command_time",Word(cg+0xae4bc),"nodes",nodes,"snapshot_commands",commands);
+        }catch(Exception error){return Obj("error",error.Message);}
+    }
+    object AircraftPose(uint entity,uint dobjSlot) {
+        // Existing calculated skeleton only; never evaluate a bone or invoke
+        // client code. Relative rotor rotations need stable, current samples.
+        try {
+            if(dobjSlot==0||dobjSlot>=2048||(Word(entity+0x204)&1)==0)return null;
+            uint bank=Word(0x07817ba8);if(bank>=256)return null;
+            uint cg=Word(0x01a19510+bank*4)^0xfbb2c97a,time=Word(cg+0xae4c8);
+            uint dobj=0x02e8e850+dobjSlot*0xcc,pose=Word(dobj+0x98),frame=Word(0x078b16c8);
+            if(pose<0x10000||Word(dobj+0x94)!=frame)return null;
+            byte[] calculated=Read(dobj+0x74,32);uint model=Word(Word(dobj+0xc0));byte[] header=Read(model,0x44);
+            int count=header[4];if(count<1||count>253)return null;
+            byte[] ids=Read(U(header,0x2c),count*2),matrices=Read(pose,count*32);uint pool=Word(0x02f37164);
+            var bones=new List<object>();
+            for(int b=0;b<count;b++) {
+                string name=Name(pool+(uint)BitConverter.ToUInt16(ids,b*2)*20+4);
+                if(b!=0&&name!="j_head"&&name!="j_jaw"&&name!="j_spine1"&&name!="j_knee_le"&&name!="j_knee_ri"&&name!="j_ankle_le"&&name!="j_ankle_ri"&&name!="tag_body"&&name!="j_spin"&&name!="tag_flash"&&name!="tag_aim"&&name.IndexOf("rotor",StringComparison.Ordinal)<0&&name.IndexOf("turret",StringComparison.Ordinal)<0&&name.IndexOf("barrel",StringComparison.Ordinal)<0&&name.IndexOf("gun",StringComparison.Ordinal)<0)continue;
+                if((U(calculated,(b>>5)*4)&(0x80000000u>>(b&31)))==0)continue;
+                bones.Add(Obj("index",b,"name",name,"matrix",Floats(matrices,b*32,8)));
+            }
+            return Obj("time",time,"stable_read",time==Word(cg+0xae4c8)&&frame==Word(dobj+0x94)&&frame==Word(0x078b16c8)&&pose==Word(dobj+0x98),"bones",bones);
+        }catch(Exception error){return Obj("error",error.Message);}
     }
     object GroundPose(uint entity,uint dobjSlot) {
         // Read existing render data only; off-screen actors may have no current

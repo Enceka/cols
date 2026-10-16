@@ -56,6 +56,19 @@ class ReadClientState {
     }
     static int Main(string[] args) {
         try {
+            uint requestedPid=0;
+            string requestedImage=null;
+            if(args.Length>=2&&args[args.Length-2]=="--image") {
+                requestedImage=args[args.Length-1].Replace('/','\\');
+                if(!requestedImage.EndsWith("\\codoMP_client_shipRetail.exe",StringComparison.OrdinalIgnoreCase))
+                    throw new Exception("invalid explicit probe image");
+                string[] extraction=new string[args.Length-2];Array.Copy(args,extraction,extraction.Length);args=extraction;
+            }
+            if(args.Length>=2&&args[args.Length-2]=="--pid") {
+                if(!UInt32.TryParse(args[args.Length-1],out requestedPid)||requestedPid==0)
+                    throw new Exception("invalid explicit probe PID");
+                string[] extraction=new string[args.Length-2];Array.Copy(args,extraction,extraction.Length);args=extraction;
+            }
             bool feedback=args.Length==1 && args[0]=="--feedback";
             bool dive=args.Length==1 && args[0]=="--dive";
             bool replay=args.Length==1 && args[0]=="--replay";
@@ -85,20 +98,33 @@ class ReadClientState {
             bool voiceAssets=args.Length==1 && args[0]=="--voice-assets";
             bool voicePlayback=args.Length==1 && args[0]=="--voice-playback";
             bool propsState=args.Length==1 && args[0]=="--props-state";
+            bool controlStream=args.Length==1 && args[0]=="--control-stream";
             bool propsFrame=args.Length==1 && args[0]=="--props-frame";
             bool propsAssets=args.Length==1 && args[0]=="--props-assets";
             bool rewardAssets=args.Length==1 && args[0]=="--reward-assets";
             bool nukeAssets=args.Length==1 && args[0]=="--nuke-assets";
             bool nukeState=args.Length==1 && args[0]=="--nuke-state";
             bool nukeFrame=args.Length==1 && args[0]=="--nuke-frame";
-            if(args.Length!=0 && !storyBundle && !storyAssets && !propsState && !propsFrame && !propsAssets && !rewardAssets && !nukeAssets && !nukeState && !nukeFrame && !voicePlayback && !voiceAssets && !frontendAssets && !glass && !mapCheck && !hudAssets && !tacticalAssets && !appearanceLoad && !outfits && !grounding && !dive && !replay && !feedback && !hitRegions && !assets && !profiles && !netConstants && !mapEntities && !bootstrapWeapon && !weaponModels && !arsenal && !collision && !weaponRegistry && !trainingTarget && !bulletImpacts && !characters) throw new Exception("only fixed extraction modes are supported");
+            if(args.Length!=0 && !controlStream && !storyBundle && !storyAssets && !propsState && !propsFrame && !propsAssets && !rewardAssets && !nukeAssets && !nukeState && !nukeFrame && !voicePlayback && !voiceAssets && !frontendAssets && !glass && !mapCheck && !hudAssets && !tacticalAssets && !appearanceLoad && !outfits && !grounding && !dive && !replay && !feedback && !hitRegions && !assets && !profiles && !netConstants && !mapEntities && !bootstrapWeapon && !weaponModels && !arsenal && !collision && !weaponRegistry && !trainingTarget && !bulletImpacts && !characters) throw new Exception("only fixed extraction modes are supported");
             IntPtr snapshot=CreateToolhelp32Snapshot(2,0); uint found=0;
             if(snapshot==new IntPtr(-1)) throw new Exception("process snapshot failed");
             try {
                 Entry e=new Entry();e.size=(uint)Marshal.SizeOf(typeof(Entry));
                 bool next=Process32FirstW(snapshot,ref e);
                 while(next) {
-                    if(String.Equals(e.name,"codoMP_client_shipRetail.exe",StringComparison.OrdinalIgnoreCase)) {
+                    if(String.Equals(e.name,"codoMP_client_shipRetail.exe",StringComparison.OrdinalIgnoreCase)
+                        &&(requestedPid==0||e.pid==requestedPid)) {
+                        if(requestedImage!=null) {
+                            IntPtr candidate=OpenProcess(0x1000,false,e.pid);
+                            if(candidate==IntPtr.Zero)throw new Exception("probe image query failed");
+                            try {
+                                StringBuilder image=new StringBuilder(4096);uint imageSize=4096;
+                                if(!QueryFullProcessImageNameW(candidate,0,image,ref imageSize))throw new Exception("probe image identity query failed");
+                                if(!String.Equals(image.ToString().Replace('/','\\'),requestedImage,StringComparison.OrdinalIgnoreCase)) {
+                                    next=Process32NextW(snapshot,ref e);continue;
+                                }
+                            } finally {CloseHandle(candidate);}
+                        }
                         if(found!=0) throw new Exception("more than one client in prefix");
                         found=e.pid;
                     }
@@ -118,6 +144,7 @@ class ReadClientState {
                     if(hash!="e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b")
                         throw new Exception("target executable hash differs from the recovered version");
                 }
+                if(controlStream) { ClientAssets.ExportControlStream(process);return 0; }
                 if(propsState) { ClientAssets.ExportPropsState(process);return 0; }
                 if(propsFrame) { ClientAssets.ExportPropsState(process,true);return 0; }
                 if(propsAssets) { ClientAssets.ExportPropsAssets(process);return 0; }
@@ -229,6 +256,11 @@ class ReadClientState {
                         Field(process,"predicted_spawn_count",checked(cg+0x19c),4);
                         Field(process,"predicted_corpse_slot",checked(cg+0xe8),4);
                         Field(process,"predicted_client_number",checked(cg+0x144),4);
+                        uint eventSnapshot=Read(process,checked(cg+0x357c),4);
+                        Field(process,"current_event_snapshot_pointer",checked(cg+0x357c),4);
+                        if(eventSnapshot>=0x1000000 && eventSnapshot<0xfff00000) {
+                            Field(process,"current_event_snapshot_entity_count",checked(eventSnapshot+0x3530),4);
+                        }
                         Field(process,"local_client_rank",checked(cg+0x15dea8+0x9c),4);
                         Field(process,"local_character_parts",checked(cg+0x15dea8+0x38c),4);
                         Field(process,"local_character_faction",checked(cg+0x15dea8+0x390),4);
@@ -251,6 +283,13 @@ class ReadClientState {
                         for(uint axis=0;axis<3;axis++)
                             Field(process,"predicted_death_hud_origin_"+axis+"_bits",checked(cg+0xa78+4+axis*4),4);
                         Field(process,"predicted_pm_flags",checked(cg+0xc),4);
+                        // Raw target PS candidates; camera linkage and controls
+                        // are distinct from PS+0x200 replay/reference identity.
+                        Field(process,"predicted_link_flags_raw",checked(cg+0x10),4);
+                        Field(process,"predicted_camera_link_entity_raw",checked(cg+0x54),4);
+                        Field(process,"predicted_camera_link_tag_raw",checked(cg+0x58),4);
+                        Field(process,"predicted_controls_link_entity_raw",checked(cg+0x5c),4);
+
                         Field(process,"predicted_pm_time",checked(cg+8),4);
                         Field(process,"predicted_jump_time",checked(cg+0xbc),4);
                         Field(process,"predicted_dive_end_time",checked(cg+0x238),4);
@@ -401,6 +440,11 @@ class ReadClientState {
                     Field(process,"last_local_cmd_pitch",checked(active+0x365c+(cmd&255)*44+8),4);
                     Field(process,"last_local_cmd_yaw",checked(active+0x365c+(cmd&255)*44+12),4);
                     Field(process,"current_pm_flags",checked(active+0x18),4);
+                    Field(process,"current_link_flags_raw",checked(active+0xc+0x10),4);
+                    Field(process,"current_camera_link_entity_raw",checked(active+0xc+0x54),4);
+                    Field(process,"current_camera_link_tag_raw",checked(active+0xc+0x58),4);
+                    Field(process,"current_controls_link_entity_raw",checked(active+0xc+0x5c),4);
+
                     Field(process,"current_clamp_pitch_bits",checked(active+0xc+0x174),4);
                     Field(process,"current_clamp_yaw_bits",checked(active+0xc+0x178),4);
                     Field(process,"client_command_number",checked(active+0x625c),4);

@@ -165,15 +165,40 @@ case "look":
     event.setIntegerValueField(.mouseEventDeltaY, value: Int64(dy.rounded()))
     event.post(tap: .cghidEventTap)
     result["delta"] = [dx, dy]
+case "wheel", "release":
+    guard let app = NSRunningApplication(processIdentifier: pid),
+          app.activate(options: [.activateAllWindows]), CGPreflightPostEventAccess()
+    else { fail("gameplay input requires the owned active research window") }
+    try focusGame(app)
+    guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid
+    else { fail("research client lost focus") }
+    if args[2] == "wheel" {
+        guard args.count == 4, let delta = Int32(args[3]), (-20...20).contains(delta), delta != 0,
+              let event = CGEvent(scrollWheelEvent2Source: nil, units: .line, wheelCount: 1,
+                                  wheel1: delta, wheel2: 0, wheel3: 0)
+        else { fail("wheel requires a bounded nonzero delta") }
+        event.post(tap: .cghidEventTap)
+        result["wheel_delta"] = delta
+    } else {
+        guard args.count == 3 else { fail("release takes no extra arguments") }
+        let point = CGEvent(source: nil)?.location ?? CGPoint(x:x+width/2,y:y+height/2)
+        for (kind,button) in [(CGEventType.leftMouseUp,CGMouseButton.left),(.rightMouseUp,.right)] {
+            guard let event = CGEvent(mouseEventSource:nil,mouseType:kind,mouseCursorPosition:point,mouseButton:button)
+            else { fail("unable to construct mouse release") }
+            event.post(tap:.cghidEventTap)
+        }
+        result["released"] = ["fire","ads"]
+    }
 case "hold":
     let keys: [String: CGKeyCode] = ["w":13,"s":1,"a":0,"d":2,"q":12,"e":14,"r":15,"f":3,"g":5,"space":49,"shift":56,"ctrl":59,"c":8,"x":7,"b":11,"v":9,"3":20,"4":21,"5":23,"6":22,"7":26,"8":28,"1":18,"2":19,"escape":53]
     let sprintChord = args.count == 5 && args[3] == "w+shift"
     let diveChord = args.count == 5 && args[3] == "w+shift+ctrl"
     let adsChord = args.count == 5 && args[3] == "w+ads"
     let fireAdsChord = args.count == 5 && args[3] == "fire+ads"
+    let steeringChord = args.count == 5 && ["w+a", "w+d"].contains(args[3])
     guard args.count == 5, let seconds = Double(args[4]), seconds.isFinite,
           (0.03...(sprintChord ? 8.0 : args[3] == "g" ? 6.0 : 3.0)).contains(seconds),
-          sprintChord || diveChord || adsChord || fireAdsChord || keys[args[3]] != nil || ["fire","ads"].contains(args[3])
+          sprintChord || diveChord || adsChord || fireAdsChord || steeringChord || keys[args[3]] != nil || ["fire","ads"].contains(args[3])
     else { fail("hold requires an allowlisted gameplay key and a bounded duration (sprint chord:8 seconds; grenade:6; others:3)") }
     guard let app = NSRunningApplication(processIdentifier:pid), app.activate(options:[.activateAllWindows]), CGPreflightPostEventAccess()
     else { fail("unable to focus game or post gameplay key") }
@@ -198,6 +223,16 @@ case "hold":
         Thread.sleep(forTimeInterval:min(0.5,seconds / 2))
         leftDown.post(tap:.cghidEventTap)
         defer { leftUp.post(tap:.cghidEventTap); rightUp.post(tap:.cghidEventTap) }
+        Thread.sleep(forTimeInterval:seconds)
+    } else if steeringChord {
+        let turn: CGKeyCode = args[3] == "w+a" ? 0 : 2
+        guard let forwardDown=CGEvent(keyboardEventSource:nil,virtualKey:13,keyDown:true),
+              let forwardUp=CGEvent(keyboardEventSource:nil,virtualKey:13,keyDown:false),
+              let turnDown=CGEvent(keyboardEventSource:nil,virtualKey:turn,keyDown:true),
+              let turnUp=CGEvent(keyboardEventSource:nil,virtualKey:turn,keyDown:false)
+        else {fail("cannot construct steering chord")}
+        forwardDown.post(tap:.cghidEventTap);turnDown.post(tap:.cghidEventTap)
+        defer {turnUp.post(tap:.cghidEventTap);forwardUp.post(tap:.cghidEventTap)}
         Thread.sleep(forTimeInterval:seconds)
     } else if diveChord {
         guard seconds >= 0.7,
