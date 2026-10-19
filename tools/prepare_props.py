@@ -11,6 +11,35 @@ from prepare_game_state import CLIENT_SHA256, compute
 from prepare_map_hud import map_entities
 
 
+def wreck_for(model_name, destructible_type, models):
+    """Resolve a native wreck model using the map's registered naming variants."""
+    candidates = []
+
+    def add(value):
+        if value and value != model_name and value not in candidates:
+            candidates.append(value)
+
+    # Most stock props use one of these direct suffix pairs.
+    add(model_name.replace('_destructible_mp', '_dsr'))
+    add(model_name.replace('_destructible_mp', '_destroyed_mp'))
+    add(model_name.replace('_destructible_', '_destroyed_'))
+    add(model_name.replace('_destructible', '_destroyed'))
+    add(model_name.replace('_destructible', '_destroy'))
+    add(model_name.replace('_destructible', '_dst'))
+    # Some map entities use a short `veh_` model while the registered wreck
+    # keeps the full `vehicle_` prefix.
+    if model_name.startswith('veh_'):
+        add('vehicle_' + model_name[4:] + '_destroyed')
+        add('vehicle_' + model_name[4:] + '_dsr')
+    # `destructible_type` is the stable semantic name for variants such as
+    # vehicle_uaz_hardtop_destructible_mp.
+    if destructible_type.startswith('vehicle_'):
+        add(destructible_type + '_destroyed')
+        add(destructible_type + '_dsr')
+        add(destructible_type + '_destroyed_mp')
+    return next((models[name] for name in candidates if name in models), None)
+
+
 def prepare(assets_raw, entities_raw, constants_raw):
     assets, entities, constants = [json.loads(raw) for raw in (assets_raw, entities_raw, constants_raw)]
     for capture in (assets, entities, constants):
@@ -69,7 +98,13 @@ def prepare(assets_raw, entities_raw, constants_raw):
         key = (model_name, tuple(origin), tuple(angles))
         if key in seen: continue
         seen.add(key)
-        wreck = models.get(model_name.replace('_destructible','_destroyed')) if vehicle and '_destructible' in model_name else None
+        wreck = None
+        if vehicle:
+            wreck = wreck_for(
+                model_name,
+                fields.get(b'destructible_type', b'').decode('ascii', errors='strict'),
+                models,
+            )
         props.append(dict(entity_number=256+len(props),kind='barrel' if barrel else 'vehicle',model=model['index'],
                           destroyed_model=None if wreck is None else wreck['index'],origin=[round(v) for v in origin],
                           angles=[int(v*65536/360)&65535 for v in angles],bounds_min=model['bounds_min'],bounds_max=model['bounds_max'],
