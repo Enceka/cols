@@ -53,6 +53,8 @@ fn source() -> Source {
 #[test]
 fn variants_have_distinct_registered_models_hands_guns_and_rotary_cadence() {
     let r = resources();
+    assert!(Plan::resources_present(&r, 23));
+    assert!(Plan::resources_present(&r, 24));
     for (id, team, model, hands, weapon, clip) in [
         (23, 1, 109, 150, 187, 100),
         (24, 1, 99, 152, 188, 300),
@@ -91,6 +93,18 @@ fn variants_have_distinct_registered_models_hands_guns_and_rotary_cadence() {
         assert!(player.take_death_weapon().is_none());
         assert_eq!(suit.source().unwrap().life, 3);
     }
+}
+
+#[test]
+fn reward_availability_rejects_missing_team_models_and_native_ammo_keys() {
+    let mut r = resources();
+    r.models.remove("viewhands_player_kp_juggernaut_sc");
+    assert!(Plan::resources_present(&r, 23));
+    assert!(!Plan::resources_present(&r, 24));
+    r.models
+        .insert("viewhands_player_kp_juggernaut_sc".into(), 151);
+    r.weapons.get_mut("minigungunship_mp").unwrap().clip_key = None;
+    assert!(!Plan::resources_present(&r, 24));
 }
 
 #[test]

@@ -132,8 +132,15 @@ fn plan_requires_real_mounts_and_weapons_and_disjoint_vehicle_slots() {
     r.weapons.get_mut("ac130_25mm_mp").unwrap().clip_size = 0;
     assert!(!Gunners::resources_present(&r, 13));
     r = resources();
+    assert!(Gunners::resources_present(&r, 12));
+    assert!(Gunners::resources_present(&r, 13));
     r.air_paths = None;
+    assert!(!Gunners::resources_present(&r, 12));
+    assert!(Gunners::resources_present(&r, 13));
     assert!(g.plan(&r, 12, 0, &c).is_none());
+    r = resources();
+    r.air_route = None;
+    assert!(!Gunners::resources_present(&r, 13));
 }
 #[test]
 fn remote_gunner_cancels_old_links_and_weapon_callbacks_without_restoring_an_old_life() {

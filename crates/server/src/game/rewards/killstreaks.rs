@@ -235,6 +235,29 @@ pub(crate) struct RemoteSpawns {
     pub sources_sha256: [String; 1],
     pub points: Vec<RemoteSpawn>,
 }
+impl RemoteSpawns {
+    pub(crate) fn valid(&self) -> bool {
+        self.points.len() <= 64
+            && self
+                .sources_sha256
+                .iter()
+                .all(|hash| hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit()))
+            && self.points.iter().all(|point| {
+                point
+                    .origin
+                    .iter()
+                    .chain(&point.target)
+                    .all(|value| value.is_finite() && value.abs() <= 30000.0)
+                    && point
+                        .origin
+                        .iter()
+                        .zip(point.target)
+                        .map(|(origin, target)| (origin - target).powi(2))
+                        .sum::<f32>()
+                        > 1.0
+            })
+    }
+}
 #[derive(Clone, Copy, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RemoteSpawn {
@@ -409,22 +432,7 @@ impl RadarResources {
                 && result
                     .remote_spawns
                     .as_ref()
-                    .is_none_or(|spawns| spawns.points.len() <= 64
-                        && spawns
-                            .sources_sha256
-                            .iter()
-                            .all(|h| h.len() == 64 && h.bytes().all(|b| b.is_ascii_hexdigit()))
-                        && spawns.points.iter().all(|p| p
-                            .origin
-                            .iter()
-                            .chain(&p.target)
-                            .all(|v| v.is_finite() && v.abs() <= 30000.0)
-                            && p.origin
-                                .iter()
-                                .zip(p.target)
-                                .map(|(a, b)| (a - b).powi(2))
-                                .sum::<f32>()
-                                > 1.0))
+                    .is_none_or(RemoteSpawns::valid)
                 && result.remote_exit.is_none_or(RemoteExitResources::valid)
                 && result
                     .remote_vision
@@ -921,31 +929,10 @@ impl Streaks {
         }
     }
     pub(crate) fn acceptance_enable_armor(&mut self, r: &RadarResources) {
-        if r.weapons
-            .get("mg4juggernaut_mp")
-            .is_some_and(|w| w.operator.as_ref().is_some_and(|o| o.valid()))
-            && [
-                "mp_fullbody_juggernaut_explosive_so",
-                "viewhands_juggernaut_ally",
-            ]
-            .into_iter()
-            .all(|n| r.models.contains_key(n))
-        {
-            self.available |= 1 << 23;
-        }
-        if r.weapons
-            .get("minigungunship_mp")
-            .is_some_and(|w| w.clip_key.is_some() && w.operator.as_ref().is_some_and(|o| o.valid()))
-            && [
-                "c_kp_juggernaut_tf_00",
-                "c_kp_juggernaut_sc_00",
-                "viewhands_player_kp_juggernaut_tf",
-                "viewhands_player_kp_juggernaut_sc",
-            ]
-            .into_iter()
-            .all(|n| r.models.contains_key(n))
-        {
-            self.available |= 1 << 24;
+        for id in [23, 24] {
+            if super::armor::Plan::resources_present(r, id) {
+                self.available |= 1 << id;
+            }
         }
     }
     pub(crate) fn acceptance_enable_dogs(&mut self, r: &RadarResources) {
@@ -1353,44 +1340,22 @@ mod tests {
     use super::*;
     fn radar_resources() -> RadarResources {
         let timing = test_resources();
-        RadarResources {
-            experimental_air_routes: false,
-            schema_version: 1,
-            client_sha256: codol_protocol::CLIENT_SHA256.into(),
-            sources_sha256: ["0".repeat(64), "1".repeat(64)],
-            map: "mp_afghan".into(),
-            ncs_crc: 123,
-            models: Default::default(),
-            tags: Default::default(),
-            vehicles: Default::default(),
-            animations: Default::default(),
-            loop_sounds: Default::default(),
-            model_bounds: Default::default(),
-            camera_mounts: Default::default(),
-            effects: Default::default(),
-            selectors: Default::default(),
-            weapons: Default::default(),
-            air_route: None,
-            air_paths: None,
-            remote_spawns: None,
-            remote_vision: None,
-            remote_exit: None,
-            animals: None,
-            radios: vec![
-                Radio {
-                    native_id: 1,
-                    weapon: 301,
-                    switch: timing.switch,
-                    fire_interval_msec: 800,
-                },
-                Radio {
-                    native_id: 3,
-                    weapon: 302,
-                    switch: timing.switch,
-                    fire_interval_msec: 800,
-                },
-            ],
-        }
+        let mut resources = crate::game::rewards::airspace::test_resources();
+        resources.radios = vec![
+            Radio {
+                native_id: 1,
+                weapon: 301,
+                switch: timing.switch,
+                fire_interval_msec: 800,
+            },
+            Radio {
+                native_id: 3,
+                weapon: 302,
+                switch: timing.switch,
+                fire_interval_msec: 800,
+            },
+        ];
+        resources
     }
     #[test]
     fn ordinary_rewards_use_real_death_thresholds_and_independent_hud_and_inventory() {

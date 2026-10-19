@@ -76,7 +76,8 @@ impl Weapon {
         // The script spawns345;339 is a separate projectile and must not alias.
         let w = r.weapons.get("remotemissile_projectile_mp")?;
         let projectile = w.projectile?;
-        if w.weapon_type != 2
+        if !(1..900).contains(&w.weapon)
+            || w.weapon_type != 2
             || projectile.explosion_kind != 1
             || !(1..=60000).contains(&projectile.lifetime_msec)
             || w.projectile_speed == 0
@@ -156,6 +157,19 @@ pub(crate) struct Remotes {
     clock: u32,
 }
 impl Remotes {
+    pub(crate) fn resources_present(r: &RadarResources) -> bool {
+        Weapon::from_resources(r).is_some()
+            && r.tags
+                .get("tag_origin")
+                .is_some_and(|tag| (1..64).contains(tag))
+            && r.remote_spawns
+                .as_ref()
+                .is_some_and(|spawns| spawns.valid())
+            && r.remote_vision
+                .as_ref()
+                .is_none_or(|vision| vision.flight_name().is_some())
+            && r.remote_exit.is_none_or(|exit| exit.valid())
+    }
     pub(crate) fn busy(&self) -> bool {
         self.pending.is_some() || self.operation.is_some()
     }
@@ -956,6 +970,23 @@ pub(crate) fn test_resources() -> RadarResources {
 mod tests {
     use super::*;
     use crate::game::rewards::inventory::Inventory;
+    #[test]
+    fn predator_availability_checks_full_payload_spawns_and_optional_native_overlays() {
+        let mut resources = test_resources();
+        assert!(Remotes::resources_present(&resources));
+        resources.remote_spawns = None;
+        assert!(!Remotes::resources_present(&resources));
+        resources = test_resources();
+        resources.tags.insert("tag_origin".into(), 0);
+        assert!(!Remotes::resources_present(&resources));
+        resources = test_resources();
+        resources.remote_exit = Some(super::super::killstreaks::RemoteExitResources {
+            white: 1,
+            grain: 1001,
+            material_bank_count: 2,
+        });
+        assert!(!Remotes::resources_present(&resources));
+    }
     fn collision() -> Collision {
         let f = tempfile::NamedTempFile::new().unwrap();
         std::fs::write(f.path(),serde_json::to_vec(&serde_json::json!({"schema_version":1,"read_only":true,"client_sha256":codol_protocol::CLIENT_SHA256,"map":"maps/mp/test.d3dbsp","ncs_crc":0,"brushes":[{"center":[0,0,-10],"half":[20000,20000,10],"contents":1,"planes":[]}],"triangles":[]})).unwrap()).unwrap();

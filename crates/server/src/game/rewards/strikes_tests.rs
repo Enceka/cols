@@ -39,6 +39,79 @@ pub(crate) fn resources() -> RadarResources {
     r.weapons.insert("mortar_mp".into(), w);
     r
 }
+
+#[test]
+fn strike_availability_requires_each_registered_weapon_effect_pair() {
+    let mut r = resources();
+    for id in [6, 11, 17] {
+        assert!(crate::game::rewards::mechanisms::Mechanism::radio_available(id, &r));
+    }
+    r.weapons.remove("artillery_mp");
+    assert!(!crate::game::rewards::mechanisms::Mechanism::radio_available(6, &r));
+    assert!(crate::game::rewards::mechanisms::Mechanism::radio_available(11, &r));
+    r = resources();
+    r.weapons.get_mut("mortar_mp").unwrap().weapon = 0;
+    assert!(!crate::game::rewards::mechanisms::Mechanism::radio_available(17, &r));
+    r = resources();
+    assert!(!crate::game::rewards::mechanisms::Mechanism::radio_available(7, &r));
+}
+
+#[test]
+fn harrier_is_advertised_only_with_the_full_attack_aircraft_registration() {
+    let mut r = resources();
+    let mut radio = r.radios[0].clone();
+    radio.native_id = 7;
+    radio.weapon = 316;
+    r.radios.push(radio);
+    r.models.insert("vehicle_av8b_harrier_jet_mp".into(), 139);
+    r.model_bounds.insert(
+        "vehicle_av8b_harrier_jet_mp".into(),
+        crate::game::rewards::killstreaks::ModelBounds {
+            min: [-50.0, -50.0, -50.0],
+            max: [50.0, 50.0, 50.0],
+        },
+    );
+    r.vehicles.insert("harrier_mp".into(), 4);
+    r.effects
+        .insert("explosions/aerial_explosion_harrier".into(), 71);
+    r.effects.insert("explosions/aerial_explosion".into(), 5);
+    r.effects
+        .insert("smoke/smoke_trail_white_heli_emitter".into(), 47);
+    r.effects
+        .insert("smoke/smoke_trail_black_heli_emitter".into(), 45);
+    let mut gun = r.weapons["artillery_mp"].clone();
+    gun.weapon = 325;
+    r.weapons.insert("harrier_20mm_mp".into(), gun);
+    let mut missile = r.weapons["artillery_mp"].clone();
+    missile.weapon = 328;
+    missile.weapon_type = 2;
+    missile.projectile = Some(crate::game::rewards::killstreaks::ProjectileFacts {
+        lifetime_msec: 7000,
+        explosion_kind: 1,
+    });
+    missile.projectile_speed = 4000;
+    missile.damage_stages[0] = 100;
+    missile.radius = 100;
+    missile.inner_damage = 100;
+    r.weapons.insert("harrier_missile_mp".into(), missile);
+    r.air_paths = Some(
+        serde_json::from_value(serde_json::json!({
+            "sources_sha256":["0".repeat(64)],
+            "entries":{"heli_start":[0],"heli_loop_start":[2],"heli_leave":[4]},
+            "nodes":[
+                {"name":"heli_start","origin":[0,0,1000],"target":1},
+                {"name":"ingress","origin":[100,0,1000],"target":null},
+                {"name":"heli_loop_start","origin":[100,100,1000],"target":3},
+                {"name":"loop","origin":[200,100,1000],"target":2},
+                {"name":"heli_leave","origin":[1000,1000,1000],"target":null}
+            ]
+        }))
+        .unwrap(),
+    );
+    assert!(crate::game::rewards::mechanisms::Mechanism::radio_available(7, &r));
+    r.vehicles.remove("harrier_mp");
+    assert!(!crate::game::rewards::mechanisms::Mechanism::radio_available(7, &r));
+}
 fn minimap() -> Minimap {
     serde_json::from_value(serde_json::json!({"material":"compass_map_mp_afghan","north_yaw":0,"upper_left":[1000,1000],"lower_right":[-1000,-1000]})).unwrap()
 }

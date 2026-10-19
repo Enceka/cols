@@ -71,6 +71,53 @@ pub(crate) struct Aircraft {
     clock: u32,
 }
 impl Aircraft {
+    pub(crate) fn resources_present(r: &RadarResources, id: u8) -> bool {
+        let model = match id {
+            8 => "vehicle_mi24p_hind_mp",
+            10 => "vehicle_pavelow",
+            _ => return false,
+        };
+        r.model_bounds.get(model).is_some_and(|b| b.valid())
+            && r.models.contains_key(model)
+            && r.vehicles
+                .contains_key(if id == 10 { "pavelow_mp" } else { "cobra_mp" })
+            && r.animations.get("bh_rotors").is_some_and(|a| a.parent > 0)
+            && r.air_paths.as_ref().is_some_and(|g| {
+                g.valid()
+                    && g.entries.contains_key("heli_start")
+                    && g.entries.contains_key("heli_loop_start")
+                    && g.entries.contains_key("heli_leave")
+            })
+            && weapons::Gun::from_resources(r, id).is_some()
+            && r.effects.contains_key("explosions/aerial_explosion")
+            && r.effects
+                .contains_key("smoke/smoke_trail_white_heli_emitter")
+            && r.effects
+                .contains_key("smoke/smoke_trail_black_heli_emitter")
+            && (id != 10
+                || r.models.contains_key("weapon_minigun")
+                    && r.effects.contains_key("misc/flares_cobra"))
+    }
+    pub(crate) fn harrier_resources_present(r: &RadarResources) -> bool {
+        r.model_bounds
+            .get("vehicle_av8b_harrier_jet_mp")
+            .is_some_and(|bounds| bounds.valid())
+            && r.models.contains_key("vehicle_av8b_harrier_jet_mp")
+            && r.vehicles.contains_key("harrier_mp")
+            && r.air_route.is_some()
+            && r.air_paths
+                .as_ref()
+                .is_some_and(|paths| paths.valid() && paths.entries.contains_key("heli_leave"))
+            && weapons::Gun::from_resources(r, 7).is_some()
+            && [
+                "explosions/aerial_explosion_harrier",
+                "smoke/smoke_trail_white_heli_emitter",
+                "smoke/smoke_trail_black_heli_emitter",
+            ]
+            .into_iter()
+            .all(|name| r.effects.contains_key(name))
+            && super::sam::Weapon::aircraft(r, 7).is_some()
+    }
     pub(crate) fn vehicle_slots(&self) -> u16 {
         self.flights.iter().fold(0, |mask, flight| {
             mask | (1 << (flight.plan.entity - FIRST_ENTITY))

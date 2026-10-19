@@ -20,6 +20,12 @@ fn collision() -> Collision {
 }
 fn resources() -> RadarResources {
     let mut r = crate::game::rewards::deployables::test_resources();
+    for (id, weapon) in [(8, 319), (10, 317)] {
+        let mut radio = r.radios[0].clone();
+        radio.native_id = id;
+        radio.weapon = weapon;
+        r.radios.push(radio);
+    }
     r.models.insert("weapon_minigun".into(), 153);
     r.vehicles.extend([
         ("cobra_mp".into(), 3),
@@ -79,11 +85,15 @@ fn aircraft_requires_native_vehicle_and_rotor_bindings_before_consuming_inventor
     let c = collision();
     let mut r = resources();
     let a = Aircraft::default();
+    assert!(Aircraft::resources_present(&r, 8));
+    assert!(Aircraft::resources_present(&r, 10));
     assert!(a.plan(&r, 8, &c).is_some());
     r.vehicles.remove("cobra_mp");
+    assert!(!Aircraft::resources_present(&r, 8));
     assert!(a.plan(&r, 8, &c).is_none());
     r.vehicles.insert("cobra_mp".into(), 3);
     r.animations.remove("bh_rotors");
+    assert!(!Aircraft::resources_present(&r, 8));
     assert!(a.plan(&r, 8, &c).is_none());
     assert!(a.plan(&r, 10, &c).is_none());
 }
@@ -197,7 +207,7 @@ fn emp_only_crashes_enemy_aircraft_and_experimental_policy_exposes_the_normal_he
     assert!(a.flights[0].crash.is_some());
     assert!(a.targets().is_empty());
     assert!(crate::game::rewards::mechanisms::Mechanism::radio_available(8, &r));
-    assert!(!crate::game::rewards::mechanisms::Mechanism::radio_available(10, &r));
+    assert!(crate::game::rewards::mechanisms::Mechanism::radio_available(10, &r));
 }
 
 #[test]

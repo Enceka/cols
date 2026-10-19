@@ -38,6 +38,56 @@ pub(crate) struct Plan {
     weapon: HeldWeapons,
 }
 impl Plan {
+    pub(crate) fn resources_present(r: &RadarResources, id: u8) -> bool {
+        let models: &[&str] = match id {
+            23 => &[
+                "mp_fullbody_juggernaut_explosive_so",
+                "viewhands_juggernaut_ally",
+            ],
+            24 => &[
+                "c_kp_juggernaut_tf_00",
+                "c_kp_juggernaut_sc_00",
+                "viewhands_player_kp_juggernaut_tf",
+                "viewhands_player_kp_juggernaut_sc",
+            ],
+            _ => return false,
+        };
+        let name = if id == 23 {
+            "mg4juggernaut_mp"
+        } else {
+            "minigungunship_mp"
+        };
+        models.iter().all(|name| {
+            r.models
+                .get(*name)
+                .is_some_and(|model| (1..1024).contains(model))
+        }) && r.weapons.get(name).is_some_and(Self::weapon_supported)
+    }
+    fn weapon_supported(w: &super::killstreaks::WeaponFacts) -> bool {
+        if w.weapon_type != 0
+            || w.clip_size == 0
+            || w.clip_size > 511
+            || w.clip_key.is_none()
+            || w.ammo_key.is_none()
+            || w.fire_interval_msec == 0
+            || !w.operator.as_ref().is_some_and(OperatorFacts::valid)
+        {
+            return false;
+        }
+        let Some(falloff) = DamageFalloff::from_stages(w.damage_stages, w.damage_ranges) else {
+            return false;
+        };
+        Ballistics {
+            damage: falloff.damage(0.0),
+            range: 8192.0,
+            near_range: w.damage_ranges[0],
+            falloff: Some(falloff),
+            location_multipliers: w.operator.as_ref().map(|facts| facts.location_multipliers),
+            pellets: 1,
+            spread_degrees: 0.0,
+        }
+        .valid()
+    }
     pub(crate) fn new(r: &RadarResources, id: u8, team: u8, base: Equipment) -> Option<Self> {
         let (model, hands, name) = match (id, team) {
             (23, 1 | 2) => (
@@ -59,12 +109,7 @@ impl Plan {
         };
         let w = r.weapons.get(name)?;
         let facts = w.operator.as_ref()?;
-        if !facts.valid()
-            || w.weapon_type != 0
-            || w.clip_size == 0
-            || w.clip_size > 511
-            || w.fire_interval_msec == 0
-        {
+        if !Self::weapon_supported(w) || !facts.valid() {
             return None;
         }
         let falloff = DamageFalloff::from_stages(w.damage_stages, w.damage_ranges)?;

@@ -15,6 +15,35 @@ pub(crate) enum Contents {
     Ammo,
     Reward(u8),
 }
+const ORDINARY_POOL: [(Contents, u32); 13] = [
+    (Contents::Ammo, 17),
+    (Contents::Reward(1), 17),
+    (Contents::Reward(3), 15),
+    (Contents::Reward(16), 12),
+    (Contents::Reward(5), 12),
+    (Contents::Reward(6), 11),
+    (Contents::Reward(7), 7),
+    (Contents::Reward(8), 7),
+    (Contents::Reward(10), 5),
+    (Contents::Reward(11), 5),
+    (Contents::Reward(12), 3),
+    (Contents::Reward(13), 3),
+    (Contents::Reward(14), 1),
+];
+const MEGA_POOL: [(Contents, u32); 12] = [
+    (Contents::Ammo, 12),
+    (Contents::Reward(1), 12),
+    (Contents::Reward(3), 16),
+    (Contents::Reward(16), 16),
+    (Contents::Reward(5), 14),
+    (Contents::Reward(6), 10),
+    (Contents::Reward(7), 5),
+    (Contents::Reward(8), 5),
+    (Contents::Reward(10), 3),
+    (Contents::Reward(11), 3),
+    (Contents::Reward(12), 2),
+    (Contents::Reward(13), 2),
+];
 #[derive(Clone, Copy)]
 pub(crate) struct PickupUser {
     pub actor: u8,
@@ -210,6 +239,13 @@ pub(crate) struct Airdrops {
     pickup_hints: [Option<PickupHint>; 12],
 }
 impl Airdrops {
+    pub(crate) fn random_rewards(id: u8) -> Option<&'static [(Contents, u32)]> {
+        match id {
+            2 => Some(&ORDINARY_POOL),
+            9 => Some(&MEGA_POOL),
+            _ => None,
+        }
+    }
     pub fn resources_present(r: &RadarResources, id: u8) -> bool {
         Definition::load(r, id).is_some()
     }
@@ -303,40 +339,13 @@ impl Airdrops {
     fn draw(random: &mut u32, mega: bool) -> Contents {
         // AlphaBuild's configuration defaults, preserved as a complete pool.
         let choices = if mega {
-            vec![
-                (Contents::Ammo, 12),
-                (Contents::Reward(1), 12),
-                (Contents::Reward(3), 16),
-                (Contents::Reward(16), 16),
-                (Contents::Reward(5), 14),
-                (Contents::Reward(6), 10),
-                (Contents::Reward(7), 5),
-                (Contents::Reward(8), 5),
-                (Contents::Reward(10), 3),
-                (Contents::Reward(11), 3),
-                (Contents::Reward(12), 2),
-                (Contents::Reward(13), 2),
-            ]
+            &MEGA_POOL[..]
         } else {
-            vec![
-                (Contents::Ammo, 17),
-                (Contents::Reward(1), 17),
-                (Contents::Reward(3), 15),
-                (Contents::Reward(16), 12),
-                (Contents::Reward(5), 12),
-                (Contents::Reward(6), 11),
-                (Contents::Reward(7), 7),
-                (Contents::Reward(8), 7),
-                (Contents::Reward(10), 5),
-                (Contents::Reward(11), 5),
-                (Contents::Reward(12), 3),
-                (Contents::Reward(13), 3),
-                (Contents::Reward(14), 1),
-            ]
+            &ORDINARY_POOL[..]
         };
         *random = random.wrapping_mul(1664525).wrapping_add(1013904223);
         let mut value = *random % choices.iter().map(|(_, w)| w).sum::<u32>();
-        for (c, w) in choices {
+        for &(c, w) in choices {
             if value < w {
                 return c;
             }

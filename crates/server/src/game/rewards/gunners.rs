@@ -236,6 +236,19 @@ impl Gunners {
             && r.camera_mounts.get(mount).is_some_and(|m| m.valid())
             && r.tags.contains_key("tag_origin")
             && (id != 12
+                || r.air_paths.as_ref().is_some_and(|paths| {
+                    paths.valid()
+                        && paths.entries.contains_key("heli_start")
+                        && paths.entries.contains_key("heli_loop_start")
+                }))
+            && (id != 13
+                || r.air_route.as_ref().is_some_and(|route| {
+                    route
+                        .center
+                        .iter()
+                        .all(|value| value.is_finite() && value.abs() <= 30000.0)
+                }))
+            && (id != 12
                 || r.vehicles.contains_key("cobra_minigun_mp")
                     && r.animations.contains_key("bh_rotors"))
             && r.effects.contains_key("explosions/aerial_explosion")

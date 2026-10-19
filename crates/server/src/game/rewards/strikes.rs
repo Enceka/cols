@@ -118,22 +118,30 @@ impl Strikes {
             return false;
         }
         match id {
-            6 | 7 => {
-                r.models.contains_key(if id == 7 {
-                    "vehicle_av8b_harrier_jet_mp"
-                } else {
-                    "vehicle_mig29_desert"
-                }) && r.weapons.contains_key("artillery_mp")
+            6 => {
+                r.models.contains_key("vehicle_mig29_desert")
+                    && r.weapons
+                        .get("artillery_mp")
+                        .is_some_and(|w| (1..900).contains(&w.weapon))
+                    && r.effects.contains_key("explosions/artilleryexp_dirt_brown")
+            }
+            7 => {
+                r.weapons
+                    .get("artillery_mp")
+                    .is_some_and(|w| (1..900).contains(&w.weapon))
                     && r.effects.contains_key("explosions/artilleryexp_dirt_brown")
             }
             11 => {
                 r.models.contains_key("vehicle_b2_bomber")
-                    && r.weapons.contains_key("stealth_bomb_mp")
+                    && r.weapons
+                        .get("stealth_bomb_mp")
+                        .is_some_and(|w| (1..900).contains(&w.weapon))
                     && r.effects.contains_key("explosions/artilleryexp_dirt_brown")
             }
             17 => {
                 r.weapons.get("mortar_mp").is_some_and(|w| {
-                    w.weapon_type == 4
+                    (1..900).contains(&w.weapon)
+                        && w.weapon_type == 4
                         && w.radius > 0
                         && w.radius <= 8192
                         && w.inner_damage > 0
