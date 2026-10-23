@@ -135,5 +135,6 @@
 - [协作约束](../AGENT.md)
 - [协议样本说明](../fixtures/protocol/README.md)
 - [使用与分发边界](../LEGAL.md)
+- [项目许可证](../LICENSE)
 
 [实验性连杀资源与全图绑定](EXPERIMENTAL_REWARDS.md)说明资源准备、默认背包、逐项发奖规则及不保证范围。

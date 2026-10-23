@@ -44,3 +44,7 @@ sh tools/cargo.sh run --locked -p codol-server -- admin
 ## 文档
 
 [文档索引](docs/README.md)覆盖全部专题；开发约束见 [AGENT.md](AGENT.md)，模块归属见[服务端结构](docs/SERVER_MODULARIZATION_PLAN.md)，样本和证据方法见[客户端基线](docs/CLIENT_BASELINE.md)。使用与分发边界见 [LEGAL.md](LEGAL.md)。
+
+## 许可
+
+本仓库自有代码按 [GNU Affero General Public License 第 3 版](LICENSE)授权，SPDX 标识为 `AGPL-3.0-only`。该授权不涵盖原游戏客户端、游戏资源及第三方资料，其权利状态与使用边界见 [LEGAL.md](LEGAL.md)。
