@@ -10,6 +10,7 @@ pub(super) struct Peer {
     incoming: u32,
     outgoing: u32,
     transaction: u64,
+    user: u64,
 }
 fn bytes(hex: &str) -> Vec<u8> {
     (0..hex.len())
@@ -76,6 +77,7 @@ impl Peer {
             incoming: 1,
             outgoing: 1,
             transaction: 1,
+            user,
         }
     }
     pub(super) async fn message(&mut self) -> lobby::ApplicationMessage {
@@ -118,7 +120,7 @@ impl Peer {
         }
         (count, r.remaining().to_vec())
     }
-    async fn create_room(&mut self) -> u64 {
+    pub(super) async fn create_room(&mut self) -> u64 {
         let (_, record) = self.rpc(&[11, 3, 13, 0]).await;
         let id = Reader::new(&record).u64().unwrap();
         let fixture: serde_json::Value = serde_json::from_str(include_str!(concat!(
@@ -129,11 +131,25 @@ impl Peer {
         let mut description = bytes(fixture["listing"]["create_arguments"].as_str().unwrap());
         let end = description.len();
         description[end - 19..end - 11].copy_from_slice(&id.to_le_bytes());
+        let owner = descriptor_owner(&description);
+        description[owner..owner + 8].copy_from_slice(&self.user.to_le_bytes());
         let mut body = vec![21, 3, 1];
         body.extend(description);
         self.rpc(&body).await;
         id
     }
+}
+// The descriptor stores the owner id after the room name; tests replay a captured
+// descriptor, so the owner has to be rewritten to the synthetic session.
+fn descriptor_owner(description: &[u8]) -> usize {
+    let mut at = 6 + 37;
+    at += 5;
+    at += 5;
+    at += 1;
+    while description[at] != 0 {
+        at += 1;
+    }
+    at + 2
 }
 fn member_request(id: u64) -> Vec<u8> {
     let mut w = Writer(vec![11, 3, 15]);
@@ -142,7 +158,7 @@ fn member_request(id: u64) -> Vec<u8> {
     w.0.push(0);
     w.0
 }
-fn broadcast(id: u64, body: &[u8]) -> Vec<u8> {
+pub(super) fn broadcast(id: u64, body: &[u8]) -> Vec<u8> {
     let mut w = Writer(vec![11, 3, 4]);
     w.u64(id);
     w.blob(body).unwrap();
