@@ -18,6 +18,8 @@ use std::{
 
 const MAX_LEDGER_BYTES: usize = 4 * 1024 * 1024;
 const MAX_RECEIPTS: usize = 1024;
+const MAX_ARCHIVES: usize = 4096;
+const MAX_RETIRED: usize = 4096;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -90,12 +92,57 @@ impl Rules {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SavedReceipt {
     award_sha256: String,
     receipt: Receipt,
     acknowledged: bool,
+}
+/// Cumulative totals behind the live receipt window. Revision zero keeps every
+/// receipt in the window and starts from the imported private profile.
+#[derive(Clone, Default, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct Base {
+    revision: u64,
+    player_total: u32,
+    weapon_xp: BTreeMap<u32, u32>,
+}
+/// One immutable segment file released from the live receipt window.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct Archived {
+    file: String,
+    from_revision: u64,
+    to_revision: u64,
+    sha256: String,
+}
+/// Retry tombstone for a receipt that already left the live window. Only the
+/// most recent tombstones are kept, because a retry follows delivery by seconds.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Retired {
+    match_id: String,
+    award_sha256: String,
+    revision: u64,
+}
+/// Self-describing archive segment; replaying it reproduces the boundary totals.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Segment {
+    schema_version: u32,
+    client_sha256: String,
+    title_id: u32,
+    user_id: String,
+    seed_private_sha256: String,
+    rules_sha256: String,
+    from_revision: u64,
+    to_revision: u64,
+    player_total_before: u32,
+    weapon_xp_before: BTreeMap<u32, u32>,
+    player_total_after: u32,
+    weapon_xp_after: BTreeMap<u32, u32>,
+    receipts: Vec<SavedReceipt>,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -109,6 +156,12 @@ struct Ledger {
     revision: u64,
     private_base64: String,
     weapon_xp: BTreeMap<u32, u32>,
+    #[serde(default)]
+    base: Base,
+    #[serde(default)]
+    archived: Vec<Archived>,
+    #[serde(default)]
+    retired: Vec<Retired>,
     receipts: Vec<SavedReceipt>,
 }
 fn digest(bytes: &[u8]) -> String {
@@ -127,6 +180,54 @@ fn match_id(value: &str) -> bool {
             .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
         && value.bytes().any(|b| b != b'0')
 }
+fn replay(
+    tables: &Tables,
+    receipts: &[SavedReceipt],
+    first_revision: u64,
+    player_total: &mut u32,
+    weapon_totals: &mut BTreeMap<u32, u32>,
+) -> Result<()> {
+    for (index, saved) in receipts.iter().enumerate() {
+        ensure!(
+            match_id(&saved.receipt.match_id)
+                && saved.receipt.revision == first_revision + index as u64
+                && hex_digest(&saved.award_sha256),
+            "invalid persisted progression receipt"
+        );
+        ensure!(
+            saved.receipt.player
+                == tables
+                    .player
+                    .award(*player_total, saved.receipt.player.credited_xp)?,
+            "persisted player receipt disagrees with XP history"
+        );
+        *player_total = saved.receipt.player.after.total_xp;
+        ensure!(
+            saved.receipt.weapons.len() <= 120
+                && saved
+                    .receipt
+                    .weapons
+                    .windows(2)
+                    .all(|p| p[0].item_id < p[1].item_id),
+            "persisted weapon receipts are not canonical"
+        );
+        for weapon in &saved.receipt.weapons {
+            let before = *weapon_totals.get(&weapon.item_id).unwrap_or(&0);
+            let primary = tables.primary.award(before, weapon.progress.credited_xp)?;
+            let secondary = tables
+                .secondary
+                .award(before, weapon.progress.credited_xp)?;
+            ensure!(
+                (1..=65535).contains(&weapon.item_id)
+                    && (weapon.progress == primary || weapon.progress == secondary),
+                "persisted weapon receipt disagrees with XP history"
+            );
+            weapon_totals.insert(weapon.item_id, weapon.progress.after.total_xp);
+        }
+    }
+    Ok(())
+}
+
 impl Ledger {
     fn validate(&self, account: AccountId, seed: &[u8]) -> Result<Vec<u8>> {
         ensure!(
@@ -137,68 +238,81 @@ impl Ledger {
                 && self.seed_private_sha256 == digest(seed)
                 && hex_digest(&self.rules_sha256)
                 && self.revision > 0
-                && self.revision == self.receipts.len() as u64
+                && self.revision == self.base.revision + self.receipts.len() as u64
                 && self.receipts.len() <= MAX_RECEIPTS
+                && self.archived.len() <= MAX_ARCHIVES
+                && self.retired.len() <= MAX_RETIRED
                 && self.weapon_xp.len() <= 512,
             "progression ledger identity, import source or revision mismatch"
         );
+        let mut expected = 1;
+        for (index, archived) in self.archived.iter().enumerate() {
+            ensure!(
+                archived.file == format!("progression-archive-{index:04}.json")
+                    && archived.from_revision == expected
+                    && archived.to_revision >= archived.from_revision
+                    && archived.to_revision - archived.from_revision < MAX_RECEIPTS as u64
+                    && hex_digest(&archived.sha256),
+                "invalid progression archive segment"
+            );
+            expected = archived.to_revision + 1;
+        }
+        ensure!(
+            expected - 1 == self.base.revision
+                && (self.base.revision > 0
+                    || (self.base.player_total == 0 && self.base.weapon_xp.is_empty())),
+            "progression archive boundary disagrees with its segments"
+        );
         let private = STANDARD.decode(&self.private_base64)?;
         let tables = Tables::native()?;
-        tables.player_total(profile::player_progress(&private, account.user_id)?)?;
-        let seed_progress = profile::player_progress(seed, account.user_id)?;
+        let private_total =
+            tables.player_total(profile::player_progress(&private, account.user_id)?)?;
+        let seed_total = tables.player_total(profile::player_progress(seed, account.user_id)?)?;
         ensure!(
-            tables.player_total(seed_progress)?
-                <= tables.player_total(profile::player_progress(&private, account.user_id)?)?,
+            seed_total <= private_total,
             "progression ledger regresses imported player XP"
         );
+        let weapon_xp_valid = |map: &BTreeMap<u32, u32>| {
+            map.iter()
+                .all(|(id, xp)| (1..=65535).contains(id) && *xp <= MAX_XP)
+        };
         ensure!(
-            self.weapon_xp
-                .iter()
-                .all(|(id, xp)| (1..=65535).contains(id) && *xp <= MAX_XP),
+            weapon_xp_valid(&self.weapon_xp) && weapon_xp_valid(&self.base.weapon_xp),
             "invalid persisted weapon XP"
         );
         let mut ids = HashSet::new();
-        let mut player_total = tables.player_total(seed_progress)?;
-        let mut weapon_totals = BTreeMap::new();
-        for (index, saved) in self.receipts.iter().enumerate() {
+        for retired in &self.retired {
             ensure!(
-                match_id(&saved.receipt.match_id)
-                    && ids.insert(&saved.receipt.match_id)
-                    && saved.receipt.revision == index as u64 + 1
-                    && hex_digest(&saved.award_sha256),
+                match_id(&retired.match_id)
+                    && hex_digest(&retired.award_sha256)
+                    && (1..=self.base.revision).contains(&retired.revision)
+                    && ids.insert(&retired.match_id),
+                "invalid retired progression receipt"
+            );
+        }
+        for saved in &self.receipts {
+            ensure!(
+                ids.insert(&saved.receipt.match_id),
                 "invalid persisted progression receipt"
             );
-            ensure!(
-                saved.receipt.player
-                    == tables
-                        .player
-                        .award(player_total, saved.receipt.player.credited_xp)?,
-                "persisted player receipt disagrees with XP history"
-            );
-            player_total = saved.receipt.player.after.total_xp;
-            ensure!(
-                saved.receipt.weapons.len() <= 120
-                    && saved
-                        .receipt
-                        .weapons
-                        .windows(2)
-                        .all(|p| p[0].item_id < p[1].item_id),
-                "persisted weapon receipts are not canonical"
-            );
-            for weapon in &saved.receipt.weapons {
-                let before = *weapon_totals.get(&weapon.item_id).unwrap_or(&0);
-                let primary = tables.primary.award(before, weapon.progress.credited_xp)?;
-                let secondary = tables
-                    .secondary
-                    .award(before, weapon.progress.credited_xp)?;
-                ensure!(
-                    (1..=65535).contains(&weapon.item_id)
-                        && (weapon.progress == primary || weapon.progress == secondary),
-                    "persisted weapon receipt disagrees with XP history"
-                );
-                weapon_totals.insert(weapon.item_id, weapon.progress.after.total_xp);
-            }
         }
+        let mut player_total = if self.base.revision == 0 {
+            seed_total
+        } else {
+            ensure!(
+                self.base.player_total >= seed_total,
+                "progression archive boundary regresses imported player XP"
+            );
+            self.base.player_total
+        };
+        let mut weapon_totals = self.base.weapon_xp.clone();
+        replay(
+            &tables,
+            &self.receipts,
+            self.base.revision + 1,
+            &mut player_total,
+            &mut weapon_totals,
+        )?;
         let final_progress = tables.player.progress(player_total)?;
         ensure!(
             weapon_totals == self.weapon_xp
@@ -207,7 +321,7 @@ impl Ledger {
                         seed,
                         account.user_id,
                         final_progress.level,
-                        final_progress.xp_within_level
+                        final_progress.xp_within_level,
                     )?,
             "progression snapshot disagrees with committed receipts"
         );
@@ -314,6 +428,9 @@ impl ProgressionService {
                 revision: 0,
                 private_base64: STANDARD.encode(&seed),
                 weapon_xp: BTreeMap::new(),
+                base: Base::default(),
+                archived: vec![],
+                retired: vec![],
                 receipts: vec![],
             },
         };
@@ -330,6 +447,17 @@ impl ProgressionService {
                 duplicate: true,
                 receipt: saved.receipt.clone(),
             });
+        }
+        if let Some(receipt) =
+            retired_receipt(&directory, &ledger, &award.match_id, &award_sha256).await?
+        {
+            return Ok(Commit {
+                duplicate: true,
+                receipt,
+            });
+        }
+        if ledger.receipts.len() >= MAX_RECEIPTS {
+            release(&directory, &mut ledger, account, &seed).await?;
         }
         ensure!(
             ledger.receipts.len() < MAX_RECEIPTS,
@@ -411,6 +539,35 @@ impl ProgressionService {
             receipt,
         })
     }
+    /// Release the acknowledged prefix of the live window into one immutable
+    /// segment so long-running accounts keep committing without losing history.
+    pub(crate) async fn archive(&self, account: AccountId) -> Result<Option<Archived>> {
+        let _lock = self.store.writes.lock().await;
+        let directory = self
+            .store
+            .profile_directory(account.title_id, account.user_id)
+            .await?;
+        let path = directory.join("progression.json");
+        let Some(bytes) = read_bounded(&path, MAX_LEDGER_BYTES).await? else {
+            return Ok(None);
+        };
+        let seed = read_bounded(&self.store.profile_path(account, true).await?, 61440)
+            .await?
+            .context("progression import profile disappeared")?;
+        let mut ledger: Ledger = serde_json::from_slice(&bytes)?;
+        ledger.validate(account, &seed)?;
+        let Some(archived) = release(&directory, &mut ledger, account, &seed).await? else {
+            return Ok(None);
+        };
+        ledger.validate(account, &seed)?;
+        let bytes = serde_json::to_vec(&ledger)?;
+        ensure!(
+            bytes.len() <= MAX_LEDGER_BYTES,
+            "progression ledger exceeds byte budget"
+        );
+        write_ledger(&path, &bytes).await?;
+        Ok(Some(archived))
+    }
     pub(crate) async fn pending(&self, account: AccountId) -> Result<Vec<Receipt>> {
         Ok(load(&self.store, account)
             .await?
@@ -451,6 +608,140 @@ impl ProgressionService {
             .join("progression.json");
         write_ledger(&path, &serde_json::to_vec(&ledger)?).await
     }
+}
+
+/// Move the acknowledged prefix of the receipt window into one immutable
+/// segment. Acknowledgement is the terminal delivery boundary, so released
+/// receipts stay available for audit and retry detection.
+async fn release(
+    directory: &std::path::Path,
+    ledger: &mut Ledger,
+    account: AccountId,
+    seed: &[u8],
+) -> Result<Option<Archived>> {
+    let count = ledger
+        .receipts
+        .iter()
+        .take_while(|receipt| receipt.acknowledged)
+        .count();
+    if count == 0 {
+        return Ok(None);
+    }
+    ensure!(
+        ledger.archived.len() < MAX_ARCHIVES,
+        "progression archive segment capacity reached"
+    );
+    let tables = Tables::native()?;
+    let mut player_total = if ledger.base.revision == 0 {
+        tables.player_total(profile::player_progress(seed, account.user_id)?)?
+    } else {
+        ledger.base.player_total
+    };
+    let mut weapon_totals = ledger.base.weapon_xp.clone();
+    let player_total_before = player_total;
+    let weapon_xp_before = weapon_totals.clone();
+    let from_revision = ledger.base.revision + 1;
+    let to_revision = ledger.base.revision + count as u64;
+    replay(
+        &tables,
+        &ledger.receipts[..count],
+        from_revision,
+        &mut player_total,
+        &mut weapon_totals,
+    )?;
+    let segment = Segment {
+        schema_version: 1,
+        client_sha256: codol_protocol::CLIENT_SHA256.into(),
+        title_id: account.title_id,
+        user_id: account.user_id.to_string(),
+        seed_private_sha256: ledger.seed_private_sha256.clone(),
+        rules_sha256: ledger.rules_sha256.clone(),
+        from_revision,
+        to_revision,
+        player_total_before,
+        weapon_xp_before,
+        player_total_after: player_total,
+        weapon_xp_after: weapon_totals.clone(),
+        receipts: ledger.receipts[..count].to_vec(),
+    };
+    let bytes = serde_json::to_vec(&segment)?;
+    ensure!(
+        bytes.len() <= MAX_LEDGER_BYTES,
+        "progression archive segment exceeds byte budget"
+    );
+    let archived = Archived {
+        file: format!("progression-archive-{:04}.json", ledger.archived.len()),
+        from_revision,
+        to_revision,
+        sha256: digest(&bytes),
+    };
+    write_ledger(&directory.join(&archived.file), &bytes).await?;
+    let written = read_bounded(&directory.join(&archived.file), MAX_LEDGER_BYTES)
+        .await?
+        .context("progression archive segment disappeared")?;
+    ensure!(
+        digest(&written) == archived.sha256,
+        "progression archive segment digest mismatch"
+    );
+    for receipt in ledger.receipts.drain(..count) {
+        ledger.retired.push(Retired {
+            match_id: receipt.receipt.match_id,
+            award_sha256: receipt.award_sha256,
+            revision: receipt.receipt.revision,
+        });
+    }
+    if ledger.retired.len() > MAX_RETIRED {
+        let excess = ledger.retired.len() - MAX_RETIRED;
+        ledger.retired.drain(..excess);
+    }
+    ledger.base = Base {
+        revision: to_revision,
+        player_total,
+        weapon_xp: weapon_totals,
+    };
+    ledger.archived.push(archived.clone());
+    Ok(Some(archived))
+}
+
+/// Resolve a retried match that already left the live window.
+async fn retired_receipt(
+    directory: &std::path::Path,
+    ledger: &Ledger,
+    match_id: &str,
+    award_sha256: &str,
+) -> Result<Option<Receipt>> {
+    let Some(retired) = ledger
+        .retired
+        .iter()
+        .find(|retired| retired.match_id == match_id)
+    else {
+        return Ok(None);
+    };
+    ensure!(
+        retired.award_sha256 == award_sha256,
+        "conflicting progression retry"
+    );
+    let archived = ledger
+        .archived
+        .iter()
+        .find(|archived| {
+            archived.from_revision <= retired.revision && retired.revision <= archived.to_revision
+        })
+        .context("retired progression receipt is outside the archive")?;
+    let bytes = read_bounded(&directory.join(&archived.file), MAX_LEDGER_BYTES)
+        .await?
+        .context("progression archive segment disappeared")?;
+    ensure!(
+        digest(&bytes) == archived.sha256,
+        "progression archive segment digest mismatch"
+    );
+    let segment: Segment = serde_json::from_slice(&bytes)?;
+    let saved = segment
+        .receipts
+        .iter()
+        .find(|saved| saved.receipt.revision == retired.revision)
+        .context("progression archive segment lost the receipt")?;
+    Ok(Some(saved.receipt.clone()))
 }
 
 async fn write_ledger(path: &std::path::Path, bytes: &[u8]) -> Result<()> {

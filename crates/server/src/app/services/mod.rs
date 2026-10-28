@@ -112,6 +112,12 @@ impl LocalServices {
     ) -> Result<crate::backend::progression::Commit> {
         self.progression.commit(account, award).await
     }
+    pub(crate) async fn archive_progression(
+        &self,
+        account: AccountId,
+    ) -> Result<Option<crate::backend::progression::Archived>> {
+        self.progression.archive(account).await
+    }
     pub async fn pending_progression(
         &self,
         account: AccountId,

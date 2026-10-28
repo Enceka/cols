@@ -399,3 +399,124 @@ async fn old_receipts_remain_retryable_after_later_matches_without_replaying_att
         1000
     );
 }
+
+#[tokio::test]
+async fn acknowledged_receipts_archive_into_one_segment_and_free_the_live_window() {
+    let (_temp, store, service) = setup().await;
+    let first = service.commit(ACCOUNT, award(1)).await.unwrap();
+    service.commit(ACCOUNT, award(2)).await.unwrap();
+    let directory = store.profile_directory(1002, 42).await.unwrap();
+    let before = committed_private(&store, ACCOUNT).await.unwrap();
+    assert!(service.archive(ACCOUNT).await.unwrap().is_none());
+    service
+        .acknowledge(ACCOUNT, &first.receipt.match_id, first.receipt.revision)
+        .await
+        .unwrap();
+    let archived = service.archive(ACCOUNT).await.unwrap().unwrap();
+    assert!(archived.file == "progression-archive-0000.json");
+    assert!((archived.from_revision, archived.to_revision) == (1, 1));
+    let raw = tokio::fs::read(directory.join(&archived.file))
+        .await
+        .unwrap();
+    assert!(digest(&raw) == archived.sha256);
+    let segment: Segment = serde_json::from_slice(&raw).unwrap();
+    assert!(segment.receipts.len() == 1);
+    assert!(segment.player_total_after == segment.receipts[0].receipt.player.after.total_xp);
+    let ledger: Ledger = serde_json::from_slice(&bytes(&store).await).unwrap();
+    assert!(ledger.base.revision == 1);
+    assert!(ledger.archived.len() == 1);
+    assert!(ledger.retired.len() == 1);
+    assert!(ledger.receipts.len() == 1);
+    assert!(ledger.revision == 2);
+    assert!(committed_private(&store, ACCOUNT).await.unwrap() == before);
+    assert!(inventory_progress(&store, ACCOUNT, &[10001]).await.unwrap()[0].xp == 1000);
+    service.commit(ACCOUNT, award(3)).await.unwrap();
+    let after: Ledger = serde_json::from_slice(&bytes(&store).await).unwrap();
+    assert!(after.revision == 3);
+    assert!(after.base.revision == 1);
+}
+
+#[tokio::test]
+async fn archived_receipts_stay_retryable_and_tampered_segments_are_rejected() {
+    let (_temp, store, service) = setup().await;
+    let first = service.commit(ACCOUNT, award(1)).await.unwrap();
+    service
+        .acknowledge(ACCOUNT, &first.receipt.match_id, first.receipt.revision)
+        .await
+        .unwrap();
+    let archived = service.archive(ACCOUNT).await.unwrap().unwrap();
+    let retry = service.commit(ACCOUNT, award(1)).await.unwrap();
+    assert!(retry.duplicate);
+    assert!(retry.receipt == first.receipt);
+    let mut conflict = award(1);
+    conflict.player_xp = 7;
+    assert!(service.commit(ACCOUNT, conflict).await.is_err());
+    let directory = store.profile_directory(1002, 42).await.unwrap();
+    let raw = tokio::fs::read(directory.join(&archived.file))
+        .await
+        .unwrap();
+    atomic_private_write(&directory.join(&archived.file), b"{}")
+        .await
+        .unwrap();
+    assert!(service.commit(ACCOUNT, award(1)).await.is_err());
+    atomic_private_write(&directory.join(&archived.file), &raw)
+        .await
+        .unwrap();
+    assert!(service.commit(ACCOUNT, award(1)).await.unwrap().duplicate);
+}
+
+#[tokio::test]
+async fn capacity_archives_the_acknowledged_prefix_and_keeps_live_retry_history() {
+    let (_temp, store, service) = setup().await;
+    service.commit(ACCOUNT, award(1)).await.unwrap();
+    let mut ledger: Ledger = serde_json::from_slice(&bytes(&store).await).unwrap();
+    ledger.receipts.clear();
+    ledger.weapon_xp.clear();
+    let tables = Tables::native().unwrap();
+    for index in 1..=MAX_RECEIPTS {
+        let input = MatchAward {
+            match_id: format!("{index:032x}"),
+            player_xp: 1,
+            weapons: Vec::new(),
+        };
+        ledger.receipts.push(SavedReceipt {
+            award_sha256: digest(&serde_json::to_vec(&input).unwrap()),
+            receipt: Receipt {
+                match_id: input.match_id,
+                revision: index as u64,
+                player: tables.player.award(index as u32 - 1, 1).unwrap(),
+                weapons: Vec::new(),
+            },
+            acknowledged: index < MAX_RECEIPTS,
+        });
+    }
+    ledger.revision = MAX_RECEIPTS as u64;
+    let seed = tokio::fs::read(store.profile_path(ACCOUNT, true).await.unwrap())
+        .await
+        .unwrap();
+    ledger.private_base64 =
+        STANDARD.encode(profile::with_player_progress(&seed, 42, 1, MAX_RECEIPTS as u32).unwrap());
+    let path = store
+        .profile_directory(1002, 42)
+        .await
+        .unwrap()
+        .join("progression.json");
+    atomic_private_write(&path, &serde_json::to_vec(&ledger).unwrap())
+        .await
+        .unwrap();
+    service.commit(ACCOUNT, award(1025)).await.unwrap();
+    let saved: Ledger = serde_json::from_slice(&bytes(&store).await).unwrap();
+    assert!(saved.base.revision == (MAX_RECEIPTS - 1) as u64);
+    assert!(saved.archived.len() == 1);
+    assert!(saved.retired.len() == MAX_RECEIPTS - 1);
+    assert!(saved.receipts.len() == 2);
+    assert!(saved.revision == MAX_RECEIPTS as u64 + 1);
+    let retry = MatchAward {
+        match_id: format!("{:032x}", 1),
+        player_xp: 1,
+        weapons: Vec::new(),
+    };
+    assert!(service.commit(ACCOUNT, retry).await.unwrap().duplicate);
+    let unchanged: Ledger = serde_json::from_slice(&bytes(&store).await).unwrap();
+    assert!(unchanged.revision == MAX_RECEIPTS as u64 + 1);
+}

@@ -40,3 +40,11 @@ pub(crate) async fn commit(root: &Path, input: &Path) -> Result<serde_json::Valu
         "scope":"isolated_offline_progression_diagnostic"}),
     )
 }
+
+/// Release the acknowledged receipts of one local account into an archive segment.
+pub(crate) async fn archive(root: &Path, title_id: u32, user_id: u64) -> Result<serde_json::Value> {
+    let services = LocalServices::open(root.to_path_buf()).await?;
+    let account = AccountId { title_id, user_id };
+    let archived = services.archive_progression(account).await?;
+    Ok(serde_json::json!({"archived":archived,"scope":"progression_archive"}))
+}

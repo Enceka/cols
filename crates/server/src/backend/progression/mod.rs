@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 const MAX_XP: u32 = i32::MAX as u32;
 pub(crate) mod service;
 pub use crate::contracts::progression::{MatchAward, WeaponXp};
+pub(crate) use service::Archived;
 pub use service::{Commit, Receipt, WeaponResult};
 
 #[derive(Deserialize)]

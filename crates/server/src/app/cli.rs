@@ -135,6 +135,15 @@ enum Command {
         #[arg(long)]
         input: PathBuf,
     },
+    /// Release acknowledged progression receipts into an immutable archive segment.
+    ArchiveProgression {
+        #[arg(long)]
+        service_data_dir: PathBuf,
+        #[arg(long, default_value_t = 1002)]
+        title_id: u32,
+        #[arg(long)]
+        user_id: u64,
+    },
     /// Create a local private profile from a CRC-valid client default; no overwrite.
     PreparePrivateProfile {
         #[arg(long)]
@@ -452,6 +461,17 @@ pub(super) async fn run() -> Result<()> {
             println!(
                 "{}",
                 crate::diagnostics::progression::commit(&service_data_dir, &input).await?
+            );
+        }
+        Command::ArchiveProgression {
+            service_data_dir,
+            title_id,
+            user_id,
+        } => {
+            println!(
+                "{}",
+                crate::diagnostics::progression::archive(&service_data_dir, title_id, user_id)
+                    .await?
             );
         }
         Command::CreateLocalPlayer {

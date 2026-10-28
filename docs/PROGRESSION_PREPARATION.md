@@ -25,7 +25,7 @@
 - `crates/server/src/backend/progression/mod.rs`：校验本版三套曲线，累计／级内经验互转，纯内存计算经验奖励，输出升级前后状态及每个跨越等级。满级没有“下一级”，有符号XP溢出受限。
 - `crates/server/src/game/progression/mod.rs`：玩法层收集服务端已确认的敌方击杀，以受害者死亡序号去重。人物／武器经验倍率来自显式策略，基础物品ID来自实际配装；自杀、友方击杀、坠落及Bot自身击杀不发玩家奖励，未映射、未拥有、近战／投掷物／奖励设备不能借用当前步枪ID发武器XP。
 - `crates/server/src/transport/game/connection/progression.rs`及`transport/game/server/mod.rs`：完成对局后提交一个稳定批次，失败时保持相同match ID重试，并延迟原生结算。提交成功后发送K私有档案、武器累计XP及人物升级提示，再由实际可靠命令ACK确认回执。INIT重发复用连接，不建立第二笔经验；此处描述单人Bot对局的经验接入；共享世界已独立实现，但共享多人经验尚未完成等同验收。
-- `crates/server/src/backend/progression/service.rs`：在共享账号写锁下提交人物进度、武器XP和原始回执，同一match ID与相同奖励重试返回原回执，奖励内容冲突则拒绝。提醒候选随回执保存，实际投递确认后才能持久化ack；入队不视为已送达。
+- `crates/server/src/backend/progression/service.rs`：在共享账号写锁下提交人物进度、武器XP和原始回执，同一match ID与相同奖励重试返回原回执，奖励内容冲突则拒绝。提醒候选随回执保存，实际投递确认后才能持久化ack；入队不视为已送达。窗口写满时把已确认前缀释放到归档段，再继续提交。
 - `crates/protocol/src/lobby/profile.rs`：`player_progress` 读取校验归属后的进度；`with_player_progress` 准备 v4 更新，重算 CRC 与 36 项投影，保留转生和其它字节，并提高 `uf_prestige_rank` 的普通等级下限而保留已有更高值。正式调用前必须先用等级模型校验／计算，不能直接把累计 XP 当参数传入。
 - `crates/protocol/src/lobby/task.rs`：`InventoryItem { id, xp }`、`player_data_with_inventory` 和 `inventory_records_with_progress`，分别覆盖初始 `80/230` 内嵌库存及 `80/203` 独立刷新记录。两种响应的归属编码不同，现有业务均已消费同一已提交经验投影；没有经验文件时保持原零XP行为。
 - `crates/protocol/src/game/snapshot/progression.rs`：本版二进制K补丁只写rank／级内XP／表版本和rank unlock值；`< <itemID> xp <累计XP>`更新武器查询缓存，`$ 0 0 <rankIndex>`使用promotion行0，`ui_promotion=1`通知原生结算。写入绝对值，可靠重发不会再次增加XP。
@@ -66,7 +66,7 @@ sh tools/cargo.sh run --locked -p codol-server -- commit-test-progression \
 
 `ProfileService`的私有读取、`LocalServices::game_profile`和库存两种响应都使用该提交记录。发武器XP前同时核对基础库存和永久购买所有权；经验不会授予武器／配件。一个批次中的未知、未拥有或重复武器导致整笔提交失败，不留下部分人物经验。每笔回执保留所有跨越等级，只有尚未确认的回执才进入pending结果。
 
-当前回执上限1024、文件上限4MiB；到达上限拒绝新提交，保留旧重试记录，不能随意删除历史以继续发奖。长期运行前需要显式归档／迁移机制。当前API接收的是一局最终确认的奖励，不应被调用成每帧或每次ACK发奖；对局ID仍需要由玩法／应用边界稳定生成。
+当前回执上限1024、文件上限4MiB；到达上限时先把已确认的连续前缀整体写入不可变归档段`progression-archive-NNNN.json`，再继续接收新提交；未确认的回执留在窗口内，旧重试记录不会因归档消失。归档段自带种子／规则摘要、起止修订号与前后累计XP，读取时校验段摘要、修订链和累计值，归档回执的重试从段内还原原回执；最近4096条只保留match ID与奖励摘要的墓碑用于冲突检测。也可用`codol-server archive-progression --service-data-dir <root> --title-id <title> --user-id <uid>`显式归档一次。当前API接收的是一局最终确认的奖励，不应被调用成每帧或每次ACK发奖；对局ID仍需要由玩法／应用边界稳定生成。
 
 ## 完成对局的发奖策略
 
@@ -126,7 +126,7 @@ sh tools/cargo.sh run --locked -p codol-server -- commit-test-progression \
 
 1. 使用独立低等级诊断账号和独立服务目录采集实际 weapon primary/secondary 分类、配件条件、插槽门槛及 splash 表。普通账号已有等级 70、全物品库存，无法直接验证自然人物升级；保留它的进度。
 2. 以服务端确认的击杀／目标事件确定人物与武器经验，携带基础物品 ID。核对持枪击杀、爆炸物、连杀奖励、拾枪、换背包、友伤、自杀和 Bot／训练模式各自是否计入；不把记分板分数直接当作通用 XP。
-3. 已接入完成的本地TDM对局奖励及稳定提交／失败重试。捕获地图验证实际M4发射／命中／击杀产生100人物XP和100武器XP，重启、重复请求和ACK均验证。长期运行先补回执归档；未完成退出、进程终止前尚未持久化的奖励和跨连接世界恢复目前没有发奖保证。
+3. 已接入完成的本地TDM对局奖励及稳定提交／失败重试。捕获地图验证实际M4发射／命中／击杀产生100人物XP和100武器XP，重启、重复请求和ACK均验证。已确认回执的归档与段内重试还原已覆盖；未完成退出、进程终止前尚未持久化的奖励和跨连接世界恢复目前没有发奖保证。
 4. 人物／武器档案、两种库存响应、准入名片读取、K／武器XP／人物splash和AAR标志已接。原生M9等级2和武器XP缓存已确认；继续验收完整对局后的场内动画／声音、武器结算进度条和返回大厅刷新。普通多人武器splash与配件提醒仍需确认本版实际入口。
 5. 原生验收人物 1→2、武器 1→2、一次跨多级、满级、配件／插槽出现、结算返回、重登和对局重试；同时核对原昵称、装配、所有权及转生保留。还需证明没有重复发经验或重复提示。
 
