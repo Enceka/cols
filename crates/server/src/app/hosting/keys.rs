@@ -116,7 +116,9 @@ pub(super) async fn ensure_identity(root: &Path, renew: bool) -> Result<Certific
     write_private(&directory.join("server.pem"), &certificate).await?;
     write_private(&directory.join("key.pem"), &key).await?;
     for name in ["server.pem", "key.pem"] {
-        tokio::fs::File::open(directory.join(name))
+        tokio::fs::OpenOptions::new()
+            .write(true)
+            .open(directory.join(name))
             .await?
             .sync_all()
             .await?;

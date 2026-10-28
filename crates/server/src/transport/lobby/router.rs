@@ -1,5 +1,6 @@
 //! Route supported task IDs to business-specific protocol handlers.
 use super::handlers;
+use crate::backend::chat::Chat;
 use crate::backend::commerce::service::CommerceService;
 use crate::backend::files::FileService;
 use crate::backend::identity::session::Session;
@@ -22,6 +23,7 @@ pub(crate) struct TaskRouter<'a> {
     pub commerce: &'a CommerceService,
     pub files: &'a FileService,
     pub publisher: &'a PublisherService,
+    pub chat: &'a std::sync::Mutex<Chat>,
 }
 impl TaskRouter<'_> {
     pub(crate) async fn handle(
@@ -47,9 +49,29 @@ impl TaskRouter<'_> {
                 record.string(name);
                 Ok(TaskResult::success("local_text_checked", vec![record.0]))
             }
+            // Public chat groups live outside the room directory: 102/1 changes
+            // subscriptions and 102/3 broadcasts text to subscribed connections.
+            (102, 1 | 3) => self
+                .chat
+                .lock()
+                .expect("chat directory poisoned")
+                .handle(&request, session),
             (71, 4) => {
                 lobby::registration_build(body)?;
                 Ok(TaskResult::success("registration", vec![]))
+            }
+            // Tencent telemetry and quit/heartbeat notifications are
+            // fire-and-forget on the native client. They carry no result
+            // records, but a failure reply stops lobby initialization.
+            (71, 3 | 7 | 9) => {
+                let mut reader = task::Reader::new(request.arguments);
+                if request.task != 9 {
+                    // Telemetry strings can contain the client's local
+                    // codepage; validation is byte/length based here.
+                    reader.string_bytes(task::MAX_FILE_BYTES)?;
+                }
+                reader.finish()?;
+                Ok(TaskResult::success("telemetry_ack", vec![]))
             }
             (12, 6) => {
                 task::Reader::new(request.arguments).finish()?;

@@ -546,13 +546,46 @@ impl Rooms {
         let actor = Identity::from(session);
         let name = &channel.humans[&session.user_id].name;
         for payload in payloads {
-            let body = message(session.user_id, name, id, &payload, delivery)?;
             if let Some(recipient) = recipient {
-                if let Some(human) = channel.humans.get(&recipient) {
-                    result.push_to(actor, human.identity, body);
+                if let Some(human) = channel.humans.get(&recipient)
+                    && let Some(filtered) = codol_protocol::room::messages::for_recipient(
+                        &payload,
+                        human.identity.user,
+                        channel.member_teams.get(&session.user_id).copied(),
+                        channel.member_teams.get(&human.identity.user).copied(),
+                    )?
+                {
+                    result.push_to(
+                        actor,
+                        human.identity,
+                        message(session.user_id, name, id, &filtered, delivery)?,
+                    );
                 }
             } else {
-                channel.targets(actor, &body, &mut result);
+                let recipients: Vec<_> = channel
+                    .humans
+                    .values()
+                    .map(|human| {
+                        (
+                            human.identity,
+                            channel.member_teams.get(&human.identity.user).copied(),
+                        )
+                    })
+                    .collect();
+                for (target, target_team) in recipients {
+                    if let Some(filtered) = codol_protocol::room::messages::for_recipient(
+                        &payload,
+                        target.user,
+                        channel.member_teams.get(&session.user_id).copied(),
+                        target_team,
+                    )? {
+                        result.push_to(
+                            actor,
+                            target,
+                            message(session.user_id, name, id, &filtered, delivery)?,
+                        );
+                    }
+                }
             }
         }
         if owner {

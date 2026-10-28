@@ -32,6 +32,7 @@ pub struct LocalServices {
     publisher: PublisherService,
     progression: crate::backend::progression::service::ProgressionService,
     rooms: Arc<Mutex<Rooms>>,
+    chat: Arc<std::sync::Mutex<crate::backend::chat::Chat>>,
     delivery: Arc<DeliveryHub>,
 }
 pub(crate) struct GameProfile {
@@ -53,6 +54,7 @@ impl LocalServices {
             ),
             accounts,
             rooms: Arc::new(Mutex::new(Rooms::default())),
+            chat: Arc::new(std::sync::Mutex::new(crate::backend::chat::Chat::default())),
             delivery: Arc::new(DeliveryHub::default()),
         })
     }
@@ -64,13 +66,18 @@ impl LocalServices {
             commerce: &self.commerce,
             files: &self.files,
             publisher: &self.publisher,
+            chat: &self.chat,
         }
     }
     pub async fn handle(&self, body: &[u8], session: &Session, now: u32) -> Result<TaskResult> {
         if body.starts_with(&[11, 3, 11])
             && let Some(name) = self.player_nickname(AccountId::from(session)).await?
         {
-            self.rooms.lock().await.set_name(session, name);
+            self.rooms.lock().await.set_name(session, name.clone());
+            self.chat
+                .lock()
+                .expect("chat directory poisoned")
+                .set_name(session, name);
         }
         self.router().handle(body, session, now).await
     }
@@ -122,20 +129,26 @@ impl LocalServices {
             .await
     }
     pub(crate) async fn subscribe_lobby(&self, session: &Session) -> Subscription {
-        let (subscription, replaced) = self.delivery.subscribe(session.into(), self.rooms.clone());
+        let (subscription, replaced) =
+            self.delivery
+                .subscribe(session.into(), self.rooms.clone(), self.chat.clone());
         let mut pushes = Vec::new();
         {
             let mut rooms = self.rooms.lock().await;
             pushes.extend(rooms.discard_changed_credentials(session));
             for identity in replaced {
                 pushes.extend(rooms.disconnect(identity));
+                self.chat
+                    .lock()
+                    .expect("chat directory poisoned")
+                    .disconnect(identity);
             }
         }
-        publish_with_cleanup(&self.delivery, &self.rooms, pushes).await;
+        publish_with_cleanup(&self.delivery, &self.rooms, &self.chat, pushes).await;
         subscription
     }
     pub(crate) async fn publish_lobby(&self, pushes: Vec<DirectedPush>) {
-        publish_with_cleanup(&self.delivery, &self.rooms, pushes).await;
+        publish_with_cleanup(&self.delivery, &self.rooms, &self.chat, pushes).await;
     }
     pub(crate) async fn reap_rooms(&self, now: u32) {
         let pushes = self.rooms.lock().await.reap(now);
@@ -159,7 +172,11 @@ impl LocalServices {
             let mut rooms = self.rooms.lock().await;
             ensure!(connection.is_current(), "lobby connection was replaced");
             if let Some(name) = nickname {
-                rooms.set_name(session, name);
+                rooms.set_name(session, name.clone());
+                self.chat
+                    .lock()
+                    .expect("chat directory poisoned")
+                    .set_name(session, name);
             }
             return rooms.handle(&request, session, now);
         }

@@ -23,7 +23,13 @@ pub(crate) async fn atomic_private_write(path: &Path, bytes: &[u8]) -> Result<()
     let temporary = path.with_extension(format!("{:016x}.tmp", u64::from_le_bytes(random)));
     let result = async {
         write_private(&temporary, bytes).await?;
-        tokio::fs::File::open(&temporary).await?.sync_all().await?;
+        // Windows requires write access for FlushFileBuffers.
+        OpenOptions::new()
+            .write(true)
+            .open(&temporary)
+            .await?
+            .sync_all()
+            .await?;
         tokio::fs::rename(&temporary, path).await?;
         Ok::<_, anyhow::Error>(())
     }
@@ -69,3 +75,6 @@ pub(crate) async fn read_bounded(path: &Path, limit: usize) -> Result<Option<Vec
 }
 
 pub(crate) mod accounts;
+
+#[cfg(test)]
+mod tests;

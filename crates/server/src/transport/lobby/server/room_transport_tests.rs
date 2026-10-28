@@ -4,7 +4,7 @@ use crate::transport::game::server::GameServer;
 use codol_protocol::lobby::task::Reader;
 use codol_protocol::lobby::task::Writer;
 
-struct Peer {
+pub(super) struct Peer {
     stream: TcpStream,
     keys: [u8; 72],
     incoming: u32,
@@ -18,7 +18,11 @@ fn bytes(hex: &str) -> Vec<u8> {
         .collect()
 }
 impl Peer {
-    async fn connect(address: SocketAddr, registry: &SessionRegistry, user: u64) -> Self {
+    pub(super) async fn connect(
+        address: SocketAddr,
+        registry: &SessionRegistry,
+        user: u64,
+    ) -> Self {
         let session = Session {
             title_id: 1002,
             user_id: user,
@@ -74,7 +78,7 @@ impl Peer {
             transaction: 1,
         }
     }
-    async fn message(&mut self) -> lobby::ApplicationMessage {
+    pub(super) async fn message(&mut self) -> lobby::ApplicationMessage {
         let wire = tokio::time::timeout(Duration::from_secs(3), read_frame(&mut self.stream))
             .await
             .unwrap()
@@ -89,7 +93,7 @@ impl Peer {
         self.incoming += 1;
         message
     }
-    async fn rpc(&mut self, body: &[u8]) -> (u32, Vec<u8>) {
+    pub(super) async fn rpc(&mut self, body: &[u8]) -> (u32, Vec<u8>) {
         let wire = lobby::encrypt_application(
             0x86,
             body,

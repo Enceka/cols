@@ -530,4 +530,6 @@ mod delivery_tests {
     }
 }
 #[cfg(test)]
+mod chat_transport_tests;
+#[cfg(test)]
 mod room_transport_tests;

@@ -1,14 +1,14 @@
 # 大厅、房间与游戏内文本聊天接入准备
 
-目标为 CODOL 3.3.3.3 的公共大厅聊天、房间全体／队伍聊天及游戏内全体／队伍聊天。当前工作完成协议研究和现状复现，尚未实现聊天修复或进行原生客户端聊天验收。角色语音、Party、私聊、战队与喇叭不在本专题范围。
+目标为 CODOL 3.3.3.3 的公共大厅聊天、房间全体／队伍聊天及游戏内全体／队伍聊天。当前已实现服务端公共聊天路由、房间 type2 解析和队伍范围过滤；原生客户端聊天 UI 尚未完成验收。角色语音、Party、私聊、战队与喇叭不在本专题范围。
 
 ## 当前结论
 
 | 场景 | 本版客户端路径 | Rust 当前行为 | 修复重点 |
 | --- | --- | --- | --- |
-| 大厅公共频道 | UI频道0 → `102/1`订阅变更、`102/3`发送 → SDK event34接收 | 两种请求均返回`unsupported_task / 4` | 订阅生命周期、发送校验、event34跨连接投递；确认频道ID |
-| 房间全体 | UI频道3 → 房间type2记录 → `11/4` → event7 | 房主可广播；普通成员的type2被拒绝 | 解析type2并允许合格成员发送 |
-| 房间队伍 | UI频道5 → 同一type2记录，team位为1 | 房主原始批次发给所有真人；普通成员被拒绝 | 服务端按当前成员队伍选择接收者 |
+| 大厅公共频道 | UI频道0 → `102/1`订阅变更、`102/3`发送 → SDK event34接收 | Rust已实现订阅、校验、event34跨连接投递；rank1账号已实采`102/1`订阅130/99，`102/3`尚未实采 | 游戏内聊天界面发送与双客户端接收 |
+| 房间全体 | UI频道3 → 房间type2记录 → `11/4` → event7 | 服务端已解析并转发全体文本；普通成员控制记录仍受白名单限制 | 双客户端原生发送与接收 |
+| 房间队伍 | UI频道5 → 同一type2记录，team位为1 | 服务端已按当前成员队伍过滤；普通成员发送仍需原生房间进入验收 | 双客户端切队及实机发送与接收 |
 | 游戏内全体／队伍 | 同一房间消息的接收链进入聊天控制器；对局状态另有队伍过滤 | 无独立文本聊天语义或对局成员路由 | 保留大厅连接，使用已绑定的房间／对局范围；实采游戏内发送入口 |
 
 房间文本已经有可复用的加密传输和event7外层，不需要重写大厅传输。仅在UDP里处理`say`不会覆盖这里已定位的原生聊天链路。
@@ -77,10 +77,20 @@ event35进入`0x5cc9a0`公告路径，不能替代公共聊天。
 发送与接收消费链支持“event34封装原始双Blob”的候选格式，但该格式尚无本版原生投递验收。
 公共UI回调将senderID设为0；自身显示是否需回送、是否与本地事件重复，必须实采确认。
 
-仍需解决两项原生行为：
+原生实采与仍需验证的行为：
 
-- 本版前端`ServerChannel.NEWBIE=99`，`JoinNewbieChannel`按传入值订阅，而公共发送分支固定组10。须捕获实际订阅与发送，确认初始化是否有另一条订阅10的路径；不能先把99与10任意合并。
-- 公共频道由`CareerController.isInNewbieChannel`控制：prestige=0且level<19。需要用符合条件的独立测试账号验证入口，避免更改用户正常账号等级，也不能把“UI没有频道”归因为服务端广播故障。
+`research-output/chat-ui-20261028d`中prestige=0、level=1的账号发出
+`102/1`，参数为`U32(0)`、`U32(1)`、`{U8(130), U64(99)}`、`NoType`，
+帧体25字节`66 03 01 08 00000000 08 01000000 03 82 0a 6300000000000000 00`。
+订阅只出现一次，未观察到另一条订阅组10的路径，而公共发送分支固定组10，
+因此两个ID指向同一公共频道：回执按客户端订阅的ID原样返回，
+投递时把99与10当作同一频道比较。
+
+`CareerController.isInNewbieChannel`（prestige=0且level<19）决定客户端是否订阅，
+验收需使用满足条件的独立测试账号，不能更改用户正常账号等级。
+
+`102/3`发送尚无原生帧：大厅聊天窗口只有私聊、组队、战队三个页签，
+公共频道消息进入`_chatChannels`后由游戏内聊天界面发送，需进入对局验证。
 
 ## 房间文本协议与成员范围
 
@@ -100,16 +110,16 @@ event35进入`0x5cc9a0`公告路径，不能替代公共聊天。
 这个U64不是玩家UID、房间ID或Unix时间。接收方从event7外层读取真正的发言者UID与SDK名称。
 记录可嵌套于type1 manifold，所有字段从第1个位偏移开始，不能按整字节切片。
 
-当前服务端存在四个明确缺口：
+当前服务端仍存在四个明确缺口：
 
-- `room_messages::validate_participant`只接受type1、6、13、16，普通成员的合法type2会触发`participant cannot produce this room command`。大厅传输把该错误转换成失败回执4。
-- `room_directory::peer_send`对房主消息按原始批次广播给全部真人，不解析team位。单真人房间的`backend/rooms/mod.rs`路径同样只回送给房主；修改时需统一两条路径的聊天处理。
+- `room_messages::validate_participant`已接受合法type2并校验有界文本、计数器和team位；普通成员的其它房主控制记录仍会被拒绝。
+- `room_directory::peer_send`已按发送者和收件人的当前room team过滤team文本；混合状态批次和共享游戏成员表仍需原生验收。
 - `Human::owner`默认将UID字符串编码为SDK名称；创建／更新房间描述只补齐房主昵称。加入者昵称尚无完整来源。聊天显示和对局队伍的按名字检查都需要核对可信昵称来源及UTF-8／GBK转换。
 - type1可以混合聊天与准备／角色／房间状态。过滤整批消息会丢状态，广播整批消息会泄露队伍文本。应按子记录及目标分发，保持同一发送者的消息顺序。
 
 原生房间接收会用发送者UID检查成员，并仅将队伍文本显示给同队；
 对局状态值10时，`0x6e1600`按来源名字查找clientinfo再比较队伍。
-当前Rust传输仍向所有成员发出原始字节，客户端隐藏不等于服务端限制接收范围。
+当前Rust传输对已识别的type2队伍文本执行服务端范围过滤；其它混合记录仍按原生房间状态路径处理。
 房间team1／2与游戏team1／2的顺序相反，已存在映射`game_team = 3 - room_team`。
 无队伍、观察者、尚未完成加入的成员不得因为team值相同而自动成为队伍收件人；具体UI行为需要实机确认。
 
@@ -150,8 +160,8 @@ Rust当前每个`game_connection::Connection`分别拥有`TdmMatch`，
 独立临时服务目录、合成UID42/43/44、真实当前`LocalServices::handle`复现：
 
 - 合法type2全体及中文队伍记录：房主成功，回送1条、跨连接投递给43和44；普通成员均被白名单拒绝。
-- `102/1`订阅和`102/3`发送：均为`unsupported_task`、错误4、0推送和0跨连接投递。
-- 房间协议测试5项、房间目录测试7项及双身份TCP传输测试2项通过；1项原生type18采集测试按既有条件ignored。
+- 四次真实客户端启动验收：AUTH、协议210、大厅注册和`71/3、71/7、71/9`均成功；rank70账号三次运行均无`102`帧，rank1（prestige=0）账号运行发出`102/1`订阅130/99且未产生`102/3`；客户端窗口保持黑屏，聊天UI未被驱动。
+- 房间协议测试7项、房间目录测试9项及双身份TCP传输测试3项通过（含公共聊天投递1项）；1项原生type18采集测试按既有条件ignored。
 
 这些测试只证明当前代码路径及消息字节分发，不证明队伍UI显示或原生聊天验收。
 本机聊天元数据保存本版地址依据与合成向量，原生接收候选未动态验收。原始指令、`native-summary.json`和诊断结果位于忽略目录；从内部引用位置误建的函数不能作为语义证据，有效入口以指令和调用链为准。
@@ -160,6 +170,7 @@ Rust当前每个`game_connection::Connection`分别拥有`TdmMatch`，
 sh tools/cargo.sh test --locked -p codol-protocol room::messages
 sh tools/cargo.sh test --locked -p codol-server --lib rooms::directory_tests
 sh tools/cargo.sh test --locked -p codol-server --lib transport::lobby::server::room_transport_tests
+sh tools/cargo.sh test --locked -p codol-server --lib transport::lobby::server::chat_transport_tests
 .tools/ghidra/ghidra_12.1.4_PUBLIC/support/analyzeHeadless \
   research-output/ghidra codol3333 -process codoMP_client_shipRetail.exe \
   -readOnly -noanalysis -scriptPath tools/ghidra \

@@ -1,0 +1,132 @@
+{
+  "schema_version": 1,
+  "client_sha256": "e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b",
+  "evidence": "current fixed-sample static producers/consumers, synthetic LocalServices reproduction, and one native 102/1 subscription capture; routing and encrypted delivery are unit-tested, native UI acceptance pending",
+  "documentation": "docs/CHAT_PREPARATION.md",
+  "address_type": "fixed_image_va",
+  "ui_channels": {
+    "public_newbie": 0,
+    "room_all": 3,
+    "room_team": 5
+  },
+  "room_text": {
+    "writer_va": "0x6dd2a0",
+    "reader_va": "0x6dd360",
+    "receiver_va": "0x6e8f10",
+    "receiver_text_branch_va": "0x6e8fa7",
+    "ui_channel_mapper_va": "0x5ccc00",
+    "bit_order": "lsb_first",
+    "batch_prefix": "le32 record length",
+    "fields": [
+      {
+        "bits": 1,
+        "value": 0,
+        "name": "typed_stream"
+      },
+      {
+        "bits": 8,
+        "value": 2,
+        "name": "record_type"
+      },
+      {
+        "name": "message",
+        "encoding": "utf-8",
+        "terminator": "nul",
+        "aligned": false
+      },
+      {
+        "bits": 64,
+        "name": "performance_counter",
+        "producer_va": "0xa6e160",
+        "semantics": "QueryPerformanceCounter; not a user ID or Unix timestamp"
+      },
+      {
+        "bits": 1,
+        "name": "team_only"
+      }
+    ],
+    "synthetic": [
+      {
+        "message": "Hello",
+        "team_only": false,
+        "performance_counter": 123,
+        "batch_hex": "100000000490cad8d8de00f60000000000000000"
+      },
+      {
+        "message": "中文 team",
+        "team_only": true,
+        "performance_counter": 123,
+        "batch_hex": "1600000004c8715bcd2d0f41e8cac2da00f60000000000000002"
+      }
+    ]
+  },
+  "public_group": {
+    "subscription": {
+      "service": 102,
+      "task": 1,
+      "builder_va": "0xa4d500",
+      "join_va": "0x6ace80",
+      "leave_va": "0x6acf10",
+      "fields": [
+        "u32 remove_count",
+        "remove_count * (u8 group_type, u64 group_id)",
+        "u32 add_count",
+        "add_count * (u8 group_type, u64 group_id)"
+      ],
+      "join_synthetic_group_type": 130,
+      "join_synthetic_group_id": 99,
+      "join_body_hex": "6603010800000000080100000003820a630000000000000000",
+      "native_capture": "research-output/chat-ui-20261028d lobby packet-029: rank 1, prestige 0 account sent this exact 25-byte body"
+    },
+    "send": {
+      "service": 102,
+      "task": 3,
+      "builder_va": "0xa4d810",
+      "frontend_handler_va": "0x5e4760",
+      "fixed_group_type": 130,
+      "fixed_group_id": 10,
+      "body_hex": "66030303820a0a0000000000000013081a00000000000000120000007455746f5230e4b8ade696872068656c6c6f00",
+      "payload_hex": "00000000120000007455746f5230e4b8ade696872068656c6c6f",
+      "payload_fields": [
+        "le32 first_blob_byte_length (0 in this vector)",
+        "le32 message_byte_length",
+        "message_bytes"
+      ],
+      "message": "tUtoR0中文 hello",
+      "prefix": "tUtoR0",
+      "prefix_semantics": "frontend public-channel marker, not a speaker name"
+    },
+    "receive_candidate": {
+      "event": 34,
+      "sdk_reader_va": "0xa3ebf0",
+      "lobby_callback_va": "0x6d2060",
+      "ui_callback_va": "0x5cc970",
+      "fields": [
+        "tagged u32 event",
+        "tagged u64 authenticated sender",
+        "tagged string Base64 SDK name",
+        "tagged blob nested payload"
+      ],
+      "synthetic_sender": 42,
+      "synthetic_name": "Host 42",
+      "kind2_body_hex": "08220000000a2a00000000000000105347397a644341304d673d3d0013081a00000000000000120000007455746f5230e4b8ade696872068656c6c6f",
+      "native_dynamic_acceptance": false
+    },
+    "unresolved": [
+      "public self-echo behavior",
+      "native chat display and in-game send path",
+      "102/3 capture from the in-game chat UI"
+    ],
+    "delivery": {
+      "channel_alias": "the native subscription builder passes ServerChannel.NEWBIE (99) while the send branch fixes group 10; both name the public channel",
+      "echo": "the 102/1 reply returns the ids the client sent",
+      "transport_test": "crates/server/src/transport/lobby/server/chat_transport_tests.rs"
+    }
+  },
+  "current_behavior": {
+    "public_subscription": "102/1 routed to backend::chat; group type 130 only",
+    "public_send": "102/3 payload validated and fanned out to subscribed authenticated identities",
+    "guest_room_text": "valid type2 text accepted after bounded participant validation",
+    "room_team_delivery": "team-only text filtered per recipient room team"
+  }
+}

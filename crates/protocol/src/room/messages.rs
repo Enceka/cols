@@ -22,6 +22,14 @@ pub struct RoomInfo {
     pub minimum: u8,
     pub maximum: u8,
 }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Text {
+    /// Player-visible message bytes, UTF-8 validated at send time.
+    pub body: Vec<u8>,
+    /// Allies-only chat; the host filters these records per recipient team.
+    pub team_only: bool,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Member {
     pub id: u64,
@@ -88,6 +96,8 @@ pub struct Updates {
     /// Owner republished its avatar, including after native frontend teardown.
     pub avatar_refresh: bool,
 }
+/// Native chat records stay small enough to fit one room payload.
+const MAX_TEXT: usize = 1024;
 struct Bits<'a> {
     bytes: &'a [u8],
     position: usize,
@@ -126,6 +136,23 @@ impl<'a> Bits<'a> {
             bytes.push(b);
         }
         Err(LobbyError("room identifier too long"))
+    }
+    fn text(&mut self) -> Result<Text, LobbyError> {
+        let mut body = Vec::new();
+        loop {
+            let b = self.read(8)? as u8;
+            if b == 0 {
+                break;
+            }
+            if body.len() >= MAX_TEXT {
+                return Err(LobbyError("room text too long"));
+            }
+            body.push(b);
+        }
+        // Type2: NUL-terminated message, 64-bit send counter, allies-only flag.
+        let _counter = self.read(64)?;
+        let team_only = self.read(1)? != 0;
+        Ok(Text { body, team_only })
     }
     fn member(&mut self) -> Result<Member, LobbyError> {
         let result = Member {
@@ -188,6 +215,163 @@ pub fn bot_room_updates(batch: &[u8], owner: u64) -> Result<Updates, LobbyError>
 pub fn channel_updates(batch: &[u8], recipients: &[u64]) -> Result<Updates, LobbyError> {
     updates_for(batch, recipients)
 }
+/// Room text a participant may publish: ordinary text reaches every member,
+/// team text only reaches recipients whose room team matches the sender.
+pub fn participant_text(batch: &[u8]) -> Result<Vec<Text>, LobbyError> {
+    fn message(bytes: &[u8], depth: usize, result: &mut Vec<Text>) -> Result<(), LobbyError> {
+        if depth > 4 || bytes.is_empty() || bytes.len() > 1024 {
+            return Err(LobbyError("room nesting limit"));
+        }
+        let mut r = Bits { bytes, position: 0 };
+        if r.read(1)? != 0 {
+            return Err(LobbyError("unsupported typed room stream"));
+        }
+        match r.read(8)? {
+            1 => {
+                let count = r.read(32)?;
+                if count > 64 {
+                    return Err(LobbyError("room manifold count"));
+                }
+                for _ in 0..count {
+                    if r.read(1)? != 0 {
+                        return Err(LobbyError("participant cannot target a room member"));
+                    }
+                    let size = r.read(32)? as usize;
+                    message(&r.bytes(size)?, depth + 1, result)?;
+                }
+            }
+            2 => result.push(r.text()?),
+            _ => return Err(LobbyError("participant can only write room text")),
+        }
+        Ok(())
+    }
+    if batch.is_empty() || batch.len() > 16384 {
+        return Err(LobbyError("room batch size"));
+    }
+    let mut left = batch;
+    let mut result = Vec::new();
+    for _ in 0..=64 {
+        if left.is_empty() {
+            break;
+        }
+        let header = left.get(..4).ok_or(LobbyError("room length missing"))?;
+        let size = u32::from_le_bytes(header.try_into().unwrap()) as usize;
+        let record = left
+            .get(4..4 + size)
+            .ok_or(LobbyError("room record truncated"))?;
+        message(record, 0, &mut result)?;
+        left = &left[4 + size..];
+    }
+    if !left.is_empty() {
+        return Err(LobbyError("room batch count"));
+    }
+    Ok(result)
+}
+
+/// Rebuild a room batch for one authenticated recipient. Text records marked
+/// team-only are removed for other teams, and targeted manifold children are
+/// retained only for their addressed recipient. Unknown non-text records stay
+/// byte-identical so their native consumers keep the same state semantics.
+pub fn for_recipient(
+    batch: &[u8],
+    recipient: u64,
+    sender_team: Option<u8>,
+    recipient_team: Option<u8>,
+) -> Result<Option<Vec<u8>>, LobbyError> {
+    fn record(
+        bytes: &[u8],
+        recipient: u64,
+        sender_team: Option<u8>,
+        recipient_team: Option<u8>,
+        depth: usize,
+    ) -> Result<Option<Vec<u8>>, LobbyError> {
+        if depth > 4 || bytes.is_empty() || bytes.len() > 1024 {
+            return Err(LobbyError("room nesting limit"));
+        }
+        let mut r = Bits { bytes, position: 0 };
+        if r.read(1)? != 0 {
+            return Err(LobbyError("unsupported typed room stream"));
+        }
+        match r.read(8)? {
+            1 => {
+                let count = r.read(32)?;
+                if count > 64 {
+                    return Err(LobbyError("room manifold count"));
+                }
+                let mut children = Vec::new();
+                for _ in 0..count {
+                    let targeted = r.read(1)? != 0;
+                    let target = if targeted { Some(r.read(64)?) } else { None };
+                    let size = r.read(32)? as usize;
+                    let body = r.bytes(size)?;
+                    if target.is_some_and(|target| target != recipient) {
+                        continue;
+                    }
+                    if let Some(body) =
+                        record(&body, recipient, sender_team, recipient_team, depth + 1)?
+                    {
+                        children.push((target, body));
+                    }
+                }
+                if children.is_empty() {
+                    return Ok(None);
+                }
+                let mut out = Output::default().frame(1);
+                out.bits(children.len() as u64, 32);
+                for (target, body) in children {
+                    out.bits(u64::from(target.is_some()), 1);
+                    if let Some(target) = target {
+                        out.bits(target, 64);
+                    }
+                    out.bits(body.len() as u64, 32);
+                    for byte in body {
+                        out.bits(u64::from(byte), 8);
+                    }
+                }
+                Ok(Some(out.bytes))
+            }
+            2 => {
+                let text = r.text()?;
+                if r.read(r.bytes.len() * 8 - r.position)? != 0 {
+                    return Err(LobbyError("nonzero room text padding"));
+                }
+                if text.team_only {
+                    let sender = sender_team.filter(|team| matches!(team, 1 | 2));
+                    if sender.is_none() || recipient_team != sender {
+                        return Ok(None);
+                    }
+                }
+                Ok(Some(bytes.to_vec()))
+            }
+            _ => Ok(Some(bytes.to_vec())),
+        }
+    }
+
+    if batch.is_empty() || batch.len() > 16384 {
+        return Err(LobbyError("room batch size"));
+    }
+    let mut left = batch;
+    let mut output = Vec::new();
+    let mut count = 0;
+    while !left.is_empty() {
+        if count >= 64 {
+            return Err(LobbyError("room batch count"));
+        }
+        let header = left.get(..4).ok_or(LobbyError("room length missing"))?;
+        let size = u32::from_le_bytes(header.try_into().unwrap()) as usize;
+        if size == 0 || size > 1024 || size + 4 > left.len() {
+            return Err(LobbyError("room record truncated"));
+        }
+        let body = &left[4..4 + size];
+        if let Some(filtered) = record(body, recipient, sender_team, recipient_team, 0)? {
+            output.extend_from_slice(&(filtered.len() as u32).to_le_bytes());
+            output.extend_from_slice(&filtered);
+        }
+        left = &left[4 + size..];
+        count += 1;
+    }
+    Ok((!output.is_empty()).then_some(output))
+}
 /// Participants can publish their own join, roster request, ready and loadout.
 /// The authenticated transport sender owns the avatar; authority stays with host.
 pub fn validate_participant(batch: &[u8], owner: u64) -> Result<(), LobbyError> {
@@ -216,6 +400,9 @@ pub fn validate_participant(batch: &[u8], owner: u64) -> Result<(), LobbyError> 
             6 | 13 => {}
             16 => {
                 r.read(1)?;
+            }
+            2 => {
+                r.text()?;
             }
             28 => {
                 // Native0x6e8f50 case28 updates only the authenticated sender's
@@ -462,6 +649,82 @@ mod tests {
         assert!(
             super::validate_participant(&super::Output::default().frame(14).batch(), 42).is_err()
         );
+    }
+    #[test]
+    fn participant_text_preserves_team_scope_and_utf8_bytes() {
+        let fixture: serde_json::Value = serde_json::from_slice(include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/protocol/chat-3.3.3.3.json"
+        )))
+        .unwrap();
+        for sample in fixture["room_text"]["synthetic"].as_array().unwrap() {
+            let hex = sample["batch_hex"].as_str().unwrap();
+            let bytes = hex
+                .as_bytes()
+                .chunks_exact(2)
+                .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+                .collect::<Vec<_>>();
+            let texts = participant_text(&bytes).unwrap();
+            assert_eq!(texts.len(), 1);
+            assert_eq!(
+                texts[0].body,
+                sample["message"].as_str().unwrap().as_bytes()
+            );
+            assert_eq!(texts[0].team_only, sample["team_only"].as_bool().unwrap());
+        }
+    }
+    #[test]
+    fn participant_text_is_allowed_but_owner_control_records_are_not() {
+        let fixture: serde_json::Value = serde_json::from_slice(include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/protocol/chat-3.3.3.3.json"
+        )))
+        .unwrap();
+        let sample = fixture["room_text"]["synthetic"][0]["batch_hex"]
+            .as_str()
+            .unwrap();
+        let bytes = sample
+            .as_bytes()
+            .chunks_exact(2)
+            .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+            .collect::<Vec<_>>();
+        assert!(validate_participant(&bytes, 42).is_ok());
+        assert!(validate_participant(&Output::default().frame(14).batch(), 42).is_err());
+        for end in 0..bytes.len() {
+            assert!(validate_participant(&bytes[..end], 42).is_err());
+        }
+    }
+    #[test]
+    fn recipient_filter_keeps_mixed_room_state_but_hides_enemy_chat() {
+        let fixture: serde_json::Value = serde_json::from_slice(include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/protocol/chat-3.3.3.3.json"
+        )))
+        .unwrap();
+        let sample = fixture["room_text"]["synthetic"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|sample| sample["team_only"].as_bool() == Some(true))
+            .unwrap();
+        let hex = sample["batch_hex"].as_str().unwrap();
+        let mut batch = hex
+            .as_bytes()
+            .chunks_exact(2)
+            .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+            .collect::<Vec<_>>();
+        let ready = bot_ready(true);
+        batch.extend_from_slice(&ready);
+
+        let ally = for_recipient(&batch, 43, Some(1), Some(1))
+            .unwrap()
+            .unwrap();
+        assert_eq!(ally, batch);
+        let enemy = for_recipient(&batch, 44, Some(1), Some(2))
+            .unwrap()
+            .unwrap();
+        assert_eq!(enemy, ready);
+        assert_eq!(for_recipient(&batch, 44, None, None).unwrap(), Some(ready));
     }
     use super::*;
     fn hex_bytes(value: &str) -> Vec<u8> {

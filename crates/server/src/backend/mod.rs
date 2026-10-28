@@ -1,3 +1,4 @@
+pub mod chat;
 pub mod commerce;
 pub mod identity;
 pub mod players;

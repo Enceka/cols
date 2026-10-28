@@ -349,6 +349,61 @@ fn owner_broadcast_join_response_also_confirms_a_pending_channel_member() {
 }
 
 #[test]
+fn room_team_text_is_sent_only_to_members_on_the_sender_team() {
+    let mut rooms = Rooms::default();
+    let owner = actor(42);
+    let ally = actor(43);
+    let enemy = actor(44);
+    let (id, _) = room(&mut rooms, &owner, 12);
+    call(&mut rooms, &join(id), &ally, 2);
+    call(&mut rooms, &join(id), &enemy, 2);
+    rooms.channels.get_mut(&id).unwrap().member_teams.extend([
+        (owner.user_id, 1),
+        (ally.user_id, 1),
+        (enemy.user_id, 2),
+    ]);
+    let fixture: serde_json::Value = serde_json::from_slice(include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../fixtures/protocol/chat-3.3.3.3.json"
+    )))
+    .unwrap();
+    let sample = fixture["room_text"]["synthetic"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|sample| sample["team_only"].as_bool() == Some(true))
+        .unwrap();
+    let hex = sample["batch_hex"].as_str().unwrap();
+    let batch = hex
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+        .collect::<Vec<_>>();
+    let result = call(&mut rooms, &send(id, None, &batch), &owner, 3);
+    assert!(result.result.is_ok());
+    assert_eq!(result.pushes.len(), 1);
+    assert_eq!(
+        result
+            .deliveries
+            .iter()
+            .map(|push| push.target.user)
+            .collect::<Vec<_>>(),
+        vec![43]
+    );
+    let guest_result = call(&mut rooms, &send(id, None, &batch), &ally, 3);
+    assert!(guest_result.result.is_ok());
+    assert_eq!(guest_result.pushes.len(), 1);
+    assert_eq!(
+        guest_result
+            .deliveries
+            .iter()
+            .map(|push| push.target.user)
+            .collect::<Vec<_>>(),
+        vec![42]
+    );
+}
+
+#[test]
 fn configured_bot_fill_uses_replaceable_seats_and_refills_after_a_human_leaves() {
     let fill = crate::backend::rooms::bots::FillPolicy {
         target: 4,

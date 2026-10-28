@@ -29,6 +29,7 @@ pub(crate) struct Subscription {
     generation: u64,
     hub: Arc<DeliveryHub>,
     rooms: Arc<tokio::sync::Mutex<Rooms>>,
+    chat: Arc<Mutex<crate::backend::chat::Chat>>,
     receiver: mpsc::Receiver<Vec<u8>>,
     closed: watch::Receiver<bool>,
 }
@@ -37,6 +38,7 @@ impl DeliveryHub {
         self: &Arc<Self>,
         identity: Identity,
         rooms: Arc<tokio::sync::Mutex<Rooms>>,
+        chat: Arc<Mutex<crate::backend::chat::Chat>>,
     ) -> (Subscription, Vec<Identity>) {
         let (sender, receiver) = mpsc::channel(64);
         let (closed_sender, closed) = watch::channel(false);
@@ -69,6 +71,7 @@ impl DeliveryHub {
                 generation,
                 hub: self.clone(),
                 rooms,
+                chat,
                 receiver,
                 closed,
             },
@@ -134,12 +137,14 @@ impl Drop for Subscription {
             return;
         }
         let rooms = self.rooms.clone();
+        let chat = self.chat.clone();
         let hub = self.hub.clone();
         let identity = self.identity;
         if let Ok(runtime) = tokio::runtime::Handle::try_current() {
             runtime.spawn(async move {
                 let pushes = rooms.lock().await.disconnect(identity);
-                publish_with_cleanup(&hub, &rooms, pushes).await;
+                chat.lock().expect("chat directory").disconnect(identity);
+                publish_with_cleanup(&hub, &rooms, &chat, pushes).await;
             });
         }
     }
@@ -147,6 +152,7 @@ impl Drop for Subscription {
 pub(crate) async fn publish_with_cleanup(
     hub: &DeliveryHub,
     rooms: &tokio::sync::Mutex<Rooms>,
+    chat: &std::sync::Mutex<crate::backend::chat::Chat>,
     mut pushes: Vec<DirectedPush>,
 ) {
     while !pushes.is_empty() {
@@ -155,6 +161,7 @@ pub(crate) async fn publish_with_cleanup(
         let mut directory = rooms.lock().await;
         for identity in failed {
             pushes.extend(directory.disconnect(identity));
+            chat.lock().expect("chat directory").disconnect(identity);
         }
     }
 }
@@ -174,10 +181,11 @@ mod tests {
     #[tokio::test]
     async fn mailbox_routes_only_to_the_exact_identity_and_replacement_preserves_new_lease() {
         let rooms = Arc::new(tokio::sync::Mutex::new(Rooms::default()));
+        let chat = Arc::new(Mutex::new(crate::backend::chat::Chat::default()));
         let hub = Arc::new(DeliveryHub::default());
         let actor = session();
-        let (mut old, _) = hub.subscribe((&actor).into(), rooms.clone());
-        let (mut current, replaced) = hub.subscribe((&actor).into(), rooms.clone());
+        let (mut old, _) = hub.subscribe((&actor).into(), rooms.clone(), chat.clone());
+        let (mut current, replaced) = hub.subscribe((&actor).into(), rooms, chat);
         assert!(replaced.is_empty());
         assert!(!old.is_current());
         assert!(old.next().await.is_none());
@@ -199,10 +207,11 @@ mod tests {
     #[tokio::test]
     async fn slow_recipient_is_closed_instead_of_silently_losing_room_events() {
         let rooms = Arc::new(tokio::sync::Mutex::new(Rooms::default()));
+        let chat = Arc::new(Mutex::new(crate::backend::chat::Chat::default()));
         let hub = Arc::new(DeliveryHub::default());
         let actor = session();
         let identity = Identity::from(&actor);
-        let (mut receiver, _) = hub.subscribe(identity, rooms);
+        let (mut receiver, _) = hub.subscribe(identity, rooms, chat);
         for _ in 0..64 {
             assert!(
                 hub.publish(&[DirectedPush {

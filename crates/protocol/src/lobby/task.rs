@@ -106,6 +106,13 @@ impl<'a> Reader<'a> {
         }
     }
     pub fn string(&mut self, capacity: usize) -> Result<&'a str, LobbyError> {
+        std::str::from_utf8(self.string_bytes(capacity)?)
+            .map_err(|_| LobbyError("unsupported task string encoding"))
+    }
+    /// Read a bounded NUL-terminated task string without interpreting its
+    /// character encoding. Some telemetry fields carry the client's local
+    /// codepage and are fire-and-forget payloads.
+    pub fn string_bytes(&mut self, capacity: usize) -> Result<&'a [u8], LobbyError> {
         self.tag(16)?;
         let end = self
             .bytes
@@ -114,8 +121,7 @@ impl<'a> Reader<'a> {
             .position(|b| *b == 0)
             .ok_or(LobbyError("unterminated or oversized task string"))?;
         let value = self.take(end + 1)?;
-        std::str::from_utf8(&value[..end])
-            .map_err(|_| LobbyError("unsupported task string encoding"))
+        Ok(&value[..end])
     }
     pub fn blob(&mut self) -> Result<&'a [u8], LobbyError> {
         self.tag(19)?;
