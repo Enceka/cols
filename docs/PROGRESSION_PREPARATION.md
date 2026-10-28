@@ -66,7 +66,7 @@ sh tools/cargo.sh run --locked -p codol-server -- commit-test-progression \
 
 `ProfileService`的私有读取、`LocalServices::game_profile`和库存两种响应都使用该提交记录。发武器XP前同时核对基础库存和永久购买所有权；经验不会授予武器／配件。一个批次中的未知、未拥有或重复武器导致整笔提交失败，不留下部分人物经验。每笔回执保留所有跨越等级，只有尚未确认的回执才进入pending结果。
 
-当前回执上限1024、文件上限4MiB；到达上限时先把已确认的连续前缀整体写入不可变归档段`progression-archive-NNNN.json`，再继续接收新提交；未确认的回执留在窗口内，旧重试记录不会因归档消失。归档段自带种子／规则摘要、起止修订号与前后累计XP，读取时校验段摘要、修订链和累计值，归档回执的重试从段内还原原回执；最近4096条只保留match ID与奖励摘要的墓碑用于冲突检测。也可用`codol-server archive-progression --service-data-dir <root> --title-id <title> --user-id <uid>`显式归档一次。当前API接收的是一局最终确认的奖励，不应被调用成每帧或每次ACK发奖；对局ID仍需要由玩法／应用边界稳定生成。
+当前回执上限1024、文件上限4MiB；到达上限时先把已确认的连续前缀整体写入不可变归档段`progression-archive-NNNN.json`，再继续接收新提交；未确认的回执留在窗口内，旧重试记录不会因归档消失。归档段自带种子／规则摘要、起止修订号与前后累计XP，读取时校验段摘要、修订链和累计值，归档回执的重试从段内还原原回执；账本另存最近4096条match ID与奖励摘要的墓碑作为快路径，墓碑被裁剪后仍会回读归档段判定重试，不会重复发奖。也可用`codol-server archive-progression --service-data-dir <root> --title-id <title> --user-id <uid>`显式归档一次。当前API接收的是一局最终确认的奖励，不应被调用成每帧或每次ACK发奖；对局ID仍需要由玩法／应用边界稳定生成。
 
 ## 完成对局的发奖策略
 

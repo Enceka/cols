@@ -117,8 +117,9 @@ pub(crate) struct Archived {
     to_revision: u64,
     sha256: String,
 }
-/// Retry tombstone for a receipt that already left the live window. Only the
-/// most recent tombstones are kept, because a retry follows delivery by seconds.
+/// Retry tombstone for a receipt that already left the live window. Tombstones
+/// only answer the common retry without reading a segment; an older retry falls
+/// back to scanning the segments.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Retired {
@@ -676,13 +677,7 @@ async fn release(
         sha256: digest(&bytes),
     };
     write_ledger(&directory.join(&archived.file), &bytes).await?;
-    let written = read_bounded(&directory.join(&archived.file), MAX_LEDGER_BYTES)
-        .await?
-        .context("progression archive segment disappeared")?;
-    ensure!(
-        digest(&written) == archived.sha256,
-        "progression archive segment digest mismatch"
-    );
+    read_segment(directory, &archived).await?;
     for receipt in ledger.receipts.drain(..count) {
         ledger.retired.push(Retired {
             match_id: receipt.receipt.match_id,
@@ -703,31 +698,8 @@ async fn release(
     Ok(Some(archived))
 }
 
-/// Resolve a retried match that already left the live window.
-async fn retired_receipt(
-    directory: &std::path::Path,
-    ledger: &Ledger,
-    match_id: &str,
-    award_sha256: &str,
-) -> Result<Option<Receipt>> {
-    let Some(retired) = ledger
-        .retired
-        .iter()
-        .find(|retired| retired.match_id == match_id)
-    else {
-        return Ok(None);
-    };
-    ensure!(
-        retired.award_sha256 == award_sha256,
-        "conflicting progression retry"
-    );
-    let archived = ledger
-        .archived
-        .iter()
-        .find(|archived| {
-            archived.from_revision <= retired.revision && retired.revision <= archived.to_revision
-        })
-        .context("retired progression receipt is outside the archive")?;
+/// Read one archive segment and verify it against the digest the ledger recorded.
+async fn read_segment(directory: &std::path::Path, archived: &Archived) -> Result<Segment> {
     let bytes = read_bounded(&directory.join(&archived.file), MAX_LEDGER_BYTES)
         .await?
         .context("progression archive segment disappeared")?;
@@ -735,13 +707,59 @@ async fn retired_receipt(
         digest(&bytes) == archived.sha256,
         "progression archive segment digest mismatch"
     );
-    let segment: Segment = serde_json::from_slice(&bytes)?;
-    let saved = segment
-        .receipts
+    Ok(serde_json::from_slice(&bytes)?)
+}
+
+/// Resolve a retried match that already left the live window. Tombstones answer
+/// the usual retry directly; an older retry reads the segments instead, so
+/// trimming tombstones never turns a duplicate into a second award.
+async fn retired_receipt(
+    directory: &std::path::Path,
+    ledger: &Ledger,
+    match_id: &str,
+    award_sha256: &str,
+) -> Result<Option<Receipt>> {
+    if let Some(retired) = ledger
+        .retired
         .iter()
-        .find(|saved| saved.receipt.revision == retired.revision)
-        .context("progression archive segment lost the receipt")?;
-    Ok(Some(saved.receipt.clone()))
+        .find(|retired| retired.match_id == match_id)
+    {
+        ensure!(
+            retired.award_sha256 == award_sha256,
+            "conflicting progression retry"
+        );
+        let archived = ledger
+            .archived
+            .iter()
+            .find(|archived| {
+                archived.from_revision <= retired.revision
+                    && retired.revision <= archived.to_revision
+            })
+            .context("retired progression receipt is outside the archive")?;
+        let segment = read_segment(directory, archived).await?;
+        let saved = segment
+            .receipts
+            .iter()
+            .find(|saved| saved.receipt.revision == retired.revision)
+            .context("progression archive segment lost the receipt")?;
+        return Ok(Some(saved.receipt.clone()));
+    }
+    for archived in ledger.archived.iter().rev() {
+        let segment = read_segment(directory, archived).await?;
+        let Some(saved) = segment
+            .receipts
+            .iter()
+            .find(|saved| saved.receipt.match_id == match_id)
+        else {
+            continue;
+        };
+        ensure!(
+            saved.award_sha256 == award_sha256,
+            "conflicting progression retry"
+        );
+        return Ok(Some(saved.receipt.clone()));
+    }
+    Ok(None)
 }
 
 async fn write_ledger(path: &std::path::Path, bytes: &[u8]) -> Result<()> {

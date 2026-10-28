@@ -520,3 +520,30 @@ async fn capacity_archives_the_acknowledged_prefix_and_keeps_live_retry_history(
     let unchanged: Ledger = serde_json::from_slice(&bytes(&store).await).unwrap();
     assert!(unchanged.revision == MAX_RECEIPTS as u64 + 1);
 }
+
+#[tokio::test]
+async fn retry_of_an_archived_match_survives_tombstone_trimming() {
+    let (_temp, store, service) = setup().await;
+    let first = service.commit(ACCOUNT, award(1)).await.unwrap();
+    service
+        .acknowledge(ACCOUNT, &first.receipt.match_id, first.receipt.revision)
+        .await
+        .unwrap();
+    service.archive(ACCOUNT).await.unwrap().unwrap();
+    let path = store
+        .profile_directory(1002, 42)
+        .await
+        .unwrap()
+        .join("progression.json");
+    let mut ledger: Ledger = serde_json::from_slice(&bytes(&store).await).unwrap();
+    ledger.retired.clear();
+    atomic_private_write(&path, &serde_json::to_vec(&ledger).unwrap())
+        .await
+        .unwrap();
+    let retry = service.commit(ACCOUNT, award(1)).await.unwrap();
+    assert!(retry.duplicate);
+    assert_eq!(retry.receipt, first.receipt);
+    let mut conflict = award(1);
+    conflict.player_xp = 7;
+    assert!(service.commit(ACCOUNT, conflict).await.is_err());
+}
