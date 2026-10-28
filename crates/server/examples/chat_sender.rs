@@ -32,8 +32,11 @@ struct Arguments {
     user: u64,
     iv_seed: u32,
     group: u64,
-    text: String,
+    text: Option<String>,
     subscribe: bool,
+    room: Option<u64>,
+    room_text: Option<String>,
+    team: bool,
 }
 
 fn arguments() -> Result<Arguments> {
@@ -44,6 +47,9 @@ fn arguments() -> Result<Arguments> {
     let mut group = PUBLIC_GROUP;
     let mut text = None;
     let mut subscribe = false;
+    let mut room = None;
+    let mut room_text = None;
+    let mut team = false;
     let mut values = std::env::args().skip(1);
     while let Some(key) = values.next() {
         match key.as_str() {
@@ -54,6 +60,9 @@ fn arguments() -> Result<Arguments> {
             "--group" => group = values.next().context("--group value")?.parse()?,
             "--text" => text = Some(values.next().context("--text value")?),
             "--subscribe" => subscribe = true,
+            "--room" => room = Some(values.next().context("--room value")?.parse()?),
+            "--room-text" => room_text = Some(values.next().context("--room-text value")?),
+            "--team" => team = true,
             other => anyhow::bail!("unknown argument {other}"),
         }
     }
@@ -63,8 +72,11 @@ fn arguments() -> Result<Arguments> {
         user: user.context("--user is required")?,
         iv_seed,
         group,
-        text: text.context("--text is required")?,
+        text,
         subscribe,
+        room,
+        room_text,
+        team,
     })
 }
 
@@ -86,14 +98,25 @@ async fn main() -> Result<()> {
             .await?;
         println!("subscribed to {GROUP_TYPE}/{NEWBIE_GROUP}: error {error}, {count} records");
     }
-    let (error, count, _) = peer
-        .rpc(&text_body(arguments.group, &arguments.text)?)
-        .await?;
-    ensure!(error == 0, "public text rejected with error {error}");
-    println!(
-        "public text accepted for group {}; reply carries {count} records",
-        arguments.group
-    );
+    if let Some(channel) = arguments.room {
+        let (error, count, _) = peer.rpc(&room_join_body(channel)).await?;
+        println!("room join for {channel}: error {error}, {count} records");
+        if let Some(text) = arguments.room_text.as_deref() {
+            let (error, count, _) = peer
+                .rpc(&room_text_body(channel, text, arguments.team)?)
+                .await?;
+            ensure!(error == 0, "room text rejected with error {error}");
+            println!("room text accepted for {channel}; reply carries {count} records");
+        }
+    }
+    if let Some(text) = arguments.text.as_deref() {
+        let (error, count, _) = peer.rpc(&text_body(arguments.group, text)?).await?;
+        ensure!(error == 0, "public text rejected with error {error}");
+        println!(
+            "public text accepted for group {}; reply carries {count} records",
+            arguments.group
+        );
+    }
     Ok(())
 }
 
@@ -221,21 +244,24 @@ impl Peer {
         )?;
         self.outgoing += 1;
         self.stream.write_all(&wire).await?;
-        let wire = tokio::time::timeout(Duration::from_secs(5), read_frame(&mut self.stream))
-            .await
-            .context("lobby reply timeout")??;
-        let message = lobby::decrypt_application(
-            &wire,
-            &self.keys,
-            lobby::Direction::ServerToClient,
-            self.incoming,
-        )?;
-        self.incoming += 1;
-        ensure!(
-            message.kind == 1,
-            "unexpected lobby reply kind {}",
-            message.kind
-        );
+        let message = loop {
+            let wire = tokio::time::timeout(Duration::from_secs(5), read_frame(&mut self.stream))
+                .await
+                .context("lobby reply timeout")??;
+            let message = lobby::decrypt_application(
+                &wire,
+                &self.keys,
+                lobby::Direction::ServerToClient,
+                self.incoming,
+            )?;
+            self.incoming += 1;
+            // Directed pushes share the stream with replies; the reply is the
+            // frame that carries this request transaction.
+            if message.kind == 1 {
+                break message;
+            }
+            println!("skipped lobby push kind {}", message.kind);
+        };
         let mut reader = Reader::new(&message.body);
         ensure!(reader.u64()? == self.transaction, "lobby reply transaction");
         self.transaction += 1;
@@ -313,4 +339,54 @@ fn hex(text: &str) -> Result<Vec<u8>> {
         .step_by(2)
         .map(|at| Ok(u8::from_str_radix(&text[at..at + 2], 16)?))
         .collect()
+}
+
+/// Room admission names the channel the client browsed and joins it as a guest.
+fn room_join_body(channel: u64) -> Vec<u8> {
+    let mut writer = Writer::default();
+    writer.0.extend_from_slice(&[11, 3, 11]);
+    writer.u64(channel);
+    writer.u64(0);
+    writer.0.push(0);
+    writer.0
+}
+
+fn push_bits(bits: &mut Vec<bool>, value: u64, count: usize) {
+    for index in 0..count {
+        bits.push((value >> index) & 1 == 1);
+    }
+}
+
+/// Participant text packs an owner-control tag bit, eight type bits, the text
+/// and its terminator, a 64-bit counter and the team bit, least significant bit
+/// first. Room batches prefix every record with its little-endian length.
+fn room_text_body(channel: u64, text: &str, team_only: bool) -> Result<Vec<u8>> {
+    if text.is_empty() || text.len() >= MAX_TEXT {
+        return Err(anyhow::Error::msg("text length outside the accepted range"));
+    }
+    let mut bits = Vec::new();
+    push_bits(&mut bits, 0, 1);
+    push_bits(&mut bits, 2, 8);
+    for byte in text.bytes() {
+        push_bits(&mut bits, u64::from(byte), 8);
+    }
+    push_bits(&mut bits, 0, 8);
+    push_bits(&mut bits, 0, 64);
+    push_bits(&mut bits, u64::from(team_only), 1);
+    let mut record = vec![0; bits.len().div_ceil(8)];
+    for (index, bit) in bits.iter().enumerate() {
+        if *bit {
+            record[index / 8] |= 1 << (index % 8);
+        }
+    }
+    let mut batch = Vec::with_capacity(record.len() + 4);
+    batch.extend_from_slice(&(record.len() as u32).to_le_bytes());
+    batch.extend_from_slice(&record);
+    let mut writer = Writer::default();
+    writer.0.extend_from_slice(&[11, 3, 4]);
+    writer.u64(channel);
+    writer.blob(&batch)?;
+    writer.u32(0);
+    writer.0.push(0);
+    Ok(writer.0)
 }
