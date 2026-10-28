@@ -6,7 +6,7 @@
 
 | 场景 | 本版客户端路径 | Rust 当前行为 | 修复重点 |
 | --- | --- | --- | --- |
-| 大厅公共频道 | UI频道0 → `102/1`订阅变更、`102/3`发送 → SDK event34接收 | Rust已实现订阅、校验、event34跨连接投递；rank1账号已实采`102/1`订阅130/99；本版客户端没有公共频道发送入口，`102/3`只由双身份加密传输测试覆盖 | 双客户端接收；原生发送入口受客户端界面限制 |
+| 大厅公共频道 | UI频道0 → `102/1`订阅变更、`102/3`发送 → SDK event34接收 | Rust已实现订阅、校验、event34跨连接投递；rank1账号已实采`102/1`订阅130/99，运行中的客户端已实采到event34定向推送；本版客户端既无公共频道发送入口也无渲染位置 | 服务端已覆盖；原生发送与显示需要客户端改动 |
 | 房间全体 | UI频道3 → 房间type2记录 → `11/4` → event7 | 服务端已解析并转发全体文本；普通成员控制记录仍受白名单限制 | 双客户端原生发送与接收 |
 | 房间队伍 | UI频道5 → 同一type2记录，team位为1 | 服务端已按当前成员队伍过滤；普通成员发送仍需原生房间进入验收 | 双客户端切队及实机发送与接收 |
 | 游戏内全体／队伍 | 同一房间消息的接收链进入聊天控制器；对局状态另有队伍过滤 | 无独立文本聊天语义或对局成员路由 | 保留大厅连接，使用已绑定的房间／对局范围；实采游戏内发送入口 |
@@ -74,7 +74,7 @@ message_bytes
 event34外层为`U32(34), U64(sender), String(sdk_name), Blob(payload)`。
 `0x6d2060`读内层两个Blob，解码SDK名称，再经`0x5cc970`进入UI频道0。
 event35进入`0x5cc9a0`公告路径，不能替代公共聊天。
-发送与接收消费链支持“event34封装原始双Blob”的候选格式，但该格式尚无本版原生投递验收。
+发送与接收消费链支持“event34封装原始双Blob”的候选格式；该格式已在本版原生大厅连接上投递成功，客户端未出现解密或序号错误。
 公共UI回调将senderID设为0；自身显示是否需回送、是否与本地事件重复，必须实采确认。
 
 原生实采与仍需验证的行为：
@@ -89,7 +89,7 @@ event35进入`0x5cc9a0`公告路径，不能替代公共聊天。
 `CareerController.isInNewbieChannel`（prestige=0且level<19）决定客户端是否订阅，
 验收需使用满足条件的独立测试账号，不能更改用户正常账号等级。
 
-`102/3`在本版客户端没有可达入口：`FsgChatWindow.onGetAllChannels`只处理`ChattingChannelType.PRIVATE`频道，`postMessage()`只对`PARTY_TAB_INDEX`、`CLAN_TAB_INDEX`和已选好友发送；新兵频道虽然由`addChatChannel`加入`_chatChannels`，但没有任何页签或输入框引用它。大厅聊天按钮（`FsgSocialPanelView.CHAT_BTN_INDEX=5`）启动时由`switchEnableButton(...,false)`置灰，只有`EVENT_UPDATE_UNREAD_CHAT`计数大于0才恢复，而该计数依赖先收到消息，所以没有第二个发送者时无法驱动这个界面。游戏内聊天走房间type2与`11/4`，已实采team位0与1的记录，同样不是`102/3`。公共发送的服务端行为由`chat_transport_tests`的双身份加密传输测试覆盖；原生发送入口需要客户端改动或第二个客户端。
+`102/3`在本版客户端没有可达入口：`FsgChatWindow.onGetAllChannels`只处理`ChattingChannelType.PRIVATE`频道，`postMessage()`只对`PARTY_TAB_INDEX`、`CLAN_TAB_INDEX`和已选好友发送；新兵频道虽然由`addChatChannel`加入`_chatChannels`，但没有任何页签或输入框引用它。大厅聊天按钮（`FsgSocialPanelView.CHAT_BTN_INDEX=5`）启动时由`switchEnableButton(...,false)`置灰，只有`EVENT_UPDATE_UNREAD_CHAT`计数大于0才恢复，而该计数依赖先收到消息，所以没有第二个发送者时无法驱动这个界面。游戏内聊天走房间type2与`11/4`，已实采team位0与1的记录，同样不是`102/3`。公共发送的服务端行为由`chat_transport_tests`的双身份加密传输测试覆盖，跨连接投递另有脚本发送者实采。新兵频道消息只写入`_chatChannels`，而`DataID.CHAT_CHANNELS`的唯一消费方`FsgChatWindow.onGetAllChannels`只处理私聊频道，因此本版大厅没有渲染公共频道文本的位置；原生显示验收在本版客户端上无法完成。
 
 ## 房间文本协议与成员范围
 
@@ -161,6 +161,7 @@ Rust当前每个`game_connection::Connection`分别拥有`TdmMatch`，
 - 合法type2全体及中文队伍记录：房主成功，回送1条、跨连接投递给43和44；普通成员均被白名单拒绝。
 - 四次真实客户端启动验收：AUTH、协议210、大厅注册和`71/3、71/7、71/9`均成功；rank70账号三次运行均无`102`帧，rank1（prestige=0）账号运行发出`102/1`订阅130/99且未产生`102/3`；客户端窗口保持黑屏，聊天UI未被驱动。
 - 房间协议测试7项、房间目录测试9项及双身份TCP传输测试3项通过（含公共聊天投递1项）；1项原生type18采集测试按既有条件ignored。
+- 脚本发送者实采（`crates/server/examples/chat_sender.rs`）：UID777取得本地票据、建立加密大厅连接，`11/11`因频道不存在返回失败但昵称已登记，`102/1`订阅130/99返回1条记录，`102/3`发送返回`public_chat_message`成功；同一实例上运行的rank1原生客户端随即收到两条定向推送`mailbox-000000-s2c.bin`、`mailbox-000001-s2c.bin`，此后继续发出21帧RPC（最后一条为`local_cp_balance`），加密序号未失步，进程保持`frontend_state=5`、`connection_state=0`。
 - 本机无法取得原生像素证据：`CGPreflightScreenCaptureAccess()`为false，`screencapture`与`game-window capture`均失败，`PrintWindow`/`BitBlt`读不到D3D9表面（整幅为黑）；改用代理`d3d9.dll`截取后备缓冲的方案在Wine下没有触发`CreateDevice`/`CreateDeviceEx`，已放弃，HUD显示仍以客户端状态探针与协议帧为准。
 
 这些测试只证明当前代码路径及消息字节分发，不证明队伍UI显示或原生聊天验收。
@@ -171,6 +172,8 @@ sh tools/cargo.sh test --locked -p codol-protocol room::messages
 sh tools/cargo.sh test --locked -p codol-server --lib rooms::directory_tests
 sh tools/cargo.sh test --locked -p codol-server --lib transport::lobby::server::room_transport_tests
 sh tools/cargo.sh test --locked -p codol-server --lib transport::lobby::server::chat_transport_tests
+sh tools/cargo.sh build --locked -p codol-server --example chat_sender
+./target/debug/examples/chat_sender --auth 127.0.0.1:39002 --lobby 127.0.0.1:39001 --user 777 --text hello
 .tools/ghidra/ghidra_12.1.4_PUBLIC/support/analyzeHeadless \
   research-output/ghidra codol3333 -process codoMP_client_shipRetail.exe \
   -readOnly -noanalysis -scriptPath tools/ghidra \
