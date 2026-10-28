@@ -129,7 +129,11 @@ impl Chat {
         ensure!(kind == GROUP_TYPE, "unsupported public chat group type");
         public_text(payload)?;
         let group = public_channel(group);
-        let name = self.members[&identity].name.clone();
+        let name = self
+            .members
+            .get(&identity)
+            .map(|member| member.name.clone())
+            .unwrap_or_default();
         // Native event 34 carries the send payload tagged as one blob.
         let mut body = Writer::default();
         body.u32(PUBLIC_EVENT);
@@ -370,5 +374,38 @@ mod tests {
             chat.groups.get(&Identity::from(&newbie)),
             Some(&vec![NEWBIE_GROUP])
         );
+    }
+
+    #[test]
+    fn public_text_from_an_unregistered_sender_still_reaches_subscribers() {
+        let mut chat = Chat::default();
+        let sender = session(1, 10);
+        let recipient = session(2, 20);
+        let subscribe = groups(&[(GROUP_TYPE, NEWBIE_GROUP)], &[]);
+        chat.handle(
+            &Request {
+                service: 102,
+                task: 1,
+                arguments: &subscribe,
+            },
+            &recipient,
+        )
+        .unwrap();
+        let message = send(PUBLIC_SEND_GROUP, b"tUtoR0hi");
+        let result = chat
+            .handle(
+                &Request {
+                    service: 102,
+                    task: 3,
+                    arguments: &message,
+                },
+                &sender,
+            )
+            .unwrap();
+        assert_eq!(result.deliveries.len(), 1);
+        let mut event = Reader::new(&result.deliveries[0].body);
+        assert_eq!(event.u32().unwrap(), PUBLIC_EVENT);
+        assert_eq!(event.u64().unwrap(), sender.user_id);
+        assert_eq!(event.string(64).unwrap(), STANDARD.encode(b"1"));
     }
 }
