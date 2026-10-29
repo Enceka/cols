@@ -208,6 +208,10 @@ def main():
                         help="isolated first-story allocation/handshake capture without a gameplay world")
     parser.add_argument("--story-resource-state",type=Path,
                         help="captured cargo CRC metadata for resource initialization without gameplay")
+    parser.add_argument("--story-world", type=Path,
+                        help="prepared story world sent as the gamestate; requires story-capture-map")
+    parser.add_argument("--story-mission", type=Path,
+                        help="mission definition run by the prepared story world; requires story-world")
     parser.add_argument("--resource-capture-playlist", type=int, help="single-entry native playlist ID for isolated resource capture")
     parser.add_argument("--resource-compass-probe",type=Path,help="metadata-only request for a native compass candidate; requires resource-capture-map")
     parser.add_argument("--snapshot-probe", nargs="?", type=int, const=60, help="bootstrap frame budget at 20 Hz (1..18000; default 60); requires game-state")
@@ -268,6 +272,12 @@ def main():
         parser.error("story capture must use isolated service data")
     if args.story_resource_state and (not args.story_capture_map or not args.story_resource_state.is_file()):
         parser.error("story-resource-state requires native story capture and an existing metadata file")
+    if args.story_world and (not args.story_capture_map or not args.story_world.is_file()):
+        parser.error("story-world requires native story capture and an existing prepared world")
+    if args.story_mission and (not args.story_world or not args.story_mission.is_file()):
+        parser.error("story-mission requires story-world and an existing mission file")
+    if args.story_world and args.story_resource_state:
+        parser.error("story-world replaces story-resource-state")
     if args.snapshot_probe is not None and (not args.game_state or not 1 <= args.snapshot_probe <= 18000):
         parser.error("snapshot-probe requires game-state and 1..18000 frames")
     if args.game_map_catalog and (not args.rust_game or not args.game_map_catalog.is_file()):
@@ -438,6 +448,12 @@ def main():
                         if args.story_resource_state:
                             tls_argv += ["--story-resource-state",str(args.story_resource_state.resolve())]
                             state["story_resource_state_sha256"] = sha256(args.story_resource_state)
+                        if args.story_world:
+                            tls_argv += ["--story-world",str(args.story_world.resolve())]
+                            state["story_world_sha256"] = sha256(args.story_world)
+                        if args.story_mission:
+                            tls_argv += ["--story-mission",str(args.story_mission.resolve())]
+                            state["story_mission_sha256"] = sha256(args.story_mission)
                         if args.resource_capture_playlist is not None:
                             tls_argv += ["--resource-capture-playlist", str(args.resource_capture_playlist)]
                             state["resource_capture_playlist"] = args.resource_capture_playlist

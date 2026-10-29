@@ -166,8 +166,12 @@ impl GameServer {
             "story world cannot replace a TDM preparation"
         );
         self.story_world = Some(Arc::new(
-            crate::game::session::prepared::PreparedGameState::load_story_world(world, mission)?,
+            crate::game::session::prepared::PreparedGameState::load_story_world(world, mission)?
+                .with_continuous_play(),
         ));
+        // A playable level streams snapshots for as long as the player stays in
+        // it, so the story endpoint is a continuous-play world.
+        self.continuous_play = true;
         Ok(self)
     }
     /// Collect the first story map's transport using its native UI entrance.
@@ -466,7 +470,7 @@ impl GameServer {
                 self.game_state.is_none()
                     && self.game_map_catalog.is_none()
                     && self.resource_capture_map.is_none()
-                    && !self.continuous_play
+                    && (self.story_world.is_some() || !self.continuous_play)
                     && self.admissions.bot_rooms.is_none(),
                 "story capture cannot publish a TDM world"
             );
@@ -474,7 +478,7 @@ impl GameServer {
                 &self.directory.join("story-capture.json"),
                 &serde_json::to_vec(
                     &serde_json::json!({"map":map,"mode":"coop","maximum_players":1,
-                "server_issued_key":true,"gameplay_snapshots":false,
+                "server_issued_key":true,"gameplay_snapshots":self.story_world.is_some(),
                 "resource_gamestate_available":self.story_resources.is_some(),
                 "world_simulation":self.story_world.is_some(),
                 "mission":self.story_world.as_ref().and_then(|world| world.story_mission()).map(|mission| serde_json::json!({"map":&mission.map,"stages":mission.stages.len(),"completion":&mission.completion.native_flag})),
@@ -523,6 +527,7 @@ impl GameServer {
                         .as_ref()
                         .map_or(0, |c| c.snapshot_limit()),
                 )
+                .max(self.story_world.as_ref().map_or(0, |s| s.snapshot_limit()))
                 .min(18000)
                 * 4;
         let mut tick = tokio::time::interval(std::time::Duration::from_millis(50));
@@ -718,7 +723,7 @@ impl GameServer {
                             let resource_collection = self.resource_capture_map.as_deref()
                                 == Some(state.map())
                                 && self.resource_capture_mode==state.mode()
-                                || admission.story_channel.is_some();
+                                || (admission.story_channel.is_some() && self.story_world.is_none());
                             ensure!(
                                 !state.has_nuke_diagnostics()
                                     || self
