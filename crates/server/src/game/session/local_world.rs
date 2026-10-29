@@ -21,6 +21,7 @@ pub(crate) struct LocalWorld {
     pub(crate) combat: Option<crate::game::combat::CombatWorld>,
     pub(crate) bot: Option<crate::game::ai::controller::BotController>,
     pub(crate) tdm: Option<crate::game::modes::tdm::TdmMatch>,
+    pub(crate) story: Option<crate::game::modes::story::StoryMatch>,
     pub(crate) bot_frame: Option<crate::game::ai::controller::BotFrame>,
     pub(crate) bot_fire_time: Option<u32>,
     pub(crate) bot_fire_toggle: bool,
@@ -41,7 +42,12 @@ impl LocalWorld {
             motion: state.motion(),
             combat: state.combat(),
             bot: state.bot(),
-            tdm: state.tdm_match().expect("validated TDM state"),
+            tdm: if state.has_tdm() {
+                state.tdm_match().expect("validated TDM state")
+            } else {
+                None
+            },
+            story: state.story_match().ok(),
             player_birth: 1000,
             game_state: Some(state),
             ..Default::default()

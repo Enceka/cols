@@ -153,6 +153,8 @@ impl Connection {
             self.advance_grenades(server_time)?;
             self.advance_props(server_time)?;
             self.advance_weapon_drops(server_time)?;
+        } else if self.world.story.is_some() {
+            self.advance_story(server_time)?;
         } else {
             self.advance_bot(server_time)?;
         }

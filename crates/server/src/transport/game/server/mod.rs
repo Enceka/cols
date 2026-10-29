@@ -30,6 +30,7 @@ pub struct GameServer {
     directory: PathBuf,
     game_state: Option<Arc<crate::game::session::prepared::PreparedGameState>>,
     story_resources: Option<Arc<crate::game::session::prepared::PreparedGameState>>,
+    story_world: Option<Arc<crate::game::session::prepared::PreparedGameState>>,
     game_map_catalog: Option<crate::game::session::catalog::GameMapCatalog>,
     resource_capture_map: Option<String>,
     resource_capture_mode: String,
@@ -122,6 +123,7 @@ impl GameServer {
             directory,
             game_state: None,
             story_resources: None,
+            story_world: None,
             game_map_catalog: None,
             resource_capture_map: None,
             resource_capture_mode: "war".into(),
@@ -143,6 +145,28 @@ impl GameServer {
         );
         self.story_resources = Some(Arc::new(
             crate::game::session::prepared::PreparedGameState::load_story_resources(path)?,
+        ));
+        Ok(self)
+    }
+    /// Publish the first story level as a real world with its mission.
+    /// The world still owns no TDM configuration; its spawn comes from the
+    /// prepared state and its objectives from the mission definition.
+    pub fn with_story_world(
+        mut self,
+        world: &std::path::Path,
+        mission: &std::path::Path,
+    ) -> Result<Self> {
+        ensure!(
+            self.admissions.story_capture_map.as_deref()
+                == Some(codol_protocol::room::story::FIRST_MAP),
+            "story world requires explicit native story capture"
+        );
+        ensure!(
+            self.game_state.is_none() && self.game_map_catalog.is_none(),
+            "story world cannot replace a TDM preparation"
+        );
+        self.story_world = Some(Arc::new(
+            crate::game::session::prepared::PreparedGameState::load_story_world(world, mission)?,
         ));
         Ok(self)
     }
@@ -365,7 +389,10 @@ impl GameServer {
                 "story capture cannot use a client-key allocation or TDM preparation"
             );
             story_capture::selection(start, map)?;
-            return Ok(self.story_resources.clone());
+            return Ok(self
+                .story_world
+                .clone()
+                .or_else(|| self.story_resources.clone()));
         }
         if let Some((version, playlist)) = self.resource_capture_playlist
             && let Some((selected, entry)) = crate::content::maps::selection::playlist_start(start)?
@@ -447,8 +474,10 @@ impl GameServer {
                 &self.directory.join("story-capture.json"),
                 &serde_json::to_vec(
                     &serde_json::json!({"map":map,"mode":"coop","maximum_players":1,
-                "server_issued_key":true,"world_simulation":false,"gameplay_snapshots":false,
+                "server_issued_key":true,"gameplay_snapshots":false,
                 "resource_gamestate_available":self.story_resources.is_some(),
+                "world_simulation":self.story_world.is_some(),
+                "mission":self.story_world.as_ref().and_then(|world| world.story_mission()).map(|mission| serde_json::json!({"map":&mission.map,"stages":mission.stages.len(),"completion":&mission.completion.native_flag})),
                 "client_sha256":codol_protocol::CLIENT_SHA256}),
                 )?,
             )

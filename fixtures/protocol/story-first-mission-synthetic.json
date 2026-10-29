@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "client_sha256": "e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b",
+  "map": "coop_training_mp_cargoship",
+  "mode": "coop",
+  "spawn": { "origin": [0.0, 0.0, 0.0], "angles": [0, 0, 0] },
+  "stages": [
+    { "id": "onboard", "objective": { "kind": "reach", "origin": [0.0, 512.0, 0.0], "radius": 256.0 } },
+    { "id": "hold_deck", "checkpoint": true, "objective": { "kind": "survive", "seconds": 30 } },
+    { "id": "cross_cargo", "checkpoint": true, "objective": { "kind": "reach", "origin": [0.0, -512.0, 0.0], "radius": 256.0 } },
+    { "id": "debrief", "objective": { "kind": "finish", "origin": [0.0, -1024.0, 0.0], "radius": 128.0 } }
+  ],
+  "completion": { "unlock_flag": 150, "native_flag": "cf_ch_coop_training_mp_cargoship" }
+}

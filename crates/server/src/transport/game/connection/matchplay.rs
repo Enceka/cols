@@ -362,4 +362,94 @@ impl Connection {
         }
         Ok(())
     }
+
+    /// Advance the cooperative mission and honour its retry checkpoints.
+    pub(super) fn advance_story(&mut self, now: u32) -> Result<()> {
+        let Some(origin) = self.world.motion.as_ref().map(|motion| motion.origin) else {
+            return Ok(());
+        };
+        let alive = self.world.vitals.health > 0;
+        let Some(story) = self.world.story.as_mut() else {
+            return Ok(());
+        };
+        story.advance(
+            now,
+            crate::game::modes::story::PlayerFrame { origin, alive },
+        );
+        let events = story.take_events();
+        let respawn = story.respawn_origin();
+        let angles = story.spawn_angles();
+        let attempts = story.attempts();
+        let finished = story.outcome();
+        let spawn = story.spawn_origin();
+        let stage = story.stage_index();
+        let stage_id = story.stage_id().to_string();
+        let completion = story.mission().completion.native_flag.clone();
+        for event in &events {
+            match event {
+                crate::game::modes::story::Event::StageStarted { index, id } => {
+                    self.feedback
+                        .push_back(format!("objective {} started: {}", index + 1, id));
+                    tracing::info!(index, id = %id, stage, spawn = ?spawn, "story stage started");
+                }
+                crate::game::modes::story::Event::Checkpoint { index } => {
+                    self.feedback.push_back(format!("checkpoint {}", index + 1));
+                    tracing::info!(index, stage = %stage_id, "story checkpoint");
+                }
+                crate::game::modes::story::Event::Retried { attempts } => {
+                    tracing::info!(attempts, stage = %stage_id, "story attempt failed");
+                }
+                crate::game::modes::story::Event::Completed { seconds } => {
+                    self.feedback
+                        .push_back(format!("mission complete in {}s", seconds));
+                    tracing::info!(seconds, flag = %completion, "story mission completed");
+                }
+            }
+        }
+        if events
+            .iter()
+            .any(|event| matches!(event, crate::game::modes::story::Event::Retried { .. }))
+        {
+            self.retry_story(now, respawn, angles, attempts)?;
+        }
+        if let Some(outcome) = finished {
+            tracing::info!(?outcome, "story mission outcome");
+        }
+        Ok(())
+    }
+    fn retry_story(
+        &mut self,
+        now: u32,
+        origin: [f32; 3],
+        angles: [u16; 3],
+        attempts: u32,
+    ) -> Result<()> {
+        self.equip_spawn_loadout();
+        self.reset_spawn_view(angles);
+        let state = self.world.game_state.as_ref().unwrap().clone();
+        self.world.motion = state.motion();
+        if let Some(motion) = &mut self.world.motion {
+            motion.origin = origin;
+            motion.command_time = now;
+        }
+        self.world.vitals = codol_protocol::game::snapshot::PlayerVitals {
+            spawn_count: self.world.vitals.spawn_count.wrapping_add(1),
+            ..Default::default()
+        };
+        self.world.player_death = None;
+        self.hit_feedback.clear();
+        self.world.player_birth = now;
+        self.world.health_recovery = Default::default();
+        self.world.poison.clear();
+        self.world.emp.clear();
+        if let Some(primary) = state.primary_player() {
+            self.world
+                .player
+                .as_mut()
+                .unwrap()
+                .replace_loadout(primary, state.secondary_player());
+        }
+        tracing::info!(attempts, "story mission checkpoint restart");
+        Ok(())
+    }
 }

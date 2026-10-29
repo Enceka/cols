@@ -193,6 +193,9 @@ pub struct PreparedGameState {
     training_enemy: Option<crate::game::ai::enemy::EnemyConfig>,
     #[serde(default)]
     match_config: Option<crate::game::modes::tdm::MatchConfig>,
+    /// First-level cooperative mission; present only for a story world.
+    #[serde(default)]
+    story_mission: Option<crate::game::modes::story::Mission>,
     #[serde(skip)]
     match_weapon: Option<BootstrapWeapon>,
     #[serde(skip)]
@@ -283,6 +286,16 @@ impl PreparedGameState {
     }
     pub(crate) fn has_tdm(&self) -> bool {
         self.match_config.is_some()
+    }
+    pub(crate) fn story_mission(&self) -> Option<&crate::game::modes::story::Mission> {
+        self.story_mission.as_ref()
+    }
+    pub(crate) fn story_match(&self) -> Result<crate::game::modes::story::StoryMatch> {
+        let mission = self
+            .story_mission
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("prepared state carries no story mission"))?;
+        crate::game::modes::story::StoryMatch::new(mission.clone())
     }
     pub(crate) fn room_bot_loadouts(
         &self,
@@ -569,6 +582,7 @@ pub(crate) fn synthetic() -> PreparedGameState {
         training_target: None,
         training_enemy: None,
         match_config: None,
+        story_mission: None,
         match_weapon: None,
         roster_weapons: Vec::new(),
         shared_bot_outfit: None,
@@ -598,6 +612,7 @@ mod tests;
 mod loading;
 
 mod preparation;
+mod story_world;
 
 mod profile;
 

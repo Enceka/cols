@@ -146,6 +146,18 @@ impl PreparedGameState {
                     .ok_or_else(|| anyhow::anyhow!("TDM requires map collision"))?,
             )?;
         }
+        if let Some(mission) = &state.story_mission {
+            ensure!(
+                state.match_config.is_none()
+                    && mission.map == state.map
+                    && mission.mode == state.mode,
+                "story mission disagrees with the prepared world"
+            );
+            ensure!(
+                state.collision.is_some() && state.arsenal.is_some(),
+                "story world requires real collision and weapons"
+            );
+        }
         for weapon in state
             .bootstrap_weapon
             .iter()

@@ -229,6 +229,16 @@ enum Command {
         /// Captured story CRC metadata; initializes resources without a gameplay world.
         #[arg(long, requires = "story_capture_map")]
         story_resource_state: Option<PathBuf>,
+        /// Prepared first story level world; requires the matching mission file.
+        #[arg(
+            long,
+            requires = "story_capture_map",
+            conflicts_with = "story_resource_state"
+        )]
+        story_world: Option<PathBuf>,
+        /// First story level mission definition used by the story world.
+        #[arg(long, requires = "story_world")]
+        story_mission: Option<PathBuf>,
         /// Bind resource collection to one native single-entry publisher playlist.
         #[arg(long, requires = "resource_capture_map")]
         resource_capture_playlist: Option<u8>,
@@ -648,6 +658,8 @@ pub(super) async fn run() -> Result<()> {
             resource_capture_mode,
             story_capture_map,
             story_resource_state,
+            story_world,
+            story_mission,
             resource_capture_playlist,
             resource_compass_probe,
             continuous_play,
@@ -776,6 +788,9 @@ pub(super) async fn run() -> Result<()> {
                     }
                     if let Some(path) = story_resource_state {
                         game = game.with_story_resource_state(&path)?;
+                    }
+                    if let (Some(world), Some(mission)) = (story_world, story_mission) {
+                        game = game.with_story_world(&world, &mission)?;
                     }
                     let endpoint = game.admissions();
                     tracing::info!(address=%endpoint.address(),"experimental Rust game UDP endpoint ready");
