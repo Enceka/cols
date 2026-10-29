@@ -115,11 +115,11 @@ IFS 清单中没有独立 `.gsc/.csc` 路径。这只说明清单没有列出散
 1. 以已通过的独立分配、握手和初始化为基础，校验首关资源依赖闭包；正常账号和TDM资源保持隔离。
 2. 只绑定 `coop_training_mp_cargoship / coop`，复用已采资源顺序、CRC、实体和碰撞，恢复真实开始点并验收出生。取得失败时保留具体阻塞，不回退阿富汗等 TDM 图。已实现：剧情世界按基础图 `mp_cargoship` 解析碰撞/武器/外观身份，出生点取自准备世界的落地坐标；原生客户端已进入货轮甲板、渲染第一人称武器与雷达，并可持续接收快照。
 3. 任务定义、目标推进、检查点重试与完成事件已实现，原生一次完整通关已验收（开始、到达目标、存活目标、检查点、完成事件按序推进）。目标数值仍是合成样例，尚无真实首关脚本/触发数据，也没有剧情 NPC 与敌人生命，`eliminate` 目标只能用已采可破坏靶代替；载具、镜头与脚本动画按实际依赖决定实现次序。
-4. 通关记录与解锁位写入已实现（首次通关置位、重复通关不重复记录、失败不解锁），并已在原生通关中写入：`private.bin` 的 `unlockFlagsNew[150]` 置 1 且 CRC 复算一致，`story.json` 只保留一条记录，重复通关返回 `first_time=false` 且不改动记录。仍缺重登后由客户端读回该解锁位的原生复核。多人 PVE 应独立评估；本版剧情表的玩家上限为 1。
+4. 通关记录与解锁位写入已实现（首次通关置位、重复通关不重复记录、失败不解锁），并已在原生通关中写入：`private.bin` 的 `unlockFlagsNew[150]` 置 1 且 CRC 复算一致，`story.json` 只保留一条记录，重复通关返回 `first_time=false` 且不改动记录。重登复核已完成：把 `unlockFlagsNew[150..163]` 全部清零后重启客户端，剧情模式任务列表的十关全部显示锁标；只把 `unlockFlagsNew[150]` 置 1 再重启，仅`身份不明`去掉锁标，`接头`及其后各关仍锁定，说明客户端读回的就是这一位。多人 PVE 应独立评估；本版剧情表的玩家上限为 1。
 
 ## 证据与复核
 
-原始捕获、反编译输出和资源表留在忽略目录，不发布剧情脚本、文本、影片、账号或密钥。首关采集已通过原生分配/握手、stats及gamestate资源初始化，CRC复算一致。此后原生客户端从剧情模式任务列表进入`身份不明`并实际可玩：出生在货轮甲板、第一人称武器与雷达正常、移动输入生效、任务目标按序推进、完成事件写入解锁位与通关记录。运行证据在 `research-output/story-play12-20261029`（服务端日志含 `story stage started`、`story checkpoint`、`story mission completed`、`story completion recorded`）。完整结果见[剧情资源采集](STORY_RESOURCE_CAPTURE.md)。
+原始捕获、反编译输出和资源表留在忽略目录，不发布剧情脚本、文本、影片、账号或密钥。首关采集已通过原生分配/握手、stats及gamestate资源初始化，CRC复算一致。此后原生客户端从剧情模式任务列表进入`身份不明`并实际可玩：出生在货轮甲板、第一人称武器与雷达正常、移动输入生效、任务目标按序推进、完成事件写入解锁位与通关记录。运行证据在 `research-output/story-play12-20261029`（服务端日志含 `story stage started`、`story checkpoint`、`story mission completed`、`story completion recorded`）。解锁位的客户端读回复核见 `research-output/story-readback3-20261029`（仅首关去掉锁标）。完整结果见[剧情资源采集](STORY_RESOURCE_CAPTURE.md)。
 
 本地汇总为 `research-output/story-study/evidence.json`，记录来源哈希、版本列、最小关卡元数据、fastfile 清单观察、外置影片存在性、完成标记的 schema 位置及旧抓包查询。可在 `server/` 运行 `python3 research-output/story-study/analyze.py` 重算；脚本只读取本地证据，不调用客户端。
 
