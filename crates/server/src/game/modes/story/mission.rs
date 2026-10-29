@@ -70,6 +70,12 @@ impl Mission {
         Ok(mission)
     }
 
+    /// Elimination stages need an enemy with health the build can simulate.
+    pub(crate) fn needs_enemy(&self) -> bool {
+        self.stages
+            .iter()
+            .any(|stage| matches!(stage.objective, Objective::Eliminate { .. }))
+    }
     pub(crate) fn validate(&self) -> Result<()> {
         ensure!(
             self.schema_version == 1

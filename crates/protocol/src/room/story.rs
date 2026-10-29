@@ -7,6 +7,13 @@ use std::net::SocketAddrV4;
 
 pub const CLIENT_BUILD: i32 = -688906341;
 pub const FIRST_MAP: &str = "coop_training_mp_cargoship";
+/// World geometry of the first level comes from the base multiplayer map.
+pub const FIRST_BASE_MAP: &str = "mp_cargoship";
+
+/// Base multiplayer map that supplies one story level's geometry.
+pub fn base_map(map: &str) -> Option<&'static str> {
+    (map == FIRST_MAP).then_some(FIRST_BASE_MAP)
+}
 /// Index of the first level completion flag in the private unlock table.
 pub const FIRST_COMPLETION_FLAG: u16 = 150;
 /// Native completion marker the frontend uses to gate the second level.

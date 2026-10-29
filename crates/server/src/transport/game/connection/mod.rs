@@ -36,6 +36,9 @@ pub(crate) struct Connection {
     story_completion: Option<(String, u32, u32)>,
     story_committed: bool,
     story_retry_at: Option<Instant>,
+    /// Health of the story enemy target in the previous frame, so a kill is
+    /// counted once when the target dies.
+    story_target_health: Option<u16>,
     model_rules_sent: bool,
     model_rules_sequence: u32,
     connected: bool,

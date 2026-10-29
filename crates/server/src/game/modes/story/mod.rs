@@ -100,9 +100,8 @@ impl StoryMatch {
 
     /// Elimination progress comes from authoritative combat kills, never from a
     /// client-reported counter.
-    /// Story actors are not modelled yet, so nothing reports kills; the
-    /// connection calls this once the first level carries enemy health.
-    #[allow(dead_code)]
+    /// The connection reports a kill when the captured destructible target
+    /// dies, which is the only enemy health this build simulates.
     pub(crate) fn record_kill(&mut self) {
         if self.finished.is_some() {
             return;

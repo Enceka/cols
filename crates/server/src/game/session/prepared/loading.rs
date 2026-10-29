@@ -8,12 +8,22 @@ impl PreparedGameState {
         Self::load_navigation(path, false)
     }
     fn load_navigation(path: &Path, eager_navigation: bool) -> Result<Self> {
+        let state = Self::read(path)?;
+        Self::attach(path, state, eager_navigation)
+    }
+    pub(super) fn read(path: &Path) -> Result<Self> {
         ensure!(
             std::fs::metadata(path)?.len() <= 256 * 1024,
             "prepared game state size"
         );
-        let mut state: Self = serde_json::from_slice(&std::fs::read(path)?)?;
+        Ok(serde_json::from_slice(&std::fs::read(path)?)?)
+    }
+    /// Loads every captured resource a prepared state names. Story worlds
+    /// attach their mission first, so the base-map captures resolve before
+    /// validation.
+    pub(super) fn attach(path: &Path, mut state: Self, eager_navigation: bool) -> Result<Self> {
         let directory = path.parent().unwrap_or(Path::new("."));
+        let geometry = geometry(&state.map, state.story_mission.is_some());
         if let Some(file) = &state.props_file {
             state.props_resources = Some(Arc::new(crate::game::world::props::Resources::load(
                 &directory.join(file),
@@ -58,17 +68,13 @@ impl PreparedGameState {
                 .as_ref()
                 .and_then(|arsenal| arsenal.captured_map.as_ref())
             {
-                ensure!(
-                    map == &format!("maps/mp/{}.d3dbsp", state.map),
-                    "arsenal belongs to another map"
-                );
+                ensure!(map == &geometry, "arsenal belongs to another map");
             }
         }
         if let Some(file) = &state.collision_file {
             let collision = crate::game::world::collision::Collision::load(&directory.join(file))?;
             ensure!(
-                collision.ncs_crc == state.ncs_crc
-                    && collision.map == format!("maps/mp/{}.d3dbsp", state.map),
+                collision.ncs_crc == state.ncs_crc && collision.map == geometry,
                 "collision identity mismatch"
             );
             state.collision = Some(Arc::new(collision));
@@ -156,6 +162,12 @@ impl PreparedGameState {
             ensure!(
                 state.collision.is_some() && state.arsenal.is_some(),
                 "story world requires real collision and weapons"
+            );
+            ensure!(
+                !mission.needs_enemy()
+                    || state.training_target.is_some()
+                    || state.training_enemy.is_some(),
+                "story elimination requires a destructible target"
             );
         }
         for weapon in state
@@ -299,6 +311,11 @@ impl PreparedGameState {
                 && state.map == codol_protocol::room::story::FIRST_MAP
                 && state.mode == "coop"
                 && state.clone().resource_initialization().is_ok())
+                || (state.story_mission.is_some()
+                    && state.map == codol_protocol::room::story::FIRST_MAP
+                    && state.mode == "coop"
+                    && state.zone == "mp"
+                    && state.playlist == 0)
                 || (crate::content::maps::registry::supports_mode(&state.map, &state.mode)
                     && state.zone == "mp"
                     && state.playlist == 0),
@@ -334,5 +351,37 @@ impl PreparedGameState {
             "loaded prepared training state"
         );
         Ok(())
+    }
+}
+
+/// A story level reuses the geometry and weapon capture of its base multiplayer
+/// map, so those captures keep their own map name instead of pretending to
+/// belong to the story map.
+pub(super) fn geometry(map: &str, story: bool) -> String {
+    if story {
+        codol_protocol::room::story::base_map(map)
+            .map(|base| format!("maps/mp/{base}.d3dbsp"))
+            .unwrap_or_else(|| format!("maps/mp/{map}.d3dbsp"))
+    } else {
+        format!("maps/mp/{map}.d3dbsp")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn story_levels_read_geometry_from_the_base_map() {
+        assert_eq!(
+            geometry(codol_protocol::room::story::FIRST_MAP, true),
+            "maps/mp/mp_cargoship.d3dbsp"
+        );
+        assert_eq!(
+            geometry(codol_protocol::room::story::FIRST_MAP, false),
+            "maps/mp/coop_training_mp_cargoship.d3dbsp"
+        );
+        assert_eq!(geometry("mp_afghan", false), "maps/mp/mp_afghan.d3dbsp");
+        assert_eq!(geometry("mp_afghan", true), "maps/mp/mp_afghan.d3dbsp");
     }
 }

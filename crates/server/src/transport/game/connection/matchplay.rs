@@ -369,9 +369,21 @@ impl Connection {
             return Ok(());
         };
         let alive = self.world.vitals.health > 0;
+        // Story enemies are the captured destructible target: a kill is the
+        // frame its health reaches zero, and the target respawns afterwards.
+        let target_health = self.world.combat.as_ref().map(|combat| combat.health());
+        let killed = match (self.story_target_health, target_health) {
+            (Some(previous), Some(0)) => previous > 0,
+            _ => false,
+        };
+        self.story_target_health = target_health;
         let Some(story) = self.world.story.as_mut() else {
             return Ok(());
         };
+        if killed {
+            story.record_kill();
+            tracing::info!(stage = %story.stage_id(), "story enemy killed");
+        }
         story.advance(
             now,
             crate::game::modes::story::PlayerFrame { origin, alive },
