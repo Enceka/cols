@@ -223,3 +223,54 @@ fn first_level_fixture_loads_and_ends_with_a_finish_stage() {
     ));
     assert!(mission.stages[1].checkpoint && mission.stages[2].checkpoint);
 }
+
+#[test]
+fn cargoship_mission_runs_from_the_captured_spawn_to_the_first_unlock() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fixtures/protocol/story-first-mission-cargoship.json");
+    let mission = Mission::load(&path).unwrap();
+    assert_eq!(mission.map, codol_protocol::room::story::FIRST_MAP);
+    assert_eq!(mission.stages.len(), 3);
+    assert_eq!(
+        mission.completion.unlock_flag,
+        codol_protocol::room::story::FIRST_COMPLETION_FLAG
+    );
+    assert_eq!(
+        mission.completion.native_flag,
+        codol_protocol::room::story::FIRST_COMPLETION_NAME
+    );
+    let mut play = StoryMatch::new(mission).unwrap();
+    let spawn = play.spawn_origin();
+    play.advance(
+        1_000,
+        PlayerFrame {
+            origin: spawn,
+            alive: true,
+        },
+    );
+    assert_eq!(play.stage_id(), "cross_deck");
+    play.advance(
+        1_100,
+        PlayerFrame {
+            origin: [3560.0, 188.0, 192.0],
+            alive: true,
+        },
+    );
+    assert_eq!(play.stage_id(), "hold_deck");
+    play.advance(
+        7_200,
+        PlayerFrame {
+            origin: [3560.0, 188.0, 192.0],
+            alive: true,
+        },
+    );
+    assert_eq!(play.stage_id(), "debrief");
+    play.advance(
+        7_300,
+        PlayerFrame {
+            origin: [3432.0, 188.0, 192.0],
+            alive: true,
+        },
+    );
+    assert!(matches!(play.outcome(), Some(Outcome::Completed { .. })));
+}

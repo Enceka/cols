@@ -1,0 +1,94 @@
+{
+ "schema_version": 1,
+ "client_sha256": "e3823fd6afc80fb25fa84747e6e9634707b9a0b189357a5466921cda354af37b",
+ "zone": "mp",
+ "playlist": 0,
+ "common_crc": 3451066449,
+ "observed_crc_verified": true,
+ "map_entities_sha256": "cdcbb3daf11567a56d716ec062ffecffc8afafe727c702ab841d2c456fab6d5a",
+ "spawn_origin": [
+  3432.0,
+  188.0,
+  192.0
+ ],
+ "map": "coop_training_mp_cargoship",
+ "mode": "coop",
+ "ncs_crc": 2662333828,
+ "constant_count": 3515,
+ "asset_count": 59,
+ "capture_sha256": "ae709c0bfda0124b2c65eb29f34425320cff639c8b8e3a3b2637be1e1125611a",
+ "collision_file": "collision.json",
+ "arsenal_file": "arsenal.json",
+ "bootstrap_weapon": {
+  "name": "m4_mp",
+  "index": 316,
+  "base_index": 163,
+  "camo": 0,
+  "composed_name": "** 163 0 0",
+  "viewmodel_index": 54,
+  "ammo": {
+   "ads": {
+    "in_rate": 0.004000000189989805,
+    "out_rate": 0.004000000189989805,
+    "reload_allowed": false,
+    "reload_end_msec": 349,
+    "reload_interruptible": false
+   },
+   "clip": 30,
+   "clip_key": 316,
+   "fire_interval_msec": 79,
+   "reload": {
+    "add_msec": 1399,
+    "empty_add_msec": 1399,
+    "empty_msec": 2799,
+    "normal_msec": 2029
+   },
+   "reserve": 90,
+   "reserve_key": 163,
+   "source_sha256": "1b3973cf4c0e9cd33e2f75c9d5785d3426a65b4bead0fc6d31655efa0b3ece9d"
+  }
+ },
+ "training_enemy": {
+  "angles": [
+   0,
+   32768,
+   0
+  ],
+  "bounds_max": [
+   16.6193771,
+   24.23611,
+   83.36963
+  ],
+  "bounds_min": [
+   -17.7558975,
+   -24.23611,
+   -0.453025818
+  ],
+  "death_animation": 47,
+  "fire_animation": 616,
+  "idle_animation": 395,
+  "model": 109,
+  "move_speed": 94.48252868652344,
+  "origin": [
+   -3632.0,
+   104.0,
+   88.0
+  ],
+  "source_sha256": "066124288bafaefe5de2219c4accb0d9ef6f0aff7d578edbf7134a9509ef5327",
+  "walk_animation": 243,
+  "weapon": 163,
+  "bot": true,
+  "walk_left_animation": 241,
+  "walk_right_animation": 240,
+  "walk_back_animation": 242,
+  "locomotion": {
+   "run_forward": 328,
+   "run_back": 325,
+   "run_left": 328,
+   "run_right": 328,
+   "sprint": 309,
+   "fire_standing": 617,
+   "script_sha256": "1b2022bc90930bb0931494653246ad7816a79130a1f65e89215c575e3b87805d"
+  }
+ }
+}

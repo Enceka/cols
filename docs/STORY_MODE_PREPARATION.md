@@ -98,6 +98,18 @@ IFS 清单中没有独立 `.gsc/.csc` 路径。这只说明清单没有列出散
 
 `story-capture.json` 记录 `world_simulation`、任务阶段数与完成标记，用于区分仅资源初始化与可玩世界。剧情世界使用独立的准备状态，不写入 TDM 目录，也不复用 TDM 的分数/时限规则。
 
+本机复现用的世界与任务定义分别是 `fixtures/protocol/story-first-world-cargoship.json` 与 `fixtures/protocol/story-first-mission-cargoship.json`，它们把 `collision_file`／`arsenal_file` 记为同目录的相对文件名，因此把采集目录里的 `collision.json` 与 `arsenal.json` 复制到同一目录即可运行：
+
+```sh
+./target/debug/codol-server serve-auth \
+  --bind 127.0.0.1:39002 --cert .tools/tls-lab/server.pem --key .tools/tls-lab/key.pem \
+  --local-title-id 1002 --lobby-bind 127.0.0.1:39001 --game-bind 127.0.0.1:39004 \
+  --service-data-dir SERVICE_DATA \
+  --story-capture-map coop_training_mp_cargoship \
+  --story-world DIR/story-first-world-cargoship.json \
+  --story-mission DIR/story-first-mission-cargoship.json
+```
+
 ## 首关玩法的剩余验收
 
 1. 以已通过的独立分配、握手和初始化为基础，校验首关资源依赖闭包；正常账号和TDM资源保持隔离。
