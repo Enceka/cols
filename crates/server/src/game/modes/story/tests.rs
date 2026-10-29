@@ -40,8 +40,8 @@ fn mission() -> Mission {
             ),
         ],
         completion: Completion {
-            unlock_flag: mission::FIRST_COMPLETION_FLAG,
-            native_flag: mission::FIRST_COMPLETION_NAME.into(),
+            unlock_flag: codol_protocol::room::story::FIRST_COMPLETION_FLAG,
+            native_flag: codol_protocol::room::story::FIRST_COMPLETION_NAME.into(),
         },
     }
 }

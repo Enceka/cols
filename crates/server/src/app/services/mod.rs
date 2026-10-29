@@ -31,6 +31,7 @@ pub struct LocalServices {
     files: FileService,
     publisher: PublisherService,
     progression: crate::backend::progression::service::ProgressionService,
+    story: crate::backend::story::StoryService,
     rooms: Arc<Mutex<Rooms>>,
     chat: Arc<std::sync::Mutex<crate::backend::chat::Chat>>,
     delivery: Arc<DeliveryHub>,
@@ -52,6 +53,7 @@ impl LocalServices {
             progression: crate::backend::progression::service::ProgressionService::new(
                 accounts.clone(),
             ),
+            story: crate::backend::story::StoryService::new(accounts.clone()),
             accounts,
             rooms: Arc::new(Mutex::new(Rooms::default())),
             chat: Arc::new(std::sync::Mutex::new(crate::backend::chat::Chat::default())),
@@ -104,6 +106,15 @@ impl LocalServices {
     pub(crate) async fn player_nickname(&self, account: AccountId) -> Result<Option<String>> {
         crate::backend::players::nickname(&self.accounts.root, account.title_id, account.user_id)
             .await
+    }
+    pub(crate) async fn complete_story(
+        &self,
+        account: AccountId,
+        map: &str,
+        attempts: u32,
+        seconds: u32,
+    ) -> Result<crate::backend::story::Completion> {
+        self.story.complete(account, map, attempts, seconds).await
     }
     pub async fn commit_match_progression(
         &self,

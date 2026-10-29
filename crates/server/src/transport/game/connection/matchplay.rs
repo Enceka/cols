@@ -403,6 +403,8 @@ impl Connection {
                     self.feedback
                         .push_back(format!("mission complete in {}s", seconds));
                     tracing::info!(seconds, flag = %completion, "story mission completed");
+                    let story_map = story.mission().map.clone();
+                    self.story_completion = Some((story_map, attempts, *seconds));
                 }
             }
         }

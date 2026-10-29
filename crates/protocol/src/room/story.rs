@@ -7,6 +7,10 @@ use std::net::SocketAddrV4;
 
 pub const CLIENT_BUILD: i32 = -688906341;
 pub const FIRST_MAP: &str = "coop_training_mp_cargoship";
+/// Index of the first level completion flag in the private unlock table.
+pub const FIRST_COMPLETION_FLAG: u16 = 150;
+/// Native completion marker the frontend uses to gate the second level.
+pub const FIRST_COMPLETION_NAME: &str = "cf_ch_coop_training_mp_cargoship";
 
 /// Server-issued security material is returned through the authenticated
 /// lobby. Map choice is checked against the later native start, not query1.

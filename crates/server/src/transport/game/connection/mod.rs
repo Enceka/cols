@@ -33,6 +33,9 @@ pub(crate) struct Connection {
     progression_committed: bool,
     progression_retry_at: Option<Instant>,
     progression_ack: Option<(u32, String, u64)>,
+    story_completion: Option<(String, u32, u32)>,
+    story_committed: bool,
+    story_retry_at: Option<Instant>,
     model_rules_sent: bool,
     model_rules_sequence: u32,
     connected: bool,
@@ -326,6 +329,8 @@ mod channel;
 
 mod presentation;
 mod progression;
+
+mod story;
 
 mod matchplay;
 

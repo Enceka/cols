@@ -544,6 +544,15 @@ impl GameServer {
                             }.await;
                             if let Err(error)=committed {bound.transport.connection.progression_commit_failed();tracing::warn!(%error,"finished match progression commit delayed");}
                         }
+                        if let Some((map,attempts,seconds))=bound.transport.connection.pending_story_completion() {
+                            match services.complete_story(account,&map,attempts,seconds).await {
+                                Ok(completion)=>{
+                                    bound.transport.connection.story_completion_committed();
+                                    tracing::info!(map=%completion.map,attempts=completion.attempts,seconds=completion.seconds,first_time=completion.first_time,"story completion recorded");
+                                }
+                                Err(error)=>{bound.transport.connection.story_completion_failed();tracing::warn!(%error,"story completion delayed");}
+                            }
+                        }
                         if let Some((id,revision))=bound.transport.connection.progression_delivery_ack() {
                             match services.acknowledge_progression(account,&id,revision).await {
                                 Ok(())=>bound.transport.connection.progression_delivery_confirmed(),

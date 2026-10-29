@@ -5,10 +5,6 @@ use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-/// `mp/unlockFlags.csv` maps the cargo completion marker to this number.
-pub(crate) const FIRST_COMPLETION_FLAG: u16 = 150;
-/// Native name of the same marker, used to cross-check the prepared file.
-pub(crate) const FIRST_COMPLETION_NAME: &str = "cf_ch_coop_training_mp_cargoship";
 const MAX_FILE_BYTES: u64 = 65536;
 const MAX_STAGES: usize = 64;
 const MIN_RADIUS: f32 = 32.0;
@@ -83,8 +79,9 @@ impl Mission {
             "story mission identity mismatch"
         );
         ensure!(
-            self.completion.unlock_flag == FIRST_COMPLETION_FLAG
-                && self.completion.native_flag == FIRST_COMPLETION_NAME,
+            self.completion.unlock_flag == codol_protocol::room::story::FIRST_COMPLETION_FLAG
+                && self.completion.native_flag
+                    == codol_protocol::room::story::FIRST_COMPLETION_NAME,
             "story mission completion flag is not the first level marker"
         );
         coordinate(self.spawn.origin)?;

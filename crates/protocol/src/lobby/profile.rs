@@ -187,6 +187,33 @@ pub fn player_rank_unlock(arguments: &[u8], user_id: u64) -> Result<i16, LobbyEr
     Ok(i16::from_le_bytes(plain[8297..8299].try_into().unwrap()))
 }
 
+/// Index of the first `unlockFlagsNew` entry in the private snapshot.
+const UNLOCK_BASE: usize = 8295;
+const UNLOCK_COUNT: u16 = 256;
+
+/// Read one story unlock flag from the private snapshot.
+pub fn story_unlock(arguments: &[u8], user_id: u64, flag: u16) -> Result<i16, LobbyError> {
+    player_rank(arguments, user_id)?;
+    if flag >= UNLOCK_COUNT {
+        return Err(LobbyError("private profile unlock flag out of range"));
+    }
+    let (plain, _) = snapshot_and_tail(arguments)?;
+    let at = UNLOCK_BASE + usize::from(flag) * 2;
+    Ok(i16::from_le_bytes(plain[at..at + 2].try_into().unwrap()))
+}
+
+/// Raise one story unlock flag. Unrelated progress survives, and the CRC is
+/// rebuilt only when the flag actually changes.
+pub fn with_story_unlock(arguments: &[u8], user_id: u64, flag: u16) -> Result<Vec<u8>, LobbyError> {
+    if story_unlock(arguments, user_id, flag)? >= 1 {
+        return Ok(arguments.to_vec());
+    }
+    let (mut plain, _) = snapshot_and_tail(arguments)?;
+    let at = UNLOCK_BASE + usize::from(flag) * 2;
+    plain[at..at + 2].copy_from_slice(&1i16.to_le_bytes());
+    encode_private(plain)
+}
+
 /// Prepare an owner-checked v4 level update in memory. The caller must derive
 /// rank/within-rank XP from the verified curve and persist it authoritatively.
 /// Prestige and unrelated progress survive; CRC and all projections are rebuilt.
@@ -495,5 +522,18 @@ mod tests {
         bad.insert(21 + n, 0);
         bad[17..21].copy_from_slice(&((n + 1) as u32).to_le_bytes());
         assert!(validate_public(&bad).is_err());
+    }
+    #[test]
+    fn story_unlock_flags_are_independent_and_idempotent() {
+        let profile = new_private(123, 1).unwrap();
+        assert_eq!(story_unlock(&profile, 123, 150).unwrap(), 0);
+        let unlocked = with_story_unlock(&profile, 123, 150).unwrap();
+        assert_eq!(story_unlock(&unlocked, 123, 150).unwrap(), 1);
+        assert_eq!(story_unlock(&unlocked, 123, 151).unwrap(), 0);
+        assert_eq!(player_rank_unlock(&unlocked, 123).unwrap(), 0);
+        assert_eq!(player_rank(&unlocked, 123).unwrap(), (0, 0));
+        assert_eq!(with_story_unlock(&unlocked, 123, 150).unwrap(), unlocked);
+        assert!(with_story_unlock(&profile, 999, 150).is_err());
+        assert!(with_story_unlock(&profile, 123, 256).is_err());
     }
 }
