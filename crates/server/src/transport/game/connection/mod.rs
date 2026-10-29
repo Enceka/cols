@@ -39,6 +39,8 @@ pub(crate) struct Connection {
     /// Health of the story enemy target in the previous frame, so a kill is
     /// counted once when the target dies.
     story_target_health: Option<u16>,
+    /// Set once the mission outcome is reported, so the log stays one line per level.
+    story_outcome_logged: bool,
     model_rules_sent: bool,
     model_rules_sequence: u32,
     connected: bool,

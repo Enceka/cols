@@ -416,7 +416,8 @@ impl Connection {
                         .push_back(format!("mission complete in {}s", seconds));
                     tracing::info!(seconds, flag = %completion, "story mission completed");
                     let story_map = story.mission().map.clone();
-                    self.story_completion = Some((story_map, attempts, *seconds));
+                    // The ledger records tries, so a first-attempt clear is one try.
+                    self.story_completion = Some((story_map, attempts + 1, *seconds));
                 }
             }
         }
@@ -426,7 +427,10 @@ impl Connection {
         {
             self.retry_story(now, respawn, angles, attempts)?;
         }
-        if let Some(outcome) = finished {
+        if let Some(outcome) = finished
+            && !self.story_outcome_logged
+        {
+            self.story_outcome_logged = true;
             tracing::info!(?outcome, "story mission outcome");
         }
         Ok(())
